@@ -1,0 +1,1546 @@
+{
+  "ruDefault": {
+    "lines": [
+      {
+        "id": "duty",
+        "label": {
+          "key": "russia.lines.duty"
+        },
+        "note": {
+          "key": "russia.notes.dutyPerCc",
+          "params": {
+            "perCc": 4.8,
+            "volumeCc": 1998
+          }
+        },
+        "amount": 908211,
+        "currency": "RUB",
+        "muted": false
+      },
+      {
+        "id": "customsFee",
+        "label": {
+          "key": "russia.lines.customsFee"
+        },
+        "note": {
+          "key": "russia.notes.customsFee",
+          "params": {
+            "value": "2 049 230"
+          }
+        },
+        "amount": 13541,
+        "currency": "RUB"
+      },
+      {
+        "id": "recyclingFee",
+        "label": {
+          "key": "russia.lines.recyclingFee"
+        },
+        "note": {
+          "key": "russia.notes.recyclingFee",
+          "params": {
+            "base": "20 000",
+            "coeff": 0.26
+          }
+        },
+        "amount": 5200,
+        "currency": "RUB"
+      }
+    ],
+    "total": {
+      "amount": 926952,
+      "currency": "RUB"
+    },
+    "alt": [
+      {
+        "amount": 11308.542764279384,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "russia.flags.privatePerson"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "russia.flags.notIncluded"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "russia.subtitle.yearMonth",
+        "params": {
+          "year": 2021,
+          "month": {
+            "key": "ui.month.1"
+          }
+        }
+      },
+      {
+        "key": "russia.subtitle.volume",
+        "params": {
+          "volumeCc": 1998
+        }
+      },
+      {
+        "key": "russia.subtitle.power",
+        "params": {
+          "horsePower": 150
+        }
+      },
+      {
+        "key": "russia.fuelShort.ice"
+      }
+    ],
+    "stampLabel": {
+      "key": "russia.stamp.eaeu"
+    },
+    "meta": {
+      "fuel": "ice",
+      "ageYears": "5",
+      "ageBand": "old",
+      "volumeCc": "1998",
+      "horsePower": "150",
+      "priceRub": "2049230",
+      "priceEur": "21639",
+      "dutyRub": "908211",
+      "feeRub": "13541",
+      "recyclingRub": "5200",
+      "recyclingApprox": "false",
+      "totalRub": "926952"
+    }
+  },
+  "ru5yBoundary": [
+    {
+      "months": 59,
+      "result": {
+        "lines": [
+          {
+            "id": "duty",
+            "label": {
+              "key": "russia.lines.duty"
+            },
+            "note": {
+              "key": "russia.notes.dutyPerCc",
+              "params": {
+                "perCc": 2.7,
+                "volumeCc": 1998
+              }
+            },
+            "amount": 510869,
+            "currency": "RUB",
+            "muted": false
+          },
+          {
+            "id": "customsFee",
+            "label": {
+              "key": "russia.lines.customsFee"
+            },
+            "note": {
+              "key": "russia.notes.customsFee",
+              "params": {
+                "value": "2 049 230"
+              }
+            },
+            "amount": 13541,
+            "currency": "RUB"
+          },
+          {
+            "id": "recyclingFee",
+            "label": {
+              "key": "russia.lines.recyclingFee"
+            },
+            "note": {
+              "key": "russia.notes.recyclingFee",
+              "params": {
+                "base": "20 000",
+                "coeff": 0.26
+              }
+            },
+            "amount": 5200,
+            "currency": "RUB"
+          }
+        ],
+        "total": {
+          "amount": 529610,
+          "currency": "RUB"
+        },
+        "alt": [
+          {
+            "amount": 6461.086802110578,
+            "currency": "USD"
+          }
+        ],
+        "flags": [
+          {
+            "level": "info",
+            "text": {
+              "key": "russia.flags.midBand",
+              "params": {
+                "from": 3,
+                "to": 5
+              }
+            }
+          },
+          {
+            "level": "info",
+            "text": {
+              "key": "russia.flags.privatePerson"
+            }
+          },
+          {
+            "level": "warn",
+            "text": {
+              "key": "russia.flags.notIncluded"
+            }
+          }
+        ],
+        "subtitle": [
+          {
+            "key": "russia.subtitle.yearMonth",
+            "params": {
+              "year": 2021,
+              "month": {
+                "key": "ui.month.1"
+              }
+            }
+          },
+          {
+            "key": "russia.subtitle.volume",
+            "params": {
+              "volumeCc": 1998
+            }
+          },
+          {
+            "key": "russia.subtitle.power",
+            "params": {
+              "horsePower": 150
+            }
+          },
+          {
+            "key": "russia.fuelShort.ice"
+          }
+        ],
+        "stampLabel": {
+          "key": "russia.stamp.eaeu"
+        },
+        "meta": {
+          "fuel": "ice",
+          "ageYears": "4",
+          "ageBand": "mid",
+          "volumeCc": "1998",
+          "horsePower": "150",
+          "priceRub": "2049230",
+          "priceEur": "21639",
+          "dutyRub": "510869",
+          "feeRub": "13541",
+          "recyclingRub": "5200",
+          "recyclingApprox": "false",
+          "totalRub": "529610"
+        }
+      }
+    },
+    {
+      "months": 60,
+      "result": {
+        "lines": [
+          {
+            "id": "duty",
+            "label": {
+              "key": "russia.lines.duty"
+            },
+            "note": {
+              "key": "russia.notes.dutyPerCc",
+              "params": {
+                "perCc": 4.8,
+                "volumeCc": 1998
+              }
+            },
+            "amount": 908211,
+            "currency": "RUB",
+            "muted": false
+          },
+          {
+            "id": "customsFee",
+            "label": {
+              "key": "russia.lines.customsFee"
+            },
+            "note": {
+              "key": "russia.notes.customsFee",
+              "params": {
+                "value": "2 049 230"
+              }
+            },
+            "amount": 13541,
+            "currency": "RUB"
+          },
+          {
+            "id": "recyclingFee",
+            "label": {
+              "key": "russia.lines.recyclingFee"
+            },
+            "note": {
+              "key": "russia.notes.recyclingFee",
+              "params": {
+                "base": "20 000",
+                "coeff": 0.26
+              }
+            },
+            "amount": 5200,
+            "currency": "RUB"
+          }
+        ],
+        "total": {
+          "amount": 926952,
+          "currency": "RUB"
+        },
+        "alt": [
+          {
+            "amount": 11308.542764279384,
+            "currency": "USD"
+          }
+        ],
+        "flags": [
+          {
+            "level": "info",
+            "text": {
+              "key": "russia.flags.privatePerson"
+            }
+          },
+          {
+            "level": "warn",
+            "text": {
+              "key": "russia.flags.notIncluded"
+            }
+          }
+        ],
+        "subtitle": [
+          {
+            "key": "russia.subtitle.yearMonth",
+            "params": {
+              "year": 2021,
+              "month": {
+                "key": "ui.month.1"
+              }
+            }
+          },
+          {
+            "key": "russia.subtitle.volume",
+            "params": {
+              "volumeCc": 1998
+            }
+          },
+          {
+            "key": "russia.subtitle.power",
+            "params": {
+              "horsePower": 150
+            }
+          },
+          {
+            "key": "russia.fuelShort.ice"
+          }
+        ],
+        "stampLabel": {
+          "key": "russia.stamp.eaeu"
+        },
+        "meta": {
+          "fuel": "ice",
+          "ageYears": "5",
+          "ageBand": "old",
+          "volumeCc": "1998",
+          "horsePower": "150",
+          "priceRub": "2049230",
+          "priceEur": "21639",
+          "dutyRub": "908211",
+          "feeRub": "13541",
+          "recyclingRub": "5200",
+          "recyclingApprox": "false",
+          "totalRub": "926952"
+        }
+      }
+    },
+    {
+      "months": 61,
+      "result": {
+        "lines": [
+          {
+            "id": "duty",
+            "label": {
+              "key": "russia.lines.duty"
+            },
+            "note": {
+              "key": "russia.notes.dutyPerCc",
+              "params": {
+                "perCc": 4.8,
+                "volumeCc": 1998
+              }
+            },
+            "amount": 908211,
+            "currency": "RUB",
+            "muted": false
+          },
+          {
+            "id": "customsFee",
+            "label": {
+              "key": "russia.lines.customsFee"
+            },
+            "note": {
+              "key": "russia.notes.customsFee",
+              "params": {
+                "value": "2 049 230"
+              }
+            },
+            "amount": 13541,
+            "currency": "RUB"
+          },
+          {
+            "id": "recyclingFee",
+            "label": {
+              "key": "russia.lines.recyclingFee"
+            },
+            "note": {
+              "key": "russia.notes.recyclingFee",
+              "params": {
+                "base": "20 000",
+                "coeff": 0.26
+              }
+            },
+            "amount": 5200,
+            "currency": "RUB"
+          }
+        ],
+        "total": {
+          "amount": 926952,
+          "currency": "RUB"
+        },
+        "alt": [
+          {
+            "amount": 11308.542764279384,
+            "currency": "USD"
+          }
+        ],
+        "flags": [
+          {
+            "level": "info",
+            "text": {
+              "key": "russia.flags.privatePerson"
+            }
+          },
+          {
+            "level": "warn",
+            "text": {
+              "key": "russia.flags.notIncluded"
+            }
+          }
+        ],
+        "subtitle": [
+          {
+            "key": "russia.subtitle.yearMonth",
+            "params": {
+              "year": 2021,
+              "month": {
+                "key": "ui.month.1"
+              }
+            }
+          },
+          {
+            "key": "russia.subtitle.volume",
+            "params": {
+              "volumeCc": 1998
+            }
+          },
+          {
+            "key": "russia.subtitle.power",
+            "params": {
+              "horsePower": 150
+            }
+          },
+          {
+            "key": "russia.fuelShort.ice"
+          }
+        ],
+        "stampLabel": {
+          "key": "russia.stamp.eaeu"
+        },
+        "meta": {
+          "fuel": "ice",
+          "ageYears": "5",
+          "ageBand": "old",
+          "volumeCc": "1998",
+          "horsePower": "150",
+          "priceRub": "2049230",
+          "priceEur": "21639",
+          "dutyRub": "908211",
+          "feeRub": "13541",
+          "recyclingRub": "5200",
+          "recyclingApprox": "false",
+          "totalRub": "926952"
+        }
+      }
+    }
+  ],
+  "kgDefaultPersonal": {
+    "lines": [
+      {
+        "id": "duty",
+        "label": {
+          "key": "kyrgyzstan.lines.dutyPersonal"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.dutyPerCc",
+          "params": {
+            "perCc": 2.7,
+            "volumeCc": 1998
+          }
+        },
+        "amount": 543613.84,
+        "currency": "KGS",
+        "muted": false
+      },
+      {
+        "id": "excise",
+        "label": {
+          "key": "kyrgyzstan.lines.excise"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.excise"
+        },
+        "amount": 0,
+        "currency": "KGS",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "kyrgyzstan.lines.vat"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.vatPersonal"
+        },
+        "amount": 0,
+        "currency": "KGS",
+        "muted": true
+      },
+      {
+        "id": "fee",
+        "label": {
+          "key": "kyrgyzstan.lines.fee"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.fee",
+          "params": {
+            "rate": 0.4,
+            "value": "8 745,98"
+          }
+        },
+        "amount": 3524.93,
+        "currency": "KGS"
+      }
+    ],
+    "extra": [
+      {
+        "id": "registration",
+        "label": {
+          "key": "kyrgyzstan.lines.registration"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.registration",
+          "params": {
+            "rate": 5
+          }
+        },
+        "amount": 44066.72,
+        "currency": "KGS"
+      }
+    ],
+    "total": {
+      "amount": 547138.77,
+      "currency": "KGS"
+    },
+    "alt": [
+      {
+        "amount": 5429.58,
+        "currency": "EUR"
+      },
+      {
+        "amount": 6270.1645266006035,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "kyrgyzstan.flags.fuelIrrelevant"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "kyrgyzstan.flags.feeSeparate",
+          "params": {
+            "rate": 0.4
+          }
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "kyrgyzstan.flags.onePerYear"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "kyrgyzstan.flags.registrationEstimate",
+          "params": {
+            "rate": 5
+          }
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "kyrgyzstan.flags.ratesInEur"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "kyrgyzstan.flags.notIncluded"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "kyrgyzstan.subtitle.year",
+        "params": {
+          "year": 2021
+        }
+      },
+      {
+        "key": "kyrgyzstan.subtitle.volume",
+        "params": {
+          "volumeCc": 1998
+        }
+      },
+      {
+        "key": "kyrgyzstan.fuelShort.petrol"
+      },
+      {
+        "key": "kyrgyzstan.modeShort.personal"
+      }
+    ],
+    "stampLabel": {
+      "key": "kyrgyzstan.stamp.personal"
+    },
+    "meta": {
+      "mode": "personal",
+      "fuel": "petrol",
+      "age": "5",
+      "ageBand": "mid",
+      "volumeCc": "1998",
+      "customsValueEur": "8745.98",
+      "dutyEur": "5394.6",
+      "vatEur": "0",
+      "feeEur": "34.98",
+      "totalEur": "5429.58"
+    }
+  },
+  "kgDefaultCommercial": {
+    "lines": [
+      {
+        "id": "duty",
+        "label": {
+          "key": "kyrgyzstan.lines.duty"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.dutyNewByValue",
+          "params": {
+            "rate": 20,
+            "perCc": 0.44,
+            "byVolume": "879,12",
+            "byValue": "1 749,20"
+          }
+        },
+        "amount": 176266.88,
+        "currency": "KGS",
+        "muted": false
+      },
+      {
+        "id": "excise",
+        "label": {
+          "key": "kyrgyzstan.lines.excise"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.excise"
+        },
+        "amount": 0,
+        "currency": "KGS",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "kyrgyzstan.lines.vat"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.vat",
+          "params": {
+            "rate": 12,
+            "value": "8 745,98",
+            "duty": "1 749,20"
+          }
+        },
+        "amount": 126911.75,
+        "currency": "KGS",
+        "muted": false
+      },
+      {
+        "id": "fee",
+        "label": {
+          "key": "kyrgyzstan.lines.fee"
+        },
+        "note": {
+          "key": "kyrgyzstan.notes.fee",
+          "params": {
+            "rate": 0.4,
+            "value": "8 745,98"
+          }
+        },
+        "amount": 3524.93,
+        "currency": "KGS"
+      }
+    ],
+    "extra": [],
+    "total": {
+      "amount": 306703.56,
+      "currency": "KGS"
+    },
+    "alt": [
+      {
+        "amount": 3043.6,
+        "currency": "EUR"
+      },
+      {
+        "amount": 3514.7972316756723,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "kyrgyzstan.flags.brokerRequired"
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "kyrgyzstan.flags.ratesInEur"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "kyrgyzstan.flags.notIncluded"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "kyrgyzstan.subtitle.year",
+        "params": {
+          "year": 2021
+        }
+      },
+      {
+        "key": "kyrgyzstan.subtitle.volume",
+        "params": {
+          "volumeCc": 1998
+        }
+      },
+      {
+        "key": "kyrgyzstan.fuelShort.petrol"
+      },
+      {
+        "key": "kyrgyzstan.modeShort.commercial"
+      }
+    ],
+    "stampLabel": {
+      "key": "kyrgyzstan.stamp.commercial"
+    },
+    "meta": {
+      "mode": "commercial",
+      "fuel": "petrol",
+      "age": "5",
+      "ageBand": "mid",
+      "volumeCc": "1998",
+      "customsValueEur": "8745.98",
+      "dutyEur": "1749.2",
+      "vatEur": "1259.42",
+      "feeEur": "34.98",
+      "totalEur": "3043.6"
+    }
+  },
+  "amElectric2026": {
+    "lines": [
+      {
+        "id": "duty",
+        "label": {
+          "key": "armenia.lines.duty"
+        },
+        "note": {
+          "key": "armenia.notes.dutyElectric"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "excise",
+        "label": {
+          "key": "armenia.lines.excise"
+        },
+        "note": {
+          "key": "armenia.notes.excise"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "armenia.lines.vat"
+        },
+        "note": {
+          "key": "armenia.notes.vatElectric",
+          "params": {
+            "untilYear": 2026
+          }
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "eco",
+        "label": {
+          "key": "armenia.lines.eco"
+        },
+        "note": {
+          "key": "armenia.notes.ecoElectric"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      }
+    ],
+    "total": {
+      "amount": 0,
+      "currency": "AMD"
+    },
+    "alt": [
+      {
+        "amount": 0,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.notEec107"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.electricQuota"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.electricVat",
+          "params": {
+            "untilYear": 2026
+          }
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.ecoOnce"
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.noExcise"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.ageByYear",
+          "params": {
+            "ageBelow": 3,
+            "ageOld": 7
+          }
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.notIncluded"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "armenia.subtitle.year",
+        "params": {
+          "year": 2021
+        }
+      },
+      {
+        "key": "armenia.fuelShort.electric"
+      }
+    ],
+    "stampLabel": {
+      "key": "armenia.stamp.eaeu"
+    },
+    "meta": {
+      "fuel": "electric",
+      "age": "5",
+      "ageBand": "electric",
+      "volumeCc": "0",
+      "customsValueAmd": "3697423",
+      "dutyAmd": "0",
+      "vatAmd": "0",
+      "ecoAmd": "0",
+      "totalAmd": "0"
+    }
+  },
+  "amElectric2027": {
+    "lines": [
+      {
+        "id": "duty",
+        "label": {
+          "key": "armenia.lines.duty"
+        },
+        "note": {
+          "key": "armenia.notes.dutyElectric"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "excise",
+        "label": {
+          "key": "armenia.lines.excise"
+        },
+        "note": {
+          "key": "armenia.notes.excise"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "armenia.lines.vat"
+        },
+        "note": {
+          "key": "armenia.notes.vatElectric",
+          "params": {
+            "untilYear": 2026
+          }
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      },
+      {
+        "id": "eco",
+        "label": {
+          "key": "armenia.lines.eco"
+        },
+        "note": {
+          "key": "armenia.notes.ecoElectric"
+        },
+        "amount": 0,
+        "currency": "AMD",
+        "muted": true
+      }
+    ],
+    "total": {
+      "amount": 0,
+      "currency": "AMD"
+    },
+    "alt": [
+      {
+        "amount": 0,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.notEec107"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.electricQuota"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.electricVat",
+          "params": {
+            "untilYear": 2026
+          }
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.ecoOnce"
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "armenia.flags.noExcise"
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.ageByYear",
+          "params": {
+            "ageBelow": 3,
+            "ageOld": 7
+          }
+        }
+      },
+      {
+        "level": "warn",
+        "text": {
+          "key": "armenia.flags.notIncluded"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "armenia.subtitle.year",
+        "params": {
+          "year": 2021
+        }
+      },
+      {
+        "key": "armenia.fuelShort.electric"
+      }
+    ],
+    "stampLabel": {
+      "key": "armenia.stamp.eaeu"
+    },
+    "meta": {
+      "fuel": "electric",
+      "age": "6",
+      "ageBand": "electric",
+      "volumeCc": "0",
+      "customsValueAmd": "3697423",
+      "dutyAmd": "0",
+      "vatAmd": "0",
+      "ecoAmd": "0",
+      "totalAmd": "0"
+    }
+  },
+  "geHybrid6y": {
+    "lines": [
+      {
+        "id": "excise",
+        "label": {
+          "key": "georgia.lines.excise"
+        },
+        "note": {
+          "key": "georgia.notes.exciseHybrid",
+          "params": {
+            "baseRate": 1.5,
+            "volumeCc": 2000,
+            "age": 6,
+            "ageBand": {
+              "key": "georgia.ageBand.upTo",
+              "params": {
+                "years": 6
+              }
+            },
+            "hybridMultiplier": 0.4,
+            "rhdMultiplier": 3
+          }
+        },
+        "amount": 1200.0000000000002,
+        "currency": "GEL",
+        "muted": false
+      },
+      {
+        "id": "customsServiceTax",
+        "label": {
+          "key": "georgia.lines.customsServiceTax"
+        },
+        "amount": 150,
+        "currency": "GEL"
+      },
+      {
+        "id": "processing",
+        "label": {
+          "key": "georgia.lines.processing"
+        },
+        "amount": 200,
+        "currency": "GEL"
+      },
+      {
+        "id": "importTax",
+        "label": {
+          "key": "georgia.lines.importTax"
+        },
+        "note": {
+          "key": "georgia.notes.importTax",
+          "params": {
+            "rate": "0.0650",
+            "volumeCc": 2000
+          }
+        },
+        "amount": 130,
+        "currency": "GEL",
+        "muted": false
+      },
+      {
+        "id": "expertAppraisal",
+        "label": {
+          "key": "georgia.lines.expertAppraisal"
+        },
+        "amount": 30,
+        "currency": "GEL"
+      },
+      {
+        "id": "declaration",
+        "label": {
+          "key": "georgia.lines.declaration"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "internalTransit",
+        "label": {
+          "key": "georgia.lines.internalTransit"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "duty",
+        "label": {
+          "key": "georgia.lines.duty"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "georgia.lines.vat"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      }
+    ],
+    "total": {
+      "amount": 1810.0000000000002,
+      "currency": "GEL"
+    },
+    "alt": [
+      {
+        "amount": 670.3703703703704,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "georgia.flags.hybridDiscount",
+          "params": {
+            "discount": 60
+          }
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "georgia.subtitle.year",
+        "params": {
+          "year": 2020
+        }
+      },
+      {
+        "key": "georgia.subtitle.volume",
+        "params": {
+          "volumeCc": 2000
+        }
+      },
+      {
+        "key": "georgia.fuelShort.hybrid"
+      },
+      {
+        "key": "georgia.steeringShort.left"
+      }
+    ],
+    "stampLabel": {
+      "key": "georgia.ageBand.upTo",
+      "params": {
+        "years": 6
+      }
+    },
+    "meta": {
+      "age": "6",
+      "ageBand": "upTo",
+      "volumeCc": "2000",
+      "fuel": "hybrid",
+      "steering": "left"
+    }
+  },
+  "geHybrid7y": {
+    "lines": [
+      {
+        "id": "excise",
+        "label": {
+          "key": "georgia.lines.excise"
+        },
+        "note": {
+          "key": "georgia.notes.excise",
+          "params": {
+            "baseRate": 4.5,
+            "volumeCc": 2000,
+            "age": 7,
+            "ageBand": {
+              "key": "georgia.ageBand.over",
+              "params": {
+                "years": 6
+              }
+            },
+            "hybridMultiplier": 0.4,
+            "rhdMultiplier": 3
+          }
+        },
+        "amount": 9000,
+        "currency": "GEL",
+        "muted": false
+      },
+      {
+        "id": "customsServiceTax",
+        "label": {
+          "key": "georgia.lines.customsServiceTax"
+        },
+        "amount": 150,
+        "currency": "GEL"
+      },
+      {
+        "id": "processing",
+        "label": {
+          "key": "georgia.lines.processing"
+        },
+        "amount": 200,
+        "currency": "GEL"
+      },
+      {
+        "id": "importTax",
+        "label": {
+          "key": "georgia.lines.importTax"
+        },
+        "note": {
+          "key": "georgia.notes.importTax",
+          "params": {
+            "rate": "0.0675",
+            "volumeCc": 2000
+          }
+        },
+        "amount": 135,
+        "currency": "GEL",
+        "muted": false
+      },
+      {
+        "id": "expertAppraisal",
+        "label": {
+          "key": "georgia.lines.expertAppraisal"
+        },
+        "amount": 30,
+        "currency": "GEL"
+      },
+      {
+        "id": "declaration",
+        "label": {
+          "key": "georgia.lines.declaration"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "internalTransit",
+        "label": {
+          "key": "georgia.lines.internalTransit"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "duty",
+        "label": {
+          "key": "georgia.lines.duty"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "georgia.lines.vat"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      }
+    ],
+    "total": {
+      "amount": 9615,
+      "currency": "GEL"
+    },
+    "alt": [
+      {
+        "amount": 3561.111111111111,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "georgia.flags.oldAge",
+          "params": {
+            "years": 6,
+            "rate": 4.5
+          }
+        }
+      },
+      {
+        "level": "info",
+        "text": {
+          "key": "georgia.flags.hybridOld",
+          "params": {
+            "years": 6
+          }
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "georgia.subtitle.year",
+        "params": {
+          "year": 2019
+        }
+      },
+      {
+        "key": "georgia.subtitle.volume",
+        "params": {
+          "volumeCc": 2000
+        }
+      },
+      {
+        "key": "georgia.fuelShort.hybrid"
+      },
+      {
+        "key": "georgia.steeringShort.left"
+      }
+    ],
+    "stampLabel": {
+      "key": "georgia.ageBand.over",
+      "params": {
+        "years": 6
+      }
+    },
+    "meta": {
+      "age": "7",
+      "ageBand": "over",
+      "volumeCc": "2000",
+      "fuel": "hybrid",
+      "steering": "left"
+    }
+  },
+  "geElectric": {
+    "lines": [
+      {
+        "id": "excise",
+        "label": {
+          "key": "georgia.lines.excise"
+        },
+        "note": {
+          "key": "georgia.notes.exciseElectric"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      },
+      {
+        "id": "customsServiceTax",
+        "label": {
+          "key": "georgia.lines.customsServiceTax"
+        },
+        "amount": 150,
+        "currency": "GEL"
+      },
+      {
+        "id": "processing",
+        "label": {
+          "key": "georgia.lines.processing"
+        },
+        "amount": 200,
+        "currency": "GEL"
+      },
+      {
+        "id": "importTax",
+        "label": {
+          "key": "georgia.lines.importTax"
+        },
+        "note": {
+          "key": "georgia.notes.importTaxElectric"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      },
+      {
+        "id": "expertAppraisal",
+        "label": {
+          "key": "georgia.lines.expertAppraisal"
+        },
+        "amount": 30,
+        "currency": "GEL"
+      },
+      {
+        "id": "declaration",
+        "label": {
+          "key": "georgia.lines.declaration"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "internalTransit",
+        "label": {
+          "key": "georgia.lines.internalTransit"
+        },
+        "amount": 50,
+        "currency": "GEL"
+      },
+      {
+        "id": "duty",
+        "label": {
+          "key": "georgia.lines.duty"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      },
+      {
+        "id": "vat",
+        "label": {
+          "key": "georgia.lines.vat"
+        },
+        "note": {
+          "key": "common.notChargedOnCars"
+        },
+        "amount": 0,
+        "currency": "GEL",
+        "muted": true
+      }
+    ],
+    "total": {
+      "amount": 480,
+      "currency": "GEL"
+    },
+    "alt": [
+      {
+        "amount": 177.77777777777777,
+        "currency": "USD"
+      }
+    ],
+    "flags": [
+      {
+        "level": "info",
+        "text": {
+          "key": "georgia.flags.electric"
+        }
+      }
+    ],
+    "subtitle": [
+      {
+        "key": "georgia.subtitle.year",
+        "params": {
+          "year": 2021
+        }
+      },
+      {
+        "key": "georgia.fuelShort.electric"
+      },
+      {
+        "key": "georgia.steeringShort.left"
+      }
+    ],
+    "stampLabel": {
+      "key": "georgia.ageBand.upTo",
+      "params": {
+        "years": 6
+      }
+    },
+    "meta": {
+      "age": "5",
+      "ageBand": "upTo",
+      "volumeCc": "0",
+      "fuel": "electric",
+      "steering": "left"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+export const feeDisplayMessages = {
+  zh: {
+    formula: '代入公式',
+    showDetails: '计算详情',
+    hideDetails: '收起详情',
+    expandAll: '全部展开',
+    collapseAll: '全部收起',
+    maximum: '取较高值',
+    lookup: '按计税价值查表',
+    amount: '该项金额',
+    fallback: '按本次适用的参考规则计算，详细依据见下方政策说明。',
+    precision: '公式中长小数以 ≈ 简化展示，税额仍按完整精度及适用舍入规则计算。',
+  },
+  en: {
+    formula: 'Substituted formula',
+    showDetails: 'Calculation details',
+    hideDetails: 'Hide details',
+    expandAll: 'Expand all',
+    collapseAll: 'Collapse all',
+    maximum: 'max',
+    lookup: 'Value-band lookup',
+    amount: 'Amount',
+    fallback: 'Calculated under the applicable reference rule; see the policy notes below.',
+    precision:
+      'Long decimals marked ≈ are shortened for display. Tax amounts retain full calculation precision and the applicable rounding steps.',
+  },
+  ru: {
+    formula: 'Подстановка в формулу',
+    showDetails: 'Как рассчитано',
+    hideDetails: 'Скрыть расчёт',
+    expandAll: 'Развернуть всё',
+    collapseAll: 'Свернуть всё',
+    maximum: 'макс',
+    lookup: 'Поиск по стоимостной группе',
+    amount: 'Сумма',
+    fallback: 'Расчёт по применимому справочному правилу; подробности приведены ниже.',
+    precision:
+      'Длинные дроби с ≈ сокращены только для отображения. Налоги рассчитаны с полной точностью и установленными этапами округления.',
+  },
+} as const;

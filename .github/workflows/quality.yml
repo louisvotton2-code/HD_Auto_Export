@@ -1,0 +1,44 @@
+name: Quality checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      NEXT_PUBLIC_SITE_URL: http://127.0.0.1:3100
+      SITE_INDEXABLE: 'false'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+          cache: false
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check types, module boundaries and unit tests
+        run: pnpm check
+      - name: Build static pages
+        run: pnpm build
+      - name: Install browser
+        run: pnpm exec playwright install --with-deps chrome
+      - name: Verify static pages in Chrome
+        run: pnpm test:e2e

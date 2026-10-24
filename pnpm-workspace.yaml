@@ -1,0 +1,4 @@
+verifyDepsBeforeRun: false
+allowBuilds:
+  '@swc/core': true
+  '@parcel/watcher': true

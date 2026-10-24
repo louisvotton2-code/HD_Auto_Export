@@ -1,0 +1,134 @@
+.hd-result-stamp {
+  --stamp-color: #cdb579;
+  --stamp-rgb: 205, 181, 121;
+  position: relative;
+  display: flex;
+  flex: 0 0 112px;
+  align-items: center;
+  justify-content: center;
+  width: 112px;
+  height: 112px;
+  margin: 0 1px 3px;
+  color: var(--stamp-color);
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(var(--stamp-rgb), 0.045), transparent 72%);
+  box-shadow:
+    0 0 22px rgba(var(--stamp-rgb), 0.035),
+    inset 0 0 14px rgba(var(--stamp-rgb), 0.025);
+  transform: rotate(-10deg);
+  isolation: isolate;
+}
+
+.hd-result-stamp::before {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border: 1px solid currentColor;
+  border-radius: inherit;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.hd-result-stamp::after {
+  content: '';
+  position: absolute;
+  inset: 9px;
+  border: 1px dotted currentColor;
+  border-radius: inherit;
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.hd-result-stamp--green {
+  --stamp-color: #9bbfa4;
+  --stamp-rgb: 155, 191, 164;
+}
+
+.hd-result-stamp--blue {
+  --stamp-color: #94b9c9;
+  --stamp-rgb: 148, 185, 201;
+}
+
+.hd-result-stamp--muted {
+  --stamp-color: #8e929c;
+  --stamp-rgb: 142, 146, 156;
+}
+
+.hd-result-stamp__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 88px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.hd-result-stamp__country {
+  max-width: 84px;
+  font-size: 7.5px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  opacity: 0.78;
+}
+
+.hd-result-stamp__title {
+  max-width: 89px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.hd-result-stamp__band {
+  max-width: 88px;
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.hd-result-stamp__condition {
+  max-width: 86px;
+  font-size: 7.5px;
+  line-height: 1.25;
+  opacity: 0.86;
+  text-wrap: balance;
+}
+
+.hd-result-stamp__reference {
+  max-width: 80px;
+  padding-top: 2px;
+  font-size: 7px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
+}
+
+@media (max-width: 440px) {
+  .hd-result-stamp {
+    flex-basis: 104px;
+    width: 104px;
+    height: 104px;
+  }
+
+  .hd-result-stamp__content {
+    width: 82px;
+    gap: 2.5px;
+  }
+
+  .hd-result-stamp__title {
+    max-width: 82px;
+    font-size: 9px;
+  }
+
+  .hd-result-stamp__band {
+    font-size: 7.5px;
+  }
+
+  .hd-result-stamp__condition {
+    max-width: 80px;
+    font-size: 7px;
+  }
+}
