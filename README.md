@@ -2,7 +2,7 @@
 
 当前阶段：**P1.10 独立仓库与维护交接基线**，包含已完成的 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
 
-源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [CONTRIBUTING](CONTRIBUTING.md)、[开发进度](docs/开发进度.md) 和 [模块与维护指南](docs/模块与维护指南.md)。
+源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
 本地项目：Next.js App Router、TypeScript、next-intl、Decimal.js。中英俄三语、七个目的国、一套 PC/H5 页面。金额按参考站的 2026 快照独立实现，尚非官方核验税单或完整落地价。
 
@@ -101,6 +101,6 @@ Facebook 指向用户提供的 `https://www.facebook.com/HDAuto`。WhatsApp/电�
 
 ## 接手开发
 
-先读 [开发进度](docs/开发进度.md)、[模块与维护指南](docs/模块与维护指南.md)、[实际技术架构](docs/技术架构.md)、[规则覆盖表](docs/规则覆盖表.md)，再读长期 [开发交接规划](docs/开发交接规划.md) 与 [参考研究](docs/计算器参考规则研究.md)。遵循根目录 `AGENTS.md` 和 [CONTRIBUTING](CONTRIBUTING.md)，每回合同步更新进度文档。
+先读 [开发进度](docs/开发进度.md)，再依次阅读本文件、[模块与维护指南](docs/模块与维护指南.md)、[实际技术架构](docs/技术架构.md)、长期 [开发交接规划](docs/开发交接规划.md) 与 [参考研究](docs/计算器参考规则研究.md)。修改税费前另核对 [规则覆盖表](docs/规则覆盖表.md)。遵循根目录 `AGENTS.md` 和 [CONTRIBUTING](CONTRIBUTING.md)，每回合同步更新进度文档。
 
 源码、锁文件、测试、文档、品牌资产和通用部署模板进入版本控制；生成产物、依赖缓存、真实环境文件、凭据、数据库、私有运维记录和早期规划ZIP归档均忽略。交接以仓库当前文档和已保存提交为准，不依赖旧本机临时目录或压缩包。
