@@ -11,6 +11,8 @@ export function SiteHeader() {
   const locale = useLocale();
   const t = useTranslations();
   const pathname = usePathname();
+  const calculatorActive = pathname === '/calculator' || pathname.startsWith('/calculator/');
+  const buyActive = pathname.replace(/\/$/, '') === '/buy';
   return (
     <header className="site-header hd-header">
       <div className="header-inner">
@@ -34,9 +36,21 @@ export function SiteHeader() {
           </span>
         </Link>
         <nav className="main-nav" aria-label={t('Nav.menu')}>
-          <Link href="/calculator" className="nav-active">
+          <Link
+            href="/calculator"
+            className={calculatorActive ? 'nav-active' : undefined}
+            aria-current={calculatorActive ? 'page' : undefined}
+          >
             <Icon name="calculator" size={17} />
             {t('Nav.calculator')}
+          </Link>
+          <Link
+            href="/buy"
+            className={buyActive ? 'nav-active' : undefined}
+            aria-current={buyActive ? 'page' : undefined}
+          >
+            <Icon name="car" size={17} />
+            {t('BuyingGuide.navLabel')}
           </Link>
           <a href="#contact">{t('Nav.contact')}</a>
         </nav>

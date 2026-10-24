@@ -30,6 +30,10 @@ export async function SiteFooter() {
               <strong>{siteConfig.name}</strong>
             </Link>
             <p>{t('Footer.description')}</p>
+            <nav className="hd-footer-nav" aria-label={t('Nav.menu')}>
+              <Link href="/calculator">{t('Nav.calculator')}</Link>
+              <Link href="/buy">{t('BuyingGuide.navLabel')}</Link>
+            </nav>
           </div>
           <section className="hd-contacts" aria-labelledby="contact-title">
             <h2 id="contact-title">{t('Contacts.title')}</h2>

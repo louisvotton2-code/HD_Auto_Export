@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.10 独立仓库与维护交接基线**，包含已完成的 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
+当前阶段：**P1.11 三语购车指南**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
@@ -18,9 +18,9 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`.nvmrc` 固定已验证的 Node 版本；不使用 nvm 时自行提供相应运行时。
+`.nvmrc` 固定已验证的 Node 版本；不使用 nvm 时自行提供相应运行时。购车指南本轮开发分支为 `codex/buying-guide`，接手该版本时先切到此分支；默认 `main` 与服务器发布状态分别以 Git 和部署记录为准。
 
-打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。根路径默认跳转英文；各语言首页暂跳转计算器。
+打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。购车指南为 [中文如何购车](http://127.0.0.1:3000/zh/buy/)，英文 `/en/buy/`、俄文 `/ru/buy/`。根路径默认跳转英文；各语言首页暂跳转计算器。
 
 本地无需环境变量或数据库。需要配置时复制 `.env.example` 为 `.env.local`。`SITE_INDEXABLE=false` 默认禁止预览站索引；正式上线前必须设置真实站点 URL，并完成业务与规则审核。
 
@@ -39,10 +39,13 @@ pnpm preview
 
 P1.9 本机验证：类型检查、5 项模块边界防护、626 项单元测试、静态 export 构建及 101 项完整浏览器测试均通过。首次浏览器验收仅有一项 `innerText`／`textContent` 断言口径不一致，修正后重新执行完整 101 项通过；不把本机结果当成公网验收。
 
+P1.11 本机验收：类型、5项边界防护、626单元、36路由静态构建、最终110项浏览器验收通过；另检查三语购车指南及共享导航在320～1440px共48个状态无溢出。最终截图与本轮新增9项场景见[开发进度](docs/开发进度.md)。
+
 **部署**：在开发电脑构建，将 `out/` 的全部内容上传到 Ubuntu 22 的 Nginx网站目录；不上传源码、node_modules、.next或.env，不需要服务器安装Node。纯静态资产可从Mac直接上传到Linux。完整安装／配置／HTTPS／更新／回滚，以及与现有s-ui／VPN的80/443冲突处理，见[服务器部署指南](docs/服务器部署.md)。不得为腾端口停止VPN或重置防火墙；先按指南检查真实监听。
 
 ## 当前可用能力
 
+- 独立三语购车指南 `/zh|en|ru/buy/`：8步纵向时间线、500 USD定金、CIF／FOB海运对照、原生折叠FAQ及真实咨询／计算器入口；PC/H5共享导航可进入。金额统一来自 `modules/buying-guide/config.ts`，内容与样式独立于计算器。维护入口见[购车指南页面](docs/购车指南页面.md)。
 - 七国路由、中英俄文案、会话内草稿、自动预填、恢复默认和复制结果；打开即有默认参考测算。
 - 主界面保留车价、排量、功率、制造日期和三类动力；更多设置默认展开，也可收起。按参考站仅 KG 显示个人／企业切换，其余六国无此选项；固定个人口径与未区分身份的参考口径分别展示。
 - 构建时获取市场参考汇率快照并标明数据日期；失败时明确标记演示参考值。更新快照需重新构建上传，静态主机不后台刷新。切换交易币种自动换算价格，手工汇率可在设置中修改。
@@ -70,6 +73,7 @@ P1.9 本机验证：类型检查、5 项模块边界防护、626 项单元测试
 src/app/                         静态语言页面、入口、SEO、全局404
 src/i18n/                        三语言路由与消息加载
 src/messages/                    中英俄文案
+src/modules/buying-guide/        独立购车指南配置、三语内容与页面／CSS Module
 src/modules/calculator/config/   国家与字段能力
 src/modules/calculator/ui/       页面和交互
 src/modules/calculator/application/ 默认参数、换币、说明格式化、印章事实及消息合并
@@ -87,7 +91,7 @@ docs/                           规划、研究、进度、实际架构与覆盖
 
 汽车、配件、物流尚未实现；没有为空模块建立假接口或假库存。
 
-计算说明由各国 `method-messages.ts` 维护，印章、公式标签及复制参数文案位于应用层消息文件，统一由 `application/calculator-messages.ts` 合并到 next-intl。P1.9 在 `FeeDisplay` 中增加 4 个折叠操作 key，三语运行时各 420 个字符串 key；基础 JSON 仍各 248 个，不要把新增命名空间再复制进去。详见[实际技术架构](docs/技术架构.md)。
+计算说明由各国 `method-messages.ts` 维护，印章、公式标签及复制参数文案位于应用层消息文件，统一由 `application/calculator-messages.ts` 合并到 next-intl。P1.9 在 `FeeDisplay` 中增加 4 个折叠操作 key，三语运行时各 420 个字符串 key；基础 JSON 仍各 248 个；P1.11 的 `buying-guide/messages.ts` 另提供各70个 `BuyingGuide` key，全站运行时各490个。不要把新增命名空间再复制进去。详见[实际技术架构](docs/技术架构.md)。
 
 ## 品牌与联系方式
 
