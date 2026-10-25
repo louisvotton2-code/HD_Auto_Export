@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.15 关于我们入口及俄语／USD默认值已发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站正式地址为 [中文购车指南](https://cars.hongdingauto.com/zh/buy/) 和 [中文计算器](https://cars.hongdingauto.com/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [域名HTTPS部署记录](docs/域名与HTTPS部署记录.md) 为准。
+当前阶段：**P1.16 固定半透明头部及导航状态修复已发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站正式地址为 [中文购车指南](https://cars.hongdingauto.com/zh/buy/) 和 [中文计算器](https://cars.hongdingauto.com/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [域名HTTPS部署记录](docs/域名与HTTPS部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
