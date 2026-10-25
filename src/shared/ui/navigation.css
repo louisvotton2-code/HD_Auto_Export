@@ -1,4 +1,5 @@
-[data-navigation-link] {
+[data-navigation-link],
+.hd-header .main-nav > a {
   position: relative;
 }
 .navigation-hint {
