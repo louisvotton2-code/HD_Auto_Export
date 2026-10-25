@@ -15,7 +15,7 @@
 }
 html {
   scroll-behavior: smooth;
-  scroll-padding-top: 100px;
+  scroll-padding-top: var(--site-header-offset, 100px);
 }
 body {
   margin: 0;
@@ -685,7 +685,7 @@ svg {
 }
 .results-column {
   position: sticky;
-  top: 24px;
+  top: var(--site-header-offset, 24px);
 }
 .result-card {
   padding: 25px 27px 24px;
@@ -1325,7 +1325,7 @@ svg {
 }
 @media (max-width: 740px) {
   html {
-    scroll-padding-top: 20px;
+    scroll-padding-top: var(--site-header-offset, 20px);
   }
   .shell,
   .footer-inner {

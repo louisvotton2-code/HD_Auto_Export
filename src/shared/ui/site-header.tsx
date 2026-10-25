@@ -53,8 +53,8 @@ export function SiteHeader() {
             <Icon name="car" size={17} />
             {t('BuyingGuide.navLabel')}
           </Link>
-          <a href={siteConfig.companyWebsite}>{t('Nav.about')}</a>
-          <a href="#contact">{t('Nav.contact')}</a>
+          <a className="nav-utility" href={siteConfig.companyWebsite}>{t('Nav.about')}</a>
+          <a className="nav-utility" href="#contact">{t('Nav.contact')}</a>
         </nav>
         <div className="header-tools">
           <span className="export-origin">

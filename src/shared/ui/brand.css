@@ -1,11 +1,24 @@
 :root {
   --brand-gold: #e5c05b;
   --brand-gold-soft: #e5c05b12;
+  --site-header-offset: 104px;
 }
 
 .hd-header {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  box-shadow: 0 8px 24px #00000012;
   background: #151410f5;
   border-bottom-color: #e5c05b1c;
+}
+
+@supports ((backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px))) {
+  .hd-header {
+    background: #151410cc;
+    -webkit-backdrop-filter: blur(16px) saturate(125%);
+    backdrop-filter: blur(16px) saturate(125%);
+  }
 }
 
 .hd-header .header-inner {
@@ -52,10 +65,15 @@
   color: #b3afa5;
 }
 
-.hd-header .main-nav > a:hover,
 .hd-header .nav-active svg,
 .hd-header .main-nav > a.nav-active {
   color: var(--brand-gold);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hd-header .main-nav > a:not(.nav-utility):hover {
+    color: var(--brand-gold);
+  }
 }
 
 .hd-header .nav-active::after {
@@ -323,7 +341,16 @@
   }
 }
 
+@media (min-width: 1500px) {
+  :root {
+    --site-header-offset: 108px;
+  }
+}
+
 @media (max-width: 1180px) {
+  :root {
+    --site-header-offset: 132px;
+  }
   .hd-header {
     height: auto;
   }
@@ -353,6 +380,9 @@
 }
 
 @media (max-width: 740px) {
+  :root {
+    --site-header-offset: 122px;
+  }
   .hd-header .header-inner {
     min-height: 106px;
   }

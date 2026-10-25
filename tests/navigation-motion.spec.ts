@@ -189,3 +189,65 @@ test('reduced motion keeps route, result and disclosure interactions immediately
     ),
   ).toBe(0);
 });
+
+for (const touch of [false, true]) {
+  test(`${touch ? 'touch' : 'desktop'} header stays above scrolled content without selecting utility links`, async ({
+    browser,
+    baseURL,
+  }) => {
+    const context = await browser.newContext({
+      baseURL,
+      hasTouch: touch,
+      isMobile: touch,
+      viewport: { width: touch ? 390 : 1440, height: 900 },
+      reducedMotion: 'reduce',
+    });
+    const page = await context.newPage();
+    try {
+      await page.goto('/ru/buy/');
+      const header = page.locator('.hd-header');
+      const utilities = header.locator('.nav-utility');
+      await expect(utilities).toHaveCount(2);
+      for (const link of await utilities.all()) {
+        await expect(link).not.toHaveAttribute('aria-current');
+        const initialColor = await link.evaluate((node) => getComputedStyle(node).color);
+        if (touch) await link.dispatchEvent('pointerover', { pointerType: 'touch' });
+        else await link.hover();
+        await expect(link).toHaveCSS('color', initialColor);
+        expect(await link.evaluate((node) => getComputedStyle(node, '::after').content)).toBe(
+          'none',
+        );
+      }
+      await page.evaluate(() => window.scrollTo(0, 900));
+      await expect.poll(() => header.evaluate((node) => node.getBoundingClientRect().top)).toBe(0);
+      await expect(header).toBeInViewport();
+      const contact = header.locator('a[href="#contact"]');
+      if (touch) await contact.tap();
+      else await contact.click();
+      await expect(page).toHaveURL(/#contact$/);
+      await expect
+        .poll(() =>
+          page.locator('#contact-title').evaluate((node) => node.getBoundingClientRect().top),
+        )
+        .toBeGreaterThan(await header.evaluate((node) => node.getBoundingClientRect().bottom));
+      await contact.focus();
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      await expect(contact).toBeFocused();
+      await expect(contact).toHaveCSS('outline-style', 'solid');
+      await expect(header.locator('.main-nav [aria-current="page"]')).toHaveText(/Как купить/);
+      await header.locator('.main-nav a[href="/ru/calculator/russia/"]').click();
+      await expect(page.locator('.reset-button')).toBeEnabled();
+      await page.evaluate(() => window.scrollTo(0, 900));
+      await expect.poll(() => header.evaluate((node) => node.getBoundingClientRect().top)).toBe(0);
+      // A tall result column naturally scrolls out with its grid container. Verify the
+      // actual jump target instead: scrolling to the result must leave its title visible.
+      await page.locator('.result-card').evaluate((node) => node.scrollIntoView({ block: 'start' }));
+      await expect
+        .poll(() => page.locator('.result-card').evaluate((node) => node.getBoundingClientRect().top))
+        .toBeGreaterThan(await header.evaluate((node) => node.getBoundingClientRect().bottom));
+    } finally {
+      await context.close();
+    }
+  });
+}
