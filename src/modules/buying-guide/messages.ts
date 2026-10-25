@@ -3,7 +3,7 @@ const en = {
   navLabel: 'How to buy',
   metaTitle: 'How to buy a car from China',
   metaDescription:
-    'Explore the HD Auto Export buying process: a USD {deposit} deposit, vehicle checks, export preparation, CIF or FOB shipping, and collection at your destination.',
+    'Explore the HD Auto Export buying process: vehicle selection, condition checks, export preparation, CIF or FOB shipping, and collection at your destination.',
   eyebrow: 'CHINA TO YOUR DESTINATION',
   title: 'Your next car.',
   titleAccent: 'A clear way to get there.',
@@ -26,7 +26,7 @@ const en = {
       note: 'Start with your requirements or send us a vehicle you are considering.',
     },
     deposit: {
-      title: 'Confirm a USD {deposit} deposit',
+      title: 'Confirm the order',
       body: 'Once the vehicle and order details are agreed, pay a USD {deposit} reservation deposit. This amount is credited toward the vehicle price.',
       note: 'Reservation, cancellation and refund conditions follow the order or contract confirmed by both parties.',
     },
@@ -94,7 +94,7 @@ const en = {
         'Ask us about Russia, Kazakhstan, Uzbekistan, Georgia, Armenia, Kyrgyzstan or Albania. For these and other destinations, we confirm the route and vehicle import requirements for your order before proceeding.',
     },
     deposit: {
-      question: 'How is the USD {deposit} deposit used?',
+      question: 'How is the reservation deposit used?',
       answer:
         'It is credited toward the vehicle price, rather than charged as an additional service fee. Reservation periods, payment deadlines, cancellation and refund conditions are set out in the order or contract agreed by both parties.',
     },
@@ -127,7 +127,7 @@ const zh: BuyingGuideMessages = {
   navLabel: '如何购车',
   metaTitle: '如何从中国购车出口',
   metaDescription:
-    '了解 HD Auto Export 中国购车出口流程：{deposit} 美元定金抵车款、车况确认、出口手续、CIF 或 FOB 国际海运，以及目的地清关与提车。',
+    '了解 HD Auto Export 中国购车出口流程：选车、车况确认、出口手续、CIF 或 FOB 国际海运，以及目的地清关与提车。',
   eyebrow: '从中国，驶向你的目的地',
   title: '下一辆爱车，',
   titleAccent: '每一步都清楚。',
@@ -148,7 +148,7 @@ const zh: BuyingGuideMessages = {
       note: '可以先说需求，也可以把正在考虑的车辆发给我们。',
     },
     deposit: {
-      title: '确认 {deposit} 美元定金',
+      title: '确认订单',
       body: '车辆与订单细节确认后，支付 {deposit} 美元预订定金。这笔金额计入车款，支付尾款时抵扣。',
       note: '车辆预留、取消及退还条件，以双方确认的订单或合同为准。',
     },
@@ -213,7 +213,7 @@ const zh: BuyingGuideMessages = {
         '可以先咨询俄罗斯、哈萨克斯坦、乌兹别克斯坦、格鲁吉亚、亚美尼亚、吉尔吉斯斯坦和阿尔巴尼亚。这些及其他目的地的实际路线、车辆准入条件，均在订单推进前逐项确认。',
     },
     deposit: {
-      question: '{deposit} 美元定金如何使用？',
+      question: '预订定金如何使用？',
       answer:
         '定金计入车款，不是额外收取的服务费。车辆预留时间、付款期限、取消及退还条件，以双方确认的订单或合同为准。',
     },
@@ -240,7 +240,7 @@ const ru: BuyingGuideMessages = {
   navLabel: 'Как купить',
   metaTitle: 'Как купить автомобиль из Китая',
   metaDescription:
-    'Покупка с HD Auto Export: аванс {deposit} USD в счёт автомобиля, проверка состояния, подготовка экспорта, морская доставка CIF или FOB, таможня и получение.',
+    'Покупка с HD Auto Export: выбор автомобиля, проверка состояния, подготовка экспорта, морская доставка CIF или FOB, таможня и получение.',
   eyebrow: 'ИЗ КИТАЯ В ВАШУ СТРАНУ',
   title: 'Ваш следующий автомобиль.',
   titleAccent: 'Понятный путь к покупке.',
@@ -263,7 +263,7 @@ const ru: BuyingGuideMessages = {
       note: 'Опишите свои пожелания или отправьте автомобиль, который рассматриваете.',
     },
     deposit: {
-      title: 'Согласуйте аванс {deposit} USD',
+      title: 'Подтвердите заказ',
       body: 'После согласования автомобиля и деталей заказа внесите аванс {deposit} USD для бронирования. Эта сумма засчитывается в стоимость автомобиля.',
       note: 'Условия бронирования, отмены и возврата определяются заказом или договором, согласованным обеими сторонами.',
     },
@@ -332,7 +332,7 @@ const ru: BuyingGuideMessages = {
         'Можно обсудить Россию, Казахстан, Узбекистан, Грузию, Армению, Кыргызстан и Албанию. Для этих и других направлений маршрут и требования к ввозу конкретного автомобиля подтверждаем до оформления заказа.',
     },
     deposit: {
-      question: 'Как учитывается аванс {deposit} USD?',
+      question: 'Как учитывается аванс?',
       answer:
         'Он засчитывается в стоимость автомобиля и не является дополнительной платой за услуги. Срок бронирования, сроки оплаты, условия отмены и возврата определяются согласованным обеими сторонами заказом или договором.',
     },

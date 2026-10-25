@@ -114,7 +114,7 @@
 
 .overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   max-width: 900px;
   margin: 56px auto 0;
   padding: 27px 0;
@@ -229,10 +229,6 @@
 .step:hover .stepContent {
   border-color: #e5c05b55;
 }
-.depositStep .stepContent {
-  border-color: #e5c05b66;
-  background: linear-gradient(130deg, #302a1b, #1c1c17);
-}
 .stepTop {
   display: flex;
   flex-direction: row-reverse;
@@ -259,9 +255,6 @@
   letter-spacing: 0.8px;
   text-transform: uppercase;
   white-space: nowrap;
-}
-.depositStep .stepIcon {
-  background: #e5c05b14;
 }
 .step h3 {
   font-size: 21px;

@@ -56,13 +56,6 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
               <span>{text('overviewSteps')}</span>
             </div>
             <div>
-              <span className={styles.overviewValue} data-testid="buy-deposit">
-                {buyingGuideConfig.depositUsd}
-                <small>USD</small>
-              </span>
-              <span>{text('overviewDeposit')}</span>
-            </div>
-            <div>
               <span className={styles.overviewValue}>
                 CIF <i>/</i> FOB
               </span>
@@ -84,7 +77,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
                 id={`buy-step-${id}`}
                 data-testid="buy-step"
                 data-motion-reveal
-                className={`${styles.step} ${id === 'deposit' ? styles.depositStep : ''}`}
+                className={styles.step}
               >
                 <div className={styles.stepTop}>
                   <span className={styles.stepIcon}>
@@ -96,7 +89,12 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
                 </div>
                 <div className={styles.stepContent}>
                   <h3>{text(`steps.${id}.title`)}</h3>
-                  <p className={styles.stepBody}>{text(`steps.${id}.body`)}</p>
+                  <p
+                    className={styles.stepBody}
+                    data-testid={id === 'deposit' ? 'buy-deposit' : undefined}
+                  >
+                    {text(`steps.${id}.body`)}
+                  </p>
                   <p className={styles.stepNote}>
                     <span aria-hidden="true" />
                     {text(`steps.${id}.note`)}

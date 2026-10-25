@@ -24,7 +24,7 @@ for (const locale of locales) {
     expect(mainHtml!.match(/<li\b[^>]*data-testid="buy-step"/g)).toHaveLength(8);
     expect(mainHtml).toMatch(/data-testid="buy-deposit"/);
     expect(mainHtml).toMatch(/500/);
-    expect(mainHtml).toMatch(/USD/);
+    expect(mainHtml).toMatch(locale === 'zh' ? /美元/ : /USD/);
     expect(mainHtml).toMatch(/data-testid="shipping-cif"/);
     expect(mainHtml).toMatch(/data-testid="shipping-fob"/);
     expect(mainHtml).toMatch(/CIF/);
@@ -42,7 +42,7 @@ for (const locale of locales) {
     );
     await expect(page.getByTestId('buy-step')).toHaveCount(8);
     await expect(page.getByTestId('buy-deposit')).toContainText('500');
-    await expect(page.getByTestId('buy-deposit')).toContainText('USD');
+    await expect(page.getByTestId('buy-deposit')).toContainText(locale === 'zh' ? '美元' : 'USD');
     for (const term of ['cif', 'fob']) {
       const section = page.getByTestId(`shipping-${term}`);
       await expect(section).toContainText(term.toUpperCase());
