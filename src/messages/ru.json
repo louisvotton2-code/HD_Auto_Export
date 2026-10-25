@@ -5,6 +5,7 @@
     "logoAlt": "Логотип HD Auto Export"
   },
   "Nav": {
+    "loading": "Открываем страницу…",
     "calculator": "Калькулятор",
     "vehicles": "Подбор авто",
     "parts": "Автозапчасти",

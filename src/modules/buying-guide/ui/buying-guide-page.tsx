@@ -1,5 +1,5 @@
 import { getTranslations } from 'next-intl/server';
-import { Link } from '@/i18n/navigation';
+import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
@@ -25,7 +25,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
   return (
     <main id="main" data-testid="buy-guide" className={styles.page}>
       <div className="shell">
-        <section className={styles.hero} aria-labelledby="buy-title">
+        <section className={styles.hero} aria-labelledby="buy-title" data-motion-reveal>
           <p className={styles.eyebrow}>
             <span />
             {text('eyebrow')}
@@ -83,6 +83,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
                 key={id}
                 id={`buy-step-${id}`}
                 data-testid="buy-step"
+                data-motion-reveal
                 className={`${styles.step} ${id === 'deposit' ? styles.depositStep : ''}`}
               >
                 <div className={styles.stepTop}>
@@ -118,6 +119,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
                 className={styles.term}
                 key={term}
                 data-testid={`shipping-${term}`}
+                data-motion-reveal
                 aria-labelledby={`${term}-title`}
               >
                 <div className={styles.termTop}>
@@ -143,7 +145,12 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
           </p>
         </section>
 
-        <section data-testid="buy-faq" className={styles.faq} aria-labelledby="buy-faq-title">
+        <section
+          data-testid="buy-faq"
+          className={styles.faq}
+          aria-labelledby="buy-faq-title"
+          data-motion-reveal
+        >
           <div className={styles.sectionHeading}>
             <p className={styles.eyebrow}>{text('faqEyebrow')}</p>
             <h2 id="buy-faq-title">{text('faqTitle')}</h2>
@@ -162,7 +169,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
           </div>
         </section>
 
-        <section className={styles.cta} aria-labelledby="buy-cta-title">
+        <section className={styles.cta} aria-labelledby="buy-cta-title" data-motion-reveal>
           <span className={styles.ctaIcon} aria-hidden="true">
             <Icon name="car" size={36} />
           </span>
@@ -179,7 +186,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
               {text('ctaContact')}
               <Icon name="diagonal" size={17} />
             </a>
-            <Link href="/calculator" className={styles.secondaryButton}>
+            <Link href="/calculator/russia/" className={styles.secondaryButton}>
               {text('ctaCalculator')}
               <Icon name="calculator" size={17} />
             </Link>

@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import { useLocale, useTranslations } from 'next-intl';
-import { Link } from '@/i18n/navigation';
+import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
+import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type Powertrain } from '../index';
 import { createDefaultInput, convertTransactionPrice } from '../application/defaults';
@@ -168,6 +169,7 @@ export function CalculatorPage({
     return next;
   }, [input, country]);
   const result = useMemo(() => calculateImportEstimate(normalized), [normalized]);
+  const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
   const formatter = useMemo(
     () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 }),
     [locale],
@@ -404,7 +406,7 @@ export function CalculatorPage({
           {countries.map((item) => (
             <Link
               key={item.code}
-              href={`/calculator/${item.slug}`}
+              href={`/calculator/${item.slug}/`}
               className={`country-tab ${country.code === item.code ? 'active' : ''}`}
               aria-current={country.code === item.code ? 'page' : undefined}
             >
@@ -416,7 +418,7 @@ export function CalculatorPage({
           ))}
         </nav>
         <div className="calculator-grid">
-          <section className="form-card panel" aria-labelledby="form-title">
+          <section className="form-card panel" aria-labelledby="form-title" data-motion-reveal>
             <div className="card-heading">
               <div>
                 <h2 id="form-title">{t('simpleFormTitle')}</h2>
@@ -614,6 +616,7 @@ export function CalculatorPage({
               className="result-card panel"
               id="calculation-result"
               aria-labelledby="result-title"
+              data-motion-reveal
             >
               <div className="result-card-top">
                 <Image
@@ -676,7 +679,7 @@ export function CalculatorPage({
                       />
                     ))}
                   </div>
-                  <div className="total-block">
+                  <div className="total-block" ref={totalRef}>
                     <span>{t('importTotal')}</span>
                     <div className="total-amount" data-testid="total">
                       <strong>{format(result.total)}</strong>

@@ -145,6 +145,9 @@ async function fillRussianReference(page: Page) {
   await openAdvanced(page);
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
   await page.locator('#price').fill(ruSample.price);
+  // Explicitly edit even when the build falls back to the same reference rates.
+  // Filling an unchanged value does not emit React's change event.
+  await page.locator('#transactionRate').fill('');
   await page.locator('#transactionRate').fill(ruSample.transactionRate);
   await page.locator('#euroRate').fill(ruSample.euroRate);
   await page.locator('#customsDate').fill(ruSample.customsDate);

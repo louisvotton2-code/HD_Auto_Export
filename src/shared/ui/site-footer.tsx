@@ -1,6 +1,6 @@
 import Image from 'next/image';
 import { getTranslations } from 'next-intl/server';
-import { Link } from '@/i18n/navigation';
+import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { ContactLinks } from './contact-links';
 
@@ -15,7 +15,7 @@ export async function SiteFooter() {
         <div className="hd-footer-main">
           <div className="hd-footer-about">
             <Link
-              href="/calculator"
+              href="/calculator/russia/"
               className="hd-footer-brand"
               aria-label={`${siteConfig.name} — ${t('Nav.home')}`}
             >
@@ -31,8 +31,8 @@ export async function SiteFooter() {
             </Link>
             <p>{t('Footer.description')}</p>
             <nav className="hd-footer-nav" aria-label={t('Nav.menu')}>
-              <Link href="/calculator">{t('Nav.calculator')}</Link>
-              <Link href="/buy">{t('BuyingGuide.navLabel')}</Link>
+              <Link href="/calculator/russia/">{t('Nav.calculator')}</Link>
+              <Link href="/buy/">{t('BuyingGuide.navLabel')}</Link>
             </nav>
           </div>
           <section className="hd-contacts" aria-labelledby="contact-title">

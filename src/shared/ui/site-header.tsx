@@ -2,7 +2,8 @@
 
 import { useLocale, useTranslations } from 'next-intl';
 import Image from 'next/image';
-import { Link, usePathname } from '@/i18n/navigation';
+import { usePathname } from '@/i18n/navigation';
+import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { routing } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
@@ -17,7 +18,7 @@ export function SiteHeader() {
     <header className="site-header hd-header">
       <div className="header-inner">
         <Link
-          href="/calculator"
+          href="/calculator/russia/"
           className="brand hd-brand"
           aria-label={`${siteConfig.name} — ${t('Nav.home')}`}
         >
@@ -37,7 +38,7 @@ export function SiteHeader() {
         </Link>
         <nav className="main-nav" aria-label={t('Nav.menu')}>
           <Link
-            href="/calculator"
+            href="/calculator/russia/"
             className={calculatorActive ? 'nav-active' : undefined}
             aria-current={calculatorActive ? 'page' : undefined}
           >
@@ -45,7 +46,7 @@ export function SiteHeader() {
             {t('Nav.calculator')}
           </Link>
           <Link
-            href="/buy"
+            href="/buy/"
             className={buyActive ? 'nav-active' : undefined}
             aria-current={buyActive ? 'page' : undefined}
           >
@@ -63,7 +64,7 @@ export function SiteHeader() {
             {routing.locales.map((l) => (
               <Link
                 key={l}
-                href={pathname}
+                href={`${pathname.replace(/\/$/, '')}/`}
                 locale={l}
                 hrefLang={l === 'zh' ? 'zh-Hans' : l}
                 aria-current={locale === l ? 'page' : undefined}

@@ -1,0 +1,145 @@
+:root {
+  --motion-fast: 160ms;
+  --motion-normal: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* State, focus and press feedback stays local so the page never blocks input. */
+main :where(button, a, summary),
+.hd-footer :where(button, a) {
+  transition:
+    color var(--motion-fast),
+    background-color var(--motion-fast),
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    opacity var(--motion-fast),
+    transform var(--motion-fast) var(--motion-ease),
+    translate var(--motion-fast) var(--motion-ease);
+}
+
+main :where(button:not(:disabled), a):active,
+.hd-footer :where(button:not(:disabled), a):active {
+  translate: 0 1px;
+}
+
+main .input-wrap {
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-normal),
+    background-color var(--motion-normal);
+}
+
+main .input-wrap:focus-within {
+  background-color: #e5c05b07;
+}
+
+main .powertrain-grid button,
+main .reset-button,
+main .copy-button,
+main .fee-details-toolbar button,
+.hd-footer .hd-contact-item {
+  transition:
+    color var(--motion-fast),
+    background-color var(--motion-fast),
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    translate var(--motion-fast) var(--motion-ease);
+}
+
+.fee-detail-hint svg,
+.fee-details-toolbar button svg,
+.advanced-summary svg,
+.advanced-settings > summary > span:first-child > svg {
+  transition: transform var(--motion-normal) var(--motion-ease);
+}
+
+.advanced-settings[open] .advanced-summary svg {
+  transform: rotate(180deg);
+}
+
+.advanced-settings[open] > summary > span:first-child > svg {
+  transform: rotate(45deg);
+}
+
+.calculator-simple .fee-line > .fee-method-panel {
+  padding: 0;
+}
+
+.fee-method-panel > .fee-method-block {
+  padding-bottom: 14px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  main .reset-button:hover:not(:disabled),
+  main .copy-button:hover:not(:disabled),
+  main .powertrain-grid button:hover:not(:disabled),
+  .hd-footer .hd-contact-item:hover {
+    translate: 0 -1px;
+  }
+
+  .fee-detail-toggle:hover {
+    background-color: #e5c05b05;
+  }
+}
+
+/* Native intrinsic-size transitions retain details keyboard behavior and work without JS.
+   Unsupported browsers keep the existing immediate open/close behavior. */
+@supports (interpolate-size: allow-keywords) and (transition-behavior: allow-discrete) {
+  .calculator-simple .fee-line > .fee-method-panel {
+    interpolate-size: allow-keywords;
+    height: auto;
+    opacity: 1;
+    overflow: clip;
+    transition:
+      height var(--motion-normal) var(--motion-ease),
+      opacity var(--motion-fast),
+      display var(--motion-normal) allow-discrete;
+  }
+
+  .calculator-simple .fee-line > .fee-method-panel[hidden] {
+    height: 0;
+    opacity: 0;
+  }
+
+  @starting-style {
+    .calculator-simple .fee-line > .fee-method-panel:not([hidden]) {
+      height: 0;
+      opacity: 0;
+    }
+  }
+
+  @supports selector(details::details-content) {
+    main details::details-content {
+      interpolate-size: allow-keywords;
+      height: 0;
+      opacity: 0;
+      overflow: clip;
+      transition:
+        height var(--motion-normal) var(--motion-ease),
+        opacity var(--motion-fast),
+        content-visibility var(--motion-normal) allow-discrete;
+    }
+
+    main details[open]::details-content {
+      height: auto;
+      opacity: 1;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  main *,
+  main *::before,
+  main *::after,
+  main details::details-content,
+  .hd-footer * {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  main :where(button, a),
+  .hd-footer :where(button, a) {
+    translate: none !important;
+  }
+}

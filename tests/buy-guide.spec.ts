@@ -149,13 +149,14 @@ test('without JavaScript, buying content, FAQ, language links and calculator lin
         page.getByTestId('buy-guide').locator(`a[href^="/${locale}/calculator"]`).first(),
       ).toBeVisible();
     }
-    await page.getByTestId('buy-guide').locator('a[href^="/ru/calculator"]').first().click();
-    // The static calculator entry exposes a real link when its script cannot redirect.
-    const defaultDestination = page.locator('main a[href^="/ru/calculator/russia"]');
-    await expect(page).toHaveURL(/\/ru\/calculator\/?$/);
-    await expect(defaultDestination).toBeVisible();
-    await defaultDestination.click();
-    await expect(page).toHaveURL(/\/ru\/calculator\/russia\/?$/);
+    const calculatorLink = page
+      .getByTestId('buy-guide')
+      .locator('a[href^="/ru/calculator"]')
+      .first();
+    // Public navigation points at the actual HTML, without a scripted entry hop.
+    await expect(calculatorLink).toHaveAttribute('href', '/ru/calculator/russia/');
+    await calculatorLink.click();
+    await expect(page).toHaveURL(/\/ru\/calculator\/russia\/$/);
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   } finally {
     await context.close();

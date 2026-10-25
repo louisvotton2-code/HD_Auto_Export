@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getTranslations, setRequestLocale } from 'next-intl/server';
+import { getMessages, getTranslations, setRequestLocale } from 'next-intl/server';
 import { hasLocale } from 'next-intl';
+import { ScopedMessagesProvider } from '@/i18n/scoped-messages-provider';
 import { routing } from '@/i18n/routing';
+import { getCalculatorCountryMessages } from '@/i18n/client-messages';
 import { countries, getCountryBySlug } from '@/modules/calculator/config/countries';
 import { CalculatorPage } from '@/modules/calculator/ui/calculator-page';
 import { localizedAlternates } from '@/shared/config/site';
@@ -43,5 +45,10 @@ export default async function CountryCalculator({ params }: Props) {
     day: '2-digit',
   }).format(new Date());
   const rates = await fetchExchangeRates();
-  return <CalculatorPage country={country} initialDate={today} initialRates={rates} />;
+  const messages = getCalculatorCountryMessages(await getMessages(), country.code);
+  return (
+    <ScopedMessagesProvider messages={messages}>
+      <CalculatorPage country={country} initialDate={today} initialRates={rates} />
+    </ScopedMessagesProvider>
+  );
 }

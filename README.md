@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.12 三语购车指南已合入并发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文购车指南](http://38.47.118.138/zh/buy/) 和 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
+当前阶段：**P1.13 路由性能与轻量交互动效本机验收完成，待发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文购车指南](http://38.47.118.138/zh/buy/) 和 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
@@ -23,6 +23,8 @@ pnpm dev
 打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。购车指南为 [中文如何购车](http://127.0.0.1:3000/zh/buy/)，英文 `/en/buy/`、俄文 `/ru/buy/`。根路径默认跳转英文；各语言首页暂跳转计算器。
 
 本地无需环境变量或数据库。需要配置时复制 `.env.example` 为 `.env.local`。`SITE_INDEXABLE=false` 默认禁止预览站索引；正式上线前必须设置真实站点 URL，并完成业务与规则审核。
+
+本轮导航、消息分层与动效维护说明见[路由性能与动效](docs/路由性能与动效.md)。最终类型、边界、626单元及116浏览器场景通过；部署状态见开发进度，不能将Git推送当作服务器发布。
 
 ## 检查与构建
 

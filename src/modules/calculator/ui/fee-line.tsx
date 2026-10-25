@@ -54,7 +54,13 @@ export function FeeLine({
           </span>
         </span>
       </button>
-      <div className="fee-method-panel" id={detailsId} hidden={!expanded}>
+      <div
+        className="fee-method-panel"
+        id={detailsId}
+        hidden={!expanded}
+        aria-hidden={!expanded}
+        inert={!expanded}
+      >
         <FeeMethod line={line} currency={currency} />
       </div>
     </div>
