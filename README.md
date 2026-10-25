@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.15 关于我们入口及俄语／USD默认值验证中**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站正式地址为 [中文购车指南](https://cars.hongdingauto.com/zh/buy/) 和 [中文计算器](https://cars.hongdingauto.com/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [域名HTTPS部署记录](docs/域名与HTTPS部署记录.md) 为准。
+当前阶段：**P1.15 关于我们入口及俄语／USD默认值已发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站正式地址为 [中文购车指南](https://cars.hongdingauto.com/zh/buy/) 和 [中文计算器](https://cars.hongdingauto.com/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [域名HTTPS部署记录](docs/域名与HTTPS部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
@@ -60,7 +60,8 @@ P1.12 已按用户授权发布到现有IP站点，采用实际origin重新构建
 - 结果右上角圆形印章随税制、车龄、动力、KG 身份或豪车状态更新；输入缺失或错误时清除旧档位。顶部复用原始 Logo 作淡水印，不占用表单或金额空间。
 - 七国结果卡下方提供中英俄政策与费用说明，按动力、车龄、GE 舵位和 KG 身份更新相关条目；未完整输入时仍可查看说明与本国参考来源。详见[复查记录](docs/参考站交互与政策说明.md)。
 - PC 双栏与 H5 单栏，手机底部结果入口，精简 FAQ 与基础无障碍；整体与用户黑金 Logo 配色一致。
-- 页眉/页脚真实 Logo、Facebook/WhatsApp/电话链接，以及 Instagram/Telegram/微信号码复制。
+- 页眉/页脚真实 Logo、“关于我们”直达主站、Facebook/WhatsApp/电话链接，以及 Instagram/Telegram/微信号码复制。
+- 首次访问根地址默认俄语，车辆演示价格为25000 USD；显式语言地址、有效会话草稿及主动切换继续保留，恢复默认切回USD。
 - 独立参考内核 `src/modules/calculator/index.ts`，可供未来车辆模块直接调用；七国燃油、混动和纯电均已接通参考金额，KG 同时支持个人／企业分支。
 - RU 完整回收费矩阵含纯电功率档；UZ 可选从未登记新车／二手车；AL 无需制造日期，KG 串联增程无需排量。
 - 未填写运保时明确提示未加入计税基础，金额按已知成本作条件估算；填入报价后重算。KG 首登估算及 AL 年度豪车税单列、不加进进口费用总额。
