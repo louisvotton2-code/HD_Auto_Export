@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.13 路由性能与轻量交互动效已合入并发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文购车指南](http://38.47.118.138/zh/buy/) 和 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
+当前阶段：**P1.15 关于我们入口及俄语／USD默认值验证中**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站正式地址为 [中文购车指南](https://cars.hongdingauto.com/zh/buy/) 和 [中文计算器](https://cars.hongdingauto.com/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [域名HTTPS部署记录](docs/域名与HTTPS部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
@@ -20,7 +20,7 @@ pnpm dev
 
 `.nvmrc` 固定已验证的 Node 版本；不使用 nvm 时自行提供相应运行时。购车指南已合入 `main`，默认克隆即包含本轮页面；`codex/buying-guide` 保留开发记录。源码版本与服务器发布仍分别以 Git 和部署记录为准。
 
-打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。购车指南为 [中文如何购车](http://127.0.0.1:3000/zh/buy/)，英文 `/en/buy/`、俄文 `/ru/buy/`。根路径默认跳转英文；各语言首页暂跳转计算器。
+打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。购车指南为 [中文如何购车](http://127.0.0.1:3000/zh/buy/)，英文 `/en/buy/`、俄文 `/ru/buy/`。根路径默认跳转俄文；各语言首页暂跳转计算器。
 
 本地无需环境变量或数据库。需要配置时复制 `.env.example` 为 `.env.local`。`SITE_INDEXABLE=false` 默认禁止预览站索引；正式上线前必须设置真实站点 URL，并完成业务与规则审核。
 
@@ -116,3 +116,5 @@ Facebook 指向用户提供的 `https://www.facebook.com/HDAuto`。WhatsApp/电�
 源码、锁文件、测试、文档、品牌资产和通用部署模板进入版本控制；生成产物、依赖缓存、真实环境文件、凭据、数据库、私有运维记录和早期规划ZIP归档均忽略。交接以仓库当前文档和已保存提交为准，不依赖旧本机临时目录或压缩包。
 
 P1.13已将最终eed6f8b静态成品发布到现有IP，增加本站文本gzip并保留VPN，源码main已同步。网页交互及导航保持无JS／减少动态效果兼容；本轮性能样本及测试口径见[维护说明](docs/路由性能与动效.md)，不保证所有网络都达到同一耗时。
+
+正式域名、免费证书自动续期、VPN端口迁移边界与回滚见[域名HTTPS记录](docs/域名与HTTPS部署记录.md)。域名仍在阿里云解析；无需CDN或Cloudflare。

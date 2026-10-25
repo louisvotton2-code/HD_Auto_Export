@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 /** Independent root layout for the language-neutral static entry and fallback page. */
 export default function EntryLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="ru">
       <body>{children}</body>
     </html>
   );

@@ -9,6 +9,7 @@ describe('secondary USD fee display', () => {
     const snapshot = createReferenceSnapshot();
     const input = {
       ...createDefaultInput('UZ', '2026-10-23'),
+      currency: 'CNY' as const,
       transactionRate: '1700',
       usdRate: '12500',
     };
@@ -35,7 +36,11 @@ describe('secondary USD fee display', () => {
   it('crosses a local-per-CNY input rate with the snapshot CNY-per-USD rate', () => {
     const snapshot = createReferenceSnapshot();
     snapshot.rates.CNY = '7';
-    const input = { ...createDefaultInput('RU', '2026-10-23'), transactionRate: '12' };
+    const input = {
+      ...createDefaultInput('RU', '2026-10-23'),
+      currency: 'CNY' as const,
+      transactionRate: '12',
+    };
     expect(convertImportAmountToUsd('840', input, snapshot)).toBe('10.00');
     expect(convertImportAmountToUsd('1', input, snapshot)).toBe('0.01');
   });
@@ -111,7 +116,11 @@ describe('secondary USD fee display', () => {
     const snapshot = createReferenceSnapshot();
     snapshot.rates.CNY = '0';
     expect(
-      convertImportAmountToUsd('100', createDefaultInput('RU', '2026-10-23'), snapshot),
+      convertImportAmountToUsd(
+        '100',
+        { ...createDefaultInput('RU', '2026-10-23'), currency: 'CNY' },
+        snapshot,
+      ),
     ).toBeNull();
     snapshot.rates.GEL = '';
     expect(

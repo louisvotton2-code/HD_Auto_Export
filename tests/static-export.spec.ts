@@ -51,7 +51,7 @@ test('root, language and calculator entry pages lead to the static default desti
 }) => {
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
   for (const [entry, locale] of [
-    ['/', 'en'],
+    ['/', 'ru'],
     ['/zh/', 'zh'],
     ['/en/', 'en'],
     ['/ru/', 'ru'],

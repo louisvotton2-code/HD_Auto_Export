@@ -4,6 +4,7 @@ const indexable = process.env.SITE_INDEXABLE === 'true';
 
 export const siteConfig = {
   name: 'HD Auto Export',
+  companyWebsite: 'https://hongdingauto.com/',
   isPlaceholderBrand: false,
   brand: {
     name: 'HD Auto Export',
@@ -27,6 +28,6 @@ export function localizedAlternates(path: string) {
     'zh-Hans': `/zh${path}`,
     en: `/en${path}`,
     ru: `/ru${path}`,
-    'x-default': `/en${path}`,
+    'x-default': `/ru${path}`,
   };
 }

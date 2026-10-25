@@ -21,8 +21,8 @@ export function createDefaultInput(
     importerType: 'individual',
     condition: 'used',
     powertrain: 'petrol',
-    price: '180000',
-    currency: 'CNY',
+    price: '25000',
+    currency: 'USD',
     displacementCc: '1998',
     powerHp: '150',
     manufactureDate: '2021-01',
@@ -31,7 +31,7 @@ export function createDefaultInput(
     freight: '',
     insurance: '',
     steering: 'left',
-    ...deriveRates(snapshot, country, 'CNY'),
+    ...deriveRates(snapshot, country, 'USD'),
   };
 }
 

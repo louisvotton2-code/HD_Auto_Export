@@ -67,7 +67,11 @@ describe('copied quote input facts', () => {
   });
 
   it('omits hidden manufacture date in Albania and distinguishes unknown freight from explicit zero insurance', () => {
-    const result = facts({ ...createDefaultInput('AL', '2026-10-23', rates), insurance: '0' });
+    const result = facts({
+      ...createDefaultInput('AL', '2026-10-23', rates),
+      insurance: '0',
+      currency: 'CNY',
+    });
     expect(result).not.toHaveProperty('manufactureDate');
     expect(result).not.toHaveProperty('condition');
     expect(result).not.toHaveProperty('steering');
@@ -78,6 +82,7 @@ describe('copied quote input facts', () => {
   it('records UZ registration condition and the separate USD tariff rate for a CNY transaction', () => {
     const result = facts({
       ...createDefaultInput('UZ', '2026-10-23', rates),
+      currency: 'CNY',
       condition: 'new',
       usdRate: '12001.125',
       freight: '15000.50',
@@ -102,7 +107,7 @@ describe('copied quote input facts', () => {
 
   it('includes the actual market leg used to display a CNY-based local fee in USD', () => {
     const result = facts(
-      { ...createDefaultInput('KG', '2026-10-23', rates), powertrain: 'erev' },
+      { ...createDefaultInput('KG', '2026-10-23', rates), currency: 'CNY', powertrain: 'erev' },
       true,
     );
     expect(result).toHaveProperty('marketCrossRate', `${rates.rates.CNY} CNY/USD`);

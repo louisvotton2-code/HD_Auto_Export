@@ -39,14 +39,14 @@ describe('pure calculator draft restoration', () => {
     ).toBe('250000');
   });
 
-  it('migrates a legacy USD draft with empty price by converting the CNY fallback', () => {
+  it('migrates a legacy CNY draft with empty price by converting the USD fallback', () => {
     const restored = restoreCalculatorDraft(
-      { current: null, legacy: JSON.stringify({ ...defaults, price: '', currency: 'USD' }) },
+      { current: null, legacy: JSON.stringify({ ...defaults, price: '', currency: 'CNY' }) },
       ru,
       date,
       rates,
     );
-    expect(restored.input).toMatchObject({ currency: 'USD', price: '26086.96' });
+    expect(restored.input).toMatchObject({ currency: 'CNY', price: '172500.00' });
   });
 
   it('preserves deliberately cleared fields and unfinished input in the current format', () => {

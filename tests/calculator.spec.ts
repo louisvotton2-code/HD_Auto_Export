@@ -189,8 +189,8 @@ test('defaults calculate immediately with settings expanded and still allow manu
   page,
 }) => {
   await openCalculator(page);
-  await expect(page.locator('#price')).toHaveValue('180000');
-  await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('CNY');
+  await expect(page.locator('#price')).toHaveValue('25000');
+  await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
   await expect(page.locator('#powerHp')).toHaveValue('150');
   await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
@@ -493,8 +493,8 @@ test('changing currency converts the price and preserves its value with the auto
   const initialPrice = Number(await page.locator('#price').inputValue());
   const initialRate = Number(await page.locator('#transactionRate').inputValue());
   const initialEuroRate = await page.locator('#euroRate').inputValue();
-  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
-  await expect(page.locator('#price')).not.toHaveValue('180000');
+  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
+  await expect(page.locator('#price')).not.toHaveValue(String(initialPrice));
   const convertedPrice = Number(await page.locator('#price').inputValue());
   const convertedRate = Number(await page.locator('#transactionRate').inputValue());
   expect(convertedPrice).toBeGreaterThan(0);
@@ -507,7 +507,7 @@ test('changing currency converts the price and preserves its value with the auto
   await expect(page.getByTestId('fx-status')).not.toContainText('手动');
   await expectReferenceAmount(page);
   await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeEnabled();
-  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
+  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
   expect(
     Math.abs(Number(await page.locator('#price').inputValue()) - initialPrice),
   ).toBeLessThanOrEqual(0.1);
@@ -534,8 +534,8 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await page.getByRole('button', { name: '恢复默认', exact: true }).click();
 
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
-  await expect(page.locator('#price')).toHaveValue('180000');
-  await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('CNY');
+  await expect(page.locator('#price')).toHaveValue('25000');
+  await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
   await expect(page.locator('#powerHp')).toHaveValue('150');
   await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
@@ -657,6 +657,7 @@ test('UZ registration condition and separate CNY/USD rates change tax for the sa
   page,
 }) => {
   await openCalculator(page, 'uzbekistan');
+  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
   await page.locator('#price').fill('50000');
   await page.locator('#transactionRate').fill('200');
   await expect(page.locator('#usdRate')).toBeVisible();
@@ -697,6 +698,7 @@ test('currency switches convert price, freight and insurance together instead of
   page,
 }) => {
   await openCalculator(page, 'albania');
+  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
   await page.locator('#price').fill('180000');
   await page.locator('#freight').fill('6900');
   await page.locator('#insurance').fill('690');
@@ -786,7 +788,7 @@ test('country pages expose localized metadata and reciprocal language URLs', asy
     ['zh-Hans', 'zh'],
     ['en', 'en'],
     ['ru', 'ru'],
-    ['x-default', 'en'],
+    ['x-default', 'ru'],
   ]) {
     const href = await page
       .locator(`link[rel="alternate"][hreflang="${language}"]`)

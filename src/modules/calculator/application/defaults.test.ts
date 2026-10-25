@@ -15,8 +15,8 @@ describe('ready-to-edit calculator defaults', () => {
       country: 'RU',
       importerType: 'individual',
       powertrain: 'petrol',
-      currency: 'CNY',
-      price: '180000',
+      currency: 'USD',
+      price: '25000',
       displacementCc: '1998',
       powerHp: '150',
       manufactureDate: '2021-01',
@@ -24,7 +24,7 @@ describe('ready-to-edit calculator defaults', () => {
       freight: '',
       insurance: '',
     });
-    expect(input.transactionRate).toBe(getReferenceRate('RU', 'CNY').transactionRate);
+    expect(input.transactionRate).toBe(getReferenceRate('RU', 'USD').transactionRate);
     expect(calculateImportEstimate(input)).toMatchObject({ status: 'reference', total: '926952' });
   });
 
@@ -54,8 +54,8 @@ describe('ready-to-edit calculator defaults', () => {
     rates.rates.RUB = '84';
     expect(createDefaultInput('RU', '2027-01-01', rates)).toMatchObject({
       customsDate: '2027-01-01',
-      price: '180000',
-      transactionRate: '12',
+      price: '25000',
+      transactionRate: '84',
     });
     expect(calculateImportEstimate(createDefaultInput('RU', '2027-01-01', rates)).status).toBe(
       'needs_review',
