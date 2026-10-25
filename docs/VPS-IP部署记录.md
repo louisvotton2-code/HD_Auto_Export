@@ -1,6 +1,6 @@
 # VPS IP 试运行部署记录
 
-记录日期：2026-10-25，已更新至 P1.12。本文是可随代码仓库交接的部署摘要，与通用[服务器部署指南](./服务器部署.md)配合使用。
+记录日期：2026-10-25，已更新至 P1.13。本文是可随代码仓库交接的部署摘要，与通用[服务器部署指南](./服务器部署.md)配合使用。
 
 完整旧运维账册只保存在本地 `docs/private/` 和管理员服务器私有记录中，不进入 Git，也不是克隆项目后的运行依赖。真实登录凭据由管理员另行安全管理，不写入源码、文档或静态成品。
 
@@ -45,10 +45,10 @@ SITE_INDEXABLE=false
 
 ```text
 /srv/hd-auto/current
-  -> /srv/hd-auto/releases/20261025T035544Z-buying-guide
+  -> /srv/hd-auto/releases/20261025T044905Z-navigation-motion-final
 ```
 
-上一版本 `/srv/hd-auto/releases/20261024T100238Z-fee-details` 和更早的 `/srv/hd-auto/releases/20261024T080609Z-ip-trial` 均保留，可按下述原子链接方法回滚；不要删除在线版本或为更新重装 Nginx。
+上一版本 `/srv/hd-auto/releases/20261025T043558Z-navigation-motion`（本轮初版）、`/srv/hd-auto/releases/20261025T035544Z-buying-guide`、`/srv/hd-auto/releases/20261024T100238Z-fee-details` 和更早的 `/srv/hd-auto/releases/20261024T080609Z-ip-trial` 均保留，可按下述原子链接方法回滚；不要删除在线版本或为更新重装 Nginx。
 
 Nginx 只增加本站配置：
 
@@ -260,3 +260,17 @@ sudo nginx -t
 ```
 
 重新启用本站同样先建立该链接，通过 `sudo nginx -t` 后再 `sudo systemctl reload nginx`，并复查 TCP 80 与 VPN 原端口。不要恢复 Nginx 初装快照来停用单个网站；该快照用于故障诊断和有针对性的回退，不应覆盖之后的其他管理员改动。
+
+## P1.13 路由性能与动效发布（2026-10-25）
+
+源码`0cfe935`完成主要优化，`eed6f8b`补齐联系导航下划线定位，两者均已正常快进main，无强推。最终按实际IP／noindex重建的213个新文件、5,269,154字节逐个SHA-256一致后，current原子切至`20261025T044905Z-navigation-motion-final`；保留本轮初版`20261025T043558Z-navigation-motion`、P1.12及旧hash资源。最终成品清单SHA-256：`1ad620389beb412cf82c4793fce0e9147ce3185104f2670724e84998f79eaf72`。
+
+本轮新建私有基线、Nginx副本与s-ui SQLite一致性备份（quick_check=ok）。服务器唯一配置改动是本站`/etc/nginx/snippets/hd-auto-static.conf`的gzip；完整`nginx -t`通过后平滑reload一次，没有重启服务。原Nginx／s-ui主进程与启动时间保持；其余Nginx文件、s-ui保护文件、配置链接、UFW及IPv4／IPv6规则与新基线一致，原TCP443可连接。未进行真实VPN客户端代理端到端验证。
+
+发布检查已确认三语HTML与新文件逐字节一致，未知路径／旧API404、robots保持禁止索引，JS／CSS／RSC实际gzip可正确解压且Vary包含Accept-Encoding；HTML／RSC继续no-cache，hash资源继续immutable。不会以压缩优化为理由缓存非版本RSC一年。
+
+最终样式微调仅换静态文件，重新保存基线和SQLite一致性备份并全量核对保护文件，没有第二次配置修改或reload。最终源码[main远端质量检查](https://github.com/louisvotton2-code/HD_Auto_Export/actions/runs/40163244796)全部通过。
+
+首次P1.13 release同流程公网购车→计算器1907→158ms，俄罗斯→乌兹别克斯坦613→53ms，冷英文切换940→657ms（样本，非普遍保证）；详细测量与维护位置见[路由性能与动效](./路由性能与动效.md)。公网首轮52项为51通过／1追踪报告收尾ENOENT，原因是并行进程共用默认输出目录，不是页面断言失败。改用独立输出后，最终发布版本16项针对性验收全过，覆盖三语购车、无JS、手机、全部新导航／动效场景及该俄文格鲁吉亚深链。不能将首轮记为整套52无失败；HTTP复制不在本轮公网场景内。
+
+如只回退页面，可将current原子指回P1.12；gzip兼容旧静态文件，无需回退VPN或恢复数据库。确需回退本站gzip时，管理员只恢复本轮私有备份中的本站snippet，nginx -t后平滑reload，不覆盖整个/etc/nginx。
