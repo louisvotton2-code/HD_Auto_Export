@@ -1,6 +1,6 @@
 # HD Auto Export 汽车出口官网
 
-当前阶段：**P1.11 三语购车指南**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
+当前阶段：**P1.12 三语购车指南已合入并发布**，包含已完成的独立仓库基线与 P1.9 费用详情折叠优化。七国三语页面构建为 HTML，计算和交互在浏览器完成；服务器仅托管 out/，不运行 Node 应用或计算 API。网站已部署到 [中文购车指南](http://38.47.118.138/zh/buy/) 和 [中文计算器](http://38.47.118.138/zh/calculator/russia/)，最新版本的发布与公网验证以 [开发进度](docs/开发进度.md) 和 [VPS-IP部署记录](docs/VPS-IP部署记录.md) 为准。
 
 源码仓库：[louisvotton2-code/HD_Auto_Export](https://github.com/louisvotton2-code/HD_Auto_Export)。新维护者先读 [开发进度](docs/开发进度.md)，再按根目录 `AGENTS.md` 的顺序阅读本文件、[模块与维护指南](docs/模块与维护指南.md)及后续资料；日常提交遵循 [CONTRIBUTING](CONTRIBUTING.md)。
 
@@ -18,7 +18,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`.nvmrc` 固定已验证的 Node 版本；不使用 nvm 时自行提供相应运行时。购车指南本轮开发分支为 `codex/buying-guide`，接手该版本时先切到此分支；默认 `main` 与服务器发布状态分别以 Git 和部署记录为准。
+`.nvmrc` 固定已验证的 Node 版本；不使用 nvm 时自行提供相应运行时。购车指南已合入 `main`，默认克隆即包含本轮页面；`codex/buying-guide` 保留开发记录。源码版本与服务器发布仍分别以 Git 和部署记录为准。
 
 打开 [中文计算器](http://127.0.0.1:3000/zh/calculator/russia)。英文 `/en/calculator/russia`，俄文 `/ru/calculator/russia`。购车指南为 [中文如何购车](http://127.0.0.1:3000/zh/buy/)，英文 `/en/buy/`、俄文 `/ru/buy/`。根路径默认跳转英文；各语言首页暂跳转计算器。
 
@@ -40,6 +40,8 @@ pnpm preview
 P1.9 本机验证：类型检查、5 项模块边界防护、626 项单元测试、静态 export 构建及 101 项完整浏览器测试均通过。首次浏览器验收仅有一项 `innerText`／`textContent` 断言口径不一致，修正后重新执行完整 101 项通过；不把本机结果当成公网验收。
 
 P1.11 本机验收：类型、5项边界防护、626单元、36路由静态构建、最终110项浏览器验收通过；另检查三语购车指南及共享导航在320～1440px共48个状态无溢出。最终截图与本轮新增9项场景见[开发进度](docs/开发进度.md)。
+
+P1.12 已按用户授权发布到现有IP站点，采用实际origin重新构建、218新文件逐个SHA-256校验并原子切换；本轮待发布成品的110项本机浏览器验收再次通过。原Nginx／VPN进程、配置和防火墙保持，旧版可回滚；公网验收明细见[实际部署记录](docs/VPS-IP部署记录.md)。
 
 **部署**：在开发电脑构建，将 `out/` 的全部内容上传到 Ubuntu 22 的 Nginx网站目录；不上传源码、node_modules、.next或.env，不需要服务器安装Node。纯静态资产可从Mac直接上传到Linux。完整安装／配置／HTTPS／更新／回滚，以及与现有s-ui／VPN的80/443冲突处理，见[服务器部署指南](docs/服务器部署.md)。不得为腾端口停止VPN或重置防火墙；先按指南检查真实监听。
 

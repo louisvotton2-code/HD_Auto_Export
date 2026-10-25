@@ -1,11 +1,14 @@
 # VPS IP 试运行部署记录
 
-记录日期：2026-10-24，已更新至 P1.9。本文是可随代码仓库交接的部署摘要，与通用[服务器部署指南](./服务器部署.md)配合使用。
+记录日期：2026-10-25，已更新至 P1.12。本文是可随代码仓库交接的部署摘要，与通用[服务器部署指南](./服务器部署.md)配合使用。
 
 完整旧运维账册只保存在本地 `docs/private/` 和管理员服务器私有记录中，不进入 Git，也不是克隆项目后的运行依赖。真实登录凭据由管理员另行安全管理，不写入源码、文档或静态成品。
 
 ## 访问地址与当前状态
 
+- [中文购车指南](http://38.47.118.138/zh/buy/)
+- [英文购车指南](http://38.47.118.138/en/buy/)
+- [俄文购车指南](http://38.47.118.138/ru/buy/)
 - [中文俄罗斯计算器](http://38.47.118.138/zh/calculator/russia/)
 - [英文计算器](http://38.47.118.138/en/calculator/russia/)
 - [俄文计算器](http://38.47.118.138/ru/calculator/russia/)
@@ -42,10 +45,10 @@ SITE_INDEXABLE=false
 
 ```text
 /srv/hd-auto/current
-  -> /srv/hd-auto/releases/20261024T100238Z-fee-details
+  -> /srv/hd-auto/releases/20261025T035544Z-buying-guide
 ```
 
-上一版本 `/srv/hd-auto/releases/20261024T080609Z-ip-trial` 仍保留，可按下述原子链接方法回滚；不要删除在线版本或为更新重装 Nginx。
+上一版本 `/srv/hd-auto/releases/20261024T100238Z-fee-details` 和更早的 `/srv/hd-auto/releases/20261024T080609Z-ip-trial` 均保留，可按下述原子链接方法回滚；不要删除在线版本或为更新重装 Nginx。
 
 Nginx 只增加本站配置：
 
@@ -100,6 +103,22 @@ SSH 主机识别信息和逐文件清单保存在管理员私有记录中。未�
 - 公网HTTP复制仍受上述限制，本轮不把需要安全上下文的复制用例放到HTTP验收；真实VPN客户端代理、域名与HTTPS仍待后续。
 
 P1.9[桌面默认收起截图](./previews/calculator-fees-collapsed-desktop.png)、实际VPS[手机默认收起](./previews/calculator-fees-collapsed-mobile.png)与[全部展开](./previews/calculator-fees-expanded-mobile.png)已保存。手机为组件长截图，捕获时临时隐藏固定浮层避免拼接遮挡，未改变产品样式。
+
+## P1.12 购车指南合入与发布
+
+用户认可预览后明确授权复查、提交并部署。源码基线[816d2eb](https://github.com/louisvotton2-code/HD_Auto_Export/commit/816d2ebf265027ddf9aaff8a82f41152edc57247)已正常快进合入main，[main质量检查](https://github.com/louisvotton2-code/HD_Auto_Export/actions/runs/40160104792)全部通过，没有强推或覆盖其他提交。
+
+新增三语购车指南、8步时间线、500 USD定金、CIF／FOB说明与FAQ；共享页眉和页脚增加入口，手机导航可见。计算规则、公式和费用数据结构未改。服务器仍使用HTTP IP和noindex，复制限制按原决定保留。
+
+- 发布前以实际origin重新构建36路由；完整110项本机浏览器再次通过，24业务HTML的canonical和noindex正确。218个新成品文件共10,404,910字节，未含源码、环境文件、密钥、数据库或Node运行服务。
+- 新一轮服务／配置／防火墙基线和Nginx配置副本保存在管理员私有记录中；新s-ui数据库副本通过SQLite backup API取得并quick_check=ok，目录700、数据库600。未修改或恢复现用数据库。
+- 暂存与release中218个文件SHA-256均与本地清单一致；清单自身SHA-256为`306ac61bd609cfdbedd5d1cf414b88af2c3f4b85cedafc36d9bd11abf352f9f5`。旧hash静态资源只补到新目录，用于已打开页面兼容，因此实际release总文件数可大于218。
+- 新release为`/srv/hd-auto/releases/20261025T035544Z-buying-guide`，旧P1.9目录保留。只原子替换current链接；服务端后验失败自动回退旧release，不改其他服务。
+- 切换后Nginx返回的三语指南与计算器HTML和本次成品逐字节一致，三语指南／Logo公网200、未知路径404，robots继续禁止索引，旧公开API继续404；原外部TCP443可连接。
+- Nginx／s-ui进程与启动时间、保护文件SHA-256、Nginx符号链接、UFW及IPv4／IPv6防火墙规则与本次基线一致，没有安装／升级软件、重启或重载服务。未进行真实VPN客户端代理全链路测试。
+- 公网浏览器46场景覆盖完成：45项首轮通过，另1项修正测试等待后公网定向复验通过。无JS用例首轮有脚本时序误判：原条件count在导航未完成时可能为0而跳过后续链接；改为显式等待入口URL和真实链接可见后再点击，已在公网定向复验通过，没有放宽最终目标地址断言或改动网站。其余45项首轮均通过，覆盖21国家语言深链／刷新、三语指南／SEO、手机导航、原生FAQ、资源、404、日期／汇率和费用折叠。不能将此记录写为首轮完整46项无失败；最终记录亦见开发进度。
+
+本次没有更改Nginx模板或重新安装服务。今后回滚本站内容时，使用本节记录的真实旧P1.9路径；不恢复s-ui数据库或整套Nginx配置来回退静态页面。
 
 ## 后续更新本站
 
