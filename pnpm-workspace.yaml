@@ -1,3 +1,6 @@
+packages:
+  - apps/*
+  - packages/*
 verifyDepsBeforeRun: false
 allowBuilds:
   '@swc/core': true

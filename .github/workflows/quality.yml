@@ -39,6 +39,6 @@ jobs:
       - name: Build static pages
         run: pnpm build
       - name: Install browser
-        run: pnpm exec playwright install --with-deps chrome
+        run: pnpm --filter @hd/web exec playwright install --with-deps chrome
       - name: Verify static pages in Chrome
         run: pnpm test:e2e

@@ -1,0 +1,4 @@
+interface:
+  display_name: "HD Auto 项目协作"
+  short_description: "按职责定位本站前后端、后台与运维任务，统一模块边界、验证和开发日志"
+  default_prompt: "使用 $hd-auto-development 从接手导航确认本轮职责和阶段，按对应任务完成工作并记录真实验证与交接日志。"

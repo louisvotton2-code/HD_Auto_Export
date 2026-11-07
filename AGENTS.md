@@ -2,30 +2,28 @@
 
 ## 开始工作
 
-1. 先读 `docs/开发进度.md`，以其确定当前阶段和真实可用能力。
-2. 再读 `README.md`、`docs/模块与维护指南.md`、`docs/技术架构.md`、`docs/开发交接规划.md`、`docs/计算器参考规则研究.md`。
-3. 遵循当前用户的分期要求，不因为长期规划存在就一次实现所有模块。
+1. 读 [接手导航](docs/README.md) 和 [当前进度](docs/开发进度.md)，确认实际阶段与环境。
+2. 加载 [hd-auto-development](.agents/skills/hd-auto-development/SKILL.md)；不支持 Skill 的 Agent 直接读取同一文件。
+3. 按导航选择本次角色文件，只补读任务相关契约与维护说明。旧规划、历史部署、税费研究不是所有角色的必读材料。
+4. 当前用户任务决定范围；不因长期路线图存在就一次实现所有模块。修改前检查工作树，保留既有改动。
+
+## 已采纳的工程边界
+
+- 官网位于 `apps/web/`；`apps/admin/`、`apps/api/` 目前只有预留包与接手说明，尚无可运行功能。
+- `packages/contracts/`、`packages/calculator-core/` 同样是待实施边界；计算核心目前仍在官网内。产品资料在 `product/`，总进度和开发日志在 `docs/`。
+- 应用独立声明依赖，全仓共用 pnpm 锁文件；禁止应用互相导入内部源码、公共包依赖应用。业务数据由独立 API 管理，前台和后台通过 HTTP 契约调用。
+- 先读职责文件并确定本轮任务 ID；公共入口能定位职责，但不会授权 Agent 自动实施整条路线图。共享文件由本轮集成人协调。
+- 功能交付需要自测、独立代码审查和对应集成验收，详见 [测试与审查](docs/协作/测试与审查.md)。最终业务／视觉确认由用户完成，PM 按版本核对证据。
 
 ## 工作边界
 
-- 页面消费计算模块的公共接口，不在 React 组件中复制税率和公式。
-- 计算核心不得依赖 React、网络、系统当前时间或翻译；日期与汇率显式传入。
-- 未核验公式只能作明确标记的参考预览；缺失规则/费用不得当 0 或宣称完整落地价。
-- 三种语言必须使用同一套语义 key；语言、交易币种、目的国互相独立。
-- 不引入未经授权的外部车源接口、支付、账号、生产部署或后台。
-- 本目录是 HD Auto Export 独立仓库；不要在父目录的其他项目仓库中提交本站文件。
-- Git 推送不等于服务器部署。密钥、真实环境文件、数据库、服务器备份和 `docs/private/` 运维账册不得提交；按 `CONTRIBUTING.md` 和实际部署记录维护。
+- 本目录是 HD Auto Export 独立仓库，不在父目录其他仓库中提交本站文件。
+- 业务模块通过公共接口协作；页面不得复制税率和公式。计算核心不得依赖 React、网络、当前系统时间或翻译；日期与汇率显式输入。
+- 未核验规则只作明确标记的参考；缺失费用不得当 0 或声称完整落地价。三语语义 key 一致，语言、交易币种与目的国独立。
+- 当前 `apps/web` 静态导出与未来 API／后台运行方式须区分。仅在分配到相应任务时迁移运行方式、建立后台或接入服务，不把计划写成已实现。
+- 不扩大到未经授权的外部车源、支付、账号、真实消息或生产操作。当前不连接旧服务器；Git 推送不等于部署。
+- 凭据、真实环境文件、数据库、备份和 `docs/private/` 不提交；遵守 [CONTRIBUTING.md](.github/CONTRIBUTING.md)。
 
 ## 持续交接
 
-更新功能时同步更新 `docs/开发进度.md` 的阶段、任务状态、验证结果和下一步。改变关键技术方案时记录原因。完成回合前检查文档与代码一致；不要把未执行的检查写成通过。
-
-<!-- BEGIN:nextjs-agent-rules -->
-
-## This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
-
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
-
-<!-- END:nextjs-agent-rules -->
+每轮更新自己的角色进度摘要和一份开发日志，格式见 [接手导航](docs/README.md#每轮如何记录)。产品／项目管理汇总 `docs/开发进度.md`，避免多端重复改写。关键方案变化记录原因并更新对应维护文档；完成前检查文档与代码一致，不把未执行检查写成通过。

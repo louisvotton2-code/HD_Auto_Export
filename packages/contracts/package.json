@@ -1,0 +1,7 @@
+{
+  "name": "@hd/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reserved workspace boundary; implementation is tracked in the role task document."
+}
