@@ -1,4 +1,24 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type Request } from '@playwright/test';
+
+const demoPhone = '15550007654';
+
+function trackRequests(page: Page) {
+  const requests: Request[] = [];
+  page.on('request', (request) => requests.push(request));
+  return requests;
+}
+
+function expectNoPhoneTransmission(requests: Request[], phone: string) {
+  const transmissions = requests
+    .map((request) => ({
+      method: request.method(),
+      url: request.url(),
+      body: request.postData(),
+      headers: request.headers(),
+    }))
+    .filter((request) => JSON.stringify(request).includes(phone));
+  expect(transmissions, 'the demo phone must not appear in any outgoing request').toEqual([]);
+}
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
   test(`${locale}: home, demo catalog and vehicle detail are linked and localized`, async ({
@@ -178,16 +198,81 @@ test('model controls, demo conversation dialog and local enquiry work without se
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   const enquiries = page.locator('[data-home-section="cta"]');
-  await enquiries.getByRole('textbox').fill('+86 18215932610');
-  const requests: string[] = [];
-  page.on('request', (r) => {
-    if (r.method() === 'POST') requests.push(r.url());
-  });
+  const initialURL = page.url();
+  const requests = trackRequests(page);
+  await enquiries.getByRole('textbox').fill(demoPhone);
   await enquiries.getByRole('button', { name: /发送/ }).click();
   await expect(enquiries.getByRole('status')).toBeVisible();
   await expect(enquiries.getByRole('status')).toContainText('未');
-  expect(requests).toEqual([]);
+  expectNoPhoneTransmission(requests, demoPhone);
+  expect(requests.filter((request) => request.method() === 'POST')).toEqual([]);
+  expect(page.url()).toBe(initialURL);
 });
+
+for (const locale of ['zh', 'en', 'ru'] as const) {
+  for (const submit of ['button', 'Enter'] as const) {
+    test(`${locale}: demo enquiry keeps the phone private without JavaScript (${submit})`, async ({
+      browser,
+      baseURL,
+    }) => {
+      const context = await browser.newContext({
+        baseURL,
+        javaScriptEnabled: false,
+        viewport: { width: 390, height: 844 },
+      });
+      const page = await context.newPage();
+      try {
+        const route = `/${locale}/`;
+        await page.goto(route);
+        const requests = trackRequests(page);
+        const enquiries = page.locator('[data-home-section="cta"]');
+        const phone = enquiries.getByRole('textbox');
+        await phone.fill(demoPhone);
+        // Observe a real native submit/reload, including when its URL is unchanged.
+        await Promise.all([
+          page.waitForEvent('load'),
+          submit === 'button'
+            ? enquiries.getByRole('button').click()
+            : phone.press('Enter'),
+        ]);
+        expect(requests.some((request) => request.isNavigationRequest())).toBe(true);
+        expectNoPhoneTransmission(requests, demoPhone);
+        expect(new URL(page.url()).pathname).toBe(route);
+        expect(new URL(page.url()).search).toBe('');
+        expect(page.url()).not.toContain(demoPhone);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  test(`${locale}: demo enquiry preserves the local notice for button and Enter with JavaScript`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.goto(`/${locale}/`);
+    const initialURL = page.url();
+    const requests = trackRequests(page);
+    const enquiries = page.locator('[data-home-section="cta"]');
+    const phone = enquiries.getByRole('textbox');
+    const notice = enquiries.getByRole('status');
+    const notSubmitted = { zh: '未提交', en: 'not been submitted', ru: 'не отправлен' };
+    for (const submit of ['button', 'Enter']) {
+      await phone.fill(demoPhone);
+      await expect(notice).not.toBeVisible();
+      if (submit === 'button') await enquiries.getByRole('button').click();
+      else await phone.press('Enter');
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText(notSubmitted[locale]);
+      await expect(notice.getByRole('link')).toHaveAttribute('href', /^https:\/\/wa\.me\//);
+      expectNoPhoneTransmission(requests, demoPhone);
+      expect(requests.filter((request) => request.method() === 'POST')).toEqual([]);
+      expect(page.url()).toBe(initialURL);
+      await phone.fill('');
+      await expect(notice).not.toBeVisible();
+    }
+  });
+}
 
 test('mobile home navigation and language menu remain usable without JavaScript', async ({
   browser,

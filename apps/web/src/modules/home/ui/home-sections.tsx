@@ -403,7 +403,6 @@ export function HomeSections({
             <input
               id="home-phone"
               type="tel"
-              name="phone"
               placeholder="+1 (999) 999-9999"
               autoComplete="tel"
               maxLength={32}
