@@ -1,0 +1,10 @@
+#!/bin/sh
+# HD Auto managed persistent pre-push loader. Installed in the Git common directory.
+set -eu
+root=$(git rev-parse --show-toplevel) || exit 1
+guard="$root/scripts/git-workflow.mjs"
+if [ ! -f "$guard" ]; then
+  echo 'HD Auto pre-push: this worktree has no scripts/git-workflow.mjs; update the branch before pushing.' >&2
+  exit 1
+fi
+exec node "$guard" pre-push "$@"

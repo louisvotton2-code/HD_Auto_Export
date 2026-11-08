@@ -26,6 +26,8 @@ Node 版本建议见 [.nvmrc](.nvmrc)，pnpm 版本由根 `package.json` 固定�
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm hooks:install
+pnpm hooks:check
 pnpm dev
 pnpm check
 pnpm build
@@ -38,3 +40,5 @@ pnpm test:e2e
 官网开发入口通常是 `http://127.0.0.1:3000/zh/`，最新静态产物在 `apps/web/out/`；浏览器测试前先构建。不要复用旧根目录产物，不并发写同一应用的 `.next/`。
 
 各端开工、测试、独立 review、阶段验收和交接记录见 [接手导航](docs/README.md) 与 [测试与审查](docs/协作/测试与审查.md)；Git 细则在 [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)。当前无新服务器部署，Git 推送与生产发布分别记录。
+
+新 clone 不继承本机 Git hooks 配置；安装依赖的生命周期也可能跳过，因此开工须显式核验 hooks。当前仓库的安装器使用 Git 公共目录中的持久入口，linked worktree 共享配置，旧分支缺检查脚本时会拒绝推送。各端先自测并交独立 Reviewer，再按 [推送前检查](docs/协作/测试与审查.md#推送前检查) 生成绑定提交的验证和审查记录；`main` 通过 PR 与远端 `verify` 检查合入。

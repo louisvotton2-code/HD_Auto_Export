@@ -8,6 +8,7 @@
 2. 加载 [hd-auto-development](../.agents/skills/hd-auto-development/SKILL.md)。支持 Skill 的工具可显式使用 `$hd-auto-development`；其他 Agent 直接读取同一文件即可，无需安装第二套规范。
 3. 按下表只读自己的角色文件及任务所需资料，检查实际代码和已有改动，然后执行。身兼多职时按本轮涉及的职责补读，跨角色变更先协调文件归属。
 4. 交付时更新本角色进度和本轮日志。总进度由产品／项目管理汇总，历史日志不反复复制。
+5. 每轮确认 `pnpm hooks:check` 通过；新 clone 先 `pnpm hooks:install`。功能自测后主动安排独立 Agent review，按 [推送前检查](协作/测试与审查.md#推送前检查) 登记对应提交的实际证据。无需用户每轮重复提醒；正在运行的旧对话需先重新读取更新后的 AGENTS 和本导航。
 
 ## 按职责找任务
 
