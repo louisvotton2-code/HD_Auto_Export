@@ -2,12 +2,12 @@
 
 从 [模块维护](../../../../docs/开发/模块维护.md) 与 [技术架构](../../../../docs/开发/技术架构.md) 只读本次相关章节：目录职责、依赖方向、路由／消息和当前运行方式。普通页面或后台任务无需通读计算器内部章节。以下是代码组织模式，不要求重写已有模块，也不要求每个模块建立全部目录。
 
-本文件的 `src/`、`public/`、`tests/` 等官网路径均相对 `apps/web/`。管理后台在独立应用初始化后沿用适用的组件／可访问规则，不复制官网的 Next 路由、语言父布局或动效。
+本文件的 `src/`、`public/`、`tests/` 等官网路径均相对 `apps/web/`。管理后台已在`apps/admin/`独立实现，沿用适用的组件／可访问规则，不复制官网的Next路由、语言父布局或动效；实际交付状态见[当前进度](../../../../docs/开发进度.md)。
 
 ## 文件与依赖
 
 ```text
-src/app/[locale]/<route>/page.tsx     路由参数、静态装配、metadata
+src/app/[locale]/<route>/page.tsx     路由参数、服务端装配、metadata
 src/modules/<module>/index.ts        供外部调用的函数、类型和页面出口
 src/modules/<module>/types.ts        业务或展示契约
 src/modules/<module>/ui/             页面、职责明确的组件与 CSS Module
@@ -19,30 +19,15 @@ src/modules/<module>/mock/           演示来源与数据（需要时）
 
 依赖方向：`app → 模块公共入口 → 模块内部`；模块可以依赖 `shared`，共享层不能反向依赖业务模块。首页接收车辆展示事实，不导入 `vehicles/mock`；供应商适配由独立 API 负责并输出公共契约，官网车辆模块仅将公开 DTO 映射为展示数据，页面不识别供应商字段。自动边界检查不能代替新增依赖的人工审查。
 
-## 当前静态阶段的路由模式
+## 当前路由与历史静态边界
 
-本节描述当前实现；FE-01 官网运行时迁移须同步动态车源、元信息与测试方式，不能直接把以下构建期样例当实时数据库查询方案。
+官网已使用Node／standalone运行：首页、目录和动态车辆详情经HTTP消费独立API，首屏由SSR装配。服务端通过`modules/vehicles/server.ts`公开入口读取契约，浏览器增强通过同源公开接口查询；筛选／分页在服务端完成，不下载全库再筛选，也不跨应用导入API源码或直连数据库。实现入口见[首页与公开车源](../../../../docs/开发/模块/首页与车源.md#fe-01fe-02-当前数据入口)，能力及同版验收状态以[当前进度](../../../../docs/开发进度.md)为准。
 
-沿用本项目异步 `params`、`hasLocale`／`notFound`、`setRequestLocale` 与父布局的静态语言参数，不自行换一套国际化路由。现有列表页的组合模式如下，metadata 与静态参数在相应页面／布局维护：
+沿用异步`params`／`searchParams`、`hasLocale`／`notFound`、`setRequestLocale`和既有语言路由。语言参数可以预生成，不意味着车辆数据只能构建时查询；新发布车辆详情不要求重建或枚举全部车辆ID。增加路径同步三语metadata／canonical／hreflang、导航与sitemap；未知／下架／删除详情返回真正404，索引策略遵循现有站点及路由配置，不能仅因SSR上线就开放索引。
 
-```tsx
-import { hasLocale } from 'next-intl';
-import { setRequestLocale } from 'next-intl/server';
-import { notFound } from 'next/navigation';
-import { routing } from '@/i18n/routing';
-import { getVehicles, VehicleList } from '@/modules/vehicles';
+**历史说明：** FE-01前曾使用静态导出、`getVehicles()`样例和演示slug构建页面；该模式已被当前HTTP接入取代，旧mock只作隔离开发／历史来源资料。不要复用构建期样例实现当前目录，也不要将“不能依赖运行时API”的旧静态托管限制套用到当前Node服务。计算器和购车指南的预生成页面与车辆运行时路由可以并存。
 
-type Props = { params: Promise<{ locale: string }> };
-
-export default async function CarsPage({ params }: Props) {
-  const { locale } = await params;
-  if (!hasLocale(routing.locales, locale)) notFound();
-  setRequestLocale(locale);
-  return <VehicleList locale={locale} initialVehicles={getVehicles()} />;
-}
-```
-
-增加路径时同步静态参数、三语 metadata／canonical／hreflang、导航和需要收录的 sitemap；未知 slug 返回真正的 404。演示目录和详情始终不索引；全站是否开放索引仍由现有站点配置控制。不能依赖静态托管上不存在的 API、运行时重定向或请求头来补逻辑。
+公开文案、样例下架、三语事实边界及取消focus／visibility激活核对遵循[用户最新产品约定](../../../../product/路线图.md#当前公开展示与交互)；历史日志或旧示例不覆盖新决定。
 
 ## 组件、内容与样式
 
@@ -54,24 +39,11 @@ export default async function CarsPage({ params }: Props) {
 
 ## 车辆数据与联系入口
 
-现有库存均为演示，规则见[首页与演示车源](../../../../docs/开发/模块/首页与车源.md)。增加样例时记录来源、对应照片和使用限制，保留来源水印，不把韩国参考样车包装为中国现货。车型家族卡与具体车辆记录是不同契约，不能给家族卡编造年份、里程或库存编号。
+当前公开车源来自独立API的已发布快照，不是旧静态mock库存；来源、库存和审核等事实按[车辆接口](../../../../docs/开发/车辆接口.md)处理，当前数据批次与验收看总进度。使用API稳定`id`／`stockCode`和与当前locale一致的`detailPath`，不把路由参数名`slug`当作演示身份或VIN。既有演示slug不能悄悄跳到其他真实车辆；未知字段不填0，模型家族卡也不能编造具体年份、里程或库存编号。
 
-所有具体车辆图卡与详情的 Telegram／WhatsApp 使用同一 builder：
+具体车辆图卡与详情统一使用`shared/lib/vehicle-contact.ts`的`buildPublicVehicleContactLinks(vehicle, locale)`，传入公开DTO；不要再将旧mock `vehicle.slug`拼成当前车辆身份。该builder保持同一车号／稳定ID／详情路径和三语草稿。语言、交易币种、目的国独立，三语语义key／占位符一致；公开文案调整不把内部unknown、machine／pending或许可待核验改成已核验事实，详见上述产品约定。
 
-```ts
-import { buildVehicleContactLinks } from '@/shared/lib/vehicle-contact';
-
-const links = buildVehicleContactLinks(
-  {
-    ...vehicle,
-    id: vehicle.slug,
-    detailPath: `/${locale}/cars/${vehicle.slug}/`,
-  },
-  locale,
-);
-```
-
-当前 `slug` 是演示稳定标识，不是库存系统 VIN 或正式车源编号；未来接入真实数据由独立 API 提供正式标识和公开 DTO；SSR 同样经 HTTP 获取，不跨应用导入后端源码。共用 `shared/ui/social-icon.tsx`，外部新窗口链接保留 `noopener noreferrer`。无车参数的公司通用联系入口直接使用 `siteConfig`。不要自动发送消息、要求访客在站内登录聊天账号，或把机器人 `start` 参数套给普通 Telegram 用户。
+共用`shared/ui/social-icon.tsx`，外部新窗口链接保留`noopener noreferrer`。无车参数的公司通用联系入口使用`siteConfig`。只准备草稿，由客户确认发送；不自动发消息、要求访客在站内登录聊天账号，或把机器人`start`参数套给普通Telegram用户。
 
 ## 参考站与动效
 

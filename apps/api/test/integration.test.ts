@@ -7,9 +7,9 @@ import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import sharp from 'sharp';
 import type {InjectOptions} from 'fastify';
-import {makeVehicleDraftFixture} from '@hd/contracts/fixtures';
+import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleResponseSchema,PublicVehicleListSchema,ApiErrorSchema} from '@hd/contracts/public';
-import type {AdminVehicle,VehicleDraftInput} from '@hd/contracts/admin';
+import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createDatabase} from '../src/db/index.js';
@@ -36,9 +36,9 @@ async function save(vehicle:AdminVehicle):Promise<AdminVehicle> {
   const r=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:vehicle.draft}});
   assert.equal(r.statusCode,200,r.body);return r.json().data;
 }
-async function upload(vehicle:AdminVehicle) {
+async function upload(vehicle:AdminVehicle, provenance?:{listingUrl:string;imageUrl:string;collectedAt:string}) {
   const bytes=await sharp({create:{width:32,height:24,channels:3,background:'#224466'}}).png().toBuffer();
-  const permit=await call({method:'POST',url:'/api/v1/admin/media/uploads',headers:headers(),payload:{vehicleId:vehicle.id,contentType:'image/png',sizeBytes:bytes.length,rights:{basis:'owned',note:'Synthetic test image generated for this test.'}}});
+  const permit=await call({method:'POST',url:'/api/v1/admin/media/uploads',headers:headers(),payload:{vehicleId:vehicle.id,contentType:'image/png',sizeBytes:bytes.length,rights:{basis:provenance?'unverified':'owned',note:'Synthetic test image generated for this test.',...(provenance?{source:provenance}:{})}}});
   assert.equal(permit.statusCode,201,permit.body);const p=permit.json().data;
   const sent=await call({method:'PUT',url:p.uploadUrl,headers:{...headers(),'content-type':'image/png','if-match':String(p.media.version)},payload:bytes});
   assert.equal(sent.statusCode,200,sent.body);
@@ -50,6 +50,12 @@ async function ready():Promise<AdminVehicle> {
   vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Isolated synthetic fixture'}];vehicle=await save(vehicle);
   const availability=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/availability`,headers:headers(),payload:{version:vehicle.version,availability:'available',checkedAt:new Date().toISOString()}});
   assert.equal(availability.statusCode,200,availability.body);return availability.json().data;
+}
+async function readyDemo():Promise<AdminVehicle> {
+  const value=makeDemoVehicleDraftFixture();value.media=[];
+  let vehicle=await create(value);const media=await upload(vehicle);
+  vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Synthetic non-inventory example'}];
+  return save(vehicle);
 }
 async function publish(vehicle:AdminVehicle):Promise<AdminVehicle> {
   const r=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
@@ -94,6 +100,162 @@ test('draft privacy and current-language publication validation',async()=>{
   assert.equal(r.statusCode,422,r.body);assert.ok(r.json().error.fields.some((f:{path:string})=>f.path==='draft.media'));
   assert.equal((await runtime.db.pool.query('SELECT count(*)::int AS count FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].count,0);
   const current=await runtime.inventory.getAdmin(vehicle.id);assert.equal(current.version,vehicle.version);assert.equal(current.publicationState,'draft');
+});
+test('demo publication stays non-inventory across catalog counts, home, detail and media; manual gates remain',async()=>{
+  let demo=await readyDemo();
+  assert.equal(demo.availability,'unknown');assert.equal(demo.availabilityCheckedAt,null);
+  await call({method:'GET',url:`/api/v1/vehicles/${demo.id}`}).then(r=>assert.equal(r.statusCode,404));
+  const uniqueMake=`demo_${randomBytes(4).toString('hex')}`;demo.draft.facts.make={id:uniqueMake,name:'Display Example Brand'};demo=await save(demo);
+  demo=await publish(demo);
+  for(const locale of ['zh','en','ru']) {
+    const detail=await call({method:'GET',url:`/api/v1/vehicles/${demo.id}?locale=${locale}`});assert.equal(detail.statusCode,200,detail.body);
+    const vehicle=PublicVehicleResponseSchema.parse(detail.json()).data;assert.equal(vehicle.source.kind,'demo');assert.equal(vehicle.availability,'unknown');assert.equal(vehicle.availabilityCheckedAt,null);assert.equal(vehicle.facts.location,null);assert.equal(vehicle.price.kind,'on_request');assert.equal(vehicle.content.title.reviewed,false);assert.equal(vehicle.content.description?.reviewed,false);assert.equal(vehicle.content.title.kind,locale==='zh'?'original':'machine');
+    const list=await call({method:'GET',url:`/api/v1/vehicles?locale=${locale}&make=${uniqueMake}`});const parsed=PublicVehicleListSchema.parse(list.json());assert.equal(parsed.meta.total,1);assert.equal(parsed.data.items[0]!.id,demo.id);
+    const filters=(await call({method:'GET',url:`/api/v1/vehicle-filters?locale=${locale}`})).json().data;assert.equal(filters.makes.find((m:{id:string})=>m.id===uniqueMake).count,1);
+  }
+  const home=(await call({method:'GET',url:'/api/v1/admin/home/vehicle-sections',headers:headers()})).json().data;home.sections[0].vehicleIds=[demo.id];
+  const configured=await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:home});assert.equal(configured.statusCode,200,configured.body);
+  assert.equal((await call({method:'GET',url:'/api/v1/home/vehicles?locale=en'})).json().data.sections[0].vehicles[0].source.kind,'demo');
+  assert.equal((await call({method:'GET',url:`/api/v1/media/${demo.draft.media[0]!.id}`})).statusCode,200);
+  for(const availability of ['available','reserved','sold','unknown']) {
+    const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/availability`,headers:headers(),payload:{version:demo.version,availability,checkedAt:new Date().toISOString()}});
+    assert.equal(rejected.statusCode,422,rejected.body);assert.equal(rejected.json().error.code,'DEMO_RESTRICTION');
+  }
+  const forbidden=structuredClone(demo.draft);forbidden.source.kind='manual';
+  const converted=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${demo.id}`,headers:headers(),payload:{version:demo.version,draft:forbidden}});assert.equal(converted.statusCode,422);
+  const archived=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/archive`,headers:headers(),payload:{version:demo.version}});assert.equal(archived.statusCode,200);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${demo.id}`})).statusCode,404);
+  assert.equal((await call({method:'GET',url:`/api/v1/media/${demo.draft.media[0]!.id}`})).statusCode,404);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?make=${uniqueMake}`})).json().meta.total,0);
+  assert.ok(!(await call({method:'GET',url:'/api/v1/vehicle-filters'})).json().data.makes.some((m:{id:string})=>m.id===uniqueMake));
+  assert.equal((await call({method:'GET',url:'/api/v1/home/vehicles'})).json().data.sections.length,0);
+  const archivedHome={...configured.json().data};
+  assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:archivedHome})).statusCode,422);
+  let manual=await ready();manual.draft.facts.location=null;manual=await save(manual);
+  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}})).statusCode,422);
+  const noInventory=await readyDemo();const source=structuredClone(noInventory.draft);source.source.kind='manual';
+  const manualUnknown=await create({...source,media:[]});const img=await upload(manualUnknown);manualUnknown.draft.media=[{id:img.id,sortOrder:0,isCover:true,alt:''}];manualUnknown.draft.facts.location={country:'CN',city:null,displayName:null};const saved=await save(manualUnknown);
+  const unverified=await call({method:'POST',url:`/api/v1/admin/vehicles/${saved.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:saved.version}});assert.equal(unverified.statusCode,422);assert.ok(unverified.json().error.fields.some((f:{path:string})=>f.path==='availability'));
+});
+test('demo publish rejects corrupted inventory metadata and source switching in either direction',async()=>{
+  const demo=await readyDemo();
+  await runtime.db.pool.query("UPDATE vehicles SET availability='available',availability_checked_at=now() WHERE id=$1",[demo.id]);
+  const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(rejected.statusCode,422);
+  await runtime.db.pool.query("UPDATE vehicles SET availability='unknown',availability_checked_at=null WHERE id=$1",[demo.id]);
+  const invalid=structuredClone(demo.draft);invalid.facts.mileageKm=100;
+  await runtime.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[demo.id,JSON.stringify(invalid)]);
+  const badFacts=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(badFacts.statusCode,422);
+  await runtime.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[demo.id,JSON.stringify(demo.draft)]);
+  const manual=await create();const demoInput=makeDemoVehicleDraftFixture();demoInput.media=[];
+  const changed=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${manual.id}`,headers:headers(),payload:{version:manual.version,draft:demoInput}});assert.equal(changed.statusCode,422);assert.equal(changed.json().error.code,'DEMO_RESTRICTION');
+});
+test('demo pending text can publish without human-review claims, but stale or missing text cannot',async()=>{
+  let demo=await readyDemo();
+  for(const language of ['zh','en','ru'] as const) assert.equal(demo.draft.content.title.translations[language]!.reviewStatus,'pending');
+  demo=await publish(demo);assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
+  demo.draft.content.title.translations.ru!.kind='original';demo=await save(demo);
+  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}})).statusCode,422);
+  demo.draft.content.title.translations.ru!.kind='machine';demo=await save(demo);
+  demo.draft.content.title.sourceText='Updated demonstration source';demo=await save(demo);
+  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(stale.statusCode,422);
+  for(const language of ['zh','en','ru'] as const) {const text=demo.draft.content.title.translations[language]!;text.sourceVersion=demo.draft.content.title.sourceVersion;text.reviewStatus='pending';}
+  demo.draft.content.title.translations.zh!.text=demo.draft.content.title.sourceText!;demo=await save(demo);demo=await publish(demo);
+  assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
+  demo.draft.content.title.translations.en=null;demo=await save(demo);
+  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}})).statusCode,422);
+  let manual=await ready();manual.draft.content.title.translations.en!.reviewStatus='pending';manual=await save(manual);
+  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}})).statusCode,422);
+});
+test('bulk reports independent results, preserves unselected records and replays exact requests without duplicate writes',async()=>{
+  const good=await publish(await ready()),stale=await create(),untouched=await create(),demo=await readyDemo(),missing=randomUUID();
+  await save(stale);
+  const key=randomUUID();const input={operation:'availability',availability:'sold',checkedAt:new Date().toISOString(),items:[{id:demo.id,expectedVersion:demo.version},{id:good.id.toUpperCase(),expectedVersion:good.version},{id:missing,expectedVersion:1},{id:stale.id,expectedVersion:stale.version}]};
+  const options:InjectOptions={method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':key},payload:input};
+  const [first,replay]=await Promise.all([call(options),call(options)]);assert.equal(first.statusCode,200,first.body);assert.equal(replay.statusCode,200,replay.body);
+  const data=BulkVehicleMutationResponseSchema.parse(first.json()).data;assert.deepEqual(data,replay.json().data);assert.deepEqual(data.summary,{total:4,succeeded:1,failed:3});
+  assert.deepEqual(data.results.map(r=>r.id),input.items.map(i=>i.id));
+  assert.deepEqual(data.results.map(r=>r.status==='failed'?r.error.code:'succeeded'),['DEMO_RESTRICTION','succeeded','NOT_FOUND','VERSION_CONFLICT']);
+  assert.equal((await runtime.inventory.getAdmin(untouched.id)).version,untouched.version);assert.equal((await runtime.inventory.getAdmin(demo.id)).availability,'unknown');
+  assert.equal((await runtime.inventory.getPublic(good.id,'en')).availability,'sold');
+  assert.ok(!(await runtime.inventory.listPublic({locale:'en',catalog:'curated',page:1,pageSize:48},randomUUID())).data.items.some(v=>v.id===good.id));
+  assert.equal((await runtime.db.pool.query("SELECT count(*)::int AS count FROM audit_events WHERE vehicle_id=$1 AND operation='vehicle.availability'",[good.id])).rows[0].count,2); // initial verification + one bulk write
+  const differentOperation=await call({...options,payload:{operation:'archive',items:input.items}});assert.equal(differentOperation.statusCode,409);
+  const changedKey=await call({...options,headers:{...headers(),'idempotency-key':randomUUID()}});assert.equal(changedKey.statusCode,200);assert.equal(changedKey.json().data.results[1].error.code,'VERSION_CONFLICT');
+  const refreshed=await runtime.inventory.getAdmin(good.id);await runtime.inventory.availability(good.id,{version:refreshed.version,availability:'reserved',checkedAt:new Date().toISOString()},{id:editorId,requestId:randomUUID()});
+  const oldResult=await call(options);assert.deepEqual(oldResult.json().data,data);assert.equal((await runtime.inventory.getAdmin(good.id)).availability,'reserved');
+});
+test('bulk bounds, authorization, conflicting concurrent batches and infrastructure rollback are enforced',async()=>{
+  const one=await publish(await ready()),two=await publish(await ready());
+  const payload={operation:'archive',items:[{id:one.id,expectedVersion:one.version},{id:two.id,expectedVersion:two.version}]};
+  const request=(body:unknown,extraHeaders=headers())=>call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...extraHeaders,'idempotency-key':randomUUID()},payload:body as InjectOptions['payload']});
+  assert.equal((await request(payload,{} as ReturnType<typeof headers>)).statusCode,401);
+  assert.equal((await request(payload,{cookie,origin:'https://untrusted.example'})).statusCode,403);
+  for(const body of [{...payload,items:[]},{...payload,items:Array.from({length:51},()=>({id:randomUUID(),expectedVersion:1}))},{...payload,items:[payload.items[0],{...payload.items[0],id:one.id.toUpperCase()}]},{...payload,items:[{id:'invalid',expectedVersion:1}]},{operation:'availability',availability:'sold',checkedAt:new Date(Date.now()+3600_000).toISOString(),items:payload.items}]) assert.equal((await request(body)).statusCode,400);
+  assert.equal((await runtime.inventory.getAdmin(one.id)).version,one.version);
+  await runtime.db.pool.query(`CREATE FUNCTION fail_bulk_second_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operation='vehicle.archive' AND NEW.vehicle_id='${two.id}' THEN RAISE EXCEPTION 'injected bulk failure'; END IF; RETURN NEW; END $$`);
+  await runtime.db.pool.query('CREATE TRIGGER test_bulk_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION fail_bulk_second_audit()');
+  const failingKey=randomUUID();
+  try {const failed=await call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':failingKey},payload});assert.equal(failed.statusCode,500,failed.body);}
+  finally {await runtime.db.pool.query('DROP TRIGGER test_bulk_audit ON audit_events');await runtime.db.pool.query('DROP FUNCTION fail_bulk_second_audit()');}
+  assert.equal((await runtime.inventory.getAdmin(one.id)).publicationState,'published');assert.equal((await runtime.inventory.getAdmin(two.id)).version,two.version);
+  assert.equal((await runtime.db.pool.query('SELECT 1 FROM idempotency_keys WHERE key=$1',[failingKey])).rowCount,0);
+  const raced=await Promise.all([request(payload),request({...payload,items:[...payload.items].reverse()})]);
+  assert.deepEqual(raced.map(r=>r.statusCode),[200,200]);assert.deepEqual(raced.map(r=>r.json().data.summary.succeeded).sort(),[0,2]);
+  for(const item of [one,two]) {assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${item.id}`})).statusCode,404);assert.equal((await call({method:'GET',url:`/api/v1/media/${item.draft.media[0]!.id}`})).statusCode,404);}
+  const demo=await publish(await readyDemo());const removed=await request({operation:'archive',items:[{id:demo.id,expectedVersion:demo.version}]});assert.equal(removed.json().data.summary.succeeded,1);
+});
+test('admin classification options include drafts and archives, respect make-model pairs and never expose internal fields',async()=>{
+  const prefix=`opts_${randomBytes(4).toString('hex')}`;
+  const first=draft();first.facts.make={id:`${prefix}_a`,name:'Earlier name'};first.facts.model={id:`${prefix}_shared`,name:'A model'};
+  const a=await create(first);const archived=await runtime.inventory.archive(a.id,a.version,{id:editorId,requestId:randomUUID()});
+  const second=draft();second.facts.make={id:`${prefix}_a`,name:'Latest name'};second.facts.model={id:`${prefix}_shared`,name:'Latest A model'};second.facts.powertrain='unknown';await create(second);
+  const third=draft();third.facts.make={id:`${prefix}_b`,name:'B brand'};third.facts.model={id:`${prefix}_shared`,name:'B model'};await create(third);
+  const r=await call({method:'GET',url:'/api/v1/admin/vehicle-filters',headers:headers()});assert.equal(r.statusCode,200);const result=AdminVehicleFiltersResponseSchema.parse(r.json()).data;
+  assert.equal(result.scope,'all_inventory');assert.equal(result.makes.find(m=>m.id===`${prefix}_a`)!.count,2);assert.equal(result.makes.find(m=>m.id===`${prefix}_a`)!.name,'Latest name');
+  assert.equal(result.models.filter(m=>m.id===`${prefix}_shared`).length,2);assert.ok(result.powertrains.some(p=>p.id==='unknown'));
+  const selected=(await call({method:'GET',url:`/api/v1/admin/vehicle-filters?make=${prefix}_a`,headers:headers()})).json().data;
+  assert.deepEqual(selected.makes,result.makes);assert.deepEqual(selected.powertrains,result.powertrains);assert.deepEqual(selected.models.map((m:{makeId:string})=>m.makeId),[`${prefix}_a`]);
+  assert.equal((await call({method:'GET',url:'/api/v1/admin/vehicle-filters?make=nonexistent',headers:headers()})).json().data.models.length,0);
+  const publicOptions=(await call({method:'GET',url:'/api/v1/vehicle-filters'})).json().data;assert.ok(!publicOptions.makes.some((m:{id:string})=>m.id.startsWith(prefix)));
+  for(const hidden of ['purchaseCost','supplierContact','INTERNAL_FIXTURE_NOT_PUBLIC','vin']) assert.ok(!r.body.includes(hidden));
+  assert.equal((await call({method:'GET',url:'/api/v1/admin/vehicle-filters'})).statusCode,401);
+  assert.equal((await runtime.inventory.getAdmin(archived.id)).publicationState,'archived');
+});
+test('admin search filters before pagination, combines categories and treats special characters literally',async()=>{
+  const group=`search_${randomBytes(5).toString('hex')}`;
+  const target=draft();target.facts.make={id:group,name:'Atlas Demo Brand'};
+  target.facts.model={id:`${group}_model`,name:'Orion Special Model'};target.facts.powertrain='bev';
+  target.content.title.sourceText="专用检索 ' %_ \\ O'Reilly";
+  target.internal.notes='NEVER_SEARCH_INTERNAL_NOTES';target.internal.vin='SYNTHETICVIN00001';
+  let vehicle=await create(target);
+  for(let i=0;i<4;i++) {
+    const value=draft();value.facts.make={id:group,name:'Other Brand'};value.facts.model={id:`${group}_other`,name:'Other Model'};
+    await create(value);
+  }
+  const query=async(params:Record<string,string|number>)=>{
+    const r=await call({method:'GET',url:`/api/v1/admin/vehicles?${new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)]))}`,headers:headers()});
+    assert.equal(r.statusCode,200,r.body);return r.json().data;
+  };
+  const first=await query({make:group,pageSize:2});assert.equal(first.total,5);assert.equal(first.hasMore,true);assert.ok(!first.items.some((v:AdminVehicle)=>v.id===vehicle.id));
+  const found=await query({q:`  ${vehicle.stockCode.toLowerCase()}  `,make:group,pageSize:2});assert.equal(found.total,1);assert.equal(found.items[0].id,vehicle.id);assert.equal(found.hasMore,false);
+  assert.equal((await query({q:vehicle.stockCode,pageSize:2,page:2})).items.length,0);
+  for(const q of ['atlas demo','Orion Special','专用检索',"O'Reilly",'%_','\\']) {
+    const matched=await query({q,make:group});assert.equal(matched.total,1);assert.equal(matched.items[0].id,vehicle.id);
+  }
+  assert.equal((await query({q:'专用检索',make:group,model:`${group}_model`,powertrain:'bev',publicationState:'draft',availability:'unknown'})).total,1);
+  assert.equal((await query({q:'专用检索',make:group,powertrain:'petrol'})).total,0);
+  for(const q of ["' OR 1=1 --",'NEVER_SEARCH_INTERNAL_NOTES','SYNTHETICVIN00001']) assert.equal((await query({q,make:group})).total,0);
+  assert.equal((await query({q:'   ',make:group})).total,5);
+  assert.equal((await query({make:group})).total,5);
+  vehicle.draft.content.title.sourceText='最新原文标题';vehicle=await save(vehicle);
+  assert.equal((await query({q:'最新原文',make:group})).items[0].id,vehicle.id);
+  assert.equal((await query({q:'专用检索',make:group})).total,0);
+  const invalidQueries:Record<string,string>[]=[{q:'x'.repeat(101)},{q:'bad\u0000value'},{powertrain:'spaceship'},{make:'invalid id'}];
+  for(const params of invalidQueries) {
+    const r=await call({method:'GET',url:`/api/v1/admin/vehicles?${new URLSearchParams(params)}`,headers:headers()});assert.equal(r.statusCode,400,r.body);
+  }
+  assert.equal((await call({method:'GET',url:'/api/v1/admin/vehicles?q=Atlas'})).statusCode,401);
+  assert.equal((await call({method:'GET',url:'/api/v1/vehicles?q=Atlas'})).statusCode,200);
 });
 test('one vehicle lifecycle, public whitelist, draft snapshot, availability, home and archive',async()=>{
   let vehicle=await ready();const mediaId=vehicle.draft.media[0]!.id;
@@ -177,7 +339,7 @@ test('media removed while a mutation waits for its vehicle lock returns 404 inst
         {method:operation==='complete'?'POST':'DELETE',url:`/api/v1/admin/media/${id}${operation==='complete'?'/complete':''}`,headers:headers(),payload:{version:1}});
       let waiting=false;
       for(let attempt=0;attempt<100;attempt++) {
-        const locks=await runtime.db.pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query='SELECT id FROM vehicles WHERE id=$1 FOR UPDATE'");
+        const locks=await runtime.db.pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query='SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE'");
         if(locks.rowCount) {waiting=true;break;} await delay(20);
       }
       assert.equal(waiting,true,'mutation reached the vehicle lock after its first media read');
@@ -258,6 +420,11 @@ test('a fresh API instance reads persisted data and reports readiness',async()=>
     assert.equal((await second.inventory.getAdmin(vehicle.id)).stockCode,vehicle.stockCode);
     assert.equal((await second.app.inject('/health/live')).statusCode,200);
     assert.equal((await second.app.inject('/health/ready')).statusCode,200);
+    // An older database can have home_config but still lack the migration required by this binary.
+    await runtime.db.pool.query('ALTER TABLE vehicles RENAME COLUMN deleted_at TO test_unmigrated_deleted_at');
+    try {assert.equal((await second.app.inject('/health/ready')).statusCode,503);}
+    finally {await runtime.db.pool.query('ALTER TABLE vehicles RENAME COLUMN test_unmigrated_deleted_at TO deleted_at');}
+    assert.equal((await second.app.inject('/health/ready')).statusCode,200);
   } finally {await second.app.close();}
 });
 test('production cookies are Secure and a missing database fails readiness without failing liveness',async()=>{
@@ -271,6 +438,147 @@ test('production cookies are Secure and a missing database fails readiness witho
     assert.equal((await unavailable.app.inject('/health/live')).statusCode,200);
     const readiness=await unavailable.app.inject('/health/ready');assert.equal(readiness.statusCode,503);assert.deepEqual(readiness.json(),{status:'unavailable'});
   } finally {await unavailable.app.close();}
+});
+test('vehicle recycle bin removes every active surface and restores only an unpublished draft',async()=>{
+  let vehicle=await ready();const make=`recycle_${randomBytes(4).toString('hex')}`;
+  vehicle.draft.facts.make={id:make,name:'Recycle fixture'};vehicle=await publish(await save(vehicle));
+  const mediaId=vehicle.draft.media[0]!.id;const imageBefore=await runtime.media.preview(mediaId);
+  let home=await runtime.inventory.getHome();home.sections=home.sections.map((section,index)=>({...section,vehicleIds:[index===0?vehicle.id.toUpperCase():vehicle.id]}));
+  home=await runtime.inventory.saveHome(home,{id:editorId,requestId:randomUUID()});
+  assert.equal((await runtime.inventory.publicHome('en')).sections.length,2);assert.ok(home.sections.every(section=>section.vehicleIds[0]===vehicle.id));
+  const path=`/api/v1/admin/vehicles/${vehicle.id}`;const key=randomUUID();
+  const deletion:InjectOptions={method:'DELETE',url:path,headers:{...headers(),'idempotency-key':key},payload:{version:vehicle.version}};
+  assert.equal((await call({...deletion,headers:{origin,'idempotency-key':key}})).statusCode,401);
+  assert.equal((await call({...deletion,headers:{cookie,'idempotency-key':key}})).statusCode,403);
+  assert.equal((await call({...deletion,headers:headers()})).statusCode,400);
+  assert.equal((await call({...deletion,payload:{version:vehicle.version-1}})).statusCode,409);
+  const [first,retry]=await Promise.all([call(deletion),call(deletion)]);assert.equal(first.statusCode,200,first.body);assert.equal(retry.statusCode,200,retry.body);
+  const removed:AdminVehicle=first.json().data;assert.deepEqual(removed,retry.json().data);assert.ok(removed.deletedAt);assert.equal(removed.version,vehicle.version+1);
+  assert.equal((await runtime.inventory.getHome()).version,home.version+1);assert.ok((await runtime.inventory.getHome()).sections.every(section=>section.vehicleIds.length===0));
+  assert.equal((await runtime.db.pool.query("SELECT 1 FROM audit_events WHERE vehicle_id=$1 AND operation='vehicle.delete'",[vehicle.id])).rowCount,1);
+  for(const query of ['', '?includeDeleted=false']) assert.equal((await call({method:'GET',url:path+query,headers:headers()})).statusCode,404);
+  assert.equal((await call({method:'GET',url:path+'?includeDeleted=yes',headers:headers()})).statusCode,400);
+  assert.equal((await call({method:'GET',url:path+'?includeDeleted=true',headers:headers()})).json().data.deletedAt,removed.deletedAt);
+  assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles?q=${vehicle.stockCode}`,headers:headers()})).json().data.total,0);
+  assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles?q=${vehicle.stockCode}&deleted=only`,headers:headers()})).json().data.total,1);
+  assert.ok(!(await runtime.inventory.adminFilters({})).makes.some(item=>item.id===make));
+  for(const locale of ['zh','en','ru']) {
+    assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}`})).statusCode,404);
+    assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=${locale}&make=${make}`})).json().meta.total,0);
+    assert.ok(!(await call({method:'GET',url:`/api/v1/vehicle-filters?locale=${locale}`})).json().data.makes.some((item:{id:string})=>item.id===make));
+    assert.equal((await call({method:'GET',url:`/api/v1/home/vehicles?locale=${locale}`})).json().data.sections.length,0);
+  }
+  for(const url of [`/api/v1/media/${mediaId}`,`/api/v1/media/${mediaId}?variant=thumb`,`/api/v1/admin/media/${mediaId}`,`/api/v1/admin/media/${mediaId}/preview`]) assert.equal((await call({method:'GET',url,headers:headers()})).statusCode,404);
+  for(const suffix of ['publish','archive','availability']) {
+    const r=await call({method:'POST',url:path+'/'+suffix,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:removed.version,...(suffix==='availability'?{availability:'available',checkedAt:new Date().toISOString()}:{})}});assert.equal(r.statusCode,404,r.body);
+  }
+  assert.equal((await call({method:'PATCH',url:path,headers:headers(),payload:{version:removed.version,draft:removed.draft}})).statusCode,404);
+  const bulk=await call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':randomUUID()},payload:{operation:'archive',items:[{id:vehicle.id,expectedVersion:removed.version}]}});assert.equal(bulk.json().data.results[0].error.code,'NOT_FOUND');
+  const newDelete=await call({...deletion,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:removed.version}});assert.equal(newDelete.statusCode,404);
+  await runtime.db.pool.query("UPDATE media_assets SET expires_at=now()-interval '1 hour' WHERE vehicle_id=$1",[vehicle.id]);await runtime.media.cleanupExpired();
+  assert.equal((await runtime.db.pool.query('SELECT 1 FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rowCount,1);
+  assert.equal((await runtime.db.pool.query('SELECT 1 FROM media_assets WHERE id=$1',[mediaId])).rowCount,1);
+  const restore:InjectOptions={method:'POST',url:path+'/restore',headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:removed.version}};
+  assert.equal((await call({...restore,payload:{version:vehicle.version}})).statusCode,409);
+  const restoredResponse=await call(restore);assert.equal(restoredResponse.statusCode,200,restoredResponse.body);const restored:AdminVehicle=restoredResponse.json().data;
+  assert.equal(restored.deletedAt,null);assert.equal(restored.version,removed.version+1);assert.equal(restored.publicationState,'draft');assert.equal(restored.publishedRevisionId,null);assert.equal(restored.publishedAt,null);assert.equal(restored.availability,'unknown');assert.equal(restored.availabilityCheckedAt,null);
+  assert.deepEqual(await runtime.media.preview(mediaId),imageBefore);assert.equal((await call({method:'GET',url:`/api/v1/media/${mediaId}`})).statusCode,404);
+  assert.equal((await runtime.inventory.getHome()).version,home.version+1);assert.equal((await call({...restore,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:restored.version}})).statusCode,409);
+  assert.deepEqual((await call(deletion)).json().data,removed);assert.equal((await runtime.inventory.getAdmin(vehicle.id)).deletedAt,null);
+  const deletedAgain=await call({...deletion,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:restored.version}});assert.equal(deletedAgain.statusCode,200,deletedAgain.body);
+  assert.deepEqual((await call(restore)).json().data,restored);assert.ok((await runtime.inventory.getAdmin(vehicle.id,true)).deletedAt);
+});
+test('delete and restore roll back home, state and idempotency when audit fails; concurrent edits do not bypass deletion',async()=>{
+  const vehicle=await publish(await ready());const actor={id:editorId,requestId:randomUUID()};let home=await runtime.inventory.getHome();home.sections[0]!.vehicleIds=[vehicle.id];home=await runtime.inventory.saveHome(home,actor);
+  await runtime.db.pool.query(`CREATE FUNCTION reject_recycle_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.vehicle_id='${vehicle.id}' AND NEW.operation IN ('vehicle.delete','vehicle.restore') THEN RAISE EXCEPTION 'test rollback'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_recycle_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_recycle_audit()`);
+  try {
+    await assert.rejects(runtime.inventory.remove(vehicle.id,vehicle.version,actor,randomUUID()));
+    assert.equal((await runtime.inventory.getAdmin(vehicle.id)).version,vehicle.version);assert.deepEqual(await runtime.inventory.getHome(),home);
+  } finally {await runtime.db.pool.query('DROP TRIGGER reject_recycle_audit ON audit_events; DROP FUNCTION reject_recycle_audit()');}
+  const race=await Promise.allSettled([runtime.inventory.remove(vehicle.id,vehicle.version,actor,randomUUID()),runtime.inventory.save(vehicle.id,vehicle.version,vehicle.draft,actor)]);
+  assert.equal(race.filter(item=>item.status==='fulfilled').length,1);
+  const current=await runtime.inventory.getAdmin(vehicle.id,true);const removed=current.deletedAt?current:await runtime.inventory.remove(current.id,current.version,actor,randomUUID());
+  await runtime.db.pool.query(`CREATE FUNCTION reject_restore_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.vehicle_id='${vehicle.id}' AND NEW.operation='vehicle.restore' THEN RAISE EXCEPTION 'test rollback'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_restore_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_restore_audit()`);
+  try {await assert.rejects(runtime.inventory.restore(vehicle.id,removed.version,actor,randomUUID()));assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id,true),removed);}
+  finally {await runtime.db.pool.query('DROP TRIGGER reject_restore_audit ON audit_events; DROP FUNCTION reject_restore_audit()');}
+});
+test('legacy idempotent receipts survive added deletion fields without resurrecting deleted records',async()=>{
+  const key=randomUUID(),value=draft();const request:InjectOptions={method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload:{draft:value}};
+  const first=await call(request);assert.equal(first.statusCode,201,first.body);const vehicle:AdminVehicle=first.json().data;
+  await runtime.db.pool.query("UPDATE idempotency_keys SET response=response-'deletedAt' WHERE actor_id=$1 AND operation='vehicle.create' AND key=$2",[editorId,key]);
+  const removed=await runtime.inventory.remove(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()},randomUUID());
+  const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.equal(replay.json().data.deletedAt,null);assert.equal(replay.json().data.version,1);
+  assert.equal((await runtime.inventory.getAdmin(vehicle.id,true)).version,removed.version);await assert.rejects(runtime.inventory.getAdmin(vehicle.id));
+});
+test('manual external listing preserves provenance, reference facts and unreviewed translations with immutable publication snapshots',async()=>{
+  const input=makeExternalVehicleDraftFixture();input.media=[];if(input.source.kind!=='external') throw new Error('external fixture required');
+  input.source.externalId=randomUUID();input.source.listingUrl='https://listing.example.invalid/item/'+input.source.externalId;input.facts.make={id:`external_${randomBytes(4).toString('hex')}`,name:'External listing fixture'};
+  let vehicle=await create(input);assert.equal(vehicle.availability,'unknown');assert.equal(vehicle.availabilityCheckedAt,null);
+  const photo=await upload(vehicle,{listingUrl:input.source.listingUrl,imageUrl:'https://images.example.invalid/original.png',collectedAt:input.source.collectedAt});
+  vehicle.draft.media=[{id:photo.id,sortOrder:0,isCover:true,alt:'Observed source photo'}];vehicle=await publish(await save(vehicle));
+  for(const locale of ['zh','en','ru']) {
+    const response=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}`});assert.equal(response.statusCode,200,response.body);
+    const published=PublicVehicleResponseSchema.parse(response.json()).data;assert.equal(published.source.kind,'external');assert.equal(published.price.kind,'reference');assert.equal(published.availability,'unknown');assert.equal(published.availabilityCheckedAt,null);assert.equal(published.content.title.reviewed,false);assert.equal(published.content.description?.reviewed,false);assert.equal(published.content.title.kind,locale==='zh'?'original':'machine');assert.equal(published.fetchedAt,input.source.collectedAt);assert.deepEqual(published.facts,vehicle.draft.facts);
+    assert.ok(!response.body.includes('externalId'));assert.ok(!response.body.includes('original.png'));assert.ok(!response.body.includes('supplierContact'));assert.ok(!response.body.includes('engineVersion'));
+    const catalog=await call({method:'GET',url:`/api/v1/vehicles?locale=${locale}&make=${input.facts.make.id}`});assert.equal(catalog.json().meta.total,1);assert.equal(catalog.json().data.items[0].id,vehicle.id);
+    assert.equal((await call({method:'GET',url:`/api/v1/vehicle-filters?locale=${locale}`})).json().data.makes.find((item:{id:string})=>item.id===input.facts.make!.id).count,1);
+  }
+  const home=await runtime.inventory.getHome();home.sections[0]!.vehicleIds=[vehicle.id];await runtime.inventory.saveHome(home,{id:editorId,requestId:randomUUID()});assert.ok((await runtime.inventory.publicHome('en')).sections.some(s=>s.vehicles.some(v=>v.id===vehicle.id)));
+  assert.equal((await call({method:'GET',url:`/api/v1/media/${photo.id}`})).statusCode,200);
+  const thumbnail=await call({method:'GET',url:`/api/v1/media/${photo.id}?variant=thumb`});assert.equal(thumbnail.statusCode,200,thumbnail.body);assert.equal((await sharp(thumbnail.rawPayload).metadata()).format,'webp');
+  for(const query of ['variant=large','width=240','variant=thumb&width=240']) assert.equal((await call({method:'GET',url:`/api/v1/media/${photo.id}?${query}`})).statusCode,400);
+  const unavailable=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/availability`,headers:headers(),payload:{version:vehicle.version,availability:'available',checkedAt:new Date().toISOString()}});assert.equal(unavailable.statusCode,422);assert.equal(unavailable.json().error.code,'EXTERNAL_RESTRICTION');
+  const bulk=await call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':randomUUID()},payload:{operation:'availability',availability:'available',checkedAt:new Date().toISOString(),items:[{id:vehicle.id,expectedVersion:vehicle.version}]}});assert.equal(bulk.json().data.results[0].error.code,'EXTERNAL_RESTRICTION');
+  const before=await runtime.inventory.getPublic(vehicle.id,'en');vehicle.draft.content.title.sourceText='Source title updated after publication';vehicle=await save(vehicle);
+  assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'en'),before);assert.equal(vehicle.draft.content.title.translations.en!.reviewStatus,'stale');
+  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(stale.statusCode,422);
+  const archived=await runtime.inventory.archive(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()});assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}`})).statusCode,404);assert.equal((await call({method:'GET',url:`/api/v1/media/${photo.id}`})).statusCode,404);assert.equal(archived.availability,'unknown');
+});
+test('external identity, source type, price and per-image evidence cannot be bypassed',async()=>{
+  const value=makeExternalVehicleDraftFixture();value.media=[];if(value.source.kind!=='external') throw new Error('external fixture required');value.source.externalId=randomUUID();
+  let vehicle=await create(value);const request=(draft:unknown)=>call({method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':randomUUID()},payload:{draft}});
+  assert.equal((await request(value)).statusCode,409);assert.equal((await request(value)).json().error.code,'SOURCE_IDENTITY_CONFLICT');
+  assert.equal((await request({...value,source:{kind:'external'}})).statusCode,400);
+  assert.equal((await request({...value,price:{kind:'asking',money:{amount:'100',currency:'CNY'},includes:[]}})).statusCode,400);
+  assert.equal((await request({...value,source:{...value.source,listingUrl:'https://user:password@example.invalid/vehicle'}})).statusCode,400);
+  const changed=structuredClone(value);if(changed.source.kind!=='external') throw new Error('external fixture required');changed.source.externalId='changed';
+  assert.equal((await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:changed}})).statusCode,422);
+  assert.equal((await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:{...value,source:{kind:'manual'}}}})).statusCode,422);
+  const media=await upload(vehicle);vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:''}];vehicle=await save(vehicle);
+  const missingEvidence=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(missingEvidence.statusCode,422);assert.ok(missingEvidence.json().error.fields.some((field:{path:string})=>field.path.startsWith('draft.media')));
+  const wrongSourcePhoto=await upload(vehicle,{listingUrl:'https://other.example.invalid/listing',imageUrl:'https://other.example.invalid/image.png',collectedAt:value.source.collectedAt});vehicle.draft.media=[{id:wrongSourcePhoto.id,sortOrder:0,isCover:true,alt:''}];vehicle=await save(vehicle);
+  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}})).statusCode,422);
+  await runtime.inventory.remove(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()},randomUUID());assert.equal((await request(value)).statusCode,409);
+  const other={...value,source:{...value.source,platform:{id:'different-platform',name:'Different isolated platform'}}};assert.equal((await request(other)).statusCode,201);
+});
+test('unverified image rights remain an external-only publishing exception',async()=>{
+  for(let vehicle of [await ready(),await readyDemo()]) {
+    const media=await upload(vehicle,{listingUrl:'https://source.example.invalid/vehicle',imageUrl:'https://source.example.invalid/image.png',collectedAt:new Date().toISOString()});
+    vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Unverified local test image'}];vehicle=await save(vehicle);
+    const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+    assert.equal(rejected.statusCode,422,rejected.body);assert.ok(rejected.json().error.fields.some((field:{path:string})=>field.path==='draft.media'));
+    assert.equal((await runtime.db.pool.query('SELECT 1 FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rowCount,0);
+  }
+});
+test('public keyword search uses only published current-language fields with exact pagination and filter totals',async()=>{
+  const token=`search_${randomBytes(4).toString('hex')}`;const vehicles:AdminVehicle[]=[];
+  for(let index=0;index<2;index++) {
+    let vehicle=await ready();vehicle.draft.content.title.translations.en!.text=`${token} 100%_car ${index}`;vehicle.draft.internal.notes=`private_${token}`;
+    vehicle=await publish(await save(vehicle));vehicles.push(vehicle);
+  }
+  const query=`locale=en&q=${encodeURIComponent(' '+token.toUpperCase()+' ')}&pageSize=1`;
+  const first=(await call({method:'GET',url:'/api/v1/vehicles?'+query})).json();const second=(await call({method:'GET',url:'/api/v1/vehicles?'+query+'&page=2'})).json();
+  assert.equal(first.meta.total,2);assert.equal(first.meta.accessibleTotal,2);assert.equal(first.data.items.length,1);assert.equal(first.data.hasMore,true);assert.equal(second.data.hasMore,false);assert.notEqual(first.data.items[0].id,second.data.items[0].id);
+  const filters=(await call({method:'GET',url:`/api/v1/vehicle-filters?locale=en&q=${token}`})).json().data;assert.equal(filters.makes.reduce((total:number,item:{count:number})=>total+item.count,0),2);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=zh&q=${token}`})).json().meta.total,0);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=en&q=private_${token}`})).json().meta.total,0);
+  assert.equal((await call({method:'GET',url:'/api/v1/vehicles?locale=en&q='+encodeURIComponent('100%_car')})).json().meta.total,2);
+  assert.equal((await call({method:'GET',url:'/api/v1/vehicles?locale=en&q='+encodeURIComponent('100X_car')})).json().meta.total,0);
+  const vehicle=vehicles[0]!;vehicle.draft.content.title.translations.en!.text=`draft_${token}`;await save(vehicle);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=en&q=draft_${token}`})).json().meta.total,0);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=en&q=${vehicle.stockCode.toLowerCase()}`})).json().data.items[0].id,vehicle.id);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=en&q=${token}&make=not-a-real-brand`})).json().meta.total,0);
+  for(const url of ['/api/v1/vehicles?q='+('x'.repeat(101)),'/api/v1/vehicles?q=%00','/api/v1/vehicle-filters?q=%00']) assert.equal((await call({method:'GET',url})).statusCode,400);
 });
 test('disabled staff sessions fail immediately and sign-out invalidates the session',async()=>{
   await setStaffEnabled(runtime.db,'editor@example.invalid',false);

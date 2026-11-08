@@ -1,2 +1,3 @@
 export { HomePage } from './ui/home-page';
-export type { HomeVehicle, HomeModel } from './types';
+export { PublicHome } from './ui/public-home';
+export type { HomeModel } from './types';

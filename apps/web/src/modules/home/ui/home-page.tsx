@@ -1,18 +1,27 @@
 'use client';
 
 import Image from 'next/image';
+import NextLink from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
+import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
+import {
+  formatPublicVehiclePrice,
+  publicAvailabilityLabel,
+  publicVehicleCover,
+  publicVehicleMessages,
+  usePublicFreshness,
+} from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
-import { buildVehicleContactLinks } from '@/shared/lib/vehicle-contact';
+import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { HeroCanvas } from './hero-canvas';
 import { HomeSections } from './home-sections';
 import { usePointerTilt } from './use-pointer-tilt';
 import styles from './home.module.css';
-import type { HomeModel, HomeVehicle } from '../types';
+import type { HomeModel } from '../types';
 import { homeContent } from '../content/home-content';
 
 function Heart({ filled }: { filled: boolean }) {
@@ -31,13 +40,11 @@ function Heart({ filled }: { filled: boolean }) {
   );
 }
 function VehicleRail({
-  brand,
-  vehicles,
+  section,
   locale,
   paused,
 }: {
-  brand: string;
-  vehicles: HomeVehicle[];
+  section: PublicHomeSection;
   locale: Locale;
   paused: boolean;
 }) {
@@ -46,6 +53,9 @@ function VehicleRail({
   const [interacting, setInteracting] = useState(false);
   const pointerTilt = usePointerTilt();
   const t = homeContent[locale];
+  const vehicleCopy = publicVehicleMessages(locale);
+  const { id, title, vehicles } = section;
+  const trusted = usePublicFreshness() === 'fresh';
   const advance = (direction: number) => {
     const node = rail.current;
     if (!node) return;
@@ -77,25 +87,31 @@ function VehicleRail({
       observer.disconnect();
       clearInterval(timer);
     };
-  }, [paused, interacting]);
+  }, [paused, interacting, vehicles.length]);
   return (
-    <section className={styles.brandSection} data-home-section={`vehicles-${brand.toLowerCase()}`}>
+    <section className={styles.brandSection} data-home-section={`vehicles-${id}`}>
       <div className={styles.sectionHead}>
-        <h2>{brand}</h2>
-        <div className={styles.railControls}>
-          <button type="button" onClick={() => advance(-1)} aria-label={`${brand} — ${t.previous}`}>
-            ‹
-          </button>
-          <button type="button" onClick={() => advance(1)} aria-label={`${brand} — ${t.next}`}>
-            ›
-          </button>
-        </div>
+        <h2>{title}</h2>
+        {vehicles.length > 1 && (
+          <div className={styles.railControls}>
+            <button
+              type="button"
+              onClick={() => advance(-1)}
+              aria-label={`${title} — ${t.previous}`}
+            >
+              ‹
+            </button>
+            <button type="button" onClick={() => advance(1)} aria-label={`${title} — ${t.next}`}>
+              ›
+            </button>
+          </div>
+        )}
       </div>
       <div
         className={styles.vehicleRail}
         ref={rail}
         tabIndex={0}
-        aria-label={`${brand} — ${t.catalog}`}
+        aria-label={`${title} — ${t.catalog}`}
         onMouseEnter={() => setInteracting(true)}
         onMouseLeave={() => setInteracting(false)}
         onFocusCapture={() => setInteracting(true)}
@@ -107,81 +123,98 @@ function VehicleRail({
         onTouchCancel={() => setInteracting(false)}
       >
         {vehicles.map((v) => {
-          const links = buildVehicleContactLinks(
-            { ...v, id: v.slug, detailPath: `/${locale}/cars/${v.slug}/` },
-            locale,
-          );
+          const links = buildPublicVehicleContactLinks(v, locale);
+          const image = publicVehicleCover(v);
+          const name = v.content.title.text;
           return (
-            <div className={styles.vehicleSlot} key={v.slug}>
-              <article className={styles.vehicleCard} data-pointer-tilt {...pointerTilt}>
+            <div className={styles.vehicleSlot} key={v.id}>
+              <article
+                className={styles.vehicleCard}
+                data-public-vehicle={v.id}
+                data-pointer-tilt
+                {...pointerTilt}
+              >
                 <div className={styles.cardLight} aria-hidden="true" />
                 <div className={styles.vehicleImage}>
-                  <Link href={`/cars/${v.slug}/`} tabIndex={-1} aria-hidden="true">
+                  <NextLink href={v.detailPath} prefetch={false} tabIndex={-1} aria-hidden="true">
                     <Image
-                      src={v.image}
-                      alt={v.imageAlt}
-                      width={640}
-                      height={400}
+                      src={image.url}
+                      alt={image.alt || name}
+                      width={image.width}
+                      height={image.height}
                       sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 1023px) 48vw, 404px"
                     />
-                  </Link>
+                  </NextLink>
                   <button
                     type="button"
                     className={styles.save}
-                    aria-label={saved.includes(v.slug) ? t.saved : t.save}
-                    aria-pressed={saved.includes(v.slug)}
+                    aria-label={saved.includes(v.id) ? t.saved : t.save}
+                    aria-pressed={saved.includes(v.id)}
                     onClick={() =>
                       setSaved((items) =>
-                        items.includes(v.slug)
-                          ? items.filter((x) => x !== v.slug)
-                          : [...items, v.slug],
+                        items.includes(v.id) ? items.filter((x) => x !== v.id) : [...items, v.id],
                       )
                     }
                   >
-                    <Heart filled={saved.includes(v.slug)} />
+                    <Heart filled={saved.includes(v.id)} />
                   </button>
-                  <span className={styles.year}>{v.year}</span>
+                  {v.facts.modelYear !== null && (
+                    <span className={styles.year}>
+                      {vehicleCopy.yearLabel} {v.facts.modelYear}
+                    </span>
+                  )}
                 </div>
                 <div className={styles.vehicleBody}>
-                  <h3 title={v.model}>{v.model}</h3>
-                  <p className={styles.make}>{v.make}</p>
+                  <h3 title={name}>{name}</h3>
+                  <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
+                  <p className={styles.stockCode}>
+                    {vehicleCopy.stockCodeLabel}: {v.stockCode}
+                  </p>
+                  {trusted && v.availability !== 'unknown' && (
+                    <p className={styles.availability} data-availability={v.availability}>
+                      {publicAvailabilityLabel(v, locale)}
+                    </p>
+                  )}
                   <div className={styles.specs}>
-                    <span>{v.mileageKm.toLocaleString(locale)} km</span>
-                    <span>{t.fuels[v.fuel as keyof typeof t.fuels] ?? v.fuel}</span>
-                    <span>{v.transmission === 'manual' ? t.manual : t.auto}</span>
+                    <span>
+                      {vehicleCopy.mileageLabel}:{' '}
+                      {v.facts.mileageKm === null
+                        ? vehicleCopy.unknown
+                        : `${v.facts.mileageKm.toLocaleString(locale)} ${vehicleCopy.km}`}
+                    </span>
+                    <span>{vehicleCopy.powertrains[v.facts.powertrain]}</span>
                   </div>
                   <div className={styles.price}>
-                    <span>{t.price}</span>
-                    <strong>$ {v.priceUsd.toLocaleString('en-US')} USD</strong>
-                    <small>
-                      {v.referencePriceKrw
-                        ? `₩ ${v.referencePriceKrw.toLocaleString('en-US')} KRW`
-                        : 'USD'}
-                    </small>
+                    {v.price.kind !== 'on_request' && (
+                      <span>{vehicleCopy.priceLabels[v.price.kind]}</span>
+                    )}
+                    <strong>{formatPublicVehiclePrice(v, locale)}</strong>
                   </div>
-                  <p className={styles.priceNote}>{t.note}</p>
-                  <span className={styles.demo}>{t.demo}</span>
-                  <div className={styles.cardContact} data-vehicle-contacts={v.slug}>
+                  <div className={styles.cardContact} data-vehicle-contacts={v.id}>
                     <a
-                      href={links.telegram}
-                      aria-label={`Telegram — ${v.make} ${v.model}`}
+                      href={trusted ? links.telegram : undefined}
+                      aria-disabled={!trusted || undefined}
+                      tabIndex={trusted ? undefined : -1}
+                      aria-label={`${vehicleCopy.contactTelegram} — ${name}`}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
                       <SocialIcon platform="telegram" size={20} />
                     </a>
                     <a
-                      href={links.whatsapp}
-                      aria-label={`WhatsApp — ${v.make} ${v.model}`}
+                      href={trusted ? links.whatsapp : undefined}
+                      aria-disabled={!trusted || undefined}
+                      tabIndex={trusted ? undefined : -1}
+                      aria-label={`${vehicleCopy.contactWhatsapp} — ${name}`}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
                       <SocialIcon platform="whatsapp" size={20} />
                     </a>
-                    <Link className={styles.details} href={`/cars/${v.slug}/`}>
+                    <NextLink className={styles.details} href={v.detailPath} prefetch={false}>
                       {t.details}
                       <Icon name="arrow" size={14} />
-                    </Link>
+                    </NextLink>
                   </div>
                 </div>
               </article>
@@ -194,17 +227,57 @@ function VehicleRail({
 }
 export function HomePage({
   locale,
-  vehicles,
-  models,
+  sections,
+  catalogFilters = null,
+  unavailable = false,
+  retryAfter = 0,
+  onRetry,
 }: {
   locale: Locale;
-  vehicles: HomeVehicle[];
-  models: HomeModel[];
+  sections: PublicHomeSection[];
+  catalogFilters?: PublicVehicleFilters['data'] | null;
+  unavailable?: boolean;
+  retryAfter?: number;
+  onRetry?: () => void;
 }) {
   const t = homeContent[locale],
     dialog = useRef<HTMLDialogElement>(null);
   const [paused, setPaused] = useState(false);
-  const brands = ['KIA', 'HYUNDAI', 'GENESIS', 'BMW', 'MERCEDES-BENZ', 'AUDI', 'PORSCHE'];
+  const visibleSections = unavailable
+    ? []
+    : sections.filter((section) => section.vehicles.length > 0);
+  const featuredCount = new Set(
+    visibleSections.flatMap((section) => section.vehicles.map((vehicle) => vehicle.id)),
+  ).size;
+  const brands =
+    catalogFilters?.makes.filter((make) => make.count > 0).map((make) => make.name) ?? [];
+  const models: HomeModel[] =
+    catalogFilters?.models
+      .filter((model) => model.count > 0)
+      .flatMap((model) => {
+        const representative = visibleSections
+          .flatMap((section) => section.vehicles)
+          .find(
+            (vehicle) =>
+              vehicle.facts.make?.id === model.makeId && vehicle.facts.model?.id === model.id,
+          );
+        if (!representative) return [];
+        const image = publicVehicleCover(representative);
+        return [
+          {
+            name: model.name,
+            brand: catalogFilters.makes.find((make) => make.id === model.makeId)?.name ?? '',
+            count: model.count,
+            href: `/${locale}/cars/?${new URLSearchParams({ make: model.makeId, model: model.id }).toString()}`,
+            image: {
+              url: image.url,
+              alt: image.alt || representative.content.title.text,
+              width: image.width,
+              height: image.height,
+            },
+          },
+        ];
+      }) ?? [];
   return (
     <main id="main" className={styles.home} data-testid="home-page" data-motion-paused={paused}>
       <section className={styles.hero} data-home-section="hero">
@@ -222,7 +295,7 @@ export function HomePage({
             </a>
           </div>
           <div className={styles.stats}>
-            {[vehicles.length, 7, 3].map((value, i) => (
+            {[unavailable ? '—' : featuredCount, 7, 3].map((value, i) => (
               <div key={t.stats[i]}>
                 <strong>{value}</strong>
                 <span>{t.stats[i]}</span>
@@ -271,32 +344,47 @@ export function HomePage({
           <Icon name="arrow" size={16} />
         </Link>
       </section>
-      {['Kia', 'Hyundai'].map((brand) => (
-        <VehicleRail
-          key={brand}
-          brand={brand}
-          vehicles={vehicles.filter(
-            (v) =>
-              v.make.toLowerCase() === brand.toLowerCase() &&
-              v.referencePriceKrw &&
-              !v.image.endsWith('.svg'),
-          )}
-          locale={locale}
-          paused={paused}
-        />
+      {visibleSections.map((section) => (
+        <VehicleRail key={section.id} section={section} locale={locale} paused={paused} />
       ))}
-      <div
-        className={styles.brands}
-        aria-label="Kia, Hyundai, Genesis, BMW, Mercedes-Benz, Audi, Porsche"
-      >
-        <div className={styles.brandMarquee} data-paused={paused}>
-          {[...brands, ...brands].map((brand, i) => (
-            <span aria-hidden={i >= brands.length} key={`${brand}-${i}`}>
-              {brand}
-            </span>
-          ))}
+      {(unavailable || visibleSections.length === 0) && (
+        <section
+          className={styles.catalogState}
+          data-testid={unavailable ? 'home-catalog-error' : 'home-catalog-empty'}
+          aria-live="polite"
+        >
+          <Icon name={unavailable ? 'refresh' : 'car'} size={32} />
+          <h2>{unavailable ? t.catalogUnavailable : t.catalogEmpty}</h2>
+          <p>{unavailable ? t.catalogUnavailableBody : t.catalogEmptyBody}</p>
+          {unavailable ? (
+            <>
+              <a
+                href={retryAfter > 0 ? undefined : `/${locale}/`}
+                aria-disabled={retryAfter > 0 || undefined}
+                onClick={(event) => {
+                  if (retryAfter > 0 || onRetry) event.preventDefault();
+                  if (retryAfter <= 0) onRetry?.();
+                }}
+              >
+                {t.retry}
+              </a>
+            </>
+          ) : (
+            <Link href="/cars/">{t.catalog}</Link>
+          )}
+        </section>
+      )}
+      {brands.length > 0 && (
+        <div className={styles.brands} aria-label={brands.join(', ')}>
+          <div className={styles.brandMarquee} data-paused={paused}>
+            {[...brands, ...brands].map((brand, i) => (
+              <span aria-hidden={i >= brands.length} key={`${brand}-${i}`}>
+                {brand}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
       <HomeSections locale={locale} models={models} paused={paused} />
       <dialog
         ref={dialog}

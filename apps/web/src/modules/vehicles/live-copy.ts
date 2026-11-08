@@ -1,0 +1,36 @@
+import type { Locale } from '@/i18n/routing';
+export const liveVehicleCopy = {
+  zh: {
+    checking: '正在核对最新车辆资料…',
+    error: '暂时无法更新车辆信息，请稍后重试。',
+    search: '搜索车型或咨询编号',
+    filters: '筛选车辆',
+    missing: '这条车辆资料目前不可用',
+    retry: '重新核对',
+    rateLimited: '访问较频繁，请稍候再试。',
+    retryIn: '{seconds}秒后可重试',
+    close: '收起筛选',
+  },
+  en: {
+    checking: 'Checking the latest vehicle information…',
+    error: 'Vehicle information could not be updated. Please try again.',
+    search: 'Search model or inquiry reference',
+    filters: 'Filter vehicles',
+    missing: 'This vehicle information is no longer available',
+    retry: 'Check again',
+    rateLimited: 'Too many requests. Please wait before trying again.',
+    retryIn: 'Try again in {seconds}s',
+    close: 'Hide filters',
+  },
+  ru: {
+    checking: 'Проверяем актуальные сведения об автомобилях…',
+    error: 'Не удалось обновить сведения об автомобилях. Повторите попытку позже.',
+    search: 'Поиск по модели или номеру',
+    filters: 'Фильтры автомобилей',
+    missing: 'Эти сведения об автомобиле больше недоступны',
+    retry: 'Проверить ещё раз',
+    rateLimited: 'Слишком много запросов. Повторите попытку позже.',
+    retryIn: 'Повтор через {seconds} с',
+    close: 'Скрыть фильтры',
+  },
+} satisfies Record<Locale, Record<string, string>>;

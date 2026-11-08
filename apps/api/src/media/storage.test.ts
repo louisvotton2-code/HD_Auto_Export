@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -52,6 +53,49 @@ test('accepts JPEG and WebP by their actual format and does not enlarge small im
     assert.equal(result.width, 9);
     assert.equal(result.height, 7);
   }
+});
+
+test('fixed thumbnails preserve aspect ratio, remain private and cache atomically across instances', async (t) => {
+  const {directory,store}=await setup(t);const id=randomUUID();
+  await store.put(id,await png(800,600),'image/png');
+  const original=await store.read(id);
+  const thumbnails=await Promise.all(Array.from({length:8},()=>new LocalMediaStore(directory).readThumbnail(id)));
+  for(const bytes of thumbnails) {
+    const metadata=await sharp(bytes).metadata();
+    assert.equal(metadata.format,'webp');assert.equal(metadata.width,240);assert.equal(metadata.height,180);
+    assert.deepEqual(bytes,thumbnails[0]);
+  }
+  const filename=path.join(directory,`${id}.thumb.webp`);
+  const before=await lstat(filename);
+  assert.equal(before.mode&0o777,0o600);assert.equal(before.nlink,1);
+  assert.deepEqual(await store.readThumbnail(id.toUpperCase()),thumbnails[0]);
+  assert.equal((await lstat(filename)).mtimeMs,before.mtimeMs);
+  assert.deepEqual(await store.read(id),original);
+  assert.deepEqual((await readdir(directory)).sort(),[`${id}.thumb.webp`,`${id}.webp`].sort());
+  await store.remove(id);await store.remove(id);
+  assert.deepEqual(await readdir(directory),[]);
+  await assert.rejects(store.readThumbnail(id),errorCode('MEDIA_NOT_FOUND'));
+});
+
+test('thumbnails do not enlarge small images or use a cache without its source',async(t)=>{
+  const {directory,store}=await setup(t);const id=randomUUID();
+  await store.put(id,await png(90,140),'image/png');
+  const thumbnail=await store.readThumbnail(id);const metadata=await sharp(thumbnail).metadata();
+  assert.equal(metadata.width,90);assert.equal(metadata.height,140);
+  await rm(path.join(directory,`${id}.webp`));
+  await assert.rejects(store.readThumbnail(id),errorCode('MEDIA_NOT_FOUND'));
+  await store.remove(id);assert.deepEqual(await readdir(directory),[]);
+});
+
+test('thumbnail cache rejects traversal and symlinks without altering their targets',async(t)=>{
+  const {temporary,directory,store}=await setup(t);const id=randomUUID();
+  await store.put(id,await png(),'image/png');
+  await assert.rejects(store.readThumbnail('../secret'),errorCode('INVALID_MEDIA_ID'));
+  const outside=path.join(temporary,'outside');await writeFile(outside,'private fixture',{mode:0o600});
+  await symlink(outside,path.join(directory,`${id}.thumb.webp`));
+  await assert.rejects(store.readThumbnail(id),errorCode('MEDIA_STORAGE_ERROR'));
+  await assert.rejects(store.remove(id),errorCode('MEDIA_STORAGE_ERROR'));
+  assert.equal(await readFile(outside,'utf8'),'private fixture');assert.ok((await store.read(id)).length);
 });
 
 test('resizes oversized display dimensions and strips metadata after orientation', async (t) => {
@@ -188,4 +232,142 @@ test('refuses hard-linked files and missing files without exposing filesystem pa
     assert.equal(error.message.includes(temporary), false);
     return true;
   });
+});
+
+test('original delivery checks metadata without reading image bytes and returns only a canonical basename', async (t) => {
+  const { directory, store } = await setup(t);
+  const id = randomUUID();
+  const stored = await store.put(id, await png(600, 400), 'image/png');
+  const bodyReader = store as unknown as { readFile(filename: string): Promise<Buffer> };
+  const read = t.mock.method(bodyReader, 'readFile', async () => { throw new Error('Delivery must not read image bytes'); });
+  const delivery = await store.prepareDelivery(id.toUpperCase());
+  assert.deepEqual(delivery, { filename: `${id}.webp`, byteSize: stored.byteSize });
+  assert.equal(delivery.filename.includes(directory), false);
+  assert.equal(read.mock.callCount(), 0);
+});
+
+test('delivery creates a fixed private thumbnail once and cached delivery does not read either body', async (t) => {
+  const { directory, store } = await setup(t);
+  const id = randomUUID();
+  await store.put(id, await png(800, 600), 'image/png');
+  const bodyReader = store as unknown as { readFile(filename: string): Promise<Buffer> };
+  const read = t.mock.method(bodyReader, 'readFile');
+  const delivery = await store.prepareDelivery(id, 'thumb');
+  assert.equal(read.mock.callCount(), 1);
+  assert.equal(read.mock.calls[0]?.arguments[0], path.join(await realpath(directory), `${id}.webp`));
+  assert.equal(delivery.filename, `${id}.thumb.webp`);
+  const filename = path.join(directory, delivery.filename);
+  const before = await lstat(filename);
+  assert.equal(delivery.byteSize, before.size);
+  assert.equal(before.mode & 0o777, 0o600);
+  assert.equal(before.nlink, 1);
+  const metadata = await sharp(await readFile(filename)).metadata();
+  assert.equal(metadata.width, 240); assert.equal(metadata.height, 180);
+
+  const reopened = new LocalMediaStore(directory);
+  const cachedRead = t.mock.method(reopened as unknown as typeof bodyReader, 'readFile', async () => {
+    throw new Error('Cached delivery must not read image bytes');
+  });
+  assert.deepEqual(await reopened.prepareDelivery(id, 'thumb'), delivery);
+  assert.equal(cachedRead.mock.callCount(), 0);
+  assert.equal((await lstat(filename)).mtimeMs, before.mtimeMs);
+  assert.deepEqual((await readdir(directory)).sort(), [`${id}.thumb.webp`, `${id}.webp`].sort());
+});
+
+test('delivery rejects invalid identifiers and variants instead of deriving arbitrary paths', async (t) => {
+  const { store } = await setup(t);
+  for (const id of ['../secret', '/etc/passwd', `${randomUUID()}.webp`, 'not-an-id']) {
+    await assert.rejects(store.prepareDelivery(id), errorCode('INVALID_MEDIA_ID'));
+  }
+  for (const variant of ['../secret', 'original', '', '/tmp/file']) {
+    await assert.rejects(store.prepareDelivery(randomUUID(), variant as 'thumb'), errorCode('INVALID_MEDIA_ID'));
+  }
+});
+
+test('delivery applies the same private-file checks to original and cached thumbnails', async (t) => {
+  for (const variant of [undefined, 'thumb'] as const) {
+    for (const unsafe of ['symlink', 'hardlink', 'oversize', 'public-mode', 'directory'] as const) {
+      await t.test(`${variant ?? 'original'}: ${unsafe}`, async (subtest) => {
+        const { temporary, directory, store } = await setup(subtest);
+        const id = randomUUID();
+        await store.put(id, await png(), 'image/png');
+        if (variant) await store.prepareDelivery(id, variant);
+        const target = path.join(directory, `${id}${variant ? '.thumb' : ''}.webp`);
+        if (unsafe === 'symlink' || unsafe === 'hardlink') {
+          const outside = path.join(temporary, 'outside');
+          await writeFile(outside, 'private outside fixture', { mode: 0o600 });
+          await rm(target);
+          if (unsafe === 'symlink') await symlink(outside, target);
+          else await link(outside, target);
+        } else if (unsafe === 'oversize') await truncate(target, MAX_MEDIA_BYTES + 1);
+        else if (unsafe === 'public-mode') await chmod(target, 0o644);
+        else { await rm(target); await mkdir(target, { mode: 0o700 }); }
+        const read = subtest.mock.method(store as unknown as { readFile(filename: string): Promise<Buffer> }, 'readFile', async () => {
+          throw new Error('Unsafe delivery must not read image bytes');
+        });
+        await assert.rejects(store.prepareDelivery(id, variant), errorCode('MEDIA_STORAGE_ERROR'));
+        assert.equal(read.mock.callCount(), 0);
+        if (unsafe === 'symlink' || unsafe === 'hardlink') {
+          assert.equal(await readFile(path.join(temporary, 'outside'), 'utf8'), 'private outside fixture');
+        }
+      });
+    }
+  }
+});
+
+test('delivery refuses an orphan thumbnail after its original is removed', async (t) => {
+  const { directory, store } = await setup(t);
+  const id = randomUUID();
+  await store.put(id, await png(), 'image/png');
+  await store.prepareDelivery(id, 'thumb');
+  await rm(path.join(directory, `${id}.webp`));
+  assert.ok((await lstat(path.join(directory, `${id}.thumb.webp`))).isFile());
+  await assert.rejects(store.prepareDelivery(id), errorCode('MEDIA_NOT_FOUND'));
+  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
+});
+
+test('an original removed during first thumbnail generation fails delivery without a fallback path', async (t) => {
+  const { directory, store } = await setup(t);
+  const id = randomUUID();
+  await store.put(id, await png(), 'image/png');
+  const bodyReader = store as unknown as { readFile(filename: string): Promise<Buffer> };
+  const read = bodyReader.readFile.bind(store);
+  t.mock.method(bodyReader, 'readFile', async (filename: string) => {
+    const bytes = await read(filename);
+    await rm(filename);
+    return bytes;
+  });
+  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
+  assert.ok((await lstat(path.join(directory, `${id}.thumb.webp`))).isFile());
+  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
+});
+
+test('unlink or cross-process replacement between open and fstat is missing, never a weakened private-file check', async (t) => {
+  for (const operation of ['unlink', 'replace'] as const) {
+    await t.test(operation, async (subtest) => {
+      const { directory, store } = await setup(subtest);
+      const id = randomUUID();
+      const result = await store.put(id, await png(), 'image/png');
+      const target = path.join(directory, `${id}.webp`);
+      const replacement = path.join(directory, 'replacement.tmp');
+      if (operation === 'replace') await writeFile(replacement, await readFile(target), { mode: 0o600 });
+      const probe = await open(target, 'r');
+      const prototype = Object.getPrototypeOf(probe) as { stat(): Promise<Stats> };
+      const originalStat = prototype.stat;
+      await probe.close();
+      let interrupted = false;
+      subtest.mock.method(prototype, 'stat', async function (this: typeof prototype) {
+        if (!interrupted) {
+          interrupted = true;
+          if (operation === 'replace') await rename(replacement, target);
+          else await rm(target);
+        }
+        return originalStat.call(this);
+      });
+      await assert.rejects(store.prepareDelivery(id), errorCode('MEDIA_NOT_FOUND'));
+      if (operation === 'replace') {
+        assert.deepEqual(await store.prepareDelivery(id), { filename: `${id}.webp`, byteSize: result.byteSize });
+      }
+    });
+  }
 });

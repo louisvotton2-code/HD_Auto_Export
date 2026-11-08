@@ -17,7 +17,8 @@ export class MediaService {
     const preliminary=await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1',[id]);
     const media=preliminary.rows[0];if(!media) throw notFound();
     // All media mutations and publication use vehicle -> media lock order.
-    await tx.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[media.vehicle_id]);
+    const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[media.vehicle_id]);
+    if(!vehicle.rowCount) throw notFound();
     const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
     if(!row || row.state==='deleted') throw notFound();
     if(version!==undefined&&row.version!==version) throw conflict();
@@ -25,7 +26,7 @@ export class MediaService {
   }
   async create(input:MediaUploadRequest,actor:Actor) {
     return this.db.transaction(async tx=>{
-      const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[input.vehicleId]);
+      const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[input.vehicleId]);
       if(!vehicle.rowCount) throw notFound();
       const count=await tx.query(`SELECT count(*)::int AS count FROM media_assets m WHERE m.vehicle_id=$1 AND m.state<>'deleted'
         AND (NOT EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)
@@ -61,40 +62,75 @@ export class MediaService {
     });
   }
   async get(id:string) {
-    const row=(await this.db.pool.query<MediaRow>("SELECT * FROM media_assets WHERE id=$1 AND state<>'deleted'",[id])).rows[0];
+    const row=(await this.db.pool.query<MediaRow>("SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id WHERE m.id=$1 AND m.state<>'deleted' AND v.deleted_at IS NULL",[id])).rows[0];
     if(!row) throw notFound();return dto(row);
   }
-  async preview(id:string) {
-    const row=(await this.db.pool.query<MediaRow>("SELECT * FROM media_assets WHERE id=$1 AND state='ready'",[id])).rows[0];
-    if(!row) throw notFound();return this.store.read(id);
+  private async authorizePreview(id:string) {
+    const row=(await this.db.pool.query<MediaRow>("SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id WHERE m.id=$1 AND m.state='ready' AND v.deleted_at IS NULL",[id])).rows[0];
+    if(!row) throw notFound();
   }
-  async publicRead(id:string) {
+  private async authorizePublic(id:string) {
     const allowed=await this.db.pool.query(`SELECT 1 FROM media_assets m JOIN publication_media pm ON pm.media_id=m.id
-      JOIN vehicles v ON v.published_revision_id=pm.publication_id WHERE m.id=$1 AND m.state='ready' AND v.publication_state='published' LIMIT 1`,[id]);
-    if(!allowed.rowCount) throw notFound();return this.store.read(id);
+      JOIN vehicles v ON v.published_revision_id=pm.publication_id WHERE m.id=$1 AND m.state='ready' AND v.publication_state='published' AND v.deleted_at IS NULL LIMIT 1`,[id]);
+    if(!allowed.rowCount) throw notFound();
+  }
+  async preview(id:string) {
+    await this.authorizePreview(id);
+    return this.store.read(id);
+  }
+  async previewFile(id:string) {
+    await this.authorizePreview(id);
+    return this.store.prepareDelivery(id);
+  }
+  async publicRead(id:string,variant?:'thumb') {
+    await this.authorizePublic(id);
+    return variant==='thumb'?this.store.readThumbnail(id):this.store.read(id);
+  }
+  async publicFile(id:string,variant?:'thumb') {
+    await this.authorizePublic(id);
+    return this.store.prepareDelivery(id,variant);
   }
   async remove(id:string,version:number,actor:Actor) {
-    await this.db.transaction(async tx=>{
+    const vehicleId=await this.db.transaction(async tx=>{
       const row=await this.lock(tx,id,version);
       const historical=await tx.query('SELECT 1 FROM publication_media WHERE media_id=$1 LIMIT 1',[id]);
       const draft=await tx.query('SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$1 AND data->\'media\' @> $2::jsonb',[row.vehicle_id,JSON.stringify([{id}])]);
       if(historical.rowCount||draft.rowCount) throw new ApiError(409,'MEDIA_IN_USE','Remove draft references first; publication history references are protected.');
       await tx.query("UPDATE media_assets SET state='deleted',version=version+1 WHERE id=$1",[id]);
       await audit(tx,actor,'media.delete',row.vehicle_id,version,version+1);
+      return row.vehicle_id;
     });
-    // Visibility is revoked before unlink; cleanup may safely retry an interrupted removal.
-    await this.store.remove(id);
+    // Revoke visibility and commit the audit first. Physical cleanup takes a new
+    // vehicle lock, so a soft deletion committed in between preserves the file.
+    await this.purgeDeleted(id,vehicleId);
+  }
+  private async purgeDeleted(id:string,vehicleId:string) {
+    return this.db.transaction(async tx=>{
+      const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[vehicleId]);
+      if(!vehicle.rowCount) return false;
+      const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!row || row.state!=='deleted') return false;
+      const references=await tx.query(`SELECT 1 FROM publication_media WHERE media_id=$1 UNION ALL SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$2 AND data->'media' @> $3::jsonb LIMIT 1`,[id,vehicleId,JSON.stringify([{id}])]);
+      if(references.rowCount) return false;
+      // Keep the vehicle lock until unlink finishes. A concurrent vehicle soft
+      // deletion can only commit before this check (skip) or after the removal.
+      // If unlink/commit fails the deleted row remains safe for a later retry.
+      await this.store.remove(id);
+      await tx.query("DELETE FROM media_assets WHERE id=$1 AND state='deleted'",[id]);
+      return true;
+    });
   }
   async cleanupExpired() {
-    const candidates=await this.db.pool.query<MediaRow>(`SELECT m.* FROM media_assets m
-      WHERE (m.state='deleted' OR m.expires_at<now())
+    const candidates=await this.db.pool.query<MediaRow>(`SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id
+      WHERE v.deleted_at IS NULL AND (m.state='deleted' OR m.expires_at<now())
       AND NOT EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)
       AND NOT EXISTS(SELECT 1 FROM vehicle_drafts d WHERE d.vehicle_id=m.vehicle_id AND d.data->'media' @> jsonb_build_array(jsonb_build_object('id',m.id)))
       ORDER BY m.created_at LIMIT 100`);
     let removed=0;
     for(const candidate of candidates.rows) {
       const safe=await this.db.transaction(async tx=>{
-        await tx.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[candidate.vehicle_id]);
+        const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[candidate.vehicle_id]);
+        if(!vehicle.rowCount) return false;
         const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[candidate.id])).rows[0];
         if(!row) return false;
         if(row.state!=='deleted' && row.expires_at.getTime()>=Date.now()) return false;
@@ -103,12 +139,7 @@ export class MediaService {
         await tx.query("UPDATE media_assets SET state='deleted',version=version+1 WHERE id=$1 AND state<>'deleted'",[row.id]);
         return true;
       });
-      if(safe) {
-        await this.store.remove(candidate.id);
-        // Only unreferenced deleted rows reach here; removing them prevents a permanent first-page cleanup loop.
-        await this.db.pool.query("DELETE FROM media_assets WHERE id=$1 AND state='deleted'",[candidate.id]);
-        removed++;
-      }
+      if(safe && await this.purgeDeleted(candidate.id,candidate.vehicle_id)) removed++;
     }
     await this.db.pool.query('DELETE FROM idempotency_keys WHERE expires_at<now()');
     return {removed};

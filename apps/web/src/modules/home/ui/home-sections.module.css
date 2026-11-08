@@ -76,6 +76,12 @@
   aspect-ratio: 16/9;
   overflow: hidden;
 }
+.modelFacet {
+  display: grid;
+  place-items: center;
+  color: #b67749;
+  background: radial-gradient(ellipse at center, #b6774929, #141414 70%);
+}
 .modelPhoto img {
   display: block;
   width: 100%;
@@ -92,6 +98,7 @@
   padding: 20px;
 }
 .modelBrand {
+  overflow-wrap: anywhere;
   font-size: 10px;
   line-height: 15px;
   font-weight: 600;
@@ -100,6 +107,7 @@
   color: var(--copper);
 }
 .modelName {
+  overflow-wrap: anywhere;
   font-size: 18px;
   line-height: 28px;
   margin-top: 4px;
@@ -250,6 +258,8 @@
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
+  padding-block: 12px;
+  margin-block: -12px;
 }
 .stepTrack::-webkit-scrollbar {
   display: none;
@@ -335,6 +345,8 @@
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
+  padding-block: 12px;
+  margin-block: -12px;
 }
 .reviewTrack::-webkit-scrollbar {
   display: none;
@@ -401,15 +413,12 @@
   text-align: left;
 }
 .chatHeader {
-  background: #075e54;
+  background: linear-gradient(120deg, #443025, #29221d);
   color: white;
-  padding: 14px 12px;
+  padding: 18px 14px;
   display: flex;
   gap: 8px;
   align-items: center;
-}
-.chatBack {
-  font-size: 24px;
 }
 .chatAvatar {
   width: 30px;
@@ -430,7 +439,9 @@
   font-size: 12px;
 }
 .chatIdentity small {
-  font-size: 9px;
+  font-size: 10px;
+  line-height: 1.5;
+  margin-top: 2px;
   opacity: 0.7;
 }
 .chatBody {
@@ -441,59 +452,42 @@
   flex: 1;
   background: radial-gradient(ellipse at 20% 30%, #b5ac9e22 0 2px, transparent 3px) 0 0/27px 33px;
 }
-.chatDate,
-.chatDisclaimer,
-.chatDemoFooter {
-  align-self: center;
-  background: #fff9;
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 9px;
-  text-align: center;
-  color: #666;
-}
-.chatDisclaimer {
-  background: #fff4cc;
-  color: #80622b;
-  max-width: 95%;
-}
-.chatBubble {
-  background: white;
-  padding: 10px;
-  border-radius: 0 8px 8px;
-  max-width: 90%;
-  align-self: flex-start;
-  box-shadow: 0 1px 1px #0001;
+.questionPair {
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
-.chatBubble[data-company='true'] {
-  align-self: flex-end;
-  background: #dcf8c6;
-  border-radius: 8px 0 8px 8px;
-}
-.chatBubble small {
-  align-self: flex-end;
-  color: #7c8b79;
-  font-size: 8px;
-  margin-top: 5px;
-}
-.chatDemoFooter {
-  margin-top: auto;
-}
-.chatComposer {
+.chatBubble {
+  background: #ffffffb3;
+  padding: 10px;
+  border-radius: 8px;
+  max-width: 100%;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  background: #f5f0e9;
-  color: #777;
+  flex-direction: column;
+  gap: 5px;
 }
-.chatComposer i {
-  background: #fff;
-  border-radius: 24px;
-  flex: 1;
-  height: 24px;
+.chatBubble[data-kind='question'] {
+  font-weight: 600;
+}
+.chatBubble[data-kind='answer'] {
+  border-left: 2px solid #b67749;
+  background: #e8dfd3;
+}
+.answerLabel {
+  color: #815132;
+  font-size: 9px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.chatFooter {
+  display: block;
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid #b6774926;
+  color: #776556;
+  font-size: 9px;
+  text-align: center;
 }
 .dialog {
   width: min(430px, calc(100% - 24px));
@@ -526,6 +520,14 @@
 }
 .chatExpanded {
   min-height: 650px;
+}
+.chatExpanded .chatBody {
+  padding: 24px;
+  gap: 20px;
+}
+.chatExpanded .chatBubble {
+  font-size: 14px;
+  line-height: 1.65;
 }
 .calculator {
   padding: 64px 0;
@@ -645,7 +647,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 448px;
+  max-width: 680px;
   margin: 40px auto 0;
 }
 .enquiryForm input {
@@ -657,6 +659,7 @@
   min-height: 56px;
   flex: 1;
   width: 100%;
+  font-size: 16px;
   transition: border-color 0.3s;
 }
 .enquiryForm input:focus {
@@ -673,6 +676,7 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
+  line-height: 1.5;
   transition:
     transform 0.3s,
     background 0.3s;
@@ -685,20 +689,9 @@
   display: block;
   font-size: 10px;
   line-height: 18px;
-  color: #666;
+  color: #8a8a8a;
   margin: 12px auto 0;
-  max-width: 448px;
-}
-.formNotice {
-  font-size: 13px;
-  line-height: 22px;
-  color: #bbb;
-  margin-top: 24px;
-}
-.formNotice a {
-  display: inline-block;
-  color: var(--copper);
-  margin-top: 12px;
+  max-width: 680px;
 }
 .srOnly {
   position: absolute;

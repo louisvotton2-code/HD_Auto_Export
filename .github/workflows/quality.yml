@@ -49,9 +49,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Check types, module boundaries and unit tests
         run: pnpm check
-      - name: Build contracts, API, OpenAPI and static pages
+      - name: Build contracts, API, OpenAPI and applications
         run: pnpm build
       - name: Install browser
         run: pnpm --filter @hd/web exec playwright install --with-deps chrome
-      - name: Verify static pages in Chrome
+      - name: Verify applications in Chrome
         run: pnpm test:e2e

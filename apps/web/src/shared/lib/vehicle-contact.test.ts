@@ -39,7 +39,8 @@ describe('vehicle contact drafts', () => {
       ])
         expect(result.message).toContain(fact);
       expect(result.message.split('\n')).toHaveLength(9);
-      expect(result.message).toContain({ zh: '演示', en: 'demo', ru: 'демонстрационном' }[locale]);
+      expect(result.message.split('\n')[0]).toMatch(/咨询|ask about|узнать/);
+      expect(result.message).not.toMatch(/演示车辆|demo vehicle|демонстрационном/);
       expect(result.message).toContain({ zh: '纯电', en: 'Electric', ru: 'Электро' }[locale]);
       expect(result.message).toContain({ zh: '轿车', en: 'Sedan', ru: 'Седан' }[locale]);
     },

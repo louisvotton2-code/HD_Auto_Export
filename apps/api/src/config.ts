@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { BlockList, isIP } from 'node:net';
 import { z } from 'zod';
 
 const Env = z.object({
@@ -10,9 +11,40 @@ const Env = z.object({
   AUTH_BASE_URL: z.string().url().default('http://127.0.0.1:3318'),
   TRUSTED_ORIGINS: z.string().default('http://127.0.0.1:3318'),
   MEDIA_ROOT: z.string().default('.data/media'),
+  MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
-  TRUST_PROXY: z.enum(['false', 'loopback']).default('false'),
+  TRUST_PROXY: z.string().max(2048).default('false'),
 });
+
+function parseTrustProxy(value: string): false | 'loopback' | string[] {
+  const setting = value.trim();
+  if (setting === 'false') return false;
+  if (setting === 'loopback') return 'loopback';
+  const entries = setting.split(',').map(entry => entry.trim());
+  const invalid = () => new Error('TRUST_PROXY must be false, loopback, or explicit proxy IPs/CIDRs (IPv4 /24–/32; IPv6 /64–/128)');
+  if (entries.length > 32) throw invalid();
+  for (const entry of entries) {
+    const parts = entry.split('/');
+    const address = parts[0]!;
+    const family = isIP(address);
+    if (!family || address.includes('%') || parts.length > 2) throw invalid();
+    // Use IPv4 entries for mapped addresses. A mapped IPv6 /96 could trust all IPv4 peers.
+    if (family === 6 && new URL(`http://[${address}]/`).hostname.startsWith('[::ffff:')) throw invalid();
+    if (parts.length === 2) {
+      const prefix = parts[1]!;
+      if (!/^[1-9]\d{0,2}$/.test(prefix)) throw invalid();
+      const bits = Number(prefix);
+      if (bits < (family === 4 ? 24 : 64) || bits > (family === 4 ? 32 : 128)) throw invalid();
+      if (family === 6 && bits <= 96) {
+        const range = new BlockList();
+        range.addSubnet(address,bits,'ipv6');
+        // Also reject parent networks such as ::/64 that contain the mapped IPv4 range.
+        if (range.check('::ffff:0:0','ipv6')) throw invalid();
+      }
+    }
+  }
+  return [...new Set(entries)];
+}
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const parsed = Env.safeParse(env);
@@ -29,8 +61,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     environment: e.NODE_ENV, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
-    mediaRoot: path.resolve(e.MEDIA_ROOT), poolMax: e.DB_POOL_MAX,
-    trustProxy: e.TRUST_PROXY === 'loopback' ? 'loopback' as const : false as const,
+    mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
+    trustProxy: parseTrustProxy(e.TRUST_PROXY),
   };
 }
 export type Config = ReturnType<typeof readConfig>;

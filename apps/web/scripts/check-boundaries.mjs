@@ -237,6 +237,8 @@ export function checkBoundaries(projectRoot) {
       if (!['vehicles', 'home'].includes(moduleName)) continue;
       const moduleRoot = path.join(modulesRoot, moduleName);
       if (within(filename, moduleRoot) || target === path.join(moduleRoot, 'index.ts')) continue;
+      // The HTTP adapter is a separate server facade; client/business modules cannot use it.
+      if (moduleName === 'vehicles' && target === path.join(moduleRoot, 'server.ts') && within(filename, path.join(sourceRoot, 'app'))) continue;
       report(filename, node, `consume ${moduleName} through its public entry: ${specifier}`);
     }
   }

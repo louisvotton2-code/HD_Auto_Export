@@ -42,6 +42,8 @@
 }
 .catalogButton {
   display: inline-block;
+  min-width: max-content;
+  white-space: nowrap;
   border: 2px solid var(--copper);
   border-radius: 999px;
   color: var(--copper);
@@ -235,6 +237,8 @@
   gap: 16px;
 }
 .sectionHead h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 30px;
   line-height: 36px;
   font-weight: 600;
@@ -359,6 +363,10 @@
   transform: scale(0.9);
 }
 .year {
+  max-width: calc(100% - 68px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   position: absolute;
   left: 12px;
   bottom: auto;
@@ -389,6 +397,55 @@
   line-height: 20px;
   margin-top: 4px;
 }
+.stockCode {
+  margin-top: 8px;
+  color: #aaa;
+  font-size: 11px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+.availability {
+  margin-top: 12px;
+  color: #e7b78f;
+  font-size: 12px;
+  line-height: 18px;
+}
+.availability[data-availability='available'] {
+  color: #79dca1;
+}
+.availability[data-availability='sold'] {
+  color: #aaa;
+}
+.catalogState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 960px;
+  margin: 64px auto 0;
+  padding: 32px 20px;
+  text-align: center;
+  color: #b67749;
+}
+.catalogState h2 {
+  color: #f5f0eb;
+  font-size: clamp(20px, 4vw, 28px);
+  line-height: 1.4;
+}
+.catalogState p {
+  max-width: 600px;
+  color: #aaa;
+  line-height: 1.65;
+}
+.catalogState a {
+  padding: 11px 20px;
+  border: 1px solid #b67749;
+  border-radius: 12px;
+  transition: background 0.2s;
+}
+.catalogState a:hover {
+  background: #b6774926;
+}
 .specs {
   display: flex;
   justify-content: center;
@@ -416,6 +473,8 @@
   letter-spacing: 0.1em;
 }
 .price strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   color: var(--copper);
   font-size: 20px;
   line-height: 28px;
@@ -432,11 +491,6 @@
   line-height: 15px;
   margin-top: 8px;
   min-height: 15px;
-}
-.demo {
-  color: #8a8a8a;
-  font-size: 10px;
-  line-height: 15px;
 }
 .cardContact {
   display: flex;

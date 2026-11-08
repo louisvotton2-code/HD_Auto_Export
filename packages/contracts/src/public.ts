@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
-  AvailabilitySchema, IdSchema, LanguageTagSchema, LocaleSchema, PowertrainSchema,
-  PublicPriceSchema, RequestMetaSchema, TimestampSchema, TranslationKindSchema,
+  AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, LocaleSchema, PowertrainSchema,
+  PublicPriceSchema, RequestMetaSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema,
   VehicleFactsSchema, responseSchema,
 } from './common.js';
 
@@ -16,7 +16,7 @@ export const PublicTextSchema = z.strictObject({
 });
 export type PublicText = z.infer<typeof PublicTextSchema>;
 export const MediaUrlSchema = z.string().max(2048).refine((value) => {
-  if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+$/.test(value)) return true;
+  if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+(?:\?variant=thumb)?$/.test(value)) return true;
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; }
   catch { return false; }
 }, 'Expected a local public media path or an HTTPS URL');
@@ -30,10 +30,18 @@ export const PublicMediaSchema = z.strictObject({
   isCover: z.boolean(),
 });
 export type PublicMedia = z.infer<typeof PublicMediaSchema>;
+export const PublicMediaQuerySchema = z.strictObject({ variant: z.literal('thumb').optional() });
+export type PublicMediaQuery = z.infer<typeof PublicMediaQuerySchema>;
+export const SourceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('manual') }),
+  z.strictObject({ kind: z.literal('demo') }),
+  z.strictObject({ kind: z.literal('external'), platform: ExternalPlatformSchema, listingUrl: SafeHttpUrlSchema }),
+]);
+export type Source = z.infer<typeof SourceSchema>;
 export const PublicVehicleSchema = z.strictObject({
   id: IdSchema,
   stockCode: z.string().min(1).max(60),
-  source: z.strictObject({ kind: z.enum(['manual', 'external']) }),
+  source: SourceSchema,
   facts: VehicleFactsSchema,
   price: PublicPriceSchema,
   content: z.strictObject({ title: PublicTextSchema, description: PublicTextSchema.nullable() }),
@@ -44,6 +52,23 @@ export const PublicVehicleSchema = z.strictObject({
   fetchedAt: TimestampSchema.nullable(),
   publishedAt: TimestampSchema,
   detailPath: z.string().regex(/^\/(?:zh|en|ru)\/cars\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/$/),
+}).superRefine((value, ctx) => {
+  if (value.source.kind === 'demo') {
+    const facts = DemoVehicleFactsSchema.safeParse(value.facts);
+    if (!facts.success) for (const issue of facts.error.issues) {
+      ctx.addIssue({ code: 'custom', path: ['facts', ...issue.path], message: 'Demo vehicles cannot contain physical inventory facts' });
+    }
+    if (value.price.kind !== 'on_request') ctx.addIssue({ code: 'custom', path: ['price'], message: 'Demo vehicles must use on-request pricing' });
+  }
+  if (value.source.kind === 'external' && value.price.kind === 'asking') {
+    ctx.addIssue({ code: 'custom', path: ['price'], message: 'External vehicles must use reference or on-request pricing' });
+  }
+  if (value.source.kind === 'demo' || value.source.kind === 'external') {
+    if (value.availability !== 'unknown') ctx.addIssue({ code: 'custom', path: ['availability'], message: 'Non-owned vehicle availability must remain unknown' });
+    if (value.availabilityCheckedAt !== null) ctx.addIssue({ code: 'custom', path: ['availabilityCheckedAt'], message: 'Non-owned vehicles have no inventory verification timestamp' });
+    if (value.content.title.reviewed) ctx.addIssue({ code: 'custom', path: ['content', 'title', 'reviewed'], message: 'Demo and external text cannot claim human review' });
+    if (value.content.description?.reviewed) ctx.addIssue({ code: 'custom', path: ['content', 'description', 'reviewed'], message: 'Demo and external text cannot claim human review' });
+  }
 });
 export type PublicVehicle = z.infer<typeof PublicVehicleSchema>;
 export const PublicVehicleResponseSchema = responseSchema(PublicVehicleSchema);
@@ -58,12 +83,14 @@ export const PublicVehicleQuerySchema = z.strictObject({
   make: IdSchema.optional(),
   model: IdSchema.optional(),
   powertrain: PowertrainSchema.optional(),
+  q: SearchTextSchema.optional(),
 });
 export type PublicVehicleQuery = z.infer<typeof PublicVehicleQuerySchema>;
 export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.default('ru') });
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicFilterQuerySchema = z.strictObject({
   locale: LocaleSchema.default('ru'), catalog: z.literal('curated').default('curated'),
+  q: SearchTextSchema.optional(),
 });
 export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
 export const CatalogMetaSchema = RequestMetaSchema.extend({

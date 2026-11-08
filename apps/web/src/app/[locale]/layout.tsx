@@ -7,11 +7,13 @@ import { siteConfig } from '@/shared/config/site';
 import { SiteHeader } from '@/shared/ui/site-header';
 import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
+import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
 import { getShellMessages } from '@/i18n/client-messages';
 import '../globals.css';
 import '@/shared/ui/brand.css';
 import '@/shared/ui/navigation.css';
 import '@/modules/calculator/ui/calculator-refinement.css';
+import '@/modules/calculator/ui/reference-calculator.css';
 import '@/shared/ui/interaction-motion.css';
 
 export const dynamicParams = false;
@@ -64,6 +66,7 @@ export default async function LocaleLayout({
           {children}
           <SiteFooter />
           <InteractionMotion />
+          <PublicNavigationFreshness />
         </NextIntlClientProvider>
       </body>
     </html>

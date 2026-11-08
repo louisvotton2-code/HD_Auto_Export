@@ -8,6 +8,15 @@ export type LanguageTag = z.infer<typeof LanguageTagSchema>;
 export const IdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/);
 export const VersionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 export const TimestampSchema = z.iso.datetime({ precision: null });
+export const SearchTextSchema = z.string().trim().max(100).regex(/^[^\u0000]*$/, 'Search text cannot contain NUL');
+/** Metadata only: validation never fetches the remote address. Preserve exact source identity. */
+export const SafeHttpUrlSchema = z.string().max(2048).regex(/^https?:\/\//i).refine((value) => {
+  if (!/^https?:\/\//i.test(value) || /[\u0000-\u0020\u007f]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
+  } catch { return false; }
+}, 'Expected an HTTP(S) URL without credentials or whitespace');
 export const RequestMetaSchema = z.strictObject({ requestId: z.string().min(1).max(200) });
 
 /** Business-supported ISO 4217 codes; support does not imply an exchange rate exists. */
@@ -46,6 +55,8 @@ export type Powertrain = z.infer<typeof PowertrainSchema>;
 export const BodySchema = z.enum(['hatchback', 'suv', 'sedan', 'wagon', 'coupe', 'convertible', 'van', 'pickup', 'other', 'unknown']);
 export const TransmissionSchema = z.enum(['manual', 'automatic', 'cvt', 'dct', 'other', 'unknown']);
 export const NamedValueSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(120).regex(/\S/, 'Display name cannot be blank') });
+export const ExternalPlatformSchema = NamedValueSchema;
+export type ExternalPlatform = z.infer<typeof ExternalPlatformSchema>;
 export const LocationSchema = z.strictObject({
   country: z.string().regex(/^[A-Z]{2}$/),
   city: z.string().min(1).max(120).nullable(),
@@ -68,6 +79,11 @@ export const VehicleFactsSchema = z.strictObject({
   location: LocationSchema.nullable(),
 });
 export type VehicleFacts = z.infer<typeof VehicleFactsSchema>;
+export const DemoVehicleFactsSchema = VehicleFactsSchema.extend({
+  manufacturedAt: z.null(), firstRegistration: z.null(), mileageKm: z.null(),
+  registrationStatus: z.literal('unknown'), location: z.null(),
+});
+export type DemoVehicleFacts = z.infer<typeof DemoVehicleFactsSchema>;
 
 const PriceIncludesSchema = z.array(z.string().min(1).max(200)).max(30);
 export const PublicPriceSchema = z.discriminatedUnion('kind', [
@@ -84,6 +100,7 @@ export const ErrorCodeSchema = z.enum([
   'IDEMPOTENCY_CONFLICT', 'PAYLOAD_TOO_LARGE', 'PUBLISH_VALIDATION_FAILED',
   'MEDIA_NOT_READY', 'MEDIA_IN_USE', 'UNSUPPORTED_MEDIA_TYPE', 'RATE_LIMITED',
   'SERVICE_UNAVAILABLE', 'UNSUPPORTED_CATALOG', 'INTERNAL_ERROR',
+  'DEMO_RESTRICTION', 'EXTERNAL_RESTRICTION', 'SOURCE_IDENTITY_CONFLICT',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const FieldErrorSchema = z.strictObject({

@@ -1,6 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
 const externalBaseURL = process.env.E2E_BASE_URL;
+const fixtureOrigin = 'http://127.0.0.1:3327';
+if (!externalBaseURL) process.env.PUBLIC_FIXTURE_API_URL = fixtureOrigin;
 
 export default defineConfig({
   testDir: './tests',
@@ -18,10 +20,19 @@ export default defineConfig({
   },
   webServer: externalBaseURL
     ? undefined
-    : {
-        command: 'pnpm preview --port 3100',
-        url: 'http://127.0.0.1:3100',
-        reuseExistingServer: !process.env.CI,
-        timeout: 120_000,
-      },
+    : [
+        {
+          command: 'node tests/fixtures/public-api.mjs --port 3327',
+          url: `${fixtureOrigin}/__fixtures/health`,
+          reuseExistingServer: false,
+          timeout: 30_000,
+        },
+        {
+          command: 'pnpm preview --port 3100',
+          url: 'http://127.0.0.1:3100',
+          env: { VEHICLE_API_BASE_URL: fixtureOrigin },
+          reuseExistingServer: false,
+          timeout: 120_000,
+        },
+      ],
 });

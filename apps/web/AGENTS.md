@@ -2,7 +2,7 @@
 
 先读仓库根 [AGENTS](../../AGENTS.md)、[接手导航](../../docs/README.md) 和 [前端任务](../../docs/协作/前端.md)。本目录是 `@hd/web`，其 `src/`、`public/`、`tests/`、`scripts/` 均相对此应用。
 
-当前仍静态 export 与演示数据。保持现有页面和计算边界；真实车源阶段通过独立 API 获取数据，不导入其他应用源码。统一检查从仓库根执行 `pnpm check`，本应用检查用 `pnpm --filter @hd/web check`。具体运行见 [README](README.md)。
+当前FE-01已迁Node／standalone；首页、目录与动态详情通过独立API和公共契约获取数据，不导入其他应用源码。保留原视觉和纯计算边界，source.demo显著非库存，未知事实不造零；具体本轮验证见FE角色日志。统一检查从仓库根执行 `pnpm check`，本应用检查用 `pnpm --filter @hd/web check`。具体运行见 [README](README.md)。
 
 <!-- BEGIN:nextjs-agent-rules -->
 

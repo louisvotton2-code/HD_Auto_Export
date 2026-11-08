@@ -67,13 +67,13 @@ for (const locale of locales) {
   });
 }
 
-test('buying navigation stays on this page when switching languages and leads to the existing calculator', async ({
+test('buying navigation stays on this page when switching languages and leads to the catalog', async ({
   page,
 }) => {
   await page.goto('/zh/buy/');
   const main = page.getByTestId('buy-guide');
   await expect(main.locator('a[href="https://wa.me/8618215932610"]').first()).toBeVisible();
-  await expect(main.locator('a[href^="/zh/calculator"]').first()).toBeVisible();
+  await expect(main.locator('a[href^="/zh/cars/"]').first()).toBeVisible();
 
   for (const locale of ['en', 'ru', 'zh'] as const) {
     await page.locator('.language-switch summary').click();
@@ -90,9 +90,9 @@ test('buying navigation stays on this page when switching languages and leads to
     await expect(page.locator('.main-nav:visible a[aria-current="page"]')).toHaveCount(1);
   }
 
-  await main.locator('a[href^="/zh/calculator"]').first().click();
-  await expect(page).toHaveURL(/\/zh\/calculator\/russia\/?$/);
-  await expect(page.locator('.main-nav:visible a[href^="/zh/calculator"]')).toHaveAttribute(
+  await main.locator('a[href^="/zh/cars/"]').first().click();
+  await expect(page).toHaveURL(/\/zh\/cars\/?$/);
+  await expect(page.locator('.main-nav:visible a[href^="/zh/cars/"]')).toHaveAttribute(
     'aria-current',
     'page',
   );
@@ -102,30 +102,16 @@ test('buying navigation stays on this page when switching languages and leads to
   );
 });
 
-test('buying FAQ supports independent native keyboard disclosure', async ({ page }) => {
+test('buying FAQ keeps all answers visible as in the reference', async ({ page }) => {
   await page.goto('/en/buy/');
   const faq = page.getByTestId('buy-faq');
-  const details = faq.locator('details');
-  await expect(details).toHaveCount(4);
-  await expect(faq.locator('summary')).toHaveCount(4);
-  for (const detail of await details.all()) await expect(detail).not.toHaveAttribute('open', '');
-
-  const firstSummary = details.first().locator('summary');
-  await firstSummary.focus();
-  await page.keyboard.press('Enter');
-  await expect(details.first()).toHaveAttribute('open', '');
-  await expect(firstSummary).toBeFocused();
-  await expect(details.nth(1)).not.toHaveAttribute('open', '');
-  await details.nth(1).locator('summary').click();
-  await expect(details.first()).toHaveAttribute('open', '');
-  await expect(details.nth(1)).toHaveAttribute('open', '');
-  await firstSummary.focus();
-  await page.keyboard.press('Space');
-  await expect(details.first()).not.toHaveAttribute('open', '');
-  await expect(details.nth(1)).toHaveAttribute('open', '');
+  await expect(faq.locator('section')).toHaveCount(4);
+  await expect(faq.locator('h3')).toHaveCount(4);
+  await expect(faq.locator('details, summary')).toHaveCount(0);
+  for (const answer of await faq.locator('section > p').all()) await expect(answer).toBeVisible();
 });
 
-test('without JavaScript, buying content, FAQ, language links and calculator links remain usable', async ({
+test('without JavaScript, buying content, FAQ, language links and catalog links remain usable', async ({
   browser,
   baseURL,
 }) => {
@@ -141,23 +127,18 @@ test('without JavaScript, buying content, FAQ, language links and calculator lin
       await expect(page).toHaveURL(new RegExp(`/${locale}/buy/?$`));
       await expect(page.getByTestId('buy-step')).toHaveCount(8);
       await expect(page.getByTestId('buy-deposit')).toContainText('500');
-      const details = page.getByTestId('buy-faq').locator('details').first();
-      await details.locator('summary').click();
-      await expect(details).toHaveAttribute('open', '');
-      await details.locator('summary').click();
-      await expect(details).not.toHaveAttribute('open', '');
+      const answers = page.getByTestId('buy-faq').locator('section > p');
+      await expect(answers).toHaveCount(4);
+      for (const answer of await answers.all()) await expect(answer).toBeVisible();
       await expect(
-        page.getByTestId('buy-guide').locator(`a[href^="/${locale}/calculator"]`).first(),
+        page.getByTestId('buy-guide').locator(`a[href^="/${locale}/cars/"]`).first(),
       ).toBeVisible();
     }
-    const calculatorLink = page
-      .getByTestId('buy-guide')
-      .locator('a[href^="/ru/calculator"]')
-      .first();
+    const calculatorLink = page.getByTestId('buy-guide').locator('a[href^="/ru/cars/"]').first();
     // Public navigation points at the actual HTML, without a scripted entry hop.
-    await expect(calculatorLink).toHaveAttribute('href', '/ru/calculator/russia/');
+    await expect(calculatorLink).toHaveAttribute('href', '/ru/cars/');
     await calculatorLink.click();
-    await expect(page).toHaveURL(/\/ru\/calculator\/russia\/$/);
+    await expect(page).toHaveURL(/\/ru\/cars\/$/);
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   } finally {
     await context.close();
@@ -165,17 +146,15 @@ test('without JavaScript, buying content, FAQ, language links and calculator lin
 });
 
 for (const width of [360, 390, 820]) {
-  test(`${width}px Russian buying guide and navigation fit the viewport, including expanded FAQ`, async ({
+  test(`${width}px Russian buying guide and navigation fit the viewport, including visible FAQ`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/ru/buy/');
     await expect(page.getByTestId('buy-guide')).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    for (const summary of await page.getByTestId('buy-faq').locator('summary').all()) {
-      await summary.click();
-    }
-    await expect(page.getByTestId('buy-faq').locator('details[open]')).toHaveCount(4);
+    for (const answer of await page.getByTestId('buy-faq').locator('section > p').all())
+      await expect(answer).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
     await page.locator('.site-header [aria-controls="site-mobile-nav"]').click();

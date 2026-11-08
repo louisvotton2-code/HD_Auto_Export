@@ -1,4 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { resetPublicFixture } from './helpers/public-fixture';
+
+test.beforeEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
+test.afterEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
 
 async function prepareCard(
   page: Page,
@@ -7,7 +15,7 @@ async function prepareCard(
   await page.emulateMedia({ reducedMotion });
   await page.goto('/en/');
   await page.getByRole('button', { name: 'Pause autoplay', exact: true }).click();
-  const card = page.locator('[data-home-section="vehicles-kia"] article').first();
+  const card = page.locator('[data-home-section^="vehicles-"] article').first();
   await card.scrollIntoViewIfNeeded();
   await page.mouse.move(5, 80);
   return { card, details: card.getByRole('link', { name: 'Details', exact: true }) };

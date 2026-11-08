@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('the static export serves actual brand images and the decorative watermark without image optimization', async ({
+test('the standalone server serves actual brand images and the decorative watermark without image optimization', async ({
   page,
   request,
 }) => {

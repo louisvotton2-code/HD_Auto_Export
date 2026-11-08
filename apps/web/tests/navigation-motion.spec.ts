@@ -94,7 +94,7 @@ test('an unfinished route shows inline feedback without blocking the current cal
   });
   let heldRequests = 0;
   await page.route(
-    (url) => url.pathname.startsWith('/zh/buy/') && url.pathname.endsWith('.txt'),
+    (url) => url.pathname === '/zh/buy/' && url.searchParams.has('_rsc'),
     async (route) => {
       heldRequests++;
       await heldResponse;
@@ -180,9 +180,8 @@ test('reduced motion keeps route, result and disclosure interactions immediately
   await expect(page.locator('#transactionRate')).toBeHidden();
   await page.locator('.main-nav:visible a[href="/zh/buy/"]').click();
   await expect(page.getByTestId('buy-guide')).toBeVisible();
-  const faq = page.getByTestId('buy-faq').locator('details').first();
-  await faq.locator('summary').click();
-  await expect(faq).toHaveAttribute('open', '');
+  const faq = page.getByTestId('buy-faq');
+  for (const answer of await faq.locator('section > p').all()) await expect(answer).toBeVisible();
   expect(
     await page.evaluate(
       () =>

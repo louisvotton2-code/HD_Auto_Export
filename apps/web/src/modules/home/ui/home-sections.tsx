@@ -37,7 +37,7 @@ function BenefitIcon({ index }: { index: number }) {
   );
 }
 
-function DemoChat({
+function ConsultationCard({
   locale,
   index,
   expanded = false,
@@ -51,37 +51,29 @@ function DemoChat({
   return (
     <span className={`${styles.chat} ${expanded ? styles.chatExpanded : ''}`}>
       <span className={styles.chatHeader}>
-        <span className={styles.chatBack} aria-hidden="true">
-          ‹
-        </span>
         <span className={styles.chatAvatar} aria-hidden="true">
           HD
         </span>
         <span className={styles.chatIdentity}>
-          <strong>HD Auto Export</strong>
-          <small>{t.chatContact}</small>
+          <strong>{siteConfig.name}</strong>
+          <small>{t.consultationLabel}</small>
         </span>
-        <span aria-hidden="true">⋮</span>
       </span>
       <span className={styles.chatBody}>
-        <span className={styles.chatDate}>{t.chatToday}</span>
-        <span className={styles.chatDisclaimer}>{t.chatDemo}</span>
-        {chat.messages.map((message, messageIndex) => (
-          <span className={styles.chatBubble} data-company={message.fromCompany} key={messageIndex}>
-            <span>{message.text}</span>
-            <small>
-              10:{String(10 + messageIndex * 2).padStart(2, '0')}
-              {message.fromCompany ? ' ✓✓' : ''}
-            </small>
+        {chat.questions.map((item) => (
+          <span className={styles.questionPair} key={item.question}>
+            <span className={styles.chatBubble} data-kind="question">
+              <span className={styles.answerLabel}>{t.questionLabel}</span>
+              <span>{item.question}</span>
+            </span>
+            <span className={styles.chatBubble} data-kind="answer">
+              <span className={styles.answerLabel}>{t.answerLabel}</span>
+              <span>{item.answer}</span>
+            </span>
           </span>
         ))}
-        <span className={styles.chatDemoFooter}>{t.chatDemo}</span>
       </span>
-      <span className={styles.chatComposer} aria-hidden="true">
-        <span>＋</span>
-        <i />
-        <span>◉</span>
-      </span>
+      <span className={styles.chatFooter}>{siteConfig.name} · {t.consultationLabel}</span>
     </span>
   );
 }
@@ -104,7 +96,8 @@ export function HomeSections({
   const [interacting, setInteracting] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [selectedChat, setSelectedChat] = useState(0);
-  const [showFormNotice, setShowFormNotice] = useState(false);
+  const [phone, setPhone] = useState('');
+  const enquiryText = `${t.enquiryMessage}${phone.trim() ? `\n${t.enquiryPhoneLabel}: ${phone.trim()}` : ''}`;
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -145,117 +138,125 @@ export function HomeSections({
 
   return (
     <div className={styles.sections}>
-      <section
-        className={styles.popular}
-        aria-labelledby="popular-models-title"
-        data-home-section="popular-models"
-      >
-        <div className={styles.container}>
-          <div className={styles.popularHeading}>
-            <div>
-              <h2 id="popular-models-title">{t.popular}</h2>
-              <p>{t.popularBody}</p>
+      {models.length > 0 && (
+        <section
+          className={styles.popular}
+          aria-labelledby="popular-models-title"
+          data-home-section="popular-models"
+        >
+          <div className={styles.container}>
+            <div className={styles.popularHeading}>
+              <div>
+                <h2 id="popular-models-title">{t.popular}</h2>
+                <p>{t.popularBody}</p>
+              </div>
+              <Link className={styles.catalogLink} href={`/${locale}/cars/`}>
+                {t.catalog}
+              </Link>
             </div>
-            <Link className={styles.catalogLink} href={`/${locale}/cars/`}>
+            <div
+              ref={modelsRef}
+              className={styles.modelsTrack}
+              aria-label={t.popular}
+              tabIndex={0}
+              onScroll={(event) => {
+                const node = event.currentTarget;
+                const child = node.firstElementChild;
+                if (child)
+                  setActiveModel(
+                    Math.round(node.scrollLeft / (child.getBoundingClientRect().width + 20)),
+                  );
+              }}
+              onMouseEnter={() => setInteracting(true)}
+              onMouseLeave={() => setInteracting(false)}
+              onFocus={() => setInteracting(true)}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setInteracting(false);
+              }}
+              onTouchStart={() => setPaused(true)}
+              onWheel={() => setPaused(true)}
+              onKeyDown={() => setPaused(true)}
+            >
+              {models.map((model, index) => (
+                <Link
+                  className={styles.modelCard}
+                  href={model.href}
+                  key={`${model.brand}-${model.name}-${index}`}
+                >
+                  <span className={styles.modelPhoto}>
+                    <img
+                      src={model.image.url}
+                      alt={model.image.alt}
+                      width={model.image.width}
+                      height={model.image.height}
+                      loading="lazy"
+                    />
+                  </span>
+                  <span className={styles.modelBody}>
+                    <span className={styles.modelBrand}>{model.brand}</span>
+                    <strong className={styles.modelName}>{model.name}</strong>
+                    <span className={styles.modelSubtitle}>{t.modelScope}</span>
+                    <span className={styles.modelBottom}>
+                      <span>
+                        <small>{t.modelRecords}</small>
+                        <strong>{model.count.toLocaleString(locale)}</strong>
+                      </span>
+                      <span className={styles.modelMore}>{t.learn}</span>
+                    </span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+            {models.length > 1 && (
+              <div className={styles.pagination}>
+                <button
+                  type="button"
+                  className={styles.modelPrevious}
+                  aria-label={t.previous}
+                  onClick={() => goToModel((activeModel - 1 + models.length) % models.length)}
+                >
+                  ‹
+                </button>
+                <div className={styles.dots}>
+                  {models.map((model, index) => (
+                    <button
+                      key={`${model.name}-${index}`}
+                      className={styles.dot}
+                      data-active={activeModel === index}
+                      aria-label={`${t.slide} ${index + 1}`}
+                      aria-current={activeModel === index ? 'true' : undefined}
+                      onClick={() => goToModel(index)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={styles.modelNext}
+                  aria-label={t.next}
+                  onClick={() => goToModel((activeModel + 1) % models.length)}
+                >
+                  ›
+                </button>
+              </div>
+            )}
+            {models.length > 1 && (
+              <button
+                type="button"
+                className={styles.pause}
+                disabled={reducedMotion}
+                onClick={() => setPaused(!paused)}
+                aria-label={paused ? t.play : t.pause}
+              >
+                {paused ? '▶' : 'Ⅱ'}
+                <span>{paused ? t.play : t.pause}</span>
+              </button>
+            )}
+            <Link className={styles.mobileCatalog} href={`/${locale}/cars/`}>
               {t.catalog}
             </Link>
           </div>
-          <div
-            ref={modelsRef}
-            className={styles.modelsTrack}
-            aria-label={t.popular}
-            tabIndex={0}
-            onScroll={(event) => {
-              const node = event.currentTarget;
-              const child = node.firstElementChild;
-              if (child)
-                setActiveModel(
-                  Math.round(node.scrollLeft / (child.getBoundingClientRect().width + 20)),
-                );
-            }}
-            onMouseEnter={() => setInteracting(true)}
-            onMouseLeave={() => setInteracting(false)}
-            onFocus={() => setInteracting(true)}
-            onBlur={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget)) setInteracting(false);
-            }}
-            onTouchStart={() => setPaused(true)}
-            onWheel={() => setPaused(true)}
-            onKeyDown={() => setPaused(true)}
-          >
-            {models.map((model, index) => (
-              <Link
-                className={styles.modelCard}
-                href={model.href}
-                key={`${model.brand}-${model.name}-${index}`}
-              >
-                <span className={styles.modelPhoto}>
-                  <img src={model.image} alt={`${model.brand} ${model.name}`} loading="lazy" />
-                </span>
-                <span className={styles.modelBody}>
-                  <span className={styles.modelBrand}>{model.brand}</span>
-                  <strong className={styles.modelName}>{model.name}</strong>
-                  <span className={styles.modelSubtitle}>{model.subtitle || t.demo}</span>
-                  <span className={styles.modelBottom}>
-                    <span>
-                      <small>{model.priceUsd ? t.price : t.demo}</small>
-                      <strong>
-                        {model.priceUsd
-                          ? `$${new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale === 'ru' ? 'ru-RU' : 'en-US', { maximumFractionDigits: 0 }).format(model.priceUsd)}`
-                          : 'HD Auto Export'}
-                      </strong>
-                    </span>
-                    <span className={styles.modelMore}>{t.learn}</span>
-                  </span>
-                </span>
-              </Link>
-            ))}
-          </div>
-          <div className={styles.pagination}>
-            <button
-              type="button"
-              className={styles.modelPrevious}
-              aria-label={t.previous}
-              onClick={() => goToModel((activeModel - 1 + models.length) % models.length)}
-            >
-              ‹
-            </button>
-            <div className={styles.dots}>
-              {models.map((model, index) => (
-                <button
-                  key={`${model.name}-${index}`}
-                  className={styles.dot}
-                  data-active={activeModel === index}
-                  aria-label={`${t.slide} ${index + 1}`}
-                  aria-current={activeModel === index ? 'true' : undefined}
-                  onClick={() => goToModel(index)}
-                />
-              ))}
-            </div>
-            <button
-              type="button"
-              className={styles.modelNext}
-              aria-label={t.next}
-              onClick={() => goToModel((activeModel + 1) % models.length)}
-            >
-              ›
-            </button>
-          </div>
-          <button
-            type="button"
-            className={styles.pause}
-            disabled={reducedMotion}
-            onClick={() => setPaused(!paused)}
-            aria-label={paused ? t.play : t.pause}
-          >
-            {paused ? '▶' : 'Ⅱ'}
-            <span>{paused ? t.play : t.pause}</span>
-          </button>
-          <Link className={styles.mobileCatalog} href={`/${locale}/cars/`}>
-            {t.catalog}
-          </Link>
-        </div>
-      </section>
+        </section>
+      )}
 
       <section className={styles.why} aria-labelledby="why-hd-title" data-home-section="why">
         <div className={styles.container}>
@@ -328,7 +329,7 @@ export function HomeSections({
                 }}
               >
                 <span className={styles.reviewImage}>
-                  <DemoChat locale={locale} index={index} />
+                  <ConsultationCard locale={locale} index={index} />
                   <span className={styles.enlarge} aria-hidden="true">
                     ⤢
                   </span>
@@ -341,18 +342,18 @@ export function HomeSections({
         <dialog
           ref={dialogRef}
           className={styles.dialog}
-          aria-labelledby="demo-chat-title"
+          aria-labelledby="home-consultation-title"
           onClick={(event) => {
             if (event.target === event.currentTarget) dialogRef.current?.close();
           }}
         >
           <div className={styles.dialogToolbar}>
-            <h3 id="demo-chat-title">{t.chats[selectedChat].title}</h3>
+            <h3 id="home-consultation-title">{t.chats[selectedChat].title}</h3>
             <button type="button" onClick={() => dialogRef.current?.close()} aria-label={t.close}>
               ×
             </button>
           </div>
-          <DemoChat locale={locale} index={selectedChat} expanded />
+          <ConsultationCard locale={locale} index={selectedChat} expanded />
         </dialog>
       </section>
 
@@ -392,22 +393,24 @@ export function HomeSections({
           <p>{t.readyBody}</p>
           <form
             className={styles.enquiryForm}
-            onSubmit={(event) => {
-              event.preventDefault();
-              setShowFormNotice(true);
-            }}
+            action={siteConfig.contacts.whatsapp.href}
+            method="get"
+            target="_blank"
+            rel="noopener noreferrer"
           >
+            <input type="hidden" name="text" value={enquiryText} />
             <label className={styles.srOnly} htmlFor="home-phone">
               {t.phone}
             </label>
             <input
               id="home-phone"
               type="tel"
-              placeholder="+1 (999) 999-9999"
+              placeholder={t.phone}
               autoComplete="tel"
               maxLength={32}
-              pattern="[+0-9 ()-]{6,32}"
-              onChange={() => setShowFormNotice(false)}
+              pattern={String.raw`\+?[0-9][0-9 \(\)\-]{5,31}`}
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
               required
               aria-describedby="home-form-hint"
             />
@@ -419,14 +422,9 @@ export function HomeSections({
           <small className={styles.formHint} id="home-form-hint">
             {t.formHint}
           </small>
-          {showFormNotice && (
-            <div className={styles.formNotice} role="status">
-              <p>{t.formNotice}</p>
-              <a href={siteConfig.contacts.whatsapp.href} target="_blank" rel="noopener noreferrer">
-                {t.whatsapp} ↗
-              </a>
-            </div>
-          )}
+          <noscript>
+            <p className={styles.formHint}>{t.phoneFallback}</p>
+          </noscript>
         </div>
       </section>
     </div>

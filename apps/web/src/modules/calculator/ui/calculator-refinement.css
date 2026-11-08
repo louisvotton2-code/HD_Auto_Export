@@ -570,7 +570,7 @@
     min-height: 43px;
   }
 }
-:root {
+.calculator-simple {
   --red: #e5c05b;
   --red-soft: #e5c05b12;
 }

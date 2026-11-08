@@ -20,56 +20,18 @@ const questions = ['destinations', 'deposit', 'customs', 'insurance'] as const;
 
 export async function BuyingGuidePage({ locale }: { locale: Locale }) {
   const t = await getTranslations({ locale, namespace: 'BuyingGuide' });
+  const nav = await getTranslations({ locale, namespace: 'Nav' });
   const text = (key: string) => t(key, { deposit: buyingGuideConfig.depositUsd });
 
   return (
     <main id="main" data-testid="buy-guide" className={styles.page}>
-      <div className="shell">
+      <div className={styles.shell}>
         <section className={styles.hero} aria-labelledby="buy-title" data-motion-reveal>
-          <p className={styles.eyebrow}>
-            <span />
-            {text('eyebrow')}
-          </p>
-          <h1 id="buy-title">
-            {text('title')}
-            <span>{text('titleAccent')}</span>
-          </h1>
+          <h1 id="buy-title">{text('metaTitle')}</h1>
           <p className={styles.intro}>{text('description')}</p>
-          <div className={styles.actions}>
-            <a
-              className={styles.primaryButton}
-              href={siteConfig.contacts.whatsapp.href}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {text('heroContact')}
-              <Icon name="diagonal" size={17} />
-            </a>
-            <a className={styles.textButton} href="#buy-process">
-              {text('heroSteps')}
-              <Icon name="arrow" size={17} />
-            </a>
-          </div>
-          <div className={styles.overview}>
-            <div>
-              <span className={styles.overviewValue}>08</span>
-              <span>{text('overviewSteps')}</span>
-            </div>
-            <div>
-              <span className={styles.overviewValue}>
-                CIF <i>/</i> FOB
-              </span>
-              <span>{text('overviewTerms')}</span>
-            </div>
-          </div>
         </section>
 
-        <section id="buy-process" className={styles.process} aria-labelledby="process-title">
-          <div className={styles.sectionHeading}>
-            <p className={styles.eyebrow}>{text('processLabel')}</p>
-            <h2 id="process-title">{text('processTitle')}</h2>
-            <p>{text('processDescription')}</p>
-          </div>
+        <section id="buy-process" className={styles.process} aria-label={text('processLabel')}>
           <ol className={styles.steps} role="list">
             {steps.map(({ id, icon }, index) => (
               <li
@@ -80,25 +42,22 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
                 className={styles.step}
               >
                 <div className={styles.stepTop}>
-                  <span className={styles.stepIcon}>
-                    <Icon name={icon} size={23} />
-                  </span>
                   <span className={styles.stepNumber}>
-                    {t('stepLabel', { number: String(index + 1).padStart(2, '0') })}
+                    {t('stepLabel', { number: String(index + 1) })}
+                  </span>
+                  <span className={styles.stepIcon}>
+                    <Icon name={icon} size={20} />
                   </span>
                 </div>
                 <div className={styles.stepContent}>
-                  <h3>{text(`steps.${id}.title`)}</h3>
+                  <h2>{text(`steps.${id}.title`)}</h2>
                   <p
                     className={styles.stepBody}
                     data-testid={id === 'deposit' ? 'buy-deposit' : undefined}
                   >
                     {text(`steps.${id}.body`)}
                   </p>
-                  <p className={styles.stepNote}>
-                    <span aria-hidden="true" />
-                    {text(`steps.${id}.note`)}
-                  </p>
+                  <p className={styles.stepNote}>{text(`steps.${id}.note`)}</p>
                 </div>
               </li>
             ))}
@@ -107,7 +66,6 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
 
         <section id="delivery" className={styles.delivery} aria-labelledby="delivery-title">
           <div className={styles.sectionHeading}>
-            <p className={styles.eyebrow}>{text('termsEyebrow')}</p>
             <h2 id="delivery-title">{text('termsTitle')}</h2>
             <p>{text('termsDescription')}</p>
           </div>
@@ -150,33 +108,28 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
           data-motion-reveal
         >
           <div className={styles.sectionHeading}>
-            <p className={styles.eyebrow}>{text('faqEyebrow')}</p>
             <h2 id="buy-faq-title">{text('faqTitle')}</h2>
-            <p>{text('faqDescription')}</p>
           </div>
           <div className={styles.questions}>
             {questions.map((question) => (
-              <details key={question}>
-                <summary>
-                  {text(`faq.${question}.question`)}
-                  <Icon name="plus" size={19} />
-                </summary>
+              <section key={question} aria-labelledby={`buy-faq-${question}`}>
+                <h3 id={`buy-faq-${question}`}>{text(`faq.${question}.question`)}</h3>
                 <p>{text(`faq.${question}.answer`)}</p>
-              </details>
+              </section>
             ))}
           </div>
         </section>
 
         <section className={styles.cta} aria-labelledby="buy-cta-title" data-motion-reveal>
-          <span className={styles.ctaIcon} aria-hidden="true">
-            <Icon name="car" size={36} />
-          </span>
-          <p className={styles.eyebrow}>{text('ctaEyebrow')}</p>
           <h2 id="buy-cta-title">{text('ctaTitle')}</h2>
           <p>{text('ctaDescription')}</p>
           <div className={styles.actions}>
+            <Link href="/cars/" className={styles.primaryButton}>
+              {nav('vehicles')}
+              <Icon name="arrow" size={17} />
+            </Link>
             <a
-              className={styles.primaryButton}
+              className={styles.secondaryButton}
               href={siteConfig.contacts.whatsapp.href}
               target="_blank"
               rel="noopener noreferrer"
@@ -184,10 +137,6 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
               {text('ctaContact')}
               <Icon name="diagonal" size={17} />
             </a>
-            <Link href="/calculator/russia/" className={styles.secondaryButton}>
-              {text('ctaCalculator')}
-              <Icon name="calculator" size={17} />
-            </Link>
           </div>
         </section>
       </div>

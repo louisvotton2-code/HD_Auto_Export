@@ -1,4 +1,16 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
+import {
+  resetPublicFixture,
+  patchPublicFixture,
+  publicFixtureLabels,
+} from './helpers/public-fixture';
+
+test.beforeEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
+test.afterEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
 
 const demoPhone = '15550007654';
 
@@ -17,11 +29,14 @@ function expectNoPhoneTransmission(requests: Request[], phone: string) {
       headers: request.headers(),
     }))
     .filter((request) => JSON.stringify(request).includes(phone));
-  expect(transmissions, 'the demo phone must not appear in any outgoing request').toEqual([]);
+  expect(
+    transmissions,
+    'the entered phone must not appear in a website request before contact draft navigation',
+  ).toEqual([]);
 }
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  test(`${locale}: home, demo catalog and vehicle detail are linked and localized`, async ({
+  test(`${locale}: home, HTTP catalog and public vehicle details are linked and localized`, async ({
     page,
     request,
   }) => {
@@ -38,32 +53,40 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.locator('main').locator(`a[href="/${locale}/cars/"]`).first().click();
     await expect(page).toHaveURL(new RegExp(`/${locale}/cars/$`));
     await expect(page.locator('main h1')).toBeVisible();
-    const vehicle = page.locator(`main a[href="/${locale}/cars/byd-seagull/"]`).first();
+    const vehicle = page.locator(`main a[href="/${locale}/cars/fixture_demo/"]`).first();
     await expect(vehicle).toBeVisible();
     await vehicle.click();
-    await expect(page).toHaveURL(new RegExp(`/${locale}/cars/byd-seagull/$`));
-    await expect(page.locator('main h1')).toHaveText('Seagull');
+    await expect(page).toHaveURL(new RegExp(`/${locale}/cars/fixture_demo/$`));
+    await expect(page.locator('main h1')).toHaveText(publicFixtureLabels[locale].title);
+    await expect(page.locator('main')).not.toContainText(publicFixtureLabels[locale].demo);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
   });
 }
 
-test('demo filters, empty state and reset operate on the sample vehicles', async ({ page }) => {
+test('HTTP-supported filters, empty state and reset operate on published vehicle information', async ({
+  page,
+}) => {
   await page.goto('/zh/cars/');
   const initialCount = await page.locator('main article').count();
   expect(initialCount).toBeGreaterThan(0);
-  await page.getByRole('searchbox', { name: '搜索品牌或车型' }).fill('K3 (Forte)');
-  await expect(page.locator('main article')).toHaveCount(1);
-  await expect(page.locator('main article')).toContainText('K3');
-  await page.getByLabel('动力类型').selectOption('electric');
+  const form = page.locator('main form');
+  await form.locator('select[name="make"]').selectOption('alpha');
+  await form.locator('select[name="model"]').selectOption('alpha_model');
+  await form.locator('select[name="powertrain"]').selectOption('petrol');
+  await form.getByRole('button', { name: '应用筛选' }).click();
+  await expect(page.getByTestId('public-catalog-empty')).toBeVisible();
   await expect(page.locator('main article')).toHaveCount(0);
-  await expect(page.getByText('没有找到符合条件的示例车辆，请试试其他筛选条件。')).toBeVisible();
-  await page.getByRole('button', { name: '清除筛选' }).click();
+  expect(new URL(page.url()).searchParams.get('make')).toBe('alpha');
+  await form.getByRole('link', { name: '清除筛选' }).click();
   await expect(page.locator('main article')).toHaveCount(initialCount);
+  await expect(form.locator('select[name="make"]')).toHaveValue('');
 });
 
 test('home follows the reference section order and measured desktop hero geometry', async ({
   page,
+  request,
 }) => {
+  await patchPublicFixture(request, { sectionCount: 2 });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/en/');
   const hero = page.locator('[data-home-section="hero"]');
@@ -78,7 +101,7 @@ test('home follows the reference section order and measured desktop hero geometr
   expect(Math.abs(heading!.x + heading!.width / 2 - 720)).toBeLessThan(1);
   await expect(hero.locator('h1')).toHaveCSS('font-size', '72px');
   const details = page
-    .locator('[data-home-section="vehicles-kia"] article')
+    .locator('[data-home-section^="vehicles-"] article')
     .first()
     .getByRole('link', { name: 'Details' });
   await expect(details).toHaveCSS('border-radius', '12px');
@@ -87,7 +110,7 @@ test('home follows the reference section order and measured desktop hero geometr
     'linear-gradient',
   );
   await expect(
-    page.locator('[data-home-section="vehicles-kia"] article strong').first(),
+    page.locator('[data-home-section^="vehicles-"] article').nth(1).locator('strong').last(),
   ).toContainText('USD');
   const order = await page
     .locator('[data-home-section]')
@@ -95,8 +118,8 @@ test('home follows the reference section order and measured desktop hero geometr
   expect(order).toEqual([
     'hero',
     'shortcuts',
-    'vehicles-kia',
-    'vehicles-hyundai',
+    'vehicles-featured',
+    'vehicles-recent',
     'popular-models',
     'why',
     'buying-process',
@@ -106,21 +129,22 @@ test('home follows the reference section order and measured desktop hero geometr
   ]);
 });
 
-test('sample rails support manual browsing, favorites, pause and automatic movement', async ({
+test('HTTP vehicle rails support manual browsing, favorites, pause and automatic movement', async ({
   page,
 }) => {
   test.setTimeout(25_000);
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/zh/');
   const home = page.getByTestId('home-page');
   await page.getByRole('button', { name: '暂停自动播放', exact: true }).click();
   await expect(home).toHaveAttribute('data-motion-paused', 'true');
-  const kia = page.locator('[data-home-section="vehicles-kia"]');
-  const rail = kia.locator('[tabindex="0"]');
+  const featured = page.locator('[data-home-section^="vehicles-"]');
+  const rail = featured.locator('[tabindex="0"]');
   await rail.scrollIntoViewIfNeeded();
-  await kia.getByRole('button', { name: 'Kia — 下一组车辆' }).click();
+  await featured.getByRole('button', { name: '配置精选 — 下一组车辆' }).click();
   await expect.poll(() => rail.evaluate((n) => n.scrollLeft)).toBeGreaterThan(100);
-  const save = kia.locator('article').nth(1).getByRole('button');
+  const save = featured.locator('article').nth(1).getByRole('button');
   await save.click();
   await expect(save).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '恢复自动播放', exact: true }).click();
@@ -129,8 +153,8 @@ test('sample rails support manual browsing, favorites, pause and automatic movem
   await page.locator('.site-header .brand').focus();
   const position = await rail.evaluate((n) => n.scrollLeft);
   await expect.poll(() => rail.evaluate((n) => n.scrollLeft), { timeout: 9000 }).not.toBe(position);
-  await page.goto('/zh/cars/kia-k3-2015/');
-  await expect(page.getByText('演示车辆 · 韩国参考站样例')).toBeVisible();
+  await page.goto('/zh/cars/fixture_demo/');
+  await expect(page.locator('main')).not.toContainText('展示样例，非实际库存');
 });
 
 test('parts placeholder and mobile menu are explicit and keyboard operable', async ({ page }) => {
@@ -170,15 +194,15 @@ test('all locales preserve centered hero, three shortcuts and usable rails acros
         .locator('#home-shortcuts')
         .evaluate((n) => Array.from(n.children).map((c) => c.getBoundingClientRect().y));
       expect(new Set(shortcuts).size).toBe(1);
-      const kia = page.locator('[data-home-section="vehicles-kia"] article').first();
-      const card = await kia.boundingBox();
+      const featured = page.locator('[data-home-section^="vehicles-"] article').first();
+      const card = await featured.boundingBox();
       expect(card!.width).toBeGreaterThan(width < 640 ? width - 35 : 250);
       expect(card!.width).toBeLessThanOrEqual(width - 30);
     }
   }
 });
 
-test('model controls, demo conversation dialog and local enquiry work without sending data', async ({
+test('model controls and service questions use the reference interactions without presentation-only notices', async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -189,89 +213,61 @@ test('model controls, demo conversation dialog and local enquiry work without se
     'aria-current',
     'true',
   );
-  const reviews = page.locator('[data-home-section="reviews"]');
-  await expect(reviews).toContainText('不是真实客户评价');
-  await reviews.getByRole('button', { name: '放大查看: 选车咨询 · 演示', exact: true }).click();
+  const questions = page.locator('[data-home-section="reviews"]');
+  await expect(questions).not.toContainText(/演示|虚构|样例|客户评价/);
+  await questions.locator('button').first().click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('虚构对话');
+  await expect(dialog).toContainText(/车型|选车|咨询/);
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
-  const enquiries = page.locator('[data-home-section="cta"]');
-  const initialURL = page.url();
-  const requests = trackRequests(page);
-  await enquiries.getByRole('textbox').fill(demoPhone);
-  await enquiries.getByRole('button', { name: /发送/ }).click();
-  await expect(enquiries.getByRole('status')).toBeVisible();
-  await expect(enquiries.getByRole('status')).toContainText('未');
-  expectNoPhoneTransmission(requests, demoPhone);
-  expect(requests.filter((request) => request.method() === 'POST')).toEqual([]);
-  expect(page.url()).toBe(initialURL);
 });
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  for (const submit of ['button', 'Enter'] as const) {
-    test(`${locale}: demo enquiry keeps the phone private without JavaScript (${submit})`, async ({
+  for (const javaScriptEnabled of [true, false]) {
+    test(`${locale}: inquiry opens a WhatsApp draft only after explicit submission (JS ${javaScriptEnabled})`, async ({
       browser,
       baseURL,
     }) => {
-      const context = await browser.newContext({
-        baseURL,
-        javaScriptEnabled: false,
-        viewport: { width: 390, height: 844 },
+      const context = await browser.newContext({ baseURL, javaScriptEnabled });
+      const outbound: string[] = [];
+      // Inspect the draft navigation without contacting a real chat service.
+      await context.route('https://wa.me/**', (route) => {
+        outbound.push(route.request().url());
+        return route.fulfill({
+          status: 200,
+          contentType: 'text/html',
+          body: '<title>Intercepted contact draft</title>',
+        });
       });
-      const page = await context.newPage();
       try {
-        const route = `/${locale}/`;
-        await page.goto(route);
+        const page = await context.newPage();
         const requests = trackRequests(page);
-        const enquiries = page.locator('[data-home-section="cta"]');
-        const phone = enquiries.getByRole('textbox');
-        await phone.fill(demoPhone);
-        // Observe a real native submit/reload, including when its URL is unchanged.
-        await Promise.all([
-          page.waitForEvent('load'),
-          submit === 'button'
-            ? enquiries.getByRole('button').click()
-            : phone.press('Enter'),
-        ]);
-        expect(requests.some((request) => request.isNavigationRequest())).toBe(true);
+        await page.goto(`/${locale}/`);
+        const form = page.locator('[data-home-section="cta"] form');
+        await form.getByRole('textbox').fill(demoPhone);
+        expect(outbound).toEqual([]);
+        const popup = context.waitForEvent('page');
+        await form.getByRole('button').click();
+        const contact = await popup;
+        await contact.waitForLoadState('domcontentloaded');
+        expect(outbound).toHaveLength(1);
+        const url = new URL(outbound[0]!);
+        expect(url.origin + url.pathname).toBe('https://wa.me/8618215932610');
+        expect([...url.searchParams.keys()]).toEqual(['text']);
+        const text = url.searchParams.get('text')!;
+        if (javaScriptEnabled) expect(text).toContain(demoPhone);
+        else expect(text).not.toContain(demoPhone);
+        expect(text).not.toMatch(/演示|demo|fictional|демонстрац/i);
         expectNoPhoneTransmission(requests, demoPhone);
-        expect(new URL(page.url()).pathname).toBe(route);
-        expect(new URL(page.url()).search).toBe('');
-        expect(page.url()).not.toContain(demoPhone);
+        expect(requests.filter((request) => request.method() === 'POST')).toEqual([]);
+        await expect(page).toHaveURL(new RegExp(`/${locale}/$`));
+        await expect(page.locator('[data-home-section="cta"] [role="status"]')).toHaveCount(0);
       } finally {
         await context.close();
       }
     });
   }
-
-  test(`${locale}: demo enquiry preserves the local notice for button and Enter with JavaScript`, async ({
-    page,
-  }) => {
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.goto(`/${locale}/`);
-    const initialURL = page.url();
-    const requests = trackRequests(page);
-    const enquiries = page.locator('[data-home-section="cta"]');
-    const phone = enquiries.getByRole('textbox');
-    const notice = enquiries.getByRole('status');
-    const notSubmitted = { zh: '未提交', en: 'not been submitted', ru: 'не отправлен' };
-    for (const submit of ['button', 'Enter']) {
-      await phone.fill(demoPhone);
-      await expect(notice).not.toBeVisible();
-      if (submit === 'button') await enquiries.getByRole('button').click();
-      else await phone.press('Enter');
-      await expect(notice).toBeVisible();
-      await expect(notice).toContainText(notSubmitted[locale]);
-      await expect(notice.getByRole('link')).toHaveAttribute('href', /^https:\/\/wa\.me\//);
-      expectNoPhoneTransmission(requests, demoPhone);
-      expect(requests.filter((request) => request.method() === 'POST')).toEqual([]);
-      expect(page.url()).toBe(initialURL);
-      await phone.fill('');
-      await expect(notice).not.toBeVisible();
-    }
-  });
 }
 
 test('mobile home navigation and language menu remain usable without JavaScript', async ({

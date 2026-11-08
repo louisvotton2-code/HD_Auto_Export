@@ -8,14 +8,14 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "dev": "pnpm --filter @hd/web dev",
-    "build": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api build && pnpm --filter @hd/api openapi && pnpm --filter @hd/web build",
+    "dev": "pnpm dev:web",
+    "build": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api build && pnpm --filter @hd/api openapi && pnpm --filter @hd/admin build && pnpm --filter @hd/web build",
     "preview": "pnpm --filter @hd/web preview",
-    "typecheck": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api typecheck && pnpm --filter @hd/web typecheck",
-    "test": "pnpm --filter @hd/contracts build && pnpm --filter @hd/contracts test && pnpm --filter @hd/api test && pnpm --filter @hd/web test",
+    "typecheck": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api typecheck && pnpm --filter @hd/admin typecheck && pnpm --filter @hd/web typecheck",
+    "test": "pnpm --filter @hd/contracts build && pnpm --filter @hd/contracts test && pnpm --filter @hd/api test && pnpm --filter @hd/admin test && pnpm --filter @hd/web test",
     "test:watch": "pnpm --filter @hd/web test:watch",
-    "test:e2e": "pnpm --filter @hd/web test:e2e",
-    "check": "pnpm check:git-workflow && pnpm check:workspace && pnpm --filter @hd/contracts check && pnpm --filter @hd/api check && pnpm --filter @hd/api test:integration && pnpm --filter @hd/web check",
+    "test:e2e": "pnpm --filter @hd/web test:e2e && pnpm --filter @hd/admin test:e2e",
+    "check": "pnpm check:git-workflow && pnpm check:workspace && pnpm --filter @hd/contracts check && pnpm --filter @hd/api check && pnpm --filter @hd/api test:integration && pnpm --filter @hd/admin check && pnpm --filter @hd/web check",
     "dev:api": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api dev",
     "db:up": "docker compose -p hd-auto-be -f apps/api/compose.yaml up -d --wait",
     "db:down": "docker compose -p hd-auto-be -f apps/api/compose.yaml down",
@@ -26,7 +26,9 @@
     "review:record": "node scripts/git-workflow.mjs review-record",
     "prepare": "node scripts/git-workflow.mjs prepare",
     "check:workspace": "node --test scripts/check-workspace.test.mjs && node scripts/check-workspace.mjs",
-    "check:boundaries": "pnpm check:workspace && pnpm --filter @hd/web check:boundaries"
+    "check:boundaries": "pnpm check:workspace && pnpm --filter @hd/web check:boundaries",
+    "dev:admin": "pnpm --filter @hd/contracts build && pnpm --filter @hd/admin dev",
+    "dev:web": "pnpm --filter @hd/contracts build && pnpm --filter @hd/web dev --port 3317"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

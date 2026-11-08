@@ -61,6 +61,66 @@ export function makePublicVehicleFixture(): PublicVehicle {
   return structuredClone(publicVehicleFixture);
 }
 
+/** Isolated UI fixtures only; these objects are never inserted as operating inventory. */
+const demoDraft = makeVehicleDraftFixture();
+demoDraft.source = { kind: 'demo' };
+Object.assign(demoDraft.facts, {
+  manufacturedAt: null, firstRegistration: null, mileageKm: null,
+  registrationStatus: 'unknown', location: null,
+});
+demoDraft.price = { kind: 'on_request', money: null, includes: [] };
+demoDraft.internal = { purchaseCost: null, notes: 'Synthetic demonstration fixture; not inventory.', supplierContact: null, vin: null };
+for (const field of Object.values(demoDraft.content)) {
+  for (const locale of ['zh', 'en', 'ru'] as const) {
+    const text = field.translations[locale]!;
+    text.kind = locale === 'zh' ? 'original' : 'machine';
+    text.reviewStatus = 'pending';
+    text.humanEditVersion = 0;
+    text.engineVersion = locale === 'zh' ? null : 'fixture-engine-1';
+  }
+}
+export const demoVehicleDraftFixture = VehicleDraftInputSchema.parse(demoDraft);
+export function makeDemoVehicleDraftFixture(): VehicleDraftInput {
+  return structuredClone(demoVehicleDraftFixture);
+}
+export const demoPublicVehicleFixture = PublicVehicleSchema.parse({
+  ...publicVehicleFixture,
+  id: 'fixture_demo_vehicle_1', stockCode: 'DEMO-FIXTURE-0001', detailPath: '/ru/cars/fixture_demo_vehicle_1/',
+  source: { kind: 'demo' }, facts: demoVehicleDraftFixture.facts,
+  price: demoVehicleDraftFixture.price, availability: 'unknown', availabilityCheckedAt: null,
+  content: {
+    title: { ...publicVehicleFixture.content.title, kind: 'machine', reviewed: false },
+    description: { ...publicVehicleFixture.content.description!, kind: 'machine', reviewed: false },
+  },
+});
+
+/** Entirely synthetic external metadata; example.invalid is never a source integration. */
+const externalSource = {
+  kind: 'external' as const,
+  platform: { id: 'fixture_market', name: 'Synthetic example platform' },
+  listingUrl: 'https://example.invalid/listings/synthetic-001',
+  externalId: 'synthetic-001', collectedAt: fixtureTime, sourceUpdatedAt: null,
+};
+const externalDraft = makeDemoVehicleDraftFixture();
+externalDraft.source = externalSource;
+externalDraft.facts = structuredClone(vehicleDraftFixture.facts);
+externalDraft.price = { kind: 'reference', money: { amount: '23500.00', currency: 'USD' }, includes: [] };
+externalDraft.internal.notes = 'Synthetic external source fixture; no real listing or authorization.';
+export const externalVehicleDraftFixture = VehicleDraftInputSchema.parse(externalDraft);
+export function makeExternalVehicleDraftFixture(): VehicleDraftInput {
+  return structuredClone(externalVehicleDraftFixture);
+}
+export const publicExternalVehicleFixture = PublicVehicleSchema.parse({
+  ...demoPublicVehicleFixture,
+  id: 'fixture_external_vehicle_1', stockCode: 'EXTERNAL-FIXTURE-0001', detailPath: '/ru/cars/fixture_external_vehicle_1/',
+  source: { kind: 'external', platform: externalSource.platform, listingUrl: externalSource.listingUrl },
+  facts: externalVehicleDraftFixture.facts, price: externalVehicleDraftFixture.price,
+  fetchedAt: externalSource.collectedAt, sourceUpdatedAt: externalSource.sourceUpdatedAt,
+});
+export function makePublicExternalVehicleFixture(): PublicVehicle {
+  return structuredClone(publicExternalVehicleFixture);
+}
+
 const pendingTranslation = makeVehicleDraftFixture();
 pendingTranslation.content.title.translations.ru = {
   text: 'Машинный перевод для проверки', kind: 'machine', reviewStatus: 'pending',
@@ -79,6 +139,11 @@ koreanSource.content.title = {
 export const contractFixtures = {
   draft: adminVehicleFixture,
   published: publicVehicleFixture,
+  demoDraft: demoVehicleDraftFixture,
+  demoPublic: demoPublicVehicleFixture,
+  externalDraft: externalVehicleDraftFixture,
+  externalPublic: publicExternalVehicleFixture,
+  deleted: AdminVehicleSchema.parse({ ...adminVehicleFixture, version: 2, deletedAt: fixtureTime }),
   onRequest: PublicVehicleSchema.parse({ ...publicVehicleFixture, price: { kind: 'on_request', money: null, includes: [] } }),
   reserved: PublicVehicleSchema.parse({ ...publicVehicleFixture, availability: 'reserved' }),
   sold: PublicVehicleSchema.parse({ ...publicVehicleFixture, availability: 'sold' }),

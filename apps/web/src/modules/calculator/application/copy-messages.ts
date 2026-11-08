@@ -7,7 +7,7 @@ export const copyQuoteMessages = {
     fxSnapshotDate: '市场参考汇率数据日期',
     manualFx: '手动设置的参考汇率',
     automaticFx: '构建时获取的市场参考汇率快照',
-    fallbackFx: '默认演示参考汇率',
+    fallbackFx: '默认参考汇率',
     marketCrossRate: 'USD 展示所用市场交叉汇率',
   },
   en: {
@@ -18,7 +18,7 @@ export const copyQuoteMessages = {
     fxSnapshotDate: 'Market reference-rate data date',
     manualFx: 'Manually entered reference rates',
     automaticFx: 'Market reference-rate snapshot fetched at build time',
-    fallbackFx: 'Default illustrative reference rates',
+    fallbackFx: 'Default reference rates',
     marketCrossRate: 'Market cross-rate used for USD display',
   },
   ru: {
@@ -29,7 +29,7 @@ export const copyQuoteMessages = {
     fxSnapshotDate: 'Дата рыночного справочного курса',
     manualFx: 'Справочные курсы, введённые вручную',
     automaticFx: 'Снимок рыночных справочных курсов на момент сборки',
-    fallbackFx: 'Демонстрационные справочные курсы',
+    fallbackFx: 'Справочные курсы по умолчанию',
     marketCrossRate: 'Рыночный кросс-курс для отображения в USD',
   },
 } as const;

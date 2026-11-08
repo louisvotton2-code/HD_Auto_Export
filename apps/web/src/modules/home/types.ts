@@ -1,24 +1,9 @@
-/** Presentation-only contract. Records arrive through the vehicle module facade. */
-export type HomeVehicle = {
-  slug: string;
-  make: string;
-  model: string;
-  year: number;
-  priceUsd: number;
-  referencePriceKrw?: number;
-  transmission?: 'automatic' | 'manual';
-  mileageKm: number;
-  fuel: string;
-  body: string;
-  image: string;
-  imageAlt: string;
-  sampleOrigin: 'company-legacy' | 'reference-korea';
-};
+/** A catalog model facet, never a specific car or an inventory quotation. */
 export type HomeModel = {
   name: string;
   brand: string;
-  image: string;
   href: string;
-  subtitle?: string;
-  priceUsd?: number;
+  count: number;
+  /** A representative from the already requested home sections, not a generic brand photo. */
+  image: { url: string; alt: string; width: number; height: number };
 };

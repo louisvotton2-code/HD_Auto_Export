@@ -1,4 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { resetPublicFixture } from './helpers/public-fixture';
+
+test.beforeEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
+test.afterEach(async ({ request }) => {
+  await resetPublicFixture(request);
+});
 
 type ArcSample = { x: number; y: number; radius: number; frame: number };
 type CanvasProbe = { frames: number; arcs: ArcSample[] };
@@ -169,7 +177,7 @@ test('vehicle cards rotate in opposite directions across the pointer, reset on l
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/en/');
   await page.getByRole('button', { name: 'Pause autoplay', exact: true }).click();
-  const card = page.locator('[data-home-section="vehicles-kia"] article').first();
+  const card = page.locator('[data-home-section^="vehicles-"] article').first();
   await card.scrollIntoViewIfNeeded();
   const box = await card.boundingBox();
   await page.mouse.move(box!.x + box!.width * 0.2, box!.y + box!.height * 0.2);
@@ -212,7 +220,7 @@ test('vehicle tilt stays disabled for touch pointers and reduced-motion users', 
     try {
       const page = await context.newPage();
       await page.goto('/en/');
-      const card = page.locator('[data-home-section="vehicles-kia"] article').first();
+      const card = page.locator('[data-home-section^="vehicles-"] article').first();
       await card.scrollIntoViewIfNeeded();
       const box = await card.boundingBox();
       if (touch) await card.locator('h3').tap();

@@ -9,4 +9,4 @@ for (const relative of ['out/', '.next/cache/fetch-cache/', '.next/standalone/']
     force: true,
   });
 }
-console.log('Static build prepared; currency snapshot will be fetched during this build.');
+console.log('Node build prepared; calculator pages keep a build-time currency snapshot.');

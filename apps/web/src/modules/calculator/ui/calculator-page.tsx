@@ -200,6 +200,9 @@ export function CalculatorPage({
     : country.personalReference
       ? t('personal')
       : null;
+  const countryName = tc(country.code);
+  const pageTitle = t('pageTitle', { country: countryName });
+  const titleCountryIndex = pageTitle.indexOf(countryName);
   const lines = result.lines;
   const feeDetailsId = (line: CalculationLine, additional = false) =>
     `fee-details-${country.code}-${additional ? 'extra' : 'main'}-${line.id}`;
@@ -387,21 +390,8 @@ export function CalculatorPage({
   }
 
   return (
-    <main id="main" className="calculator-main calculator-simple">
+    <main id="main" className="calculator-main calculator-simple calculator-reference">
       <section className="hero shell simple-hero" aria-labelledby="page-title">
-        <div className="hero-copy">
-          <span className="eyebrow">
-            <span />
-            {t('originLabel')}
-          </span>
-          <h1 id="page-title">{t('pageTitle', { country: tc(country.code) })}</h1>
-          <p>{t('simpleDescription')}</p>
-        </div>
-        <span className="route-pill">
-          CN <Icon name="arrow" size={16} /> {country.code}
-        </span>
-      </section>
-      <div className="shell">
         <nav className="country-nav" aria-label={t('destination')} ref={countryNavRef}>
           {countries.map((item) => (
             <Link
@@ -417,6 +407,29 @@ export function CalculatorPage({
             </Link>
           ))}
         </nav>
+        <div className="hero-copy">
+          <span className="eyebrow">
+            <span />
+            {t('originLabel')}
+          </span>
+          <h1 id="page-title">
+            {titleCountryIndex < 0 ? (
+              pageTitle
+            ) : (
+              <>
+                {pageTitle.slice(0, titleCountryIndex)}
+                <span className="calculator-country-name">{countryName}</span>
+                {pageTitle.slice(titleCountryIndex + countryName.length)}
+              </>
+            )}
+          </h1>
+          <p>{t('simpleDescription')}</p>
+        </div>
+        <span className="route-pill">
+          CN <Icon name="arrow" size={16} /> {country.code}
+        </span>
+      </section>
+      <div className="shell">
         <div className="calculator-grid">
           <section className="form-card panel" aria-labelledby="form-title" data-motion-reveal>
             <div className="card-heading">
