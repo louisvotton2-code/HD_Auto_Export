@@ -43,6 +43,20 @@ pnpm --filter @hd/contracts test
 
 公开文本只含 `text`、`requestedLocale`、`contentLocale`、`kind`、`reviewed`。`kind` 表示产生方式，`reviewed` 独立表示是否已人工审核；机器译文审核通过仍保留 `kind:machine`。此形状支持未来经明确批准的原文回退，但不自行授权降级；人工精选仍按三语审核门槛发布。引擎版本、源版本和详细审核过程只在管理契约。
 
+### 多语言固定样例
+
+从 `@hd/contracts/fixtures` 导入 `contractFixtures`。以下均为合成情景，外部来源/翻译任务尚未运行；需要修改样例时先 `structuredClone`。
+
+| 情景 | 样例 | 预期消费行为 |
+| --- | --- | --- |
+| 单语来源 | `untranslatedKorean` | 标题保留韩语原文，三语标题为 null；描述沿用基础样例，当前不满足精选发布条件 |
+| 混合审核状态 | `pendingTranslation` | 中文原文标题/英文人工标题已审核，俄语机器标题待审；不能把机器来源显示成人工译文 |
+| 翻译中（后续任务模拟） | `untranslatedKorean` | 原文标题已入库，等待译文时仍保持相同草稿，不伪造目标标题 |
+| 翻译失败（后续任务模拟） | `untranslatedKorean` | 保存结果与等待时相同，失败不清除原文标题、不改变库存；不能仅凭 null 译文判断任务失败 |
+| 原文更新 | `staleTranslation` | 标题原文版本提高，旧标题译文不满足当前版本发布门槛，需复核 |
+
+翻译中与翻译失败复用同一份已保存内容，说明任务状态与车辆内容分离。BE-04/BE-I18N-01 接入 worker 时另交内部任务状态样例和接口；本期不虚构正在运行的任务、供应商错误或公开失败详情。
+
 ## OpenAPI 和适配
 
 API 从这些 schema 生成 JSON Schema，并组合路径、状态码和安全元数据，不复制手写类型。schema 可用 `z.toJSONSchema` 转为 Draft 2020-12，保持 `unrepresentable:'throw'`。日历、重复媒体等附加约束仍需执行 Zod 校验，JSON Schema 不包含全部业务检查。
