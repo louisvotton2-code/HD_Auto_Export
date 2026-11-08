@@ -4,13 +4,16 @@ export const CONTRACT_VERSION = '0.1.0';
 export const LocaleSchema = z.enum(['zh', 'en', 'ru']);
 export type Locale = z.infer<typeof LocaleSchema>;
 export const LanguageTagSchema = z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/).max(35);
+export type LanguageTag = z.infer<typeof LanguageTagSchema>;
 export const IdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/);
 export const VersionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 export const TimestampSchema = z.iso.datetime({ precision: null });
 export const RequestMetaSchema = z.strictObject({ requestId: z.string().min(1).max(200) });
 
-/** ISO 4217 code shape; monetary support does not imply an exchange rate exists. */
-export const CurrencySchema = z.string().regex(/^[A-Z]{3}$/);
+/** Business-supported ISO 4217 codes; support does not imply an exchange rate exists. */
+export const SUPPORTED_CURRENCIES = ['USD', 'CNY', 'EUR', 'RUB', 'KRW', 'KZT', 'UZS', 'GEL', 'AMD', 'KGS', 'ALL', 'JPY', 'GBP', 'AED'] as const;
+export const CurrencySchema = z.enum(SUPPORTED_CURRENCIES);
+export type Currency = z.infer<typeof CurrencySchema>;
 export const MoneySchema = z.strictObject({
   amount: z.string().regex(/^(?:0|[1-9]\d{0,13})(?:\.\d{1,2})?$/),
   currency: CurrencySchema,
@@ -37,10 +40,12 @@ export type PartialDate = z.infer<typeof PartialDateSchema>;
 
 export const AvailabilitySchema = z.enum(['available', 'reserved', 'sold', 'unknown']);
 export const PublicationStateSchema = z.enum(['draft', 'published', 'archived']);
+export type PublicationState = z.infer<typeof PublicationStateSchema>;
 export const PowertrainSchema = z.enum(['petrol', 'diesel', 'hev', 'phev', 'erev', 'bev', 'lpg', 'other', 'unknown']);
+export type Powertrain = z.infer<typeof PowertrainSchema>;
 export const BodySchema = z.enum(['hatchback', 'suv', 'sedan', 'wagon', 'coupe', 'convertible', 'van', 'pickup', 'other', 'unknown']);
 export const TransmissionSchema = z.enum(['manual', 'automatic', 'cvt', 'dct', 'other', 'unknown']);
-export const NamedValueSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(120) });
+export const NamedValueSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(120).regex(/\S/, 'Display name cannot be blank') });
 export const LocationSchema = z.strictObject({
   country: z.string().regex(/^[A-Z]{2}$/),
   city: z.string().min(1).max(120).nullable(),
@@ -73,12 +78,14 @@ export const PublicPriceSchema = z.discriminatedUnion('kind', [
 export type PublicPrice = z.infer<typeof PublicPriceSchema>;
 
 export const TranslationKindSchema = z.enum(['original', 'machine', 'human']);
+export type TranslationKind = z.infer<typeof TranslationKindSchema>;
 export const ErrorCodeSchema = z.enum([
   'INVALID_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'VERSION_CONFLICT',
   'IDEMPOTENCY_CONFLICT', 'PAYLOAD_TOO_LARGE', 'PUBLISH_VALIDATION_FAILED',
   'MEDIA_NOT_READY', 'MEDIA_IN_USE', 'UNSUPPORTED_MEDIA_TYPE', 'RATE_LIMITED',
   'SERVICE_UNAVAILABLE', 'UNSUPPORTED_CATALOG', 'INTERNAL_ERROR',
 ]);
+export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const FieldErrorSchema = z.strictObject({
   path: z.string().min(1).max(500),
   code: z.string().min(1).max(100),

@@ -8,10 +8,11 @@ import {
 export * from './common.js';
 
 export const PublicTextSchema = z.strictObject({
-  text: z.string().min(1).max(10_000),
+  text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
   requestedLocale: LocaleSchema,
   contentLocale: LanguageTagSchema,
   kind: TranslationKindSchema,
+  reviewed: z.boolean(),
 });
 export type PublicText = z.infer<typeof PublicTextSchema>;
 export const MediaUrlSchema = z.string().max(2048).refine((value) => {
@@ -60,9 +61,11 @@ export const PublicVehicleQuerySchema = z.strictObject({
 });
 export type PublicVehicleQuery = z.infer<typeof PublicVehicleQuerySchema>;
 export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.default('ru') });
+export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicFilterQuerySchema = z.strictObject({
   locale: LocaleSchema.default('ru'), catalog: z.literal('curated').default('curated'),
 });
+export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
 export const CatalogMetaSchema = RequestMetaSchema.extend({
   catalog: z.literal('curated'),
   total: z.number().int().nonnegative().nullable(),
@@ -75,6 +78,7 @@ export const CatalogMetaSchema = RequestMetaSchema.extend({
     ctx.addIssue({ code: 'custom', path: ['total'], message: 'Unknown totals must be null; known totals must be numbers' });
   }
 });
+export type CatalogMeta = z.infer<typeof CatalogMetaSchema>;
 export const PublicVehicleListSchema = z.strictObject({
   data: z.strictObject({
     items: z.array(PublicVehicleSchema).max(48),
@@ -87,8 +91,9 @@ export const PublicVehicleListSchema = z.strictObject({
 export type PublicVehicleList = z.infer<typeof PublicVehicleListSchema>;
 
 export const PublicHomeSectionSchema = z.strictObject({
-  id: IdSchema, title: z.string().min(1).max(120), vehicles: z.array(PublicVehicleSchema).min(1).max(30),
+  id: IdSchema, title: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'), vehicles: z.array(PublicVehicleSchema).min(1).max(30),
 });
+export type PublicHomeSection = z.infer<typeof PublicHomeSectionSchema>;
 export const PublicHomeSectionsSchema = responseSchema(z.strictObject({ sections: z.array(PublicHomeSectionSchema).max(2) }));
 export type PublicHomeSections = z.infer<typeof PublicHomeSectionsSchema>;
 

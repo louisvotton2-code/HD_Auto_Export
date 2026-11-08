@@ -8,7 +8,7 @@ import {
 export * from './common.js';
 
 export const LocalizedTextSchema = z.strictObject({
-  text: z.string().min(1).max(10_000),
+  text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
   kind: TranslationKindSchema,
   reviewStatus: z.enum(['pending', 'approved', 'stale']),
   sourceVersion: VersionSchema,
@@ -28,6 +28,7 @@ export type TranslatableField = z.infer<typeof TranslatableFieldSchema>;
 export const DraftMediaSchema = z.strictObject({
   id: IdSchema, alt: z.string().max(500), sortOrder: z.number().int().min(0).max(29), isCover: z.boolean(),
 });
+export type DraftMedia = z.infer<typeof DraftMediaSchema>;
 export const VehicleDraftInputSchema = z.strictObject({
   source: z.strictObject({ kind: z.literal('manual') }),
   facts: VehicleFactsSchema,
@@ -71,6 +72,7 @@ export const AdminVehicleQuerySchema = z.strictObject({
   pageSize: z.number().int().min(1).max(48).default(24),
   publicationState: PublicationStateSchema.optional(), availability: AvailabilitySchema.optional(),
 });
+export type AdminVehicleQuery = z.infer<typeof AdminVehicleQuerySchema>;
 export const CreateVehicleRequestSchema = z.strictObject({ draft: VehicleDraftInputSchema });
 export const SaveVehicleRequestSchema = z.strictObject({ version: VersionSchema, draft: VehicleDraftInputSchema });
 export const VersionRequestSchema = z.strictObject({ version: VersionSchema });
@@ -87,9 +89,14 @@ export const IdempotencyKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-
 
 export const AdminHomeSectionSchema = z.strictObject({
   id: IdSchema,
-  title: z.strictObject({ zh: z.string().min(1).max(120), en: z.string().min(1).max(120), ru: z.string().min(1).max(120) }),
+  title: z.strictObject({
+    zh: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'),
+    en: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'),
+    ru: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'),
+  }),
   vehicleIds: z.array(IdSchema).max(30).refine((ids) => new Set(ids).size === ids.length, 'Duplicate vehicles in section'),
 });
+export type AdminHomeSection = z.infer<typeof AdminHomeSectionSchema>;
 export const AdminHomeSectionsSchema = z.strictObject({ version: VersionSchema, sections: z.array(AdminHomeSectionSchema).length(2) }).superRefine((value, ctx) => {
   if (new Set(value.sections.map((section) => section.id)).size !== value.sections.length) ctx.addIssue({ code: 'custom', path: ['sections'], message: 'Duplicate section IDs' });
 });
@@ -100,9 +107,17 @@ export type SaveHomeSectionsRequest = z.infer<typeof SaveHomeSectionsRequestSche
 
 export const MediaContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
 export const MediaStatusSchema = z.enum(['pending', 'uploaded', 'ready', 'failed', 'deleted']);
+export type MediaContentType = z.infer<typeof MediaContentTypeSchema>;
+export type MediaStatus = z.infer<typeof MediaStatusSchema>;
+export const MediaRightsSchema = z.strictObject({
+  basis: z.enum(['owned', 'permission']),
+  note: z.string().min(1).max(500).regex(/\S/, 'Image rights declaration cannot be blank'),
+});
+export type MediaRights = z.infer<typeof MediaRightsSchema>;
 export const MediaAssetSchema = z.strictObject({
   id: IdSchema, vehicleId: IdSchema, version: VersionSchema, status: MediaStatusSchema,
   contentType: MediaContentTypeSchema,
+  rights: MediaRightsSchema,
   sizeBytes: z.number().int().min(1).max(10 * 1024 * 1024),
   width: z.number().int().positive().max(100_000).nullable(),
   height: z.number().int().positive().max(100_000).nullable(),
@@ -111,10 +126,12 @@ export const MediaAssetSchema = z.strictObject({
 });
 export type MediaAsset = z.infer<typeof MediaAssetSchema>;
 export const MediaAssetResponseSchema = responseSchema(MediaAssetSchema);
+export type MediaAssetResponse = z.infer<typeof MediaAssetResponseSchema>;
 export const MediaUploadRequestSchema = z.strictObject({
   vehicleId: IdSchema,
   filename: z.string().min(1).max(255).regex(/^[^/\\\u0000-\u001f]+$/).optional(),
   contentType: MediaContentTypeSchema,
+  rights: MediaRightsSchema,
   sizeBytes: z.number().int().min(1).max(10 * 1024 * 1024),
 });
 export const MediaUploadResponseSchema = responseSchema(z.strictObject({
@@ -132,6 +149,9 @@ export type MediaDeleteRequest = z.infer<typeof MediaDeleteRequestSchema>;
 
 export const StaffRoleSchema = z.enum(['admin', 'editor']);
 export const StaffPermissionSchema = z.enum(['vehicles:read', 'vehicles:write', 'vehicles:publish', 'media:write', 'home:write', 'staff:manage']);
+export type StaffRole = z.infer<typeof StaffRoleSchema>;
+export type StaffPermission = z.infer<typeof StaffPermissionSchema>;
 export const StaffMeSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(200), role: StaffRoleSchema, permissions: z.array(StaffPermissionSchema) });
 export const StaffMeResponseSchema = responseSchema(StaffMeSchema);
 export type StaffMe = z.infer<typeof StaffMeSchema>;
+export type StaffMeResponse = z.infer<typeof StaffMeResponseSchema>;

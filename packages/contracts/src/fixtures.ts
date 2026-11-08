@@ -50,8 +50,8 @@ export const publicVehicleFixture = PublicVehicleSchema.parse({
   id: 'fixture_vehicle_1', stockCode: 'FIXTURE-0001', source: { kind: 'manual' },
   facts: vehicleDraftFixture.facts, price: vehicleDraftFixture.price,
   content: {
-    title: { text: 'Тестовый автомобиль', requestedLocale: 'ru', contentLocale: 'ru', kind: 'human' },
-    description: { text: 'Пример для тестирования, не реальное предложение.', requestedLocale: 'ru', contentLocale: 'ru', kind: 'human' },
+    title: { text: 'Тестовый автомобиль', requestedLocale: 'ru', contentLocale: 'ru', kind: 'human', reviewed: true },
+    description: { text: 'Пример для тестирования, не реальное предложение.', requestedLocale: 'ru', contentLocale: 'ru', kind: 'human', reviewed: true },
   },
   images: [{ id: 'fixture_media_1', url: '/api/v1/media/fixture_media_1', alt: 'Synthetic test image', width: 800, height: 600, sortOrder: 0, isCover: true }],
   availability: 'available', availabilityCheckedAt: fixtureTime, sourceUpdatedAt: null,
@@ -90,6 +90,7 @@ export const contractFixtures = {
   failedMedia: MediaAssetSchema.parse({
     id: 'fixture_media_failed', vehicleId: 'fixture_vehicle_1', version: 2, status: 'failed',
     contentType: 'image/jpeg', sizeBytes: 128, width: null, height: null,
+    rights: { basis: 'owned', note: 'Synthetic fixture image created for testing.' },
     previewPath: null, createdAt: fixtureTime,
   }),
   versionConflict: ApiErrorSchema.parse({
