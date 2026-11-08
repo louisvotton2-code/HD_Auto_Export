@@ -1,7 +1,7 @@
 # 产品项目 / PM-GIT-02 / 推送检查与主分支保护
 
 日期：2026-11-08（Asia/Shanghai）
-状态：进行中（保护已配置、本地工具与审查通过；正在验证最终交付版本）
+状态：待验收（保护已配置、实现已通过本地验证和独立审查并推送，远端 CI 全部通过）
 
 ## 范围与版本
 
@@ -36,10 +36,19 @@
 - Reviewer 另建本地 bare 仓库，用真实 git push --dry-run 验证缺证据、直推 main、多 ref 中混入未验证提交的拒绝，以及已验证新分支／非 HEAD 的允许；bare 仓库未变化。另以确定性假 pnpm 测真实 CLI：子命令失败不写通过，全部实际返回 0 才记录。以上只是工具夹具，不冒充官网业务检查。
 - 本仓库实际执行 hooks:install 和 hooks:check 成功；安装位置为 Git common-dir/hd-auto-hooks，并启用本地 hooksPath。读取实际安装入口、传入待推 ref 后，缺记录与直推 main 均退出 1，错误原因正确。最初尝试 git hook run --to-stdin 被本机 Git 以不支持参数拒绝，未当作拦截成功；改用安装入口直接注入 stdin，并结合 Reviewer 的真实 Git dry-run 验证。
 - 原作者的测试中曾出现 Node 启动延迟，单独探针随后自行恢复；未终止其他任务进程，最终夹具通过。使用 Node 24.22.1 与 pnpm 11.25.0。
-- 维护文档本地链接／锚点、围栏与空白检查、Skill 元数据检查通过。实际最终 SHA、真实 verify:push、推送和对应 CI 结果在操作后登记；不会把上轮数量复制为本轮检查。
+- 维护文档本地链接／锚点、围栏与空白检查、Skill 元数据检查通过。本轮真实验证对象与远端结果见下节，不把上轮数量复制为本轮检查。
 
 文档接手审查由 handoff_docs 完成，已修正“每个提交”与“每个待更新 ref 目标 SHA”的区别，补充非 HEAD 验证应在对应 worktree／检出版本执行。OpenAI 官方文档确认 AGENTS 在启动时构建指令链；旧会话需要重新读取，不能承诺文件变更会自动广播到所有既有对话。
 
+## 精确版本与交付核验
+
+- 实现提交：`63d5a6680b7a4d75a9f8d5b9f37fcd46fed28fdb`，父提交／审查基线 `dd0230914d40b8b35a2763b553d7268778c97b3b`；共 16 个文件，未改业务源码或运行依赖。
+- 对该完整 SHA 实际运行 `pnpm verify:push --base dd0230914d40b8b35a2763b553d7268778c97b3b`：`pnpm check` 通过（31 Git 流程夹具、27 工作区夹具、6 原模块夹具、634 单元及类型检查），`pnpm build` 生成 96 页，`pnpm test:e2e` 完成 153 项 Chrome 测试。三步骤均退出 0，测试记录于 2026-11-08 10:49:25（Asia/Shanghai）生成，工作树和提交未变化，验证锁已清除。
+- migration_review 独立复核上述记录的 SHA／基线／文件树／校验和／命令退出码，再亲自撰写 pass 报告，未处理 P0/P1/P2 为 0。报告原样存入 Git 私有证据目录，以 `review:record` 登记；报告 SHA256 为 `66dcb1cf4e45f605602662506898935160902744ff33d416a120d717b10ff661`。真实业务全量由集成人执行，Reviewer 的隔离工具测试与此区分。
+- 再次 `hooks:check` 通过；普通 `git push` 实际输出 `Pre-push evidence accepted for 1 changed branch ref(s).`，将工作分支由 dd02309 快进至 63d5a66，未使用绕过选项。随后 `ls-remote` 核对同名远端分支精确一致，main 仍为 `06b1c4a2731c4b0e0e4ce856de09c9584517c91a`。
+- 对应 [GitHub Actions 运行 42440321469](https://github.com/louisvotton2-code/HD_Auto_Export/actions/runs/42440321469) 的 verify 成功（4m7s）：依赖安装、类型／边界／单元、构建、Chrome 回归与收尾步骤全部通过。已核对运行的完整 head SHA 为上述实现提交，不以本地成功替代远端结果。
+- 推送后再次 GET main protection：PR 必需、strict verify／app_id 15368、管理员受限、会话解决、禁止强推／删除均符合配置；批准数 0、last push approval=false。
+
 ## 交接
 
-新 Agent 从包含本轮工具的共同工作分支开始，开工核验 hooks；主分支尚未合并当前多应用基础。阶段业务与视觉验收仍按原任务推进。Git 保存、推送、实际远端保护与生产部署分别记录；不会自动合并、部署或监控全部对话。
+新 Agent 从包含本轮工具的 `codex/workspace-foundation` 共同工作分支开始，开工核验 hooks；旧会话重新读取一次公共入口。主分支尚未合并当前多应用基础，阶段业务与视觉验收仍按原任务推进。本节后的收尾仅同步本日志及两份 PM 进度摘要，按纯文档流程独立审查、核验并推送；不改变上述实现提交或冒充其后的新业务测试。Git 保存、推送、实际远端保护与生产部署分别记录；不会自动合并、部署或监控全部对话。
