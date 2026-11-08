@@ -245,6 +245,16 @@ export function checkWorkspace(projectRoot) {
     const from = ownerOf(filename);
     const options = optionsFor(filename, from);
     const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true);
+    const browserContract = from?.name === '@hd/contracts' && within(filename, path.join(from.root, 'src'));
+    if (browserContract) {
+      function inspect(node) {
+        if (ts.isIdentifier(node) && ['process', 'Buffer', 'fetch', 'XMLHttpRequest', 'WebSocket'].includes(node.text)) {
+          report(filename, `contracts must be browser-safe and side-effect free: ${node.text}`);
+        }
+        ts.forEachChild(node, inspect);
+      }
+      inspect(source);
+    }
     for (const dependency of importsIn(source)) {
       const line = source.getLineAndCharacterOfPosition(dependency.node.getStart(source)).line + 1;
       const location = `${filename}:${line}`;
@@ -259,6 +269,10 @@ export function checkWorkspace(projectRoot) {
         }
       }
       if (!specifier) continue;
+      if (browserContract) {
+        const local = specifier.startsWith('.') && within(path.resolve(path.dirname(filename), specifier), path.join(from.root, 'src'));
+        if (!local && specifier !== 'zod') report(location, `contracts source may import only its own source and zod: ${specifier}`);
+      }
       const named = byName(specifier);
       if (named) {
         const direction = forbiddenDirection(from, named);

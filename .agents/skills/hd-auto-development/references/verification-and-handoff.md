@@ -15,7 +15,7 @@ pnpm build
 pnpm test:e2e
 ```
 
-命令名称以当前 `package.json` 为准。根 `check` 组合工作区边界与官网类型、模块边界和单元；`test:e2e` 面向构建后的静态预览，定向运行可用 `pnpm --filter @hd/web exec playwright test tests/<相关文件>.spec.ts`。不要复用旧根目录 `out/` 来验新代码；`E2E_BASE_URL` 指向哪套成品必须明确。
+命令名称以当前 `package.json` 为准。根 `check` 组合工作区、contracts、API 类型/单元/隔离 PostgreSQL 集成与官网检查；后端检查先按 API README 启动本机测试库。`test:e2e` 仍面向官网构建后的静态预览，定向运行可用 `pnpm --filter @hd/web exec playwright test tests/<相关文件>.spec.ts`。不要复用旧根目录产物；`E2E_BASE_URL` 的测试对象必须明确。
 
 **`next dev`、`next typegen` 与 `next build` 不能并发写同一个应用的 `.next/`。** 先停止本次自己启动的开发进程，顺序执行检查／构建，再恢复预览；不能为清理端口杀掉无关进程。多个 Playwright 进程若并行，分别设置输出目录，避免互相清报告。环境缺运行时或浏览器时先查项目／工具提供的已安装依赖，不盲目换包管理器或锁文件。
 

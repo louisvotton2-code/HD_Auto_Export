@@ -8,6 +8,18 @@ import { checkWorkspace } from './check-workspace.mjs';
 const manifest = (name, extra = {}) => JSON.stringify({ name, private: true, ...extra });
 const reserved = (name) => manifest(name, { description: 'Reserved workspace boundary; implementation pending.' });
 
+test('contracts cannot pull server libraries, environment secrets or network effects into browser consumers', (t) => {
+  const root = fixture(t, {
+    'packages/contracts/src/index.ts': 'export { value } from "./hidden";',
+    'packages/contracts/src/hidden.ts': 'import pg from "pg"; import fs from "node:fs"; export const value = process.env.SECRET; fetch("https://example.invalid");',
+  });
+  const result = checkWorkspace(root);
+  assert.ok(result.issues.some(issue => issue.includes('only its own source and zod: pg')));
+  assert.ok(result.issues.some(issue => issue.includes('only its own source and zod: node:fs')));
+  assert.ok(result.issues.some(issue => issue.includes('side-effect free: process')));
+  assert.ok(result.issues.some(issue => issue.includes('side-effect free: fetch')));
+});
+
 function fixture(t, additions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-workspace-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -20,7 +20,7 @@
 | 税费规则／公共计算 | 来源、生效期、阈值、舍入、缺失状态、说明和复制结果；参考复算与官方核验分开 |
 | 运行时迁移／部署 | 对应角色任务书的生产模式、权限、联调、恢复和回滚检查 |
 
-当前根 `pnpm check` 包含工作区边界以及官网的类型、模块边界和单元测试；预留 admin/api/公共包没有功能测试，不算已经验收。`pnpm test:e2e` 使用构建后的静态预览；可用 `E2E_BASE_URL` 指向明确的测试环境。测试配置以仓库文件为准，不能把旧 `out/` 或历史通过数量当作本轮结果。
+当前根 `pnpm check` 包含工作区边界、contracts、API 类型/单元/隔离 PostgreSQL 集成及官网检查；先按 API README 启动本机测试库。admin 与 calculator-core 仍预留，不计作已验收。`pnpm test:e2e` 仍使用官网构建后的静态预览；可用 `E2E_BASE_URL` 指向明确测试环境。根 build 构建 contracts、API、OpenAPI 和官网，不能把旧产物或历史通过数量当本轮结果。
 
 `next dev`、`next typegen` 与 `next build` 不并发写同一个 `.next/`。独立工作目录及应用使用独立端口、数据库与测试输出；只停止本任务启动的进程。
 

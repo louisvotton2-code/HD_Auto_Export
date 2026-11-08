@@ -10,15 +10,15 @@
 | --- | --- |
 | `apps/web/` | 已迁移官网，仍为静态 Next 应用，19 条演示车源与参考计算器 |
 | `apps/admin/` | 员工后台预留包；尚无页面、依赖或启动命令 |
-| `apps/api/` | 独立后端预留包；尚无 API、鉴权或数据库 |
-| `packages/contracts/` | 接口契约预留包，等待 BE-01 落码 |
+| `apps/api/` | 独立 API、员工登录、PostgreSQL、车辆与图片发布；本地实现，待前后台联调 |
+| `packages/contracts/` | public/admin schema、推导类型和隔离样例，供三端共同消费 |
 | `packages/calculator-core/` | 纯计算包预留位置；现有核心仍在 web 内，待真实消费者需要时提取 |
 | `product/` | 产品路线图、业务决定和选型 |
 | `docs/` | 导航、阶段、角色任务、开发维护、日志和研究 |
 | `deploy/` | 现有静态模板；多应用部署材料由 OPS 按阶段建立 |
 | `scripts/` | 仓库级依赖边界检查；官网自己的工具在 `apps/web/scripts/` |
 
-应用之间通过 API 协作，共用包只通过公共出口调用；各端独立依赖，全仓一份锁文件。目录建立不等于后台和 API 已实现。
+应用之间通过 API 协作，共用包只通过公共出口调用；各端独立依赖，全仓一份锁文件。后端运行与账号初始化见 [API 说明](apps/api/README.md)，前后台接入见[车辆接口](docs/开发/车辆接口.md)。员工后台和官网真实数据接入仍待各角色完成。
 
 ## 本地运行与检查
 
@@ -28,6 +28,7 @@ Node 版本建议见 [.nvmrc](.nvmrc)，pnpm 版本由根 `package.json` 固定�
 pnpm install --frozen-lockfile
 pnpm hooks:install
 pnpm hooks:check
+pnpm db:up
 pnpm dev
 pnpm check
 pnpm build
@@ -35,7 +36,7 @@ pnpm preview --port 3100
 pnpm test:e2e
 ```
 
-`dev/build/preview/test/typecheck/test:e2e` 默认转发官网；`pnpm check` 先检查工作区依赖边界，再检查官网。也可用 `pnpm --filter @hd/web <命令>`。其他包尚无对应运行命令，不将跳过的包记为已验证功能。
+`dev/preview/test:e2e` 仍面向官网；`dev:api` 启动后端。`check` 包含工作区、契约、API 单元/隔离 PostgreSQL 集成和官网检查；需 Docker 或明确的本机测试库。`build` 构建契约、API、OpenAPI 与官网，构建本身无需数据库。单独检查官网使用 `pnpm --filter @hd/web <命令>`。
 
 官网开发入口通常是 `http://127.0.0.1:3000/zh/`，最新静态产物在 `apps/web/out/`；浏览器测试前先构建。不要复用旧根目录产物，不并发写同一应用的 `.next/`。
 

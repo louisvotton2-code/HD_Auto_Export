@@ -37,7 +37,7 @@ pnpm --filter @hd/contracts test
 
 ## 多语与版本
 
-`content.title` 和 `content.description` 各是独立 `TranslatableField`：`sourceLanguage`、`sourceText`、`sourceVersion` 和 `translations.{zh,en,ru}`。来源语言允许短 BCP47 样式，如 `ko`、`zh-CN`；目标语言固定三种。
+`content.title` 和 `content.description` 各是独立 `TranslatableField`：`sourceLanguage`、`sourceText`、`sourceVersion` 和 `translations.{zh,en,ru}`。来源语言允许短 BCP47 样式，如 `ko`、`zh-CN`；目标语言固定三种。`original` 要求基础语言匹配且与原文字串完全一致；例如 zh-CN 原文可在 zh 栏审核，公开 `contentLocale` 保留 zh-CN。员工改写或转换字形应使用 human。
 
 每个译文记录 `text`、`kind`（original/machine/human）、`reviewStatus`（pending/approved/stale）、`sourceVersion`、`humanEditVersion`、`engineVersion`。缺失原文/译文为 `null`。schema 可表示未翻译、待审、过期等草稿，不将它们自动升级为已审核。API 负责校验版本、计算原文 hash、保护人工编辑和执行发布门槛；浏览器类型校验不能代替这些规则。
 
