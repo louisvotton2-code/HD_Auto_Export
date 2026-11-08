@@ -1,0 +1,4 @@
+interface:
+  display_name: "HD Auto 后端开发"
+  short_description: "按当前任务维护后端接口、数据库和发布流程，并规划来源接入、翻译与只读 AI"
+  default_prompt: "使用 $hd-auto-backend 确认本轮后端任务和实际实现，按现行架构完成开发、验证、独立审查与交接。"

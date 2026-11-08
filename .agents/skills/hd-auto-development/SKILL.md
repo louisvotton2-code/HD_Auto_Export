@@ -19,6 +19,7 @@ description: 为 HD Auto Export 仓库的前端、后端、员工后台、部署
 - 修改页面、组件、车辆 UI 或动效：读 [页面与模块模式](references/component-and-module-patterns.md)，再定位对应模块说明。
 - 选择检查、记录交付或准备 Git／部署：读 [验证与交接](references/verification-and-handoff.md)。纯产品整理无需读页面实现规范。
 - 真实车源、后端和后台任务：按角色文件读取 [车辆接口](../../../docs/开发/车辆接口.md)。服务端出口、鉴权、发布和状态以同一契约协作，不在不同对话另造接口。
+- 后端 API、数据库、来源接入、翻译任务或 AI 查询：按需加载 [后端工作入口](../hd-auto-backend/SKILL.md)，定位现行架构与分阶段任务，不提前执行后续接入。
 - 修改税费才读 [规则覆盖表](../../../docs/research/规则覆盖表.md)、[参考研究](../../../docs/research/计算器参考研究.md) 和对应策略／测试。参考站复算与官方核验分别登记。
 
 ## 必须保持的边界
