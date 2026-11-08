@@ -41,3 +41,11 @@ export function getCalculatorCountryMessages(
     },
   };
 }
+
+/** Detail-page budget uses the same vocabulary and seven method tables as the full tool. */
+export function getVehicleCalculatorMessages(messages: AbstractIntlMessages): AbstractIntlMessages {
+  return {
+    ...getCalculatorCommonMessages(messages),
+    FeeMethods: messages.FeeMethods,
+  };
+}

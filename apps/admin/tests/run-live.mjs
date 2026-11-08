@@ -10,6 +10,26 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const adminRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(adminRoot, '../..');
+const translationProvider = process.env.ADMIN_LIVE_TRANSLATION_PROVIDER ?? 'disabled';
+const aliyunCase = '(?:^| )real Aliyun international Chinese suggestion persistence$';
+const playwrightArgs = process.argv.slice(2);
+if (!['disabled', 'libretranslate', 'aliyun'].includes(translationProvider)) throw new Error('Unsupported isolated translation test mode.');
+let localTranslationUrl;
+if (translationProvider === 'libretranslate') {
+  const endpoint = new URL(process.env.LIBRETRANSLATE_URL ?? 'http://127.0.0.1:3340');
+  if (!['http:', 'https:'].includes(endpoint.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) || endpoint.port !== '3340' || endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash) {
+    throw new Error('Live machine translation requires a loopback-only service on port 3340 without credentials, a path, or query parameters.');
+  }
+  if (!process.env.LIBRETRANSLATE_ENGINE_VERSION) throw new Error('Record the actual local model version before running live machine translation.');
+  localTranslationUrl = endpoint.toString();
+}
+if (translationProvider === 'aliyun') {
+  // This is the only paid-provider mode. All gates run before temporary data or a server is created.
+  if (process.env.ADMIN_LIVE_ALIYUN_CONFIRM !== 'synthetic-only') throw new Error('Aliyun tests require the explicit synthetic-only confirmation.');
+  if (process.env.ALI_MT_REGION !== 'ap-southeast-1') throw new Error('Aliyun tests require the explicitly selected Singapore region.');
+  if (!process.env.ALI_MT_ACCESS_KEY_ID?.trim() || !process.env.ALI_MT_ACCESS_KEY_SECRET?.trim()) throw new Error('Aliyun test credentials must already be configured privately.');
+  if (playwrightArgs.length !== 2 || playwrightArgs[0] !== '--grep' || playwrightArgs[1] !== aliyunCase) throw new Error('Aliyun mode permits exactly the single approved synthetic test.');
+}
 const maintenanceUrl = new URL(process.env.API_TEST_DATABASE_URL ?? 'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
 if (!['localhost', '127.0.0.1'].includes(maintenanceUrl.hostname) || maintenanceUrl.pathname !== '/postgres') {
   throw new Error('Live browser tests require a local /postgres maintenance database.');
@@ -24,9 +44,23 @@ const env = {
   API_TEST_DATABASE_URL: maintenanceUrl.toString(), ADMIN_TEST_DB_NAME: databaseName,
   AUTH_SECRET: randomBytes(32).toString('hex'), AUTH_BASE_URL: origin, TRUSTED_ORIGINS: origin,
   HOST: '127.0.0.1', PORT: '3322', MEDIA_ROOT: path.join(temporaryRoot, 'media'),
-  ADMIN_API_TARGET: 'http://127.0.0.1:3322', ADMIN_LIVE_TEST: '1',
+  ADMIN_API_TARGET: 'http://127.0.0.1:3322', ADMIN_LIVE_TEST: '1', TRANSLATION_PROVIDER: translationProvider,
+  ADMIN_LIVE_TRANSLATION_PROVIDER: translationProvider,
   ADMIN_TEST_PASSWORD: randomBytes(24).toString('base64url'),
 };
+// Generic credential aliases and local-service API keys never enter a test child process.
+for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN', 'LIBRETRANSLATE_API_KEY']) delete env[key];
+if (translationProvider !== 'aliyun') {
+  for (const key of ['ALI_MT_ACCESS_KEY_ID', 'ALI_MT_ACCESS_KEY_SECRET', 'ALI_MT_SECURITY_TOKEN']) delete env[key];
+} else {
+  // The provider owns its fixed official endpoint; this runner adds no host/URL option.
+  env.ALI_MT_REGION = 'ap-southeast-1';
+  env.ALI_MT_CONFIG_VERSION = process.env.ALI_MT_CONFIG_VERSION?.trim() || '1';
+  env.TRANSLATION_MAX_CHARACTERS_PER_HOUR = '500';
+  if (!env.ALI_MT_SECURITY_TOKEN?.trim()) delete env.ALI_MT_SECURITY_TOKEN;
+}
+if (translationProvider === 'libretranslate') env.LIBRETRANSLATE_URL = localTranslationUrl;
+else { delete env.LIBRETRANSLATE_URL; delete env.LIBRETRANSLATE_ENGINE_VERSION; }
 let api;
 let created = false;
 
@@ -80,7 +114,9 @@ try {
     await delay(250);
   }
   if (!ready) throw new Error('Isolated API did not become ready');
-  await command(['--filter', '@hd/admin', 'exec', 'playwright', 'test', ...process.argv.slice(2)]);
+  await command(['--filter', '@hd/admin', 'exec', 'playwright', 'test', ...playwrightArgs,
+    ...(translationProvider === 'aliyun' ? ['--workers=1', '--retries=0', '--repeat-each=1', '--max-failures=1'] : []),
+  ]);
 } finally {
   if (api && api.exitCode === null) {
     if (process.platform !== 'win32') process.kill(-api.pid, 'SIGTERM');

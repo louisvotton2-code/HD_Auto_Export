@@ -8,6 +8,7 @@ import { SiteHeader } from '@/shared/ui/site-header';
 import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
 import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
+import { VehicleFavorites } from '@/modules/vehicles';
 import { getShellMessages } from '@/i18n/client-messages';
 import '../globals.css';
 import '@/shared/ui/brand.css';
@@ -62,7 +63,7 @@ export default async function LocaleLayout({
                 ? 'К основному содержимому'
                 : 'Skip to content'}
           </a>
-          <SiteHeader />
+          <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} />
           {children}
           <SiteFooter />
           <InteractionMotion />

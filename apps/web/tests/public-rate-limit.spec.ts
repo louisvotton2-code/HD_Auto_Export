@@ -71,7 +71,7 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
       page.on('request', collect);
       try {
         const limitedResponse = page.waitForResponse((response) => pathOf(response.url()) === '/api/v1/vehicles');
-        await form.locator('[type="submit"]').click();
+        await form.locator('[type="submit"]').last().click();
         const response = await limitedResponse;
         const limitedAt = Date.now();
         expect(response.status()).toBe(429);
@@ -89,7 +89,7 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
         // Recovery of the fixture alone must not bypass the browser's retained Retry-After.
         await setRateLimited(request, false);
         await form.locator('select[name="powertrain"]').selectOption('bev');
-        await form.locator('[type="submit"]').click();
+        await form.locator('[type="submit"]').last().click();
         // An explicit DOM event also checks the guard if a UI variant leaves retry enabled.
         await retry.dispatchEvent('click');
         await page.waitForTimeout(180);

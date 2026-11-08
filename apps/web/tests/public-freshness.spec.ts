@@ -150,7 +150,7 @@ test.describe('explicit public queries, stable activation and media regression',
     await form.locator('select[name="make"]').selectOption('alpha');
     await form.locator('select[name="model"]').selectOption('alpha_model');
     await form.locator('select[name="powertrain"]').selectOption('bev');
-    await form.locator('[type="submit"]').click();
+    await form.locator('[type="submit"]').last().click();
     await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('1');
     await expect(current).toHaveAttribute('data-freshness', 'fresh');
     await expect(current.locator('[data-public-vehicle]')).toHaveCount(2);

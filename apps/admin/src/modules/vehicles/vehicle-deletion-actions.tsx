@@ -29,7 +29,7 @@ const operationLabels = { delete: '删除', restore: '恢复' };
 export function VehicleDeletionActions({
   vehicle, isDeleted, disabled = false, onBusyChange, onDeleted, onRestored, onConflict, compact = false,
 }: Props) {
-  const { modal } = App.useApp();
+  const { modal, message: toast } = App.useApp();
   const staff = useOutletContext<StaffMe>();
   const canManage = staff.permissions.includes('vehicles:write');
   const canRead = staff.permissions.includes('vehicles:read');
@@ -100,7 +100,7 @@ export function VehicleDeletionActions({
   }
   function applyCurrent(current: CurrentLifecycle, message: string) {
     intent.current = null; setUncertain(false); setConflict(false); setLatest(null);
-    setError(''); setSuccess(message);
+    setError(''); setSuccess(message); void toast.success(message);
     // A replayed receipt may predate another delete/restore. Only this freshly read state is adopted.
     if (current.isDeleted) onDeleted?.(current.vehicle);
     else onRestored?.(current.vehicle);
@@ -114,7 +114,7 @@ export function VehicleDeletionActions({
     if (inFlight.current || confirmation.current || disabled || !canManage) return;
     const epoch = generation.current;
     if (vehicleLifecycleIntentExpired(snapshot, Date.now())) {
-      setUncertain(true); setError('本次请求已超过 24 小时，请先读取当前状态并核对结果，不能直接重试。'); return;
+      setUncertain(true); setError('本次请求已超过 24 小时，请先读取当前状态并核对结果，不能直接重试。'); void toast.warning('原请求已超过24小时，请先读取当前状态。'); return;
     }
     start();
     let receiptAccepted = false;
@@ -131,6 +131,8 @@ export function VehicleDeletionActions({
       const status = failure instanceof ApiClientError ? failure.status : 0;
       const keep = keepVehicleLifecycleIntent(status, wasUncertain, receiptAccepted);
       setUncertain(keep);
+      if (keep) void toast.warning(`${operationLabels[snapshot.operation]}结果尚未确认，请保留页面并核对当前状态。`);
+      else void toast.error(failure instanceof Error ? failure.message : '操作失败，请核对当前状态。');
       if (!keep) intent.current = null;
       versionConflict = !keep && status === 409;
       if (versionConflict) setConflict(true);
@@ -170,9 +172,9 @@ export function VehicleDeletionActions({
     start();
     try {
       const current = verifyCurrent(await readVehicleLifecycle(id), id);
-      if (isCurrent(id, epoch)) setLatest(current);
+      if (isCurrent(id, epoch)) { setLatest(current); void toast.success('已读取当前状态，请核对后再选择是否采用。'); }
     } catch (failure) {
-      if (isCurrent(id, epoch)) setError(failure instanceof Error ? failure.message : '读取当前状态失败，请稍后重试。');
+      if (isCurrent(id, epoch)) { const detail = failure instanceof Error ? failure.message : '读取当前状态失败，请稍后重试。'; setError(detail); void toast.error(detail); }
     } finally { stop(id, epoch); }
   }
 

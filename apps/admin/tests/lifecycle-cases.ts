@@ -273,7 +273,7 @@ test('publishing clears the earlier draft-only save notice after accepting the c
   await tab(page, '三语与发布');
   await page.getByRole('button', { name: /发布车辆$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
-  await expect(page.getByText('已读取当前状态，请核对实际公开内容。历史发布回执不会覆盖当前状态。', { exact: true })).toBeVisible();
+  await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本，请核对公开内容。' })).toBeVisible();
   await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toHaveCount(0);
   await expect(page.getByText('已发布', { exact: true }).first()).toBeVisible();
 });

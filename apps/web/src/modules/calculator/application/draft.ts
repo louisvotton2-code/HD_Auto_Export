@@ -77,9 +77,13 @@ export function restoreCalculatorDraft(
       (draft.importerType === 'individual' || draft.importerType === 'company')
     )
       next.importerType = draft.importerType;
-    if (draft.steering === 'left' || draft.steering === 'right') next.steering = draft.steering;
-    if (draft.condition === 'new' || draft.condition === 'used') next.condition = draft.condition;
-    if (CALCULATOR_POWERTRAINS.includes(draft.powertrain as Powertrain))
+    // Current UI drafts can explicitly leave missing vehicle facts unselected.
+    // The core's required-field validation accepts empty text; do not invent a fact on refresh.
+    if (draft.steering === 'left' || draft.steering === 'right' || current && draft.steering === '')
+      next.steering = draft.steering as CalculationInput['steering'];
+    if (draft.condition === 'new' || draft.condition === 'used' || current && draft.condition === '')
+      next.condition = draft.condition as CalculationInput['condition'];
+    if (CALCULATOR_POWERTRAINS.includes(draft.powertrain as Powertrain) || current && draft.powertrain === '')
       next.powertrain = draft.powertrain as Powertrain;
     const manualRates =
       draft.country === country.code &&

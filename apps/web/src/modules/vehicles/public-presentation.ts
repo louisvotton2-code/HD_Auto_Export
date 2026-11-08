@@ -2,18 +2,22 @@ import type { PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
+import { catalogFilterKeys } from './public-query';
+import { catalogFilterCopy } from './catalog-filter-copy';
 
 /** Price is displayed in its original currency. No exchange rate or tax assumption is introduced. */
-export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
-  const { price } = vehicle;
-  if (price.kind === 'on_request') return publicVehicleMessages(locale).priceLabels.on_request;
-  const [whole, fraction = ''] = price.money.amount.split('.');
+export function formatPublicAmount(amount: string, locale: Locale): string {
+  const [whole, fraction = ''] = amount.split('.');
   const formatter = new Intl.NumberFormat(locale);
   const decimal =
     formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
   const significantFraction = fraction.replace(/0+$/, '');
-  const amount = `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
-  return `${amount} ${price.money.currency}`;
+  return `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
+}
+export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
+  const { price } = vehicle;
+  if (price.kind === 'on_request') return publicVehicleMessages(locale).priceLabels.on_request;
+  return `${formatPublicAmount(price.money.amount, locale)} ${price.money.currency}`;
 }
 
 export function publicAvailabilityLabel(vehicle: PublicVehicle, locale: Locale): string {
@@ -48,6 +52,18 @@ export function publicVehicleFacts(
       value: f.mileageKm === null ? t.unknown : `${number.format(f.mileageKm)} ${t.km}`,
     },
     { label: t.powertrain, value: t.powertrains[f.powertrain] },
+    ...(f.trim ? [{ label: catalogFilterCopy[locale].trim, value: f.trim.name }] : []),
+    ...(f.generation
+      ? [{ label: catalogFilterCopy[locale].generation, value: f.generation.name }]
+      : []),
+    ...(f.drivetrain
+      ? [
+          {
+            label: catalogFilterCopy[locale].drive,
+            value: catalogFilterCopy[locale].drives[f.drivetrain],
+          },
+        ]
+      : []),
     {
       label: t.engineLabel,
       value: f.engineCc === null ? t.unknown : `${number.format(f.engineCc)} cm³`,
@@ -72,10 +88,10 @@ export function publicCatalogHref(
   page = query.page,
 ): string {
   const search = new URLSearchParams();
-  if (query.q) search.set('q', query.q);
-  if (query.make) search.set('make', query.make);
-  if (query.model) search.set('model', query.model);
-  if (query.powertrain) search.set('powertrain', query.powertrain);
+  for (const key of catalogFilterKeys) {
+    const value = query[key];
+    if (value !== undefined) search.set(key, String(value));
+  }
   if (query.pageSize !== 24) search.set('pageSize', String(query.pageSize));
   if (page > 1) search.set('page', String(page));
   return `/${locale}/cars/${search.size ? `?${search}` : ''}`;

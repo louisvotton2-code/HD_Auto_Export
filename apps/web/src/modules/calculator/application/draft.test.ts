@@ -14,6 +14,13 @@ const current = (input: unknown, manualRates: unknown = false) => ({
 });
 
 describe('pure calculator draft restoration', () => {
+  it('preserves explicit missing vehicle enums only in the current UI format', () => {
+    const unknown = { ...defaults, powertrain: '', condition: '', steering: '' };
+    expect(restoreCalculatorDraft(current(unknown), ru, date, rates).input)
+      .toMatchObject({ powertrain: '', condition: '', steering: '' });
+    expect(restoreCalculatorDraft({ current: null, legacy: JSON.stringify(unknown) }, ru, date, rates).input)
+      .toMatchObject({ powertrain: 'petrol', condition: 'used', steering: 'left' });
+  });
   it.each([null, '', '{', 'null', 'false', '42', '[]', '{}', '{"input":[]}'])(
     'falls back to explicit route defaults for missing or malformed current draft %s',
     (raw) => {

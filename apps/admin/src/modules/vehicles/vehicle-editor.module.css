@@ -31,4 +31,10 @@
 .center { text-align: center; }
 .lifecyclePanel { margin-top: 24px; min-width: 0; }
 @media (max-width: 760px) { .heading { flex-direction: column; gap: 16px; margin-top: 18px; }.heading h1 { font-size: 24px; }.metadata { padding: 14px 16px; }.tabs :global(.ant-tabs-nav) { padding-left: 12px; padding-right: 12px; }.card :global(.ant-card-body) { padding: 20px 16px; }.card :global(.ant-card-head) { padding: 0 16px; }.saveBar { padding: 14px; align-items: flex-start; }.saveHint { max-width: 170px; }.sourceChoices { display: grid; width: 100%; }.sourceChoices :global(.ant-radio-button-wrapper) { width: 100%; }.heading > :global(.ant-space) { max-width: 100%; } }
+@media (max-width: 540px) {
+  .localizationPrompt:global(.ant-alert) { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 8px; }
+  .localizationPrompt :global(.ant-alert-icon) { grid-column: 1; grid-row: 1; margin-inline-end: 0; }
+  .localizationPrompt :global(.ant-alert-section) { grid-column: 2; grid-row: 1; min-width: 0; }
+  .localizationPrompt :global(.ant-alert-actions) { grid-column: 2; grid-row: 2; margin-inline-start: 0; justify-self: start; }
+}
 @media (max-width: 380px) { .saveBar { flex-wrap: wrap; }.saveBar > button { width: 100%; }.saveHint { max-width: none; } }

@@ -191,14 +191,14 @@ test('a future browser year remains explicit instead of silently applying expire
   await expect(page.getByTestId('result-status')).toBeVisible();
 });
 
-test('FX labels identify a frozen build snapshot or illustrative fallback and manual overrides remain effective', async ({
+test('FX labels identify a frozen build snapshot or reference fallback and manual overrides remain effective', async ({
   page,
 }) => {
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   const fx = page.getByTestId('fx-status');
-  await expect(fx).toContainText(/构建时汇率快照|默认演示汇率/);
+  await expect(fx).toContainText(/构建时汇率快照|默认参考汇率/);
   await expect(fx).toContainText(/\d{4}-\d{2}-\d{2}/);
   await expect(fx).not.toContainText(/每小时|实时|自动更新/);
   await page.locator('#transactionRate').fill('100');

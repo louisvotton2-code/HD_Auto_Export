@@ -4,15 +4,16 @@ import { useMemo, useRef, type MouseEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   PublicVehicleFiltersSchema,
-  PublicVehicleListSchema,
   type PublicVehicleFilters,
   type PublicVehicleList as CatalogResult,
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleMessages } from '../public-messages';
 import { publicCatalogHref } from '../public-presentation';
 import { parseCatalogQuery, publicQueryString } from '../public-query';
+import { localizedListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
 import { PublicVehicleFiltersForm } from './public-vehicle-filters';
@@ -44,9 +45,9 @@ export function PublicVehicleList({
     return parseCatalogQuery(input, locale);
   }, [search, locale]);
   const selected = query ?? initialQuery;
-  const url = `/api/v1/vehicles/?${publicQueryString(selected)}`;
+  const url = `/api/v1/vehicles/?${publicQueryString({ ...selected, view: 'localized' })}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, result, PublicVehicleListSchema, {
+  const resource = usePublicResource(url, result, localizedListSchema(locale), {
     navigationPath: `/${locale}/cars/`,
     initialRetryAfter,
     cooldown,
@@ -55,11 +56,16 @@ export function PublicVehicleList({
     () => (filters ? { data: filters, meta: { requestId: 'server-rendered' } } : null),
     [filters],
   );
-  const filterUrl = `/api/v1/vehicle-filters/?${publicQueryString({ catalog: 'curated', locale, q: selected.q })}`;
+  const filterUrl = `/api/v1/vehicle-filters/?${publicQueryString({ catalog: 'curated', locale, q: selected.q, view: 'localized' })}`;
   const facets = usePublicResource(filterUrl, initialFilters, PublicVehicleFiltersSchema, {
     cooldown,
   });
   const data = resource.data;
+  const tiltLayout = useMemo(
+    () => ({ data, phase: resource.phase, url }),
+    [data, resource.phase, url],
+  );
+  const pointerTilt = usePointerTilt(tiltLayout);
   function reloadCatalog() {
     void resource.reload();
     if (facets.phase === 'error' && resource.retryAfter <= 0) void facets.reload();
@@ -135,7 +141,12 @@ export function PublicVehicleList({
                   {data.data.items.length ? (
                     <div className={styles.grid}>
                       {data.data.items.map((vehicle) => (
-                        <PublicVehicleCard key={vehicle.id} vehicle={vehicle} locale={locale} />
+                        <PublicVehicleCard
+                          key={vehicle.id}
+                          vehicle={vehicle}
+                          locale={locale}
+                          pointerTilt={pointerTilt}
+                        />
                       ))}
                     </div>
                   ) : (

@@ -204,7 +204,7 @@ test('defaults calculate immediately with settings expanded and still allow manu
     'aria-pressed',
     'true',
   );
-  await expect(page.getByTestId('fx-status')).toContainText(/构建时汇率快照|默认演示汇率/);
+  await expect(page.getByTestId('fx-status')).toContainText(/构建时汇率快照|默认参考汇率/);
   await expect(page.getByTestId('fx-status')).toContainText(/\d{4}-\d{2}-\d{2}/);
   await expectReferenceAmount(page);
 

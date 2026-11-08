@@ -2,13 +2,18 @@ import type { Metadata } from 'next';
 import { connection } from 'next/server';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
-import { getTranslations } from 'next-intl/server';
+import { getMessages, getTranslations } from 'next-intl/server';
 import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
-import { PublicDetailResource, publicVehicleMessages } from '@/modules/vehicles';
+import { publicVehicleMessages } from '@/modules/vehicles';
 import { countries } from '@/modules/calculator/config/countries';
 import { getPublicVehicleById, PublicApiError } from '@/modules/vehicles/server';
 import { localizedAlternates, siteConfig } from '@/shared/config/site';
+import { ScopedMessagesProvider } from '@/i18n/scoped-messages-provider';
+import { getVehicleCalculatorMessages } from '@/i18n/client-messages';
+import { getClearanceDate } from '@/modules/calculator/application/current-date';
+import { createReferenceSnapshot } from '@/modules/calculator/infrastructure/exchange-rates';
+import { VehicleDetailPage } from './vehicle-detail-page';
 
 type Props = { params: Promise<{ locale: string; slug: string }> };
 export const dynamicParams = true;
@@ -55,14 +60,19 @@ export default async function CarPage({ params }: Props) {
   const { locale, slug, vehicle, retryAfter } = await load(params);
   setRequestLocale(locale);
   const t = await getTranslations({ locale, namespace: 'Countries' });
+  const calculatorMessages = getVehicleCalculatorMessages(await getMessages());
   return (
-    <PublicDetailResource
-      key={`${locale}:${slug}`}
-      locale={locale}
-      vehicle={vehicle}
-      id={slug}
-      initialRetryAfter={retryAfter}
-      destinations={countries.map((country) => ({ slug: country.slug, label: t(country.code) }))}
-    />
+    <ScopedMessagesProvider messages={calculatorMessages}>
+      <VehicleDetailPage
+        key={`${locale}:${slug}`}
+        locale={locale}
+        vehicle={vehicle}
+        id={slug}
+        initialRetryAfter={retryAfter}
+        initialDate={getClearanceDate(new Date())}
+        initialRates={createReferenceSnapshot()}
+        destinations={countries.map((country) => ({ slug: country.slug, label: t(country.code) }))}
+      />
+    </ScopedMessagesProvider>
   );
 }

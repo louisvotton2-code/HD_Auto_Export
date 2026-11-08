@@ -28,6 +28,17 @@ def validate_proxy(values):
     if not dynamic.subnet_of(subnet) or any(ip not in subnet or ip in dynamic or ip in (subnet.network_address,subnet.broadcast_address) for ip in (proxy,web,gateway)) or len({proxy,web,gateway})!=3:
         raise ValueError('Proxy, web and gateway must be distinct usable addresses outside the dynamic pool within the subnet')
 
+def validate_operator(values):
+    uid=int(values.get('APP_UID','1000'));gid=int(values.get('APP_GID','1000'))
+    if uid<=0 or gid<=0: raise ValueError('APP_UID and APP_GID must both be non-root')
+    if os.getuid()!=0 and (uid!=os.getuid() or gid!=os.getgid()):
+        raise ValueError('Run as root or the configured APP_UID/APP_GID')
+    return uid,gid
+
+def validate_domains(values):
+    if values.get('WEB_SITE_ORIGIN') != 'https://cars.hongdingauto.com' or values.get('ADMIN_ORIGIN') != 'https://admin.hongdingauto.com' or values.get('SITE_ORIGIN') != values.get('WEB_SITE_ORIGIN'):
+        raise ValueError('Two-domain origins must match the configured HTTPS hosts')
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--env',type=pathlib.Path,required=True)
@@ -36,7 +47,7 @@ def main():
     p.add_argument('action',choices=['init','backup','restore','validate'])
     p.add_argument('--backup',type=pathlib.Path)
     a=p.parse_args(); values,root=config(a.env)
-    if int(values.get('APP_UID','1000'))!=os.getuid() or int(values.get('APP_GID','1000'))!=os.getgid(): raise ValueError('Run as the configured APP_UID/APP_GID so private files remain readable')
+    app_uid,app_gid=validate_operator(values)
     if not re.fullmatch('[a-z0-9][a-z0-9_-]+',a.project): raise ValueError('Invalid project')
     # Clear inherited Compose overrides: the selected env file is the source of truth.
     env=os.environ.copy()
@@ -44,6 +55,7 @@ def main():
     dc=['docker','compose','--project-name',a.project,'--env-file',str(a.env.resolve()),'-f',str(HERE/'compose.yaml')]
     for override in a.compose_override:
         if override.name=='compose.proxy.yaml': validate_proxy(values)
+        if override.name=='compose.domains.yaml': validate_domains(values)
         dc += ['-f',str(override.resolve())]
     def compose(*args,**kw): return run(dc+list(args),env=env,**kw)
     if a.action=='validate':
@@ -51,7 +63,10 @@ def main():
     if a.action=='init':
         if root.exists(): raise ValueError('DATA_ROOT already exists; initialization never overwrites data')
         root.mkdir(parents=True,mode=0o700)
-        for name in ['postgres','media','secrets','tls']: (root/name).mkdir(mode=0o700)
+        for name in ['postgres','media','secrets','tls','acme']: (root/name).mkdir(mode=0o700)
+        # A root-operated server keeps DATA_ROOT private to root; the webroot
+        # is separately owned by the non-root Nginx worker for ACME reads.
+        if os.getuid()==0: os.chown(root/'acme',app_uid,app_gid)
         for name in ['postgres_password','app_db_password','auth_secret']: (root/'secrets'/name).write_text(secrets.token_hex(32)+'\n')
         run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-days','30','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1','-keyout',str(root/'tls/server.key'),'-out',str(root/'tls/server.crt')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         print('Created private data directories and local-only TLS certificate. No application started.')

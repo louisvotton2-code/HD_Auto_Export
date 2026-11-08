@@ -96,6 +96,8 @@ export type PublicPrice = z.infer<typeof PublicPriceSchema>;
 export const TranslationKindSchema = z.enum(['original', 'machine', 'human']);
 export type TranslationKind = z.infer<typeof TranslationKindSchema>;
 export const ErrorCodeSchema = z.enum([
+  'TRANSLATION_DISABLED', 'TRANSLATION_BUSY', 'TRANSLATION_QUOTA_EXCEEDED',
+  'TRANSLATION_UPSTREAM_FAILED', 'TRANSLATION_SOURCE_UNSUPPORTED', 'TRANSLATION_INPUT_TOO_LONG',
   'INVALID_REQUEST', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'VERSION_CONFLICT',
   'IDEMPOTENCY_CONFLICT', 'PAYLOAD_TOO_LARGE', 'PUBLISH_VALIDATION_FAILED',
   'MEDIA_NOT_READY', 'MEDIA_IN_USE', 'UNSUPPORTED_MEDIA_TYPE', 'RATE_LIMITED',

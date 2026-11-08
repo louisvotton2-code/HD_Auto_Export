@@ -6,6 +6,8 @@ BE-INT-02 已增加最多50条的库存/下架批量接口与后台全库存品�
 
 BE-INT-03 增加车辆回收站／恢复、人工外部挂牌、公开关键词查询及固定240px缩略图。删除与首页清理同事务，恢复为未发布且未核验的草稿；媒体和不可变发布历史保留。具体接口、幂等历史回执与消费者接法见[车辆接口第10节](../../docs/开发/车辆接口.md)。本轮实现与验证状态以角色日志为准，运行中的3320是否升级须单独核对。
 
+BE-I18N-01 已实现员工触发的中文源→英俄译文建议，保持已保存草稿及人工审核不变。用户后续选择使用现有阿里通用版国际站额度；服务端显式选择 `TRANSLATION_PROVIDER=aliyun`、`ALI_MT_REGION=ap-southeast-1`，仅调用固定新加坡HTTPS接入点。region另允许 `cn-hangzhou`，并保留其兼容默认值；不接受自定义阿里URL，不自动回退或切换站点。实际账号开通／权限／计费须按国际站核对，不能套用中国站免费额度。源码默认仍 disabled，密钥仅服务端；本地LibreTranslate适配保留但不能当作本轮业务质量已通过。配置与接口见[车辆接口第13节](../../docs/开发/车辆接口.md#13-be-i18n-01-单车译文建议与发布差异)，真实调用与联调按运行日志核对，不将HTTP stub当作服务成功。
+
 架构见[后端架构](../../docs/开发/后端架构.md)，接口唯一说明见[车辆接口](../../docs/开发/车辆接口.md)，公共 schema 与样例见 [contracts](../../packages/contracts/README.md)。
 
 ## 本地启动
@@ -66,8 +68,14 @@ OpenAPI 由路由使用的 schema 生成到 `openapi/public.json` 和 `openapi/a
 - 存活检查 `/health/live`；就绪检查 `/health/ready` 检查数据库及迁移后的必要表。接口、登录和图片响应均 no-store；错误只含稳定 code、字段路径及 requestId，不暴露堆栈或连接信息。
 - BE-INT-03分桶增量：公开JSON、公开媒体、管理业务、健康检查各按已校验来源IP限制120次／60秒，鉴权路由30次／60秒保持。健康检查不再消耗业务桶，原图／thumb及不同媒体ID共用媒体桶；429保留真实Retry-After。完整可信访客协议见[车辆接口第11节](../../docs/开发/车辆接口.md)：入口覆盖X-HD-Visitor-IP，Web在服务端开关启用且入口封闭时构造单值X-Forwarded-For，API仅信任固定proxy/Web地址。实际3320是否已启用以BE增量日志为准，不在启动脚本中自动扩大信任范围。
 - `pnpm --filter @hd/api media:cleanup` 每次处理最多 100 个过期且无引用的上传对象，并清理到期幂等记录。上传许可保留 30 分钟，完成处理后未绑定图片保留 24 小时；已发布历史或草稿引用不会被删除；车辆回收站内的媒体全部保留。恢复车辆不会延长已过期上传许可或无引用媒体保留期。命令可重复执行，可靠调度、对象存储、备份恢复及监控告警待 BE-03。
-- 人工录入的外部挂牌使用 `source.kind=external`，来源、时间与每图证据按车辆接口第10节保存；不是自有库存，当前不宣称人审。第三方自动适配、自动翻译及 AI 工具仍未接入。人工修改通过草稿和发布流程生效。
+- 人工录入的外部挂牌使用 `source.kind=external`，来源、时间与每图证据按车辆接口第10节保存；不是自有库存，当前不宣称人审。第三方自动适配及 AI 工具仍未接入。员工可明确生成翻译建议，仍须采用／保存和发布；后台自动翻译 worker 留待后续。
 
 停止服务使用该进程的正常退出信号；不要停止其他角色的进程。真实库存、服务器、外部 API 及翻译服务须分别提供资料并按对应阶段验证。
 
 本机后台验收环境与日常开发库分开。当前入口、专属库/媒体、账号、启动/停止方法只登记在未提交的 `docs/private/本地联调访问.md`（仓库根相对路径，权限 600）；不要据此另建或重置数据库，也不要把私有内容粘贴进公共日志。
+
+### I18N02 / FEUX04 integration
+
+The optional `view=localized` public projection, complete-catalog ranges/facets, protected vehicle localization sidecar routes and migration `0003_vehicle_localization` are implemented. See the authoritative vehicle contract, section 14, for exact query, length, revision, publishing and compatibility rules. Existing default public DTOs stay unchanged. `generation` and `drivetrain` belong to sidecars and remain null until supplied; no legacy fact is inferred.
+
+Before enabling this build, stop old writers, back up the authoritative database/media, apply migrations explicitly, then check readiness. Migration 0003 separates response metadata from old vehicle receipts without discarding historical results or expiry. A rollback must pause management writes and use matching consumers because older applications do not understand sidecars. Integration tests create/drop isolated random local databases; they never migrate the acceptance inventory. Runtime/provider enablement is recorded separately in the BE role log.

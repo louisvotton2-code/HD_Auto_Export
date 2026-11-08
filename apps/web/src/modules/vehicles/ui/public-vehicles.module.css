@@ -43,13 +43,13 @@
 }
 .filters {
   display: grid;
-  gap: 20px;
+  gap: 16px;
   background: #141414;
-  padding: 24px;
+  padding: 16px;
   border: 1px solid #ffffff0d;
   border-radius: 16px;
 }
-.filters h2 {
+.filters h2:not(.srOnly) {
   font-size: 18px;
   font-weight: 600;
   margin: 0 0 4px;
@@ -83,7 +83,8 @@
   display: grid;
   gap: 12px;
 }
-.filterActions button {
+.filterActions button,
+.searchButton {
   min-height: 40px;
   padding: 9px 14px;
   border: 0;
@@ -96,7 +97,8 @@
   font-weight: 600;
   transition: background 200ms;
 }
-.filterActions button:hover {
+.filterActions button:hover,
+.searchButton:hover {
   background: #c88858;
 }
 .filterActions a {
@@ -145,7 +147,13 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
+.cardSlot {
+  min-width: 0;
+  height: 100%;
+}
 .card {
+  position: relative;
+  height: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -153,23 +161,51 @@
   background: #141414;
   border: 1px solid #ffffff0d;
   border-radius: 16px;
+  transform: perspective(1000px) rotateX(var(--card-tilt-x, 0deg)) rotateY(var(--card-tilt-y, 0deg))
+    scale3d(1, 1, 1);
   transition:
     border-color 300ms,
-    transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 400ms cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 300ms;
   scroll-margin-top: 88px;
 }
-.card:hover {
-  border-color: #b6774966;
-  transform: translateY(-4px);
-  box-shadow: 0 16px 32px #0004;
+.card[data-tilt-active='true'] {
+  border-color: #b677494d;
+  transform: perspective(1000px) rotateX(var(--card-tilt-x, 0deg)) rotateY(var(--card-tilt-y, 0deg))
+    scale3d(1.02, 1.02, 1.02);
+  box-shadow: 0 20px 60px #b677491f;
+  will-change: transform;
+}
+.cardLight {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    circle at var(--card-light-x, 50%) var(--card-light-y, 50%),
+    #ffffff14 0%,
+    transparent 60%
+  );
+  transition: opacity 200ms;
+}
+.card[data-tilt-active='true'] .cardLight {
+  opacity: 1;
 }
 .cardImage {
+  flex-shrink: 0;
   display: block;
   aspect-ratio: 16/10;
   overflow: hidden;
   position: relative;
   background: #1e1e1e;
+}
+.favorite {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
 }
 .cardImage img {
   display: block;
@@ -178,8 +214,8 @@
   object-fit: cover;
   transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.card:hover .cardImage img {
-  transform: scale(1.035);
+.card[data-tilt-active='true'] .cardImage img {
+  transform: scale(1.05);
 }
 .year {
   position: absolute;
@@ -206,6 +242,11 @@
   letter-spacing: 0.06em;
 }
 .card h2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  min-height: 2.7em;
+  overflow: hidden;
   margin: 0 0 8px;
   font-size: 17px;
   font-weight: 600;
@@ -259,6 +300,7 @@
   letter-spacing: -0.02em;
 }
 .cardActions {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -278,6 +320,8 @@
   border-radius: 50%;
 }
 .detailsButton {
+  min-width: 0;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -294,6 +338,9 @@
   transition:
     background 200ms,
     color 200ms;
+}
+.detailsButton > span {
+  flex-shrink: 0;
 }
 .detailsButton:hover {
   background: #c88858;
@@ -373,20 +420,6 @@
   .catalogLayout {
     grid-template-columns: 1fr;
   }
-  .filters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-  }
-  .filters h2 {
-    grid-column: 1/-1;
-  }
-  .filterActions {
-    grid-template-columns: 1fr 1fr;
-    align-items: center;
-  }
-  .filterNotice {
-    grid-column: 1/-1;
-  }
 }
 @media (max-width: 639px) {
   .shell {
@@ -397,13 +430,6 @@
   }
   .grid {
     grid-template-columns: 1fr;
-  }
-  .filters {
-    padding: 18px;
-  }
-  .filters label:first-of-type,
-  .filterActions {
-    grid-column: 1/-1;
   }
   .cardBody {
     padding: 18px;
@@ -416,6 +442,9 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .cardLight {
+    display: none;
+  }
   .card,
   .cardImage img {
     transform: none !important;
@@ -441,4 +470,31 @@
   text-transform: none;
   font-size: 13px;
   letter-spacing: 0;
+}
+
+.filterDivider {
+  height: 1px;
+  background: #ffffff0d;
+  margin: 12px 0;
+}
+.rangeGroup {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.rangeGroup legend {
+  padding: 0;
+  margin-bottom: 8px;
+  color: #c0c0c0;
+  font-size: 13px;
+}
+.rangeFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.filters select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

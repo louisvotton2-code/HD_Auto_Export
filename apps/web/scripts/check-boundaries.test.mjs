@@ -93,3 +93,19 @@ test('home and app consumers cannot bypass the vehicle facade to reach mock data
   assert.equal(issues.length, 1);
   assert.match(issues[0], /consume vehicles through its public entry/);
 });
+
+test('parts keeps static data behind its facade and allows its server entry only in app composition', () => {
+  const root = fixture({
+    [entry]: 'export const calculate = () => 1;',
+    'src/modules/parts/index.ts': "export { Catalog } from './ui/catalog';",
+    'src/modules/parts/ui/catalog.tsx': 'export const Catalog = () => null;',
+    'src/modules/parts/server.ts': "export { parts } from './data/items';",
+    'src/modules/parts/data/items.ts': 'export const parts = [];',
+    'src/modules/home/ui/page.tsx': "import { parts } from '@/modules/parts/data/items';",
+    'src/shared/favorites.ts': "import { parts } from '@/modules/parts/server';",
+    'src/app/parts/page.tsx': "import { Catalog } from '@/modules/parts'; import { parts } from '@/modules/parts/server';",
+  });
+  const issues = checkBoundaries(root).issues;
+  assert.equal(issues.length, 2);
+  assert.ok(issues.every((issue) => issue.includes('consume parts through its public entry')));
+});

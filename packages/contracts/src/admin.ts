@@ -6,6 +6,8 @@ import {
 } from './common.js';
 
 export * from './common.js';
+export * from './localization.js';
+export * from './catalog.js';
 
 export const LocalizedTextSchema = z.strictObject({
   text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
@@ -81,6 +83,8 @@ export const AdminVehicleSchema = z.strictObject({
   publishedRevisionId: IdSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   deletedAt: TimestampSchema.nullable().default(null),
+  // null is reserved for immutable historical receipts created before this field existed.
+  hasUnpublishedChanges: z.boolean().nullable().default(null),
   createdAt: TimestampSchema, updatedAt: TimestampSchema,
 });
 export type AdminVehicle = z.infer<typeof AdminVehicleSchema>;
@@ -119,6 +123,29 @@ export type DeleteVehicleRequest = z.infer<typeof DeleteVehicleRequestSchema>;
 export type RestoreVehicleRequest = z.infer<typeof RestoreVehicleRequestSchema>;
 export type AvailabilityRequest = z.infer<typeof AvailabilityRequestSchema>;
 export const IdempotencyKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/);
+
+export const GenerateVehicleTranslationsRequestSchema = VersionRequestSchema;
+export type GenerateVehicleTranslationsRequest = z.infer<typeof GenerateVehicleTranslationsRequestSchema>;
+export const VehicleTranslationSuggestionFieldSchema = z.strictObject({
+  sourceLanguage: LanguageTagSchema, sourceText: z.string().min(1).max(10_000), sourceVersion: VersionSchema,
+  sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
+  targetHumanEditVersions: z.strictObject({
+    zh: z.number().int().nonnegative().nullable(), en: z.number().int().nonnegative().nullable(), ru: z.number().int().nonnegative().nullable(),
+  }),
+  translations: z.strictObject({
+    zh: LocalizedTextSchema.extend({kind:z.literal('original'),reviewStatus:z.literal('pending'),engineVersion:z.null()}),
+    en: LocalizedTextSchema.extend({kind:z.literal('machine'),reviewStatus:z.literal('pending'),engineVersion:z.string().min(1).max(200)}),
+    ru: LocalizedTextSchema.extend({kind:z.literal('machine'),reviewStatus:z.literal('pending'),engineVersion:z.string().min(1).max(200)}),
+  }),
+});
+export type VehicleTranslationSuggestionField = z.infer<typeof VehicleTranslationSuggestionFieldSchema>;
+export const VehicleTranslationSuggestionsSchema = z.strictObject({
+  vehicleId: z.uuid(), version: VersionSchema, engineVersion: z.string().min(1).max(200),
+  content: z.strictObject({title:VehicleTranslationSuggestionFieldSchema,description:VehicleTranslationSuggestionFieldSchema.nullable()}),
+});
+export type VehicleTranslationSuggestions = z.infer<typeof VehicleTranslationSuggestionsSchema>;
+export const VehicleTranslationSuggestionsResponseSchema = responseSchema(VehicleTranslationSuggestionsSchema);
+export type VehicleTranslationSuggestionsResponse = z.infer<typeof VehicleTranslationSuggestionsResponseSchema>;
 
 export const BulkVehicleMutationItemSchema = z.strictObject({
   id: z.uuid(), expectedVersion: VersionSchema,

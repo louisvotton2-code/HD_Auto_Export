@@ -15,6 +15,7 @@ import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { detailContent } from '../detail-content';
+import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string };
@@ -382,18 +383,19 @@ export function VehicleGallery({
   );
 }
 
-/** Local-only controls; favorites never imply a saved account or a sent inquiry. */
+/** Shared favorite identities and a local share action; neither sends an inquiry. */
 export function VehicleDetailActions({
+  vehicleId,
   detailPath,
   title,
   locale,
 }: {
+  vehicleId: string;
   detailPath: string;
   title: string;
   locale: Locale;
 }) {
   const t = detailContent[locale];
-  const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState('');
   useEffect(() => {
     if (!status) return;
@@ -416,15 +418,7 @@ export function VehicleDetailActions({
       >
         <span aria-hidden="true">↗</span> {t.share}
       </button>
-      <button
-        type="button"
-        className={styles.heart}
-        aria-label={`${saved ? t.unsave : t.save} — ${title}`}
-        aria-pressed={saved}
-        onClick={() => setSaved((value) => !value)}
-      >
-        {saved ? '♥' : '♡'}
-      </button>
+      <FavoriteVehicleButton vehicleId={vehicleId} title={title} locale={locale} />
       <span className={styles.actionStatus} role="status">
         {status}
       </span>

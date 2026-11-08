@@ -109,7 +109,7 @@ test('public list and dictionaries share bounded literal search text without acc
     ]) assert.equal(schema.safeParse(input).success, false, JSON.stringify(input));
   }
   assert(publicContract.PublicVehicleQuerySchema.safeParse({ q: 'model', locale: 'zh', make: 'kia', model: 'k5', powertrain: 'hev', page: 2 }).success);
-  assert.equal(publicContract.PublicFilterQuerySchema.safeParse({ q: 'model', make: 'kia' }).success, false);
+  assert.equal(publicContract.PublicFilterQuerySchema.safeParse({ q: 'model', make: 'kia' }).success, true);
 });
 
 test('recycle-bin queries use explicit strings and old admin receipts gain a null deletion marker', () => {

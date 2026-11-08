@@ -1,11 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
-import { AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, type AdminVehicle } from '@hd/contracts/admin';
+import { AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, SaveVehicleLocalizationSchema, VehicleLocalizationResponseSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
-import { mkdir, copyFile } from 'node:fs/promises';
+import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 
 async function login(page: Page, path = '/admin/vehicles') {
-  if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN) throw new Error('Use the isolated live runner only.');
+  if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !/^hd_admin_test_[a-f0-9]{16}$/.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
   await page.goto(path);
   await page.getByLabel('工作邮箱').fill('browser-test@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TEST_PASSWORD);
@@ -77,6 +77,116 @@ async function readRespectingRateLimit(page: Page, url: string) {
   throw new Error('Unreachable bounded read retry.');
 }
 
+test('real localization sidecar preserves public language snapshots with disabled translation', async ({ page }) => {
+  test.setTimeout(180_000);
+  expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
+  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
+  const privateMarker = 'PRIVATE_I18N02_SYNTHETIC_ONLY';
+  const model = { zh: '合成中文车型', en: 'Synthetic model', ru: 'Синтетическая модель' };
+  const alt = { zh: '合成测试封面', en: 'Synthetic cover image', ru: 'Синтетическое изображение' };
+  await login(page); await page.goto('/admin/vehicles/new');
+  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '展示样例，非实际库存' }).click();
+  await select(page, '品牌', '丰田 / Toyota'); await newName(page, '车型', model.zh);
+  await page.getByLabel('标题原文', { exact: true }).fill('多语字段隔离展示样例'); await (await notes(page)).fill(privateMarker);
+  const initial = await save(page); const ready = await contentAndImage(page, initial, false);
+  expect(ready.draft.internal.notes).toBe(privateMarker); expect(ready.draft.media).toHaveLength(1);
+  const localizationPath = `/api/v1/admin/vehicles/${initial.id}/localization`;
+  async function readLocalization() {
+    const response = await readRespectingRateLimit(page, localizationPath); expect(response.status()).toBe(200);
+    return VehicleLocalizationResponseSchema.parse(await response.json()).data;
+  }
+  async function persistLocalization() {
+    const responseReady = page.waitForResponse(response => new URL(response.url()).pathname === localizationPath && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: /保存多语展示资料$/ }).click();
+    const response = await responseReady; expect(response.status()).toBe(200);
+    const input = SaveVehicleLocalizationSchema.parse(response.request().postDataJSON());
+    const saved = VehicleLocalizationResponseSchema.parse(await response.json()).data;
+    await expect(page.locator('.ant-alert-success').filter({ hasText: '多语展示资料已保存，尚未自动发布' })).toBeVisible();
+    return { saved, input };
+  }
+  async function expandField(label: string) {
+    const header = page.locator('.ant-collapse-header').filter({ has: page.getByText(label, { exact: true }) });
+    await expect(header).toBeVisible();
+    if (await header.getAttribute('aria-expanded') === 'false') await header.click();
+    await expect(page.getByLabel(`${label}原文`, { exact: true })).toBeVisible();
+  }
+  async function evidence(name: string) {
+    await mkdir('/private/tmp/hd-ad-i18n02-evidence', { recursive: true });
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: width === 320 ? 844 : 1000 }); await fitsViewport(page);
+      await page.evaluate(() => scrollTo(0, 0));
+      await page.screenshot({ path: `/private/tmp/hd-ad-i18n02-evidence/real-disabled-${name}-${width}.png`, fullPage: true, animations: 'disabled' });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
+  const before = await readLocalization();
+  expect(before.data.facts).toEqual({ generation: null, drivetrain: null });
+  expect(before.data.fields.map(field => field.ref)).toEqual(['model', `media.${ready.draft.media[0]!.id}.alt`]);
+  expect(before.data.fields.every(field => field.sourceLanguage === 'und')).toBe(true);
+  await tab(page, '公开字段多语');
+  for (const label of ['车型名称', '图片 1 说明']) {
+    await expandField(label);
+    // Wait for the prior Select portal to finish closing before opening the next one.
+    await expect(page.locator('.ant-select-dropdown:visible')).toHaveCount(0);
+    await select(page, `${label}来源语言`, '中文');
+    await expect(page.locator('.ant-select-dropdown:visible')).toHaveCount(0);
+  }
+  const sources = await persistLocalization();
+  for (const previous of before.data.fields) expect(sources.input.data.fields.find(field => field.ref === previous.ref)).toMatchObject({ sourceLanguage: 'zh', sourceVersion: previous.sourceVersion, sourceHash: previous.sourceHash });
+  await page.getByRole('button', { name: '选择前10个中文字段', exact: true }).click();
+  const generatedResponse = page.waitForResponse(response => response.url().endsWith(`${localizationPath}/translation-suggestions`) && response.request().method() === 'POST');
+  await page.getByRole('button', { name: /生成所选展示字段英俄译文$/ }).click();
+  const disabled = await generatedResponse; expect(disabled.status()).toBe(503); expect((await disabled.json()).error.code).toBe('TRANSLATION_DISABLED');
+  expect(disabled.request().postDataJSON()).toEqual({ vehicleVersion: sources.saved.vehicleVersion, revision: sources.saved.revision, refs: before.data.fields.map(field => field.ref) });
+  expect(disabled.request().headers()['idempotency-key']).toBeTruthy();
+  await expect(page.locator('.ant-alert-error')).toBeVisible();
+  const afterDisabled = await readLocalization(); expect(afterDisabled).toEqual(sources.saved);
+  for (const [label, values] of [['车型名称', model], ['图片 1 说明', alt]] as const) {
+    await expandField(label); await page.getByRole('button', { name: `中文${label}使用原文`, exact: true }).click();
+    await page.getByLabel(`英文${label}`, { exact: true }).fill(values.en); await page.getByLabel(`俄文${label}`, { exact: true }).fill(values.ru);
+    for (const language of ['中文', '英文', '俄文']) await expect(page.getByRole('checkbox', { name: `${language}${label}已审核`, exact: true })).not.toBeChecked();
+  }
+  const translated = await persistLocalization();
+  for (const field of translated.saved.data.fields) {
+    expect(field.translations).toMatchObject({ zh: { kind: 'original', reviewStatus: 'pending' }, en: { kind: 'human', reviewStatus: 'pending' }, ru: { kind: 'human', reviewStatus: 'pending' } });
+  }
+  await evidence('display-saved-pending');
+  let publishCalls = 0; page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/publish`)) publishCalls++; });
+  const firstPublish = await operation(page, initial.id, '发布车辆', 'publish'); expect(firstPublish.status()).toBe(200);
+  const first = AdminVehicleResponseSchema.parse(await firstPublish.json()).data; expect(first.hasUnpublishedChanges).toBe(false);
+  async function verifyPublic(expectedEnglish: string) {
+    for (const locale of ['zh', 'en', 'ru'] as const) {
+      const response = await readRespectingRateLimit(page, `/api/v1/vehicles/${initial.id}?locale=${locale}&view=localized`); expect(response.status()).toBe(200);
+      const raw = await response.text();
+      for (const secret of [privateMarker, 'purchaseCost', 'supplierContact', 'sourceHash', 'humanEditVersion', 'engineVersion']) expect(raw).not.toContain(secret);
+      const publicVehicle = PublicVehicleResponseSchema.parse(JSON.parse(raw)).data;
+      expect(publicVehicle.source.kind).toBe('demo'); expect(publicVehicle.availability).toBe('unknown');
+      expect(publicVehicle.facts.model?.name).toBe(locale === 'en' ? expectedEnglish : model[locale]);
+      expect(publicVehicle.display?.model).toMatchObject({ status: 'ready', text: locale === 'en' ? expectedEnglish : model[locale], requestedLocale: locale, contentLocale: locale, provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
+      expect(publicVehicle.images[0]!.alt).toBe(alt[locale]);
+      expect(publicVehicle.display?.mediaAlt.find(entry => entry.mediaId === ready.draft.media[0]!.id)?.value).toMatchObject({ status: 'ready', text: alt[locale], contentLocale: locale });
+      expect(publicVehicle.facts.generation).toBeNull(); expect(publicVehicle.facts.drivetrain).toBeNull();
+    }
+  }
+  await verifyPublic(model.en);
+  await tab(page, '公开字段多语'); await expandField('车型名称');
+  await page.getByLabel('英文车型名称', { exact: true }).fill('Synthetic revised model');
+  const revision = await persistLocalization();
+  const changedResponse = await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`); expect(changedResponse.status()).toBe(200);
+  const changed = AdminVehicleResponseSchema.parse(await changedResponse.json()).data;
+  expect(changed.hasUnpublishedChanges).toBe(true); expect(changed.publishedRevisionId).toBe(first.publishedRevisionId); expect(changed.draft).toEqual(ready.draft);
+  expect(revision.saved.vehicleVersion).toBe(changed.version); expect(publishCalls).toBe(1);
+  await verifyPublic(model.en); await tab(page, '三语与发布');
+  await expect(page.getByRole('button', { name: /发布已保存的修改$/ })).toBeEnabled(); await evidence('translation-only-unpublished');
+  const secondPublish = await operation(page, initial.id, '发布已保存的修改', 'publish'); expect(secondPublish.status()).toBe(200);
+  const second = AdminVehicleResponseSchema.parse(await secondPublish.json()).data;
+  expect(second.publishedRevisionId).not.toBe(first.publishedRevisionId); expect(second.hasUnpublishedChanges).toBe(false);
+  await verifyPublic('Synthetic revised model');
+  await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toBeDisabled();
+  await page.reload(); await tab(page, '三语与发布'); await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toBeDisabled(); expect(publishCalls).toBe(2);
+  await writeFile('/private/tmp/hd-ad-i18n02-evidence/real-disabled-sidecar-summary.json', JSON.stringify({ sampleKind: 'Real API isolated synthetic demo; translator disabled; all translations entered manually', provider: 'disabled', vehicleId: initial.id, refs: before.data.fields.map(field => field.ref), firstPublication: first.publishedRevisionId, secondPublication: second.publishedRevisionId, model, alt, revisedEnglish: 'Synthetic revised model', publishCalls }, null, 2));
+});
+
 test('real cookie login, draft persistence/privacy and logout', async ({ page }) => {
   await login(page);
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
@@ -104,7 +214,22 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   await expect(page.getByRole('alert').filter({ hasText: '库存' }).last()).toBeVisible();
   await select(page, '核验后的库存状态', '可售');
   expect((await operation(page, initial.id, '核验并更新库存', 'availability')).status()).toBe(200);
-  expect((await operation(page, initial.id, '发布车辆', 'publish')).status()).toBe(200);
+  const publishedResponse = await operation(page, initial.id, '发布车辆', 'publish');
+  expect(publishedResponse.status()).toBe(200);
+  expect(AdminVehicleResponseSchema.parse(await publishedResponse.json()).data.hasUnpublishedChanges).toBe(false);
+  await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toBeDisabled();
+  await page.reload(); await tab(page, '三语与发布');
+  await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toBeDisabled();
+  await (await notes(page)).fill('PRIVATE_INTERNAL_ONLY_AFTER_PUBLISH');
+  const internalOnly = await save(page, initial.id);
+  expect(internalOnly.hasUnpublishedChanges).toBe(false);
+  await expect(page.locator('.ant-alert-success').filter({ hasText: '草稿已保存，对外内容已是最新，无需重复发布。' })).toBeVisible();
+  await tab(page, '三语与发布');
+  await select(page, '核验后的库存状态', '已预订');
+  const inventoryOnly = await operation(page, initial.id, '核验并更新库存', 'availability');
+  expect(inventoryOnly.status()).toBe(200);
+  expect(AdminVehicleResponseSchema.parse(await inventoryOnly.json()).data.hasUnpublishedChanges).toBe(false);
+  await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toBeDisabled();
   for (const locale of ['zh', 'en', 'ru']) {
     const response = await page.request.get(`/api/v1/vehicles/${initial.id}?locale=${locale}`);
     expect(response.status()).toBe(200);
@@ -121,6 +246,7 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   await tab(page, '三语与发布');
   await expect(page.getByRole('checkbox', { name: '英文标题已审核', exact: true })).toBeDisabled();
   const edited = await save(page, initial.id);
+  expect(edited.hasUnpublishedChanges).toBe(true);
   expect(edited.draft.content.title.translations.en?.reviewStatus).toBe('stale');
   expect(PublicVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/vehicles/${initial.id}?locale=zh`)).json()).data.content.title.text).toBe(initial.draft.content.title.sourceText);
   await select(page, '核验后的库存状态', '已售');
@@ -259,6 +385,8 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   }));
   await page.locator('input[type=file]').setInputFiles(pngs.map((png, i) => ({ name: `synthetic-${i + 1}.png`, mimeType: 'image/png', buffer: Buffer.from(png, 'base64') })));
   await expect(page.getByRole('textbox', { name: '图片 8 说明', exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('.ant-message-success').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
+  await expect(page.locator('.ant-alert').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
   expect(uploads).toHaveLength(8);
   expect(uploads.map(upload => upload.rights.source?.imageUrl)).toEqual(imageUrls);
   for (const upload of uploads) expect(upload.rights).toMatchObject({ basis: 'unverified', source: { listingUrl, collectedAt: '2026-11-08T08:00:00.000Z' } });
@@ -342,4 +470,146 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   expect(PublicHomeSectionsSchema.parse(await (await readRespectingRateLimit(page, '/api/v1/home/vehicles?locale=zh')).json()).data.sections.every(section => section.vehicles.every(item => item.id !== initial.id))).toBe(true);
   await expect(page.getByLabel('标题原文', { exact: true })).toBeVisible();
   await page.screenshot({ path: '/private/tmp/hd-ad-del-evidence/restored-draft.png', fullPage: true, animations: 'disabled' });
+});
+
+test('translation disabled real API keeps Chinese source intact and never pretends machine suggestions were saved', async ({ page }) => {
+  test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'disabled', 'This case verifies the explicitly disabled provider.');
+  await login(page);
+  const initial = await create(page, 'manual', '中文首存与未配置机器翻译隔离测试');
+  expect(initial.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: '中文首存与未配置机器翻译隔离测试' });
+  expect(initial.draft.content.title.translations.en).toBeNull();
+  await tab(page, '三语与发布');
+  const translating = page.waitForResponse(response => response.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/translation-suggestions`) && response.request().method() === 'POST');
+  await page.getByRole('button', { name: /生成英俄译文$/ }).click();
+  const result = await translating;
+  expect(result.status()).toBe(503); expect((await result.json()).error.code).toBe('TRANSLATION_DISABLED');
+  await expect(page.locator('.ant-alert').filter({ hasText: '机器翻译服务尚未配置' })).toBeVisible();
+  await expect(page.locator('.ant-message-error').filter({ hasText: '机器翻译服务尚未配置' })).toBeVisible();
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('俄文标题', { exact: true })).toHaveValue('');
+  const unchanged = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
+  expect(unchanged.version).toBe(initial.version); expect(unchanged.draft).toEqual(initial.draft);
+});
+
+test('actual local machine translation produces English/Russian suggestions and persists only after an explicit save', async ({ page }) => {
+  test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'libretranslate', 'Requires the explicitly selected loopback-only LibreTranslate service.');
+  test.setTimeout(90_000);
+  await login(page);
+  const sourceTitle = '2024款二手汽车';
+  const sourceDescription = '车辆行驶12000公里，售价50000元，仅用于本地翻译测试。';
+  const initial = await create(page, 'manual', sourceTitle);
+  await tab(page, '三语与发布');
+  await page.getByLabel('描述原文', { exact: true }).fill(sourceDescription);
+  const withDescription = await save(page, initial.id);
+  const generating = page.waitForResponse(response => response.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/translation-suggestions`) && response.request().method() === 'POST');
+  await page.getByRole('button', { name: /生成英俄译文$/ }).click();
+  const response = await generating;
+  expect(response.status()).toBe(200);
+  const generated = VehicleTranslationSuggestionsResponseSchema.parse(await response.json()).data;
+  expect(generated.engineVersion).toBe(`libretranslate:${process.env.LIBRETRANSLATE_ENGINE_VERSION}`);
+  expect(generated.content.title.translations.zh).toMatchObject({ text: sourceTitle, kind: 'original', reviewStatus: 'pending' });
+  expect(generated.content.description!.translations.zh).toMatchObject({ text: sourceDescription, kind: 'original', reviewStatus: 'pending' });
+  for (const field of ['title', 'description'] as const) {
+    const suggestion = generated.content[field]!;
+    for (const locale of ['en', 'ru'] as const) {
+      const translation = suggestion.translations[locale];
+      expect(translation).toMatchObject({ kind: 'machine', reviewStatus: 'pending', engineVersion: generated.engineVersion });
+      expect(translation.text.trim()).not.toBe(suggestion.sourceText.trim());
+      expect(translation.text).toMatch(locale === 'en' ? /[A-Za-z]/ : /[А-Яа-яЁё]/);
+      const normalized = translation.text.replace(/[,\s\u00a0\u202f]/g, '');
+      for (const number of field === 'title' ? ['2024'] : ['12000', '50000']) expect(normalized).toContain(number);
+    }
+  }
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(generated.content.title.translations.en.text);
+  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(generated.content.description!.translations.ru.text);
+  await expect(page.getByRole('checkbox', { name: '英文标题已审核', exact: true })).not.toBeChecked();
+  const beforeSave = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
+  expect(beforeSave.version).toBe(withDescription.version); expect(beforeSave.draft).toEqual(withDescription.draft);
+  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
+  await mkdir('/private/tmp/hd-ad-i18n-evidence', { recursive: true });
+  await writeFile('/private/tmp/hd-ad-i18n-evidence/actual-local-machine-output.json', JSON.stringify(generated, null, 2));
+  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/actual-local-machine-suggestions.png', fullPage: true, animations: 'disabled' });
+  const saved = await save(page, initial.id);
+  expect(saved.publicationState).toBe('draft'); expect(saved.hasUnpublishedChanges).toBe(true);
+  for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
+    expect(saved.draft.content[field].translations[locale]).toMatchObject({ text: generated.content[field]!.translations[locale].text, reviewStatus: 'pending', kind: locale === 'zh' ? 'original' : 'machine' });
+  }
+  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
+  await page.reload(); await tab(page, '三语与发布');
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(generated.content.title.translations.en.text);
+  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(generated.content.description!.translations.ru.text);
+});
+
+test('real Aliyun international Chinese suggestion persistence', async ({ page }) => {
+  test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'aliyun', 'Requires the separately approved real Aliyun synthetic-only mode.');
+  test.setTimeout(90_000);
+  expect(process.env.ADMIN_LIVE_ALIYUN_CONFIRM).toBe('synthetic-only');
+  expect(process.env.ALI_MT_REGION).toBe('ap-southeast-1');
+  expect(process.env.TRANSLATION_MAX_CHARACTERS_PER_HOUR).toBe('500');
+  const sourceTitle = '2024款丰田卡罗拉';
+  const sourceDescription = '合成测试：里程12000km，参考价格50000CNY，库存和出口资格待核验。';
+  const sourceCharacters = sourceTitle.length + sourceDescription.length;
+  expect(sourceCharacters).toBeLessThanOrEqual(200);
+  expect(sourceCharacters * 2).toBeLessThan(400);
+  await login(page);
+  const initial = await create(page, 'manual', sourceTitle);
+  await tab(page, '三语与发布');
+  await page.getByLabel('描述原文', { exact: true }).fill(sourceDescription);
+  const source = await save(page, initial.id);
+  const responseReady = page.waitForResponse(response => response.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/translation-suggestions`) && response.request().method() === 'POST');
+  const startedAt = Date.now();
+  // Exactly one generation click: an unknown result fails this case instead of making more paid calls.
+  await page.getByRole('button', { name: /生成英俄译文$/ }).click();
+  const response = await responseReady;
+  const elapsedMs = Date.now() - startedAt;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON()).toEqual({ version: source.version });
+  const generated = VehicleTranslationSuggestionsResponseSchema.parse(await response.json()).data;
+  expect(generated.engineVersion).toBe(`aliyun-general:2018-10-12:general:ap-southeast-1:${process.env.ALI_MT_CONFIG_VERSION ?? '1'}`);
+  expect(JSON.stringify(generated)).not.toContain('PRIVATE_AD_UX_ONLY');
+  const output = {
+    sampleKind: 'real Aliyun international synthetic sample; not operational inventory or professional translation certification',
+    engineVersion: generated.engineVersion, elapsedMs, sourceCharacters, maximumPlannedTranslatedSourceCharacters: sourceCharacters * 2,
+    zh: { title: sourceTitle, description: sourceDescription },
+    en: { title: generated.content.title.translations.en.text, description: generated.content.description!.translations.en.text },
+    ru: { title: generated.content.title.translations.ru.text, description: generated.content.description!.translations.ru.text },
+  };
+  await mkdir('/private/tmp/hd-ad-i18n-evidence', { recursive: true });
+  // Only the deliberately synthetic source/output and timing are written; no environment, signatures, or upstream messages.
+  await writeFile('/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-output.json', JSON.stringify(output, null, 2));
+  for (const field of ['title', 'description'] as const) {
+    const suggestion = generated.content[field]!;
+    expect(suggestion.translations.zh).toMatchObject({ text: field === 'title' ? sourceTitle : sourceDescription, kind: 'original', reviewStatus: 'pending' });
+    for (const locale of ['en', 'ru'] as const) {
+      const translation = suggestion.translations[locale];
+      expect(translation).toMatchObject({ kind: 'machine', reviewStatus: 'pending', engineVersion: generated.engineVersion });
+      expect(translation.text.trim()).not.toBe(suggestion.sourceText.trim());
+      const normalized = translation.text.replace(/[,\s\u00a0\u202f]/g, '');
+      for (const number of field === 'title' ? ['2024'] : ['12000', '50000']) expect(normalized).toContain(number);
+    }
+  }
+  expect(output.en.title).toMatch(/[A-Za-z]/); expect(output.en.description).toMatch(/[A-Za-z]/);
+  // A proper model name may remain Latin in Russian; the sentence must contain actual Cyrillic text.
+  expect(output.ru.description).toMatch(/[А-Яа-яЁё]/);
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(output.en.title);
+  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(output.ru.description);
+  const beforeSave = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
+  expect(beforeSave.version).toBe(source.version); expect(beforeSave.draft).toEqual(source.draft);
+  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
+  for (const locale of ['中文', '英文', '俄文']) await expect(page.getByRole('checkbox', { name: `${locale}标题已审核`, exact: true })).not.toBeChecked();
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-unsaved.png', fullPage: true, animations: 'disabled' });
+  const saved = await save(page, initial.id);
+  expect(saved.publicationState).toBe('draft'); expect(saved.publishedAt).toBeNull(); expect(saved.publishedRevisionId).toBeNull();
+  for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
+    expect(saved.draft.content[field].translations[locale]).toMatchObject({ text: generated.content[field]!.translations[locale].text, reviewStatus: 'pending', kind: locale === 'zh' ? 'original' : 'machine' });
+  }
+  expect(saved.draft.internal.notes).toBe('PRIVATE_AD_UX_ONLY');
+  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
+  await page.reload(); await tab(page, '三语与发布');
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(output.en.title);
+  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(output.ru.description);
+  await expect(page.locator('.ant-alert').filter({ hasText: /已填入\d+项语言内容，请核对并保存草稿|译文已填入当前草稿，请核对并保存/ })).toHaveCount(0);
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-saved.png', fullPage: true, animations: 'disabled' });
 });

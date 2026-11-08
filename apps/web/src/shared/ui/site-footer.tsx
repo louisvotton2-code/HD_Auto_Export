@@ -52,6 +52,7 @@ export async function SiteFooter() {
             <nav className={`hd-footer-nav ${styles.footerNav}`} aria-label={t('Nav.menu')}>
               <Link href="/">{t('Nav.home')}</Link>
               <Link href="/cars/">{t('Nav.vehicles')}</Link>
+              <Link href="/parts/">{t('Nav.parts')}</Link>
               <Link href="/calculator/russia/">{t('Nav.calculator')}</Link>
               <Link href="/buy/">{t('BuyingGuide.navLabel')}</Link>
               <a href={siteConfig.companyWebsite}>{t('Nav.about')}</a>

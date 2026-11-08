@@ -1,13 +1,16 @@
 import {
-  PublicHomeSectionsSchema,
   PublicVehicleFiltersSchema,
-  PublicVehicleListSchema,
   PublicVehicleResponseSchema,
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
+import {
+  localizedHomeSchema,
+  localizedListSchema,
+  localizedVehicleSchema,
+} from '../localized-projection';
 export { parseCatalogQuery } from '../public-query';
 
 export class PublicApiError extends Error {
@@ -127,27 +130,34 @@ export const queryString = (query: Record<string, string | number | undefined>) 
 };
 
 export function getPublicHome(locale: Locale) {
-  return readPublicJson(`/api/v1/home/vehicles?locale=${locale}`, PublicHomeSectionsSchema);
+  return readPublicJson(
+    `/api/v1/home/vehicles?locale=${locale}&view=localized`,
+    localizedHomeSchema(locale),
+  );
 }
 export function getPublicFilters(locale: Locale, q?: string) {
   return readPublicJson(
-    `/api/v1/vehicle-filters?${queryString({ catalog: 'curated', locale, q })}`,
+    `/api/v1/vehicle-filters?${queryString({ catalog: 'curated', locale, q, view: 'localized' })}`,
     PublicVehicleFiltersSchema,
   );
 }
 export function getPublicCatalog(query: PublicVehicleQuery) {
-  return readPublicJson(`/api/v1/vehicles?${queryString(query)}`, PublicVehicleListSchema);
+  return readPublicJson(
+    `/api/v1/vehicles?${queryString({ ...query, view: 'localized' })}`,
+    localizedListSchema(query.locale),
+  );
 }
 export async function getPublicVehicle(
   id: string,
   locale: Locale,
   incoming?: Pick<Headers, 'get'>,
+  view?: 'legacy' | 'localized',
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const result = await readPublicJson(
-      `/api/v1/vehicles/${id}?locale=${locale}`,
-      PublicVehicleResponseSchema,
+      `/api/v1/vehicles/${id}?${queryString({ locale, view })}`,
+      view === 'localized' ? localizedVehicleSchema(locale) : PublicVehicleResponseSchema,
       incoming,
     );
     if (result.data.id !== id || result.data.detailPath !== `/${locale}/cars/${id}/`)

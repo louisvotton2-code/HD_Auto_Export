@@ -10,7 +10,7 @@ test.afterEach(async ({ request }) => {
 const governance =
   /展示样例|演示|虚构|第三方|外部车源|库存待核验|库存待确认|\bdemo\b|fictional|display example|external listing|stock not verified|демонстраци|вымышлен|внешнее объявление|наличие не проверено/i;
 for (const locale of ['zh', 'en', 'ru']) {
-  test(`${locale}: five public pages and contact drafts have production wording`, async ({
+  test(`${locale}: seven public pages and contact drafts have production wording`, async ({
     page,
   }) => {
     for (const path of [
@@ -18,6 +18,8 @@ for (const locale of ['zh', 'en', 'ru']) {
       `/${locale}/cars/`,
       `/${locale}/cars/fixture_car_2/`,
       `/${locale}/buy/`,
+      `/${locale}/parts/`,
+      `/${locale}/parts/52910k2200/`,
       `/${locale}/calculator/russia/`,
     ]) {
       await page.goto(path);
@@ -82,7 +84,10 @@ for (const path of ['/en/', '/en/cars/', '/en/cars/fixture_car_2/']) {
     await expect(page.getByTestId('public-catalog-empty')).toHaveCount(0);
     await expect(page.getByTestId('public-vehicle-missing')).toHaveCount(0);
     if (path === '/en/')
-      await expect(page.locator('[data-home-section="hero"] strong').first()).toHaveText('—');
+      // The complete catalog total is available from successful facets even if the home selection is limited.
+      await expect(
+        page.getByTestId('hero-stat-catalog').locator('[data-counter-value]'),
+      ).toHaveAttribute('data-counter-value', '26');
     await setPublicFixtureState(request, { publicRateLimited: false });
     await page.evaluate(() => {
       dispatchEvent(new Event('focus'));
@@ -153,14 +158,14 @@ test('a keyword change during cooldown waits for an explicit retry of results an
   });
   const form = page.locator('main form');
   await form.locator('[name="q"]').fill('Alpha Model');
-  await form.locator('[type="submit"]').click();
+  await form.locator('[type="submit"]').last().click();
   const status = page.getByTestId('public-resource-status');
   await expect(status).toContainText('Too many requests');
   await expect.poll(() => calls.length).toBe(2);
   const limitedAt = Date.now();
   await setPublicFixtureState(request, { publicRateLimited: false });
   await form.locator('[name="q"]').fill('Selected vehicle');
-  await form.locator('[type="submit"]').click();
+  await form.locator('[type="submit"]').last().click();
   await expect(page.getByTestId('public-filter-unavailable').locator('a')).not.toHaveAttribute(
     'href',
   );

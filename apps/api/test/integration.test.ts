@@ -9,12 +9,13 @@ import sharp from 'sharp';
 import type {InjectOptions} from 'fastify';
 import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleResponseSchema,PublicVehicleListSchema,ApiErrorSchema} from '@hd/contracts/public';
-import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
+import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createDatabase} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
 import {createStaff,setStaffEnabled} from '../src/staff-cli.js';
+import {VehicleTranslator} from '../src/vehicles/translation.js';
 
 const baseUrl=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
 if(!['127.0.0.1','localhost'].includes(baseUrl.hostname)||baseUrl.pathname!=='/postgres') throw new Error('Integration tests require a local PostgreSQL maintenance database; never point at production.');
@@ -25,9 +26,17 @@ let root:string;let cookie:string;let editorId:string;let requestCounter=0;
 const origin='http://127.0.0.1:3318';
 const password='Isolated_test_password_903!';
 let dbUrl:string;
+let translationHook:((text:string,target:'en'|'ru')=>Promise<string>)|null=null;
 const headers=()=>({cookie,origin});
 const call=(options:InjectOptions)=>runtime.app.inject({...options,remoteAddress:`198.51.${Math.floor(requestCounter/240)}.${++requestCounter%240+1}`});
 function draft():VehicleDraftInput {const value=makeVehicleDraftFixture();value.media=[];return value;}
+// Escape every UTF-16 unit in every JSON string, including property names, without changing the parsed request.
+function escapedJson(value:object):string {
+  return JSON.stringify(value).replace(/"(?:[^"\\]|\\.)*"/g,token=>`"${(JSON.parse(token) as string).split('').map(unit=>`\\u${unit.charCodeAt(0).toString(16).padStart(4,'0')}`).join('')}"`);
+}
+function padJson(body:string,size:number):Buffer {
+  const bytes=Buffer.from(body);assert.ok(bytes.length<=size);return Buffer.concat([bytes,Buffer.alloc(size-bytes.length,0x20)]);
+}
 async function create(value=draft()):Promise<AdminVehicle> {
   const r=await call({method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':randomUUID()},payload:{draft:value}});
   assert.equal(r.statusCode,201,r.body);return r.json().data;
@@ -66,7 +75,7 @@ before(async()=>{
   await maintenance.pool.query(`CREATE DATABASE "${databaseName}"`);
   const url=new URL(baseUrl);url.pathname=`/${databaseName}`;dbUrl=url.toString();
   const config=readConfig({NODE_ENV:'test',DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin});
-  runtime=await buildApp(config);await migrateDatabase(runtime.db);await migrateDatabase(runtime.db);
+  runtime=await buildApp(config,{translator:new VehicleTranslator({engineVersion:'isolated-http-stub:1',async translate(text,target){return translationHook?translationHook(text,target):`${target}:${text}`;}},1_000_000)});await migrateDatabase(runtime.db);await migrateDatabase(runtime.db);
   await createStaff(runtime.auth,{email:'admin@example.invalid',name:'Test admin',role:'admin',password});
   const editor=await createStaff(runtime.auth,{email:'editor@example.invalid',name:'Test editor',role:'editor',password});editorId=editor.user.id;
   const login=await call({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email:'editor@example.invalid',password}});
@@ -100,6 +109,117 @@ test('draft privacy and current-language publication validation',async()=>{
   assert.equal(r.statusCode,422,r.body);assert.ok(r.json().error.fields.some((f:{path:string})=>f.path==='draft.media'));
   assert.equal((await runtime.db.pool.query('SELECT count(*)::int AS count FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].count,0);
   const current=await runtime.inventory.getAdmin(vehicle.id);assert.equal(current.version,vehicle.version);assert.equal(current.publicationState,'draft');
+});
+test('full multibyte translation drafts survive save/readback, escaped JSON and the bounded route limit',async(context)=>{
+  const limit=1024*1024;const input=draft();
+  for(const [name,char] of [['title','车'],['description','辆']] as const) {
+    input.content[name]={sourceLanguage:'zh',sourceText:char.repeat(10_000),sourceVersion:1,translations:{zh:null,en:null,ru:null}};
+  }
+  const creation=JSON.stringify({draft:input});assert.ok(Buffer.byteLength(creation)<100_000);
+  let vehicle=await create(input);
+  for(const name of ['title','description'] as const) {
+    const field=vehicle.draft.content[name];
+    for(const locale of ['zh','en','ru'] as const)field.translations[locale]={
+      text:locale==='zh'?field.sourceText!:locale==='en'?'E'.repeat(10_000):'Я'.repeat(10_000),
+      kind:locale==='zh'?'original':'machine',reviewStatus:'pending',sourceVersion:field.sourceVersion,humanEditVersion:0,
+      engineVersion:locale==='zh'?null:'isolated-pending-result:1',
+    };
+  }
+  const adopted=JSON.stringify(SaveVehicleRequestSchema.parse({version:vehicle.version,draft:vehicle.draft}));
+  assert.ok(Buffer.byteLength(adopted)>100_000);assert.ok(Buffer.byteLength(adopted)<limit);
+  const url=`/api/v1/admin/vehicles/${vehicle.id}`;
+  const first=await call({method:'PATCH',url,headers:{...headers(),'content-type':'application/json'},payload:adopted});
+  assert.equal(first.statusCode,200,first.body);vehicle=first.json().data;
+  for(const name of ['title','description'] as const)for(const locale of ['zh','en','ru'] as const) {
+    const text=vehicle.draft.content[name].translations[locale]!;
+    assert.equal(text.text.length,10_000);assert.equal(text.reviewStatus,'pending');assert.equal(text.kind,locale==='zh'?'original':'machine');
+  }
+  const escaped=escapedJson({version:vehicle.version,draft:vehicle.draft});
+  assert.deepEqual(JSON.parse(escaped),{version:vehicle.version,draft:vehicle.draft});assert.ok(Buffer.byteLength(escaped)>Buffer.byteLength(adopted));
+  const second=await call({method:'PATCH',url,headers:{...headers(),'content-type':'application/json'},payload:escaped});
+  assert.equal(second.statusCode,200,second.body);vehicle=second.json().data;
+  const atLimit=padJson(JSON.stringify({version:vehicle.version,draft:vehicle.draft}),limit);
+  const boundary=await call({method:'PATCH',url,headers:{...headers(),'content-type':'application/json'},payload:atLimit});
+  assert.equal(boundary.statusCode,200,boundary.body);vehicle=boundary.json().data;
+  const overflow=Buffer.concat([atLimit,Buffer.from(' ')]);
+  const rejectedSave=await call({method:'PATCH',url,headers:{...headers(),'content-type':'application/json'},payload:overflow});
+  assert.equal(rejectedSave.statusCode,413,rejectedSave.body);assert.equal(rejectedSave.json().error.code,'PAYLOAD_TOO_LARGE');
+  const countBefore=(await runtime.db.pool.query('SELECT count(*)::int n FROM vehicles')).rows[0].n;
+  const rejectedCreate=await call({method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'content-type':'application/json','idempotency-key':randomUUID()},payload:padJson(creation,limit+1)});
+  assert.equal(rejectedCreate.statusCode,413,rejectedCreate.body);assert.equal((await runtime.db.pool.query('SELECT count(*)::int n FROM vehicles')).rows[0].n,countBefore);
+  const smallMutation=await call({method:'POST',url:`${url}/publish`,headers:{...headers(),'content-type':'application/json','idempotency-key':randomUUID()},payload:padJson(JSON.stringify({version:vehicle.version}),100_001)});
+  assert.equal(smallMutation.statusCode,413,smallMutation.body); // The general 100k limit was not raised.
+  const refreshed=await call({method:'GET',url,headers:headers()});assert.equal(refreshed.statusCode,200,refreshed.body);
+  assert.deepEqual(refreshed.json().data,vehicle); // All six complete texts persisted; failed requests made no change.
+  context.diagnostic(`UTF-8 create=${Buffer.byteLength(creation)}, adopted save=${Buffer.byteLength(adopted)}, all-string-escaped save=${Buffer.byteLength(escaped)} bytes; exact route cap=${limit}.`);
+});
+test('one MiB covers bounded full-field draft JSON even when every string is Unicode-escaped',context=>{
+  const input=makeExternalVehicleDraftFixture();
+  input.source={kind:'external',platform:{id:'p'.repeat(100),name:'平'.repeat(120)},listingUrl:'https://example.invalid/'.padEnd(2048,'x'),externalId:'源'.repeat(300),collectedAt:'2026-11-08T00:00:00.000Z',sourceUpdatedAt:'2026-11-08T00:00:00.000Z'};
+  for(const name of ['make','model','trim'] as const)input.facts[name]={id:name.padEnd(100,'x'),name:'车'.repeat(120)};
+  Object.assign(input.facts,{modelYear:9999,manufacturedAt:{precision:'day',value:'9999-12-31'},firstRegistration:{precision:'day',value:'9999-12-31'},
+    mileageKm:10_000_000,engineCc:100_000,powerKw:100_000,location:{country:'CN',city:'市'.repeat(120),displayName:'地'.repeat(200)}});
+  const money={amount:'99999999999999.99',currency:'CNY' as const};
+  input.price={kind:'reference',money,includes:Array.from({length:30},()=> '费'.repeat(200))};
+  input.internal={purchaseCost:money,notes:'备'.repeat(10_000),supplierContact:'联'.repeat(1000),vin:'X'.repeat(17)};
+  input.media=Array.from({length:30},(_,index)=>({id:`image_${index}`.padEnd(100,'x'),alt:'图'.repeat(500),sortOrder:index,isCover:index===0}));
+  for(const field of Object.values(input.content)) {
+    field.sourceLanguage='zh-aaaaaaaa'+'-aaaaaaa'.repeat(3);field.sourceText='中'.repeat(10_000);field.sourceVersion=Number.MAX_SAFE_INTEGER;
+    for(const locale of ['zh','en','ru'] as const)field.translations[locale]={text:'文'.repeat(10_000),kind:'machine',reviewStatus:'pending',
+      sourceVersion:Number.MAX_SAFE_INTEGER,humanEditVersion:Number.MAX_SAFE_INTEGER,engineVersion:'版'.repeat(200)};
+  }
+  const parsed=SaveVehicleRequestSchema.parse({version:Number.MAX_SAFE_INTEGER,draft:input});const bytes=Buffer.byteLength(escapedJson(parsed));
+  assert.ok(bytes<1024*1024,`Full escaped draft was ${bytes} bytes`);
+  context.diagnostic(`Full bounded-field save with normal UTC millisecond timestamps, escaped keys/values and all numeric versions at maximum=${bytes} bytes.`);
+});
+test('publishable changes are authoritative; identical publish is a version-protected no-op',async()=>{
+  let vehicle=await publish(await ready());assert.equal(vehicle.hasUnpublishedChanges,false);
+  const counts=async()=>({publications:(await runtime.db.pool.query('SELECT count(*)::int n FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].n,
+    audits:(await runtime.db.pool.query("SELECT count(*)::int n FROM audit_events WHERE vehicle_id=$1 AND operation='vehicle.publish'",[vehicle.id])).rows[0].n});
+  const old=structuredClone(vehicle);const initial=await counts();assert.deepEqual(await publish(vehicle),old);assert.deepEqual(await counts(),initial);
+  assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers()})).json().data.hasUnpublishedChanges,false);
+  assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles?q=${vehicle.stockCode}`,headers:headers()})).json().data.items[0].hasUnpublishedChanges,false);
+  vehicle.draft.internal.notes='Internal only';vehicle=await save(vehicle);assert.equal(vehicle.hasUnpublishedChanges,false);
+  const availability=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/availability`,headers:headers(),payload:{version:vehicle.version,availability:'reserved',checkedAt:new Date().toISOString()}});
+  vehicle=availability.json().data;assert.equal(vehicle.hasUnpublishedChanges,false);const afterLive=structuredClone(vehicle);
+  assert.deepEqual(await publish(vehicle),afterLive);assert.deepEqual(await counts(),initial);
+  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:old.version}});assert.equal(stale.statusCode,409);
+  vehicle.draft.facts.model!.name='Updated public model';vehicle=await save(vehicle);assert.equal(vehicle.hasUnpublishedChanges,true);
+  vehicle=await publish(vehicle);assert.equal(vehicle.hasUnpublishedChanges,false);assert.equal((await counts()).publications,initial.publications+1);
+  const archived=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/archive`,headers:headers(),payload:{version:vehicle.version}});vehicle=archived.json().data;assert.equal(vehicle.hasUnpublishedChanges,false);
+  const republished=await publish(vehicle);assert.equal(republished.version,vehicle.version+1);assert.equal(republished.publicationState,'published');
+});
+test('translation suggestions enforce auth, origin, version/idempotency and leave human content untouched',async()=>{
+  let vehicle=await create();const url=`/api/v1/admin/vehicles/${vehicle.id}/translation-suggestions`;const key=randomUUID();
+  for(const options of [{headers:{'idempotency-key':key},status:401},{headers:{cookie,'idempotency-key':key},status:403}]) {
+    const result=await call({method:'POST',url,headers:options.headers,payload:{version:vehicle.version}});assert.equal(result.statusCode,options.status,result.body);
+  }
+  const request={method:'POST' as const,url,headers:{...headers(),'idempotency-key':key},payload:{version:vehicle.version}};
+  assert.equal((await call({...request,payload:{version:vehicle.version+1}})).statusCode,409);
+  assert.equal((await call({...request,headers:headers()})).statusCode,400);
+  const result=await call(request);assert.equal(result.statusCode,200,result.body);
+  const suggested=VehicleTranslationSuggestionsResponseSchema.parse(result.json()).data;assert.equal(suggested.version,vehicle.version);
+  assert.equal(suggested.content.title.translations.en.reviewStatus,'pending');assert.equal(suggested.content.title.translations.en.kind,'machine');
+  assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
+  const replay=await call(request);assert.deepEqual(replay.json().data,suggested);
+  vehicle.draft.internal.notes='edit after suggestion';vehicle=await save(vehicle);
+  assert.deepEqual((await call(request)).json().data,suggested); // historical receipt; caller must compare current version
+  const keyConflict=await call({...request,payload:{version:vehicle.version}});assert.equal(keyConflict.statusCode,409);assert.equal(keyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
+  vehicle.draft.content.title.sourceLanguage='en';vehicle=await save(vehicle);
+  const unsupported=await call({...request,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(unsupported.statusCode,422);assert.equal(unsupported.json().error.code,'TRANSLATION_SOURCE_UNSUPPORTED');
+});
+test('translation results racing with an edit are rejected and upstream failures never change the draft',async()=>{
+  const input=draft();input.content.title.sourceText=`隔离旧建议${randomUUID()}`;input.content.description.sourceText=null;let vehicle=await create(input);
+  let release!:()=>void;let started!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});const invoked=new Promise<void>(resolve=>{started=resolve;});
+  translationHook=async(_text,target)=>{started();await gate;return `${target}:generated`;};
+  const request={method:'POST' as const,url:`/api/v1/admin/vehicles/${vehicle.id}/translation-suggestions`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}};
+  try {
+    const pending=call(request);await invoked;vehicle.draft.internal.notes='Concurrent edit';vehicle=await save(vehicle);release();
+    const stale=await pending;assert.equal(stale.statusCode,409,stale.body);assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
+    translationHook=async()=>{throw new Error('private upstream failure');};vehicle.draft.content.title.sourceText=`隔离失败${randomUUID()}`;vehicle=await save(vehicle);
+    const failed=await call({...request,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(failed.statusCode,503,failed.body);assert.equal(failed.json().error.code,'TRANSLATION_UPSTREAM_FAILED');assert.ok(!failed.body.includes('private upstream'));
+    assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
+  } finally{release();translationHook=null;}
 });
 test('demo publication stays non-inventory across catalog counts, home, detail and media; manual gates remain',async()=>{
   let demo=await readyDemo();
@@ -505,9 +625,9 @@ test('delete and restore roll back home, state and idempotency when audit fails;
 test('legacy idempotent receipts survive added deletion fields without resurrecting deleted records',async()=>{
   const key=randomUUID(),value=draft();const request:InjectOptions={method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload:{draft:value}};
   const first=await call(request);assert.equal(first.statusCode,201,first.body);const vehicle:AdminVehicle=first.json().data;
-  await runtime.db.pool.query("UPDATE idempotency_keys SET response=response-'deletedAt' WHERE actor_id=$1 AND operation='vehicle.create' AND key=$2",[editorId,key]);
+  await runtime.db.pool.query("UPDATE idempotency_keys SET response=response-'deletedAt'-'hasUnpublishedChanges' WHERE actor_id=$1 AND operation='vehicle.create' AND key=$2",[editorId,key]);
   const removed=await runtime.inventory.remove(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()},randomUUID());
-  const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.equal(replay.json().data.deletedAt,null);assert.equal(replay.json().data.version,1);
+  const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.equal(replay.json().data.deletedAt,null);assert.equal(replay.json().data.hasUnpublishedChanges,null);assert.equal(replay.json().data.version,1);
   assert.equal((await runtime.inventory.getAdmin(vehicle.id,true)).version,removed.version);await assert.rejects(runtime.inventory.getAdmin(vehicle.id));
 });
 test('manual external listing preserves provenance, reference facts and unreviewed translations with immutable publication snapshots',async()=>{
@@ -580,6 +700,133 @@ test('public keyword search uses only published current-language fields with exa
   assert.equal((await call({method:'GET',url:`/api/v1/vehicles?locale=en&q=${token}&make=not-a-real-brand`})).json().meta.total,0);
   for(const url of ['/api/v1/vehicles?q='+('x'.repeat(101)),'/api/v1/vehicles?q=%00','/api/v1/vehicle-filters?q=%00']) assert.equal((await call({method:'GET',url})).statusCode,400);
 });
+async function localization(id:string):Promise<VehicleLocalization>{
+  const response=await call({method:'GET',url:`/api/v1/admin/vehicles/${id}/localization`,headers:headers()});
+  assert.equal(response.statusCode,200,response.body);return VehicleLocalizationSchema.parse(response.json().data);
+}
+async function saveLocalization(value:VehicleLocalization,pathId=value.vehicleId):Promise<VehicleLocalization>{
+  const response=await call({method:'PUT',url:`/api/v1/admin/vehicles/${pathId}/localization`,headers:headers(),payload:{vehicleVersion:value.vehicleVersion,revision:value.revision,data:value.data}});
+  assert.equal(response.statusCode,200,response.body);return VehicleLocalizationSchema.parse(response.json().data);
+}
+async function reviewDisplay(id:string,extra=false){
+  let local=await localization(id);
+  if(extra){local.data.facts={generation:{id:'gen_test',name:'Generation One'},drivetrain:'awd'};local=await saveLocalization(local);}
+  for(const field of local.data.fields)field.sourceLanguage=/\p{Script=Han}/u.test(field.sourceText)?'zh':'en';
+  local=await saveLocalization(local);
+  for(const field of local.data.fields)for(const locale of ['zh','en','ru'] as const){
+    field.translations[locale]={text:locale===field.sourceLanguage?field.sourceText:`${locale} reviewed ${field.ref}`,kind:locale===field.sourceLanguage?'original':'human',reviewStatus:'approved',sourceVersion:field.sourceVersion,humanEditVersion:field.translations[locale]?.humanEditVersion??0,engineVersion:null};
+  }
+  return saveLocalization(local);
+}
+async function freshVehicle(id:string):Promise<AdminVehicle>{const r=await call({method:'GET',url:`/api/v1/admin/vehicles/${id}`,headers:headers()});assert.equal(r.statusCode,200,r.body);return r.json().data;}
+
+test('localized sidecars are optional, private, versioned and immutable with their publication',async()=>{
+  let vehicle=await ready();vehicle.draft.facts.make={id:'manual_toyota_localized',name:'丰田'};vehicle.draft.facts.model={id:'localized_model',name:'车型甲'};vehicle=await publish(await save(vehicle));
+  const legacy=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en`});assert.equal(legacy.statusCode,200,legacy.body);
+  assert.equal('display' in legacy.json().data,false);assert.equal('generation' in legacy.json().data.facts,false);
+  let read=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`});assert.equal(read.statusCode,200,read.body);
+  assert.equal(read.json().data.facts.make.name,'Toyota');assert.equal(read.json().data.display.model.status,'missing');assert.equal(read.json().data.facts.generation,null);
+  assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}/localization`})).statusCode,401);
+  let local=await localization(vehicle.id);assert.equal(local.revision,0);
+  // First PUT via upper-case UUID must use the same deterministic includes refs.
+  local=await saveLocalization(local,vehicle.id.toUpperCase());
+  const premature=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:local.vehicleVersion}});assert.equal(premature.statusCode,422,premature.body);
+  local=await reviewDisplay(vehicle.id,true);vehicle=await freshVehicle(vehicle.id);assert.equal(vehicle.hasUnpublishedChanges,true);
+  vehicle=await publish(vehicle);assert.equal(vehicle.hasUnpublishedChanges,false);
+  read=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`});assert.equal(read.statusCode,200,read.body);
+  assert.equal(read.json().data.facts.model.name,'en reviewed model');assert.equal(read.json().data.facts.generation.id,'gen_test');assert.equal(read.json().data.facts.drivetrain,'awd');
+  for(const secret of ['sourceHash','engineVersion','internal','sourceText','humanEditVersion'])assert.equal(read.body.includes(`"${secret}"`),false,secret);
+  const priorPublication=vehicle.publishedRevisionId;
+  local=await localization(vehicle.id);local.data.fields.find(field=>field.ref==='model')!.translations.en!.text='Human revised model';local=await saveLocalization(local);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`})).json().data.facts.model.name,'en reviewed model');
+  assert.equal((await freshVehicle(vehicle.id)).hasUnpublishedChanges,true);vehicle=await publish(await freshVehicle(vehicle.id));assert.notEqual(vehicle.publishedRevisionId,priorPublication);
+  await assert.rejects(runtime.db.pool.query('UPDATE publication_localizations SET data=data WHERE publication_id=$1',[priorPublication]),/immutable/);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`})).json().data.facts.model.name,'Human revised model');
+  const noOp=await publish(vehicle);assert.equal(noOp.version,vehicle.version);assert.equal(noOp.publishedRevisionId,vehicle.publishedRevisionId);
+});
+
+test('full-catalog ranges are inclusive, original-currency, model-year based and precede pagination/facets',async()=>{
+  const makeId=`range_${randomUUID()}`;
+  for(const spec of [
+    {price:'0.00',currency:'USD',mileage:0,year:2020},
+    {price:'100.00',currency:'USD',mileage:50,year:2024},
+    {price:'100.00',currency:'CNY',mileage:50,year:2024},
+    {price:null,currency:'USD',mileage:null,year:null},
+  ] as const){
+    let v=await ready();v.draft.facts.make={id:makeId,name:'Toyota'};v.draft.facts.model={id:'range_model',name:'范围车型'};v.draft.facts.trim={id:'trim_test',name:'配置甲'};
+    v.draft.facts.mileageKm=spec.mileage;v.draft.facts.modelYear=spec.year;v.draft.facts.manufacturedAt={precision:'year',value:'1999'};
+    v.draft.price=spec.price===null?{kind:'on_request',money:null,includes:[]}:{kind:'asking',money:{amount:spec.price,currency:spec.currency},includes:[]};
+    v=await save(v);if(spec.currency==='CNY')await reviewDisplay(v.id,true);await publish(await freshVehicle(v.id));
+  }
+  const query=`locale=en&view=localized&make=${makeId}`;
+  const list=async(extra:string)=>{const r=await call({method:'GET',url:`/api/v1/vehicles?${query}${extra}`});assert.equal(r.statusCode,200,r.body);return r.json();};
+  assert.equal((await list('&pageSize=1')).meta.total,4);assert.equal((await list('&pageSize=1')).data.hasMore,true);
+  assert.equal((await list('&priceCurrency=USD')).meta.total,4);
+  assert.equal((await list('&priceCurrency=USD&priceMin=0&priceMax=100')).meta.total,2);
+  assert.equal((await list('&priceCurrency=CNY&priceMin=100&priceMax=100.00')).meta.total,1);
+  assert.equal((await list('&mileageMin=0&mileageMax=0')).meta.total,1);
+  assert.equal((await list('&yearMin=2024&yearMax=2024')).meta.total,2);
+  assert.equal((await list('&yearMin=1999&yearMax=1999')).meta.total,0);
+  assert.equal((await list('&model=range_model&trim=trim_test&generation=gen_test&drivetrain=awd')).meta.total,1);
+  const facet=await call({method:'GET',url:`/api/v1/vehicle-filters?${query}&yearMin=2024&yearMax=2024`});assert.equal(facet.statusCode,200,facet.body);
+  assert.deepEqual(facet.json().data.modelYears,[{year:2024,count:2}]);assert.equal(facet.json().data.trims[0].count,2);assert.equal(facet.json().data.generations[0].count,1);
+  assert.deepEqual(facet.json().data.priceCurrencies,[{id:'CNY',count:1},{id:'USD',count:1}]);
+  for(const extra of ['&priceMin=abc&priceMax=20&priceCurrency=USD','&mileageMin=1e3','&mileageMin=3&mileageMax=2','&yearMin=2025&yearMax=2024','&priceMin=1']){
+    const r=await call({method:'GET',url:`/api/v1/vehicles?${query}${extra}`});assert.equal(r.statusCode,400,r.body);
+  }
+});
+
+test('localized q, facets, detail and home use the same publication projection while legacy stays raw',async()=>{
+  let vehicle=await ready();vehicle.draft.facts.make={id:`manual_${randomUUID()}`,name:'　丰田　'};vehicle.draft.facts.model={id:'model_search_i18n',name:'原车型词'};
+  vehicle=await publish(await save(vehicle));
+  const before=await call({method:'GET',url:`/api/v1/vehicles?locale=en&view=localized&make=${vehicle.draft.facts.make!.id}&q=Toyota`});assert.equal(before.statusCode,200,before.body);assert.equal(before.json().meta.total,1);
+  const hidden=await call({method:'GET',url:`/api/v1/vehicles?locale=en&view=localized&make=${vehicle.draft.facts.make!.id}&q=${encodeURIComponent('原车型词')}`});assert.equal(hidden.json().meta.total,0);
+  await reviewDisplay(vehicle.id);vehicle=await publish(await freshVehicle(vehicle.id));
+  const local=await call({method:'GET',url:`/api/v1/vehicles?locale=en&view=localized&make=${vehicle.draft.facts.make!.id}&q=en%20reviewed%20model`});assert.equal(local.statusCode,200,local.body);assert.equal(local.json().meta.total,1);
+  const facets=await call({method:'GET',url:`/api/v1/vehicle-filters?locale=en&view=localized&make=${vehicle.draft.facts.make!.id}&q=en%20reviewed%20model`});assert.equal(facets.json().data.models[0].name,'en reviewed model');assert.equal(facets.json().data.models[0].count,1);
+  const home=(await runtime.inventory.getHome());home.sections[0]!.vehicleIds=[vehicle.id];home.sections[1]!.vehicleIds=[];
+  await runtime.inventory.saveHome(home,{id:editorId,requestId:'localized-home-test'});
+  const shown=await call({method:'GET',url:'/api/v1/home/vehicles?locale=en&view=localized'});assert.equal(shown.statusCode,200,shown.body);assert.equal(shown.json().data.sections[0].vehicles[0].facts.model.name,'en reviewed model');
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en`})).json().data.facts.model.name,'原车型词');
+  // The same legal Russian boundary must parse on all public surfaces; one extra unit is rejected on save.
+  let limit=await localization(vehicle.id);limit.data.fields.find(field=>field.ref==='model')!.translations.ru!.text='Ж'.repeat(121);
+  const tooLong=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/localization`,headers:headers(),payload:{vehicleVersion:limit.vehicleVersion,revision:limit.revision,data:limit.data}});assert.equal(tooLong.statusCode,400,tooLong.body);
+  limit.data.fields.find(field=>field.ref==='model')!.translations.ru!.text='Ж'.repeat(120);await saveLocalization(limit);vehicle=await publish(await freshVehicle(vehicle.id));
+  for(const url of [`/api/v1/vehicles/${vehicle.id}?locale=ru&view=localized`,`/api/v1/vehicles?locale=ru&view=localized&make=${vehicle.draft.facts.make!.id}`,'/api/v1/home/vehicles?locale=ru&view=localized',`/api/v1/vehicle-filters?locale=ru&view=localized&make=${vehicle.draft.facts.make!.id}`]){
+    const result=await call({method:'GET',url});assert.equal(result.statusCode,200,result.body);assert.ok(result.body.includes('Ж'.repeat(120)));
+  }
+});
+
+test('display suggestions never save drafts and reject concurrent source/human edits',async()=>{
+  let vehicle=await ready();vehicle.draft.facts.model!.name='机器建议车型';vehicle=await save(vehicle);
+  let local=await localization(vehicle.id);local.data.fields.find(field=>field.ref==='model')!.sourceLanguage='zh';local=await saveLocalization(local);
+  const input={vehicleVersion:local.vehicleVersion,revision:local.revision,refs:['model']};const key=randomUUID();
+  const generated=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':key},payload:input});assert.equal(generated.statusCode,200,generated.body);
+  assert.equal((await localization(vehicle.id)).data.fields.find(field=>field.ref==='model')!.translations.en,null);
+  const received=generated.json().data.fields[0];assert.equal(received.translations.en.kind,'machine');assert.equal(received.translations.en.reviewStatus,'pending');assert.equal(received.translations.en.humanEditVersion,0);
+  local.data.fields.find(field=>field.ref==='model')!.translations.en={text:'Human revision',kind:'human',reviewStatus:'approved',sourceVersion:local.data.fields.find(field=>field.ref==='model')!.sourceVersion,humanEditVersion:0,engineVersion:null};
+  const latest=await saveLocalization(local);const old=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/localization`,headers:headers(),payload:{vehicleVersion:local.vehicleVersion,revision:local.revision,data:{...local.data,fields:local.data.fields.map(field=>field.ref==='model'?received:field)}}});assert.equal(old.statusCode,409,old.body);
+  const replay=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':key},payload:input});assert.equal(replay.statusCode,200,replay.body);assert.deepEqual(replay.json().data,generated.json().data);
+  let entered!:()=>void,release!:()=>void;const started=new Promise<void>(resolve=>entered=resolve),gate=new Promise<void>(resolve=>release=resolve);
+  translationHook=async(text,target)=>{entered();await gate;return `${target} fresh ${text}`;};
+  vehicle=await freshVehicle(vehicle.id);vehicle.draft.facts.model!.name='并发新车型';vehicle=await save(vehicle);local=await localization(vehicle.id);
+  const running=call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{vehicleVersion:local.vehicleVersion,revision:local.revision,refs:['model']}});
+  await started;try{vehicle.draft.facts.model!.name='并发再修改';await save(vehicle);}finally{release();translationHook=null;}
+  const conflict=await running;assert.equal(conflict.statusCode,409,conflict.body);assert.ok(latest.vehicleVersion>input.vehicleVersion);
+});
+
+test('new vehicle receipts remain readable by the old strict DTO and preserve immutable new metadata',async()=>{
+  const key=randomUUID();const payload={draft:draft()};const request={method:'POST' as const,url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload};
+  const created=await call(request);assert.equal(created.statusCode,201,created.body);assert.equal(created.json().data.hasUnpublishedChanges,true);
+  const stored=(await runtime.db.pool.query('SELECT response,expires_at,request_hash FROM idempotency_keys WHERE actor_id=$1 AND operation=$2 AND key=$3',[editorId,'vehicle.create',key])).rows[0];
+  assert.equal('hasUnpublishedChanges' in stored.response,false);
+  // The prior DTO is precisely the current base object without the optional/defaulted addition.
+  const {AdminVehicleSchema}=await import('@hd/contracts/admin');const oldSchema=AdminVehicleSchema.omit({hasUnpublishedChanges:true});assert.deepEqual(oldSchema.parse(stored.response),stored.response);
+  const v=created.json().data as AdminVehicle;v.draft.internal.notes='Edited after receipt';await save(v);
+  const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.deepEqual(replay.json().data,created.json().data);
+  assert.deepEqual((await runtime.db.pool.query('SELECT response,expires_at,request_hash FROM idempotency_keys WHERE actor_id=$1 AND operation=$2 AND key=$3',[editorId,'vehicle.create',key])).rows[0],stored);
+});
+
 test('disabled staff sessions fail immediately and sign-out invalidates the session',async()=>{
   await setStaffEnabled(runtime.db,'editor@example.invalid',false);
   assert.equal((await call({method:'GET',url:'/api/v1/admin/me',headers:headers()})).statusCode,401);

@@ -383,7 +383,7 @@
     font-size: 15px;
   }
 }
-@media (max-width: 1023px) {
+@media (max-width: 1279px) {
   .header:global(.hd-header) .mainNav {
     display: none;
   }
@@ -483,6 +483,11 @@
   .footer:global(.hd-footer) .footerBottom {
     flex-direction: column;
     gap: 12px;
+  }
+}
+@media (max-width: 399px) {
+  .brandName > span {
+    display: none;
   }
 }
 @media (max-width: 359px) {

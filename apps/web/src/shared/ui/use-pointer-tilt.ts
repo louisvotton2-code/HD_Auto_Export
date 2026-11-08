@@ -8,7 +8,7 @@ type TiltTarget = {
 };
 
 /** Pointer-only presentation: one DOM write per frame, no React render on movement. */
-export function usePointerTilt() {
+export function usePointerTilt(layoutKey?: unknown) {
   const target = useRef<TiltTarget | null>(null);
   const frame = useRef<number | null>(null);
   const point = useRef({ x: 0, y: 0 });
@@ -54,6 +54,12 @@ export function usePointerTilt() {
       document.removeEventListener('visibilitychange', reset);
     };
   }, [reset]);
+
+  // A new resource or layout state can move the stable slot under a stationary pointer.
+  // Reset before the next movement so its origin is measured from the current layout.
+  useEffect(() => {
+    reset();
+  }, [reset, layoutKey]);
 
   const move = useCallback(
     (event: PointerEvent<HTMLElement>) => {
@@ -107,3 +113,5 @@ export function usePointerTilt() {
     onFocusCapture: focus,
   };
 }
+
+export type PointerTiltHandlers = ReturnType<typeof usePointerTilt>;

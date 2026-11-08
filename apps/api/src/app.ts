@@ -14,10 +14,14 @@ import { InventoryService, type Actor } from './vehicles/service.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError } from './errors.js';
+import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
 const versionHeader=z.object({'if-match':z.string().regex(/^\d+$/)});
 const idemHeader=z.object({'idempotency-key':adm.IdempotencyKeySchema});
+// Full drafts include two source fields, six translations and bounded private/media metadata.
+// Allow their UTF-8/JSON-escaped encoding without raising the limits of small mutations.
+const vehicleDraftBodyLimit=1024*1024;
 const errorResponses=Object.fromEntries([400,401,403,404,409,413,422,429,500,503].map(code=>[code,pub.ApiErrorSchema]));
 const schema=(tag:string,operationId:string,options:Record<string,unknown>)=>({tags:[tag],operationId,...options});
 
@@ -40,10 +44,11 @@ function sendInternalMedia(reply:FastifyReply,file:{filename:string}) {
     .header('X-Accel-Expires','0').send();
 }
 
-export async function buildApp(config:Config=readConfig(), options:{logger?:boolean}={}) {
+export async function buildApp(config:Config=readConfig(), options:{logger?:boolean;translator?:VehicleTranslator}={}) {
   const db=createDatabase(config.databaseUrl,config.poolMax);
   const auth=createAuth(db,config);
   const inventory=new InventoryService(db);
+  const translator=options.translator??createVehicleTranslator(config.translation);
   const media=new MediaService(db,new LocalMediaStore(config.mediaRoot));
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.body','res.headers.set-cookie']} : false,
     genReqId:()=>randomUUID(),requestIdHeader:false,bodyLimit:100_000,requestTimeout:30_000,trustProxy:config.trustProxy,
@@ -72,8 +77,8 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   app.addHook('preValidation',async(request)=>{
     // Query strings use decimal integers only. Other representations remain invalid.
     const query=request.query as Record<string,unknown>;
-    if(query && typeof query==='object') for(const key of ['page','pageSize']) {
-      if(typeof query[key]==='string' && /^[1-9]\d*$/.test(query[key])) query[key]=Number(query[key]);
+    if(query && typeof query==='object') for(const key of ['page','pageSize','mileageMin','mileageMax','yearMin','yearMax']) {
+      if(typeof query[key]==='string' && /^(?:0|[1-9]\d*)$/.test(query[key])) query[key]=Number(query[key]);
     }
   });
   app.addHook('onResponse',async(request,reply)=>{
@@ -115,7 +120,9 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   app.get('/health/live',{schema:schema('health','liveness',{response:{200:z.object({status:z.literal('ok')})}})},async()=>({status:'ok' as const}));
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query('SELECT h.id,v.deleted_at FROM home_config h LEFT JOIN vehicles v ON false WHERE h.id=1');
+      const ready=await db.pool.query(`SELECT h.id,v.deleted_at,l.revision,pl.projections,im.receipt_hash FROM home_config h
+        LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
+        LEFT JOIN idempotency_vehicle_metadata im ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       return {status:'ready' as const};
     }
@@ -137,9 +144,9 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   app.get('/api/v1/vehicles',{schema:schema('public','listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:pub.PublicVehicleListSchema,...errorResponses}})},
     async request=>inventory.listPublic(request.query as pub.PublicVehicleQuery,request.id));
   app.get('/api/v1/vehicles/:id',{schema:schema('public','getVehicle',{params:IdParams,querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as {locale:pub.Locale};return response(await inventory.getPublic(p.id,q.locale),request);});
+    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return response(await inventory.getPublic(p.id,q.locale,q.view),request);});
   app.get('/api/v1/vehicle-filters',{schema:schema('public','vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>response(await inventory.filters(request.query as pub.PublicFilterQuery),request));
-  app.get('/api/v1/home/vehicles',{schema:schema('public','homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>response(await inventory.publicHome((request.query as {locale:pub.Locale}).locale),request));
+  app.get('/api/v1/home/vehicles',{schema:schema('public','homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>{const query=request.query as pub.PublicLocaleQuery;return response(await inventory.publicHome(query.locale,query.view),request);});
   app.get('/api/v1/media/:id',{schema:schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema})},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const variant=(request.query as pub.PublicMediaQuery).variant;
     if(config.mediaDelivery==='nginx') return sendInternalMedia(reply,await media.publicFile(id,variant));
@@ -151,14 +158,18 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>response(await inventory.listAdmin(request.query as z.infer<typeof adm.AdminVehicleQuerySchema>),request));
   app.get('/api/v1/admin/vehicle-filters',{schema:adminSchema('adminVehicleFilters',{querystring:adm.AdminVehicleFiltersQuerySchema,response:{200:adm.AdminVehicleFiltersResponseSchema,...errorResponses}})},async request=>response(await inventory.adminFilters(request.query as adm.AdminVehicleFiltersQuery),request));
   app.post('/api/v1/admin/vehicles/bulk',{schema:adminSchema('bulkVehicleMutation',{body:adm.BulkVehicleMutationRequestSchema,headers:idemHeader,response:{200:adm.BulkVehicleMutationResponseSchema,...errorResponses}})},async request=>response(await inventory.bulk(request.body as adm.BulkVehicleMutationRequest,actor(request),request.headers['idempotency-key'] as string),request));
-  app.post('/api/v1/admin/vehicles',{schema:adminSchema('createVehicle',{body:adm.CreateVehicleRequestSchema,headers:idemHeader,response:{201:adm.AdminVehicleResponseSchema,...errorResponses}})},async(request,reply)=>{
+  app.post('/api/v1/admin/vehicles',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('createVehicle',{body:adm.CreateVehicleRequestSchema,headers:idemHeader,response:{201:adm.AdminVehicleResponseSchema,...errorResponses}})},async(request,reply)=>{
     const body=request.body as adm.CreateVehicleRequest;return reply.code(201).send(response(await inventory.create(body.draft,actor(request),request.headers['idempotency-key'] as string),request));
   });
   app.get('/api/v1/admin/vehicles/:id',{schema:adminSchema('adminGetVehicle',{params:IdParams,querystring:adm.AdminVehicleDetailQuerySchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.getAdmin((request.params as {id:string}).id,(request.query as adm.AdminVehicleDetailQuery).includeDeleted==='true'),request));
-  app.patch('/api/v1/admin/vehicles/:id',{schema:adminSchema('saveVehicle',{params:IdParams,body:adm.SaveVehicleRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>{
+  app.patch('/api/v1/admin/vehicles/:id',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicle',{params:IdParams,body:adm.SaveVehicleRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>{
     const body=request.body as adm.SaveVehicleRequest;return response(await inventory.save((request.params as {id:string}).id,body.version,body.draft,actor(request)),request);
   });
   app.post('/api/v1/admin/vehicles/:id/publish',{schema:adminSchema('publishVehicle',{params:IdParams,body:adm.PublishVehicleRequestSchema,headers:idemHeader,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.publish((request.params as {id:string}).id,(request.body as adm.VersionRequest).version,actor(request),request.headers['idempotency-key'] as string),request));
+  app.post('/api/v1/admin/vehicles/:id/translation-suggestions',{schema:adminSchema('generateVehicleTranslations',{params:IdParams,body:adm.GenerateVehicleTranslationsRequestSchema,headers:idemHeader,response:{200:adm.VehicleTranslationSuggestionsResponseSchema,...errorResponses}})},async request=>response(await inventory.translationSuggestions((request.params as {id:string}).id,(request.body as adm.GenerateVehicleTranslationsRequest).version,actor(request),request.headers['idempotency-key'] as string,translator),request));
+  app.get('/api/v1/admin/vehicles/:id/localization',{schema:adminSchema('getVehicleLocalization',{params:IdParams,response:{200:adm.VehicleLocalizationResponseSchema,...errorResponses}})},async request=>response(await inventory.getLocalization((request.params as {id:string}).id),request));
+  app.put('/api/v1/admin/vehicles/:id/localization',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicleLocalization',{params:IdParams,body:adm.SaveVehicleLocalizationSchema,response:{200:adm.VehicleLocalizationResponseSchema,...errorResponses}})},async request=>response(await inventory.saveLocalization((request.params as {id:string}).id,request.body as adm.SaveVehicleLocalization,actor(request)),request));
+  app.post('/api/v1/admin/vehicles/:id/localization/translation-suggestions',{schema:adminSchema('generateDisplayTranslations',{params:IdParams,body:adm.GenerateDisplayTranslationsSchema,headers:idemHeader,response:{200:adm.DisplayTranslationSuggestionsResponseSchema,...errorResponses}})},async request=>response(await inventory.displayTranslationSuggestions((request.params as {id:string}).id,request.body as adm.GenerateDisplayTranslations,actor(request),request.headers['idempotency-key'] as string,translator),request));
   app.post('/api/v1/admin/vehicles/:id/availability',{schema:adminSchema('setAvailability',{params:IdParams,body:adm.AvailabilityRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.availability((request.params as {id:string}).id,request.body as adm.AvailabilityRequest,actor(request)),request));
   app.post('/api/v1/admin/vehicles/:id/archive',{schema:adminSchema('archiveVehicle',{params:IdParams,body:adm.ArchiveVehicleRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.archive((request.params as {id:string}).id,(request.body as adm.VersionRequest).version,actor(request)),request));
   app.delete('/api/v1/admin/vehicles/:id',{schema:adminSchema('deleteVehicle',{params:IdParams,body:adm.DeleteVehicleRequestSchema,headers:idemHeader,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.remove((request.params as {id:string}).id,(request.body as adm.VersionRequest).version,actor(request),request.headers['idempotency-key'] as string),request));

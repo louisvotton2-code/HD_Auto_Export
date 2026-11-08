@@ -1,0 +1,27 @@
+# Apply after compose.yaml, compose.proxy.yaml and compose.media.yaml.
+# Domain certificates and ACME challenge directories must exist before proxy startup.
+services:
+  api:
+    environment:
+      AUTH_BASE_URL: ${ADMIN_ORIGIN:?set HTTPS admin origin}
+      TRUSTED_ORIGINS: ${ADMIN_ORIGIN}
+  web:
+    build:
+      args:
+        SITE_ORIGIN: ${WEB_SITE_ORIGIN:?set HTTPS website origin}
+    environment:
+      NEXT_PUBLIC_SITE_URL: ${WEB_SITE_ORIGIN}
+  proxy:
+    image: hd-auto-proxy-domains:${RELEASE_ID:?set RELEASE_ID}
+    build:
+      target: proxy-domains
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-3414}:8080'
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT:?set absolute DATA_ROOT}/acme
+        target: /srv/acme
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/health/proxy']

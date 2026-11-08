@@ -11,6 +11,7 @@ import {
   publicVehicleCover,
   publicVehicleMessages,
   usePublicFreshness,
+  FavoriteVehicleButton,
 } from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
@@ -19,26 +20,12 @@ import { SocialIcon } from '@/shared/ui/social-icon';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { HeroCanvas } from './hero-canvas';
 import { HomeSections } from './home-sections';
-import { usePointerTilt } from './use-pointer-tilt';
+import { HeroStats } from './hero-stats';
+import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import styles from './home.module.css';
 import type { HomeModel } from '../types';
 import { homeContent } from '../content/home-content';
 
-function Heart({ filled }: { filled: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill={filled ? 'currentColor' : 'none'}
-      stroke="currentColor"
-      strokeWidth="1.6"
-    >
-      <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" />
-    </svg>
-  );
-}
 function VehicleRail({
   section,
   locale,
@@ -49,9 +36,8 @@ function VehicleRail({
   paused: boolean;
 }) {
   const rail = useRef<HTMLDivElement>(null);
-  const [saved, setSaved] = useState<string[]>([]);
   const [interacting, setInteracting] = useState(false);
-  const pointerTilt = usePointerTilt();
+  const pointerTilt = usePointerTilt(section.vehicles);
   const t = homeContent[locale];
   const vehicleCopy = publicVehicleMessages(locale);
   const { id, title, vehicles } = section;
@@ -145,19 +131,12 @@ function VehicleRail({
                       sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 1023px) 48vw, 404px"
                     />
                   </NextLink>
-                  <button
-                    type="button"
+                  <FavoriteVehicleButton
                     className={styles.save}
-                    aria-label={saved.includes(v.id) ? t.saved : t.save}
-                    aria-pressed={saved.includes(v.id)}
-                    onClick={() =>
-                      setSaved((items) =>
-                        items.includes(v.id) ? items.filter((x) => x !== v.id) : [...items, v.id],
-                      )
-                    }
-                  >
-                    <Heart filled={saved.includes(v.id)} />
-                  </button>
+                    vehicleId={v.id}
+                    title={name}
+                    locale={locale}
+                  />
                   {v.facts.modelYear !== null && (
                     <span className={styles.year}>
                       {vehicleCopy.yearLabel} {v.facts.modelYear}
@@ -240,15 +219,16 @@ export function HomePage({
   retryAfter?: number;
   onRetry?: () => void;
 }) {
-  const t = homeContent[locale],
-    dialog = useRef<HTMLDialogElement>(null);
+  const t = homeContent[locale];
   const [paused, setPaused] = useState(false);
   const visibleSections = unavailable
     ? []
     : sections.filter((section) => section.vehicles.length > 0);
-  const featuredCount = new Set(
-    visibleSections.flatMap((section) => section.vehicles.map((vehicle) => vehicle.id)),
-  ).size;
+  // Powertrain facets partition the entire unfiltered public catalog, including unknowns.
+  // Homepage sections contain only configured selections and cannot serve as a catalog total.
+  const catalogCount = catalogFilters
+    ? catalogFilters.powertrains.reduce((total, powertrain) => total + powertrain.count, 0)
+    : null;
   const brands =
     catalogFilters?.makes.filter((make) => make.count > 0).map((make) => make.name) ?? [];
   const models: HomeModel[] =
@@ -294,14 +274,7 @@ export function HomePage({
               {siteConfig.contacts.phone.display}
             </a>
           </div>
-          <div className={styles.stats}>
-            {[unavailable ? '—' : featuredCount, 7, 3].map((value, i) => (
-              <div key={t.stats[i]}>
-                <strong>{value}</strong>
-                <span>{t.stats[i]}</span>
-              </div>
-            ))}
-          </div>
+          <HeroStats locale={locale} catalogCount={catalogCount} />
         </div>
         <a className={styles.scroll} href="#home-shortcuts">
           <span>{t.scroll}</span>
@@ -327,16 +300,12 @@ export function HomePage({
           <span>{t.shortcutNotes[0]}</span>
           <Icon name="arrow" size={16} />
         </Link>
-        <button
-          type="button"
-          onClick={() => dialog.current?.showModal()}
-          className={styles.shortcut}
-        >
+        <Link href="/parts/" className={styles.shortcut}>
           <Icon name="box" size={30} />
           <strong>{t.shortcuts[1]}</strong>
           <span>{t.shortcutNotes[1]}</span>
           <Icon name="arrow" size={16} />
-        </button>
+        </Link>
         <Link href="/calculator/russia/" className={styles.shortcut}>
           <Icon name="calculator" size={30} />
           <strong>{t.shortcuts[2]}</strong>
@@ -386,22 +355,6 @@ export function HomePage({
         </div>
       )}
       <HomeSections locale={locale} models={models} paused={paused} />
-      <dialog
-        ref={dialog}
-        className={styles.comingSoon}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) e.currentTarget.close();
-        }}
-      >
-        <h2>{t.soon}</h2>
-        <p>{t.soonBody}</p>
-        <a href={siteConfig.contacts.whatsapp.href} target="_blank" rel="noreferrer">
-          {t.contact} ↗
-        </a>
-        <button type="button" onClick={() => dialog.current?.close()}>
-          {t.close}
-        </button>
-      </dialog>
     </main>
   );
 }

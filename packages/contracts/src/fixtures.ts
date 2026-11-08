@@ -5,6 +5,8 @@ import {
   type TranslatableField, type VehicleDraftInput,
 } from './admin.js';
 import { PublicVehicleSchema, type PublicVehicle } from './public.js';
+import {VehicleLocalizationSchema,type VehicleLocalization} from './localization.js';
+import type {Locale} from './common.js';
 
 const fixtureTime = '2026-11-08T00:00:00Z';
 function textField(zh: string, en: string, ru: string): TranslatableField {
@@ -59,6 +61,32 @@ export const publicVehicleFixture = PublicVehicleSchema.parse({
 });
 export function makePublicVehicleFixture(): PublicVehicle {
   return structuredClone(publicVehicleFixture);
+}
+
+/** Opt-in localized fixtures: never inserted into the acceptance inventory. */
+export function makeLocalizedPublicVehicleFixture(locale:Locale='en',state:'ready'|'missing'|'machine'='ready'):PublicVehicle {
+  const missing={status:'missing' as const,text:null,requestedLocale:locale,contentLocale:null,provenance:null,reviewed:false as const};
+  const ready=(text:string)=>({status:'ready' as const,text,requestedLocale:locale,contentLocale:locale,provenance:state==='machine'?'machine' as const:'human' as const,reviewed:state!=='machine'});
+  const text={zh:'样例车型',en:'Sample model',ru:'Пример модели'}[locale];
+  const model=state==='missing'?missing:ready(text);
+  const vehicle=structuredClone(state==='machine'?publicExternalVehicleFixture:publicVehicleFixture);
+  const brand={...ready('Toyota'),provenance:'catalog' as const,reviewed:true};
+  vehicle.facts={...vehicle.facts,make:{id:'fixture_toyota',name:locale==='zh'?'丰田':'Toyota'},model:{id:'fixture_model',name:model.text??{zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[locale]},generation:null,drivetrain:null};
+  vehicle.price.includes=[];vehicle.images=vehicle.images.map(image=>({...image,alt:''}));
+  vehicle.content.title={...vehicle.content.title,text,requestedLocale:locale,contentLocale:locale};
+  vehicle.content.description=null;vehicle.detailPath=`/${locale}/cars/${vehicle.id}/`;
+  vehicle.display={make:{...brand,text:vehicle.facts.make!.name},model,trim:missing,generation:missing,city:missing,location:missing,platform:missing,
+    priceIncludes:[{id:'b671b2d8-9c0f-5903-a228-b2218c6dcf53',value:missing}],mediaAlt:vehicle.images.map(image=>({mediaId:image.id,value:missing}))};
+  if(vehicle.source.kind==='external')vehicle.source.platform.name={zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[locale];
+  return PublicVehicleSchema.parse(vehicle);
+}
+
+export function makeVehicleLocalizationFixture():VehicleLocalization {
+  return VehicleLocalizationSchema.parse({vehicleId:'a472f2be-66e3-4c6a-a574-20b259fd872b',vehicleVersion:3,revision:1,retiredFieldCount:0,
+    data:{facts:{generation:null,drivetrain:null},fields:[{ref:'model',sourceLanguage:'zh',sourceText:'样例车型',sourceVersion:1,sourceHash:'a'.repeat(64),translations:{
+      zh:{text:'样例车型',kind:'original',reviewStatus:'approved',sourceVersion:1,humanEditVersion:1,engineVersion:null},
+      en:{text:'Sample model',kind:'machine',reviewStatus:'pending',sourceVersion:1,humanEditVersion:0,engineVersion:'fixture-engine-1'},ru:null,
+    }}]}});
 }
 
 /** Isolated UI fixtures only; these objects are never inserted as operating inventory. */

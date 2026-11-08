@@ -27,7 +27,7 @@ DATA_ROOT/
 
 依赖：Docker Compose v2、Python 3、OpenSSL；应用构建固定 Node 24.19.0、pnpm 11.25.0、PostgreSQL 18.6。基础镜像版本固定但不是安全更新承诺，更新版本后重新构建审查。宿主 Node 不用于Linux镜像构建。
 
-1. 将 `.env.example` 复制至忽略目录，例如 `docs/private/ops01/runtime.env`，权限600。设置绝对 `DATA_ROOT`（独立于源码和构建，正式服务器建议 `/srv/hd-auto/data`），唯一 `RELEASE_ID`、宿主 `APP_UID/APP_GID`（`id -u`、`id -g`）、空闲端口与架构，同时填写PROXY_SUBNET、PROXY_DYNAMIC_RANGE、PROXY_GATEWAY、PROXY_IP、WEB_IP并确认子网空闲。本机 `linux/arm64`；x86服务器必须 `linux/amd64` 重新安装依赖、构建、验证，不能上传Mac原生依赖。
+1. 将 `.env.example` 复制至忽略目录，例如 `docs/private/ops01/runtime.env`，权限600。设置绝对 `DATA_ROOT`（独立于源码和构建，正式服务器建议 `/srv/hd-auto/data`），唯一 `RELEASE_ID`、宿主 `APP_UID/APP_GID`、空闲端口与架构；非root操作者使用自己的 `id -u`/`id -g`，root部署需选择核对不冲突的专用非零UID/GID（可无需登录账号），确保容器与宿主数值映射一致，同时填写PROXY_SUBNET、PROXY_DYNAMIC_RANGE、PROXY_GATEWAY、PROXY_IP、WEB_IP并确认子网空闲。本机 `linux/arm64`；x86服务器必须 `linux/amd64` 重新安装依赖、构建、验证，不能上传Mac原生依赖。
 2. 初始化只接受不存在的数据根，不覆盖已有数据：
 
    ```sh
@@ -35,7 +35,7 @@ DATA_ROOT/
    python3 deploy/runtime/prepare-source.py docs/private/ops01/source
    ```
 
-   初始化生成随机秘密和30天有效的localhost自签证书，不会启动应用。浏览器需自行信任本机证书；`curl -k`仅供这个隔离测试。公网部署必须换真实域名证书。初始化／恢复要求执行用户与APP_UID/APP_GID一致，提前拒绝不匹配配置。秘密保持600；不能用chmod777。容器启动入口以root读秘密、修正media所有权，随后清空附加组并永久降为APP_UID/GID运行API；Docker Desktop可能把bind挂载显示为root所有。Postgres自定义入口在官方降权前读取应用数据库密码，内置SQL初始化独立角色。不要把真实env、数据库、秘密或备份放进构建上下文。
+   初始化生成随机秘密和30天有效的localhost自签证书，不会启动应用。浏览器需自行信任本机证书；`curl -k`仅供这个隔离测试。公网部署必须换真实域名证书。初始化／恢复可由root运维用户执行，或由与APP_UID/APP_GID一致的非root用户执行；其他身份在执行前被拒绝。每个数据根从初始化到备份／恢复始终使用同一运维身份，避免root创建的私有锁文件使普通用户后续无法打开；目标服务器推荐全程以root操作。APP_UID和APP_GID均须为非零；在目标Linux还需确认该数值不与其他业务身份冲突。root初始化时DATA_ROOT保持root私有，ACME webroot单独归APP_UID/APP_GID以供Nginx worker读取。秘密保持600；不能用chmod777。容器启动入口以root读秘密、修正media所有权，随后清空附加组并永久降为APP_UID/GID运行API；Docker Desktop可能把bind挂载显示为root所有。Postgres自定义入口在官方降权前读取应用数据库密码，内置SQL初始化独立角色。不要把真实env、数据库、秘密或备份放进构建上下文。
 3. 从冻结快照构建，既不复用也不改动正在开发的 `.next`、dist。快照内 `source-manifest.json` 记录源文件SHA256；把清单及镜像ID登记为版本证据。以下 `dc` 函数每次只操作指定项目：
 
    ```sh
@@ -117,3 +117,29 @@ API和Nginx worker使用相同 `APP_UID/APP_GID`，目录0700、文件0600无需
 使用两个override时，备份/恢复命令各传两次 `--compose-override`，依次指定 `deploy/runtime/compose.proxy.yaml` 和 `deploy/runtime/compose.media.yaml`；所有手工Compose生命周期命令也都携带两个 `-f`。正式域名/HTTPS须申请真实证书，替换目标数据根 `tls/server.crt` 和 `tls/server.key`（私钥600），用目标域名设置SITE_ORIGIN并重建官网，核对证书链、续期及重启后可读；本机自签证书仅用于本机，不能当公网证书。
 
 当前权威写入仍是既有3317/3318/3320开发组合；原native 3320图片仍由API发送。隔离恢复克隆只供验证，不作为第二个日常写入口，不要与原库双写；克隆若必须测试写入，仅用明确合成记录且结束后不回写源库。3422合成代理是早期实验；其后3412已以最终BE镜像与真实恢复数据验证完整API授权、Nginx发图、删除／恢复及独立QA抽查。最终业务与视觉仍由用户验收。
+
+
+## 双域部署与证书（新服务器，实施前核对最终SHA）
+
+用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域开发配置不变。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网代理仅允许公开GET/HEAD，其余API和后台入口拒绝；两域均要求SNI与Host匹配，未知SNI拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
+
+本机3430/3431以历史冻结应用及临时双域证书验证了域名隔离、后台登录Secure/HttpOnly/host-only cookie、官网canonical、ACME webroot、未知和错配SNI；2026-11-08两次本机自签证书原子切换/reload及运维脚本测试在本机非root环境16项通过、1项root专测跳过；独立Linux root容器17项全通过。该结果并非最终应用SHA、真实证书或Linux/amd64目标机上线验收；具体证据见[OPS记录](../../docs/日志/2026-11-08/运维-OPS-02-新服务器准备.md)。Docker发布端口可能绕过UFW，必须核对阿里云安全策略、Docker监听和主机规则；DB/API/web不可映射公网。HTTP 80仅响应ACME路径或重定向至对应HTTPS主机。默认Compose绑定127.0.0.1；公网监听仅在明确部署授权和安全策略核验后配置。
+
+首次签发前确认两个A记录均解析到目标、无错误AAAA、云/主机80可达且该端口无人使用，并核实证书联系人邮箱。初始化使用独立DATA_ROOT（本轮已存在的 `/srv/hd-auto/data` 是父目录，不能直接对已有目录执行init，可选其下全新专用子目录）；备份/证书/环境文件保持私有。预先从最终受审SHA导出运行工具与配置；不得从共享dirty树或旧阶段构建。未签证书前不要启动需要TLS的正式代理。
+
+示例（仅在DNS/端口、邮箱和部署任务均已核实后执行；真实值不写入仓库）：
+
+```sh
+# 首次签发：独占空闲80端口，结束后释放；证书名固定供续期识别。
+certbot certonly --standalone --cert-name hd-auto --email "$CERT_CONTACT_EMAIL" --agree-tos --non-interactive -d cars.hongdingauto.com -d admin.hongdingauto.com
+python3 deploy/runtime/install-domain-certificate.py --env /absolute/private/runtime.env --project hd-auto --bootstrap --cert /etc/letsencrypt/live/hd-auto/fullchain.pem --key /etc/letsencrypt/live/hd-auto/privkey.pem
+# 随后使用四个Compose配置按数据库→显式迁移→API→web→proxy启动。
+```
+
+`install-domain-certificate.py` 检查两域、有效期和公私钥匹配，将证书/密钥600写入版本目录，原子切换 `tls/current`，容器master读取；续期时先 `nginx -t` 再reload，失败恢复旧链接，回滚reload失败须立即人工处理。不要直接把容器外绝对链接挂到容器。证书目录、旧有效版本及其备份须限制root访问。首次安装仅允许没有current和代理未运行；后续不带 `--bootstrap`、只允许已有current及运行中代理。
+
+正式代理启动后，先在webroot放置无敏感内容的临时挑战文件，从外部确认两域 `/.well-known/acme-challenge/` 可读取；再以Certbot的 `reconfigure` 自带staging测试验证真实token（包括root创建目录/文件时Nginx worker可遍历及读取），成功后才保存standalone→webroot续期配置（Certbot 2.3+）。不要在仍为standalone且正式代理占用80时直接执行 `certbot renew --dry-run`。
+
+将最终SHA中 `deploy/runtime/` 的工具作为受控只读副本部署在 `/srv/hd-auto/tools/`，root专属 `/etc/hd-auto/cert-renew.json`（600）写入 `{"runtime_env":"/absolute/private/runtime.env","project":"hd-auto","lineage":"/etc/letsencrypt/live/hd-auto"}`；再运行 `certbot reconfigure --cert-name hd-auto --authenticator webroot --webroot-path /absolute/data-root/acme --deploy-hook /srv/hd-auto/tools/domain-cert-deploy-hook.py`。该操作自带staging验证，通过后才持久保存该证书的webroot及hook选项。钩子只接受匹配root私有配置的 `RENEWED_LINEAGE` 并调用证书安装脚本。检查reconfigure结果与Certbot原生timer，再执行 `certbot renew --cert-name hd-auto --dry-run`；dry-run默认不运行部署钩子，因此另以root执行 `RENEWED_LINEAGE=/etc/letsencrypt/live/hd-auto /srv/hd-auto/tools/domain-cert-deploy-hook.py`，用当前有效证书安全验证钩子，并核对新旧证书、日志和reload；不能把dry-run单独当完整续期验证。若reconfigure/挑战失败，明确记为未完成、处理告警，不声称已自动续期；不要随意禁用系统全局timer。目标机Certbot 2.9.0已确认能解析这些参数，真实证书、staging、配置持久和续期仍待执行。
+
+真实数据切换须临近上线协调AD/BE短暂停写，采集**当时**权威native验收库及其实际MEDIA_ROOT，包含全部资料；校验DB与完整媒体清单，在目标新数据根恢复并核账。不要使用本轮18:48旧快照或3412测试克隆，不预设8辆车；原库不清理并保留回退。正式证书、云防火墙、域名连通、AMD64构建、迁移及真实业务上线均未发生。

@@ -295,20 +295,6 @@
   font-size: 12px;
   font-weight: 600;
 }
-.heart {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1.5px solid #ffffff2e;
-  border-radius: 999px;
-  background: #0a0a0a8c;
-  color: #f5f0eb;
-  font-size: 22px;
-}
-.heart[aria-pressed='true'] {
-  color: #e05252;
-}
 .destination {
   display: flex;
   flex-direction: column;

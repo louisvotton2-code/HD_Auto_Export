@@ -1,13 +1,41 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Empty, Image, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Image, Select, Space, Table, Tag, Typography } from 'antd';
 import { ExportOutlined, ReloadOutlined } from '@ant-design/icons';
-import { PublicVehicleFiltersSchema, PublicVehicleListSchema, LocaleSchema, PowertrainSchema, type PublicVehicle, type PublicVehicleFilters, type PublicVehicleList } from '@hd/contracts/public';
+import { PublicVehicleFiltersSchema, PublicVehicleListSchema, LocaleSchema, PowertrainSchema, type DisplayText, type Locale, type PublicVehicle, type PublicVehicleFilters, type PublicVehicleList } from '@hd/contracts/public';
 import { request } from '../../shared/api/client';
 import { availabilityLabels, formatTime, powertrainLabels } from './draft-form';
 import styles from './public-catalog.module.css';
 
 const { Title, Text, Paragraph } = Typography;
+const languageNames = { zh: '中文', en: '英文', ru: '俄文' };
+
+function localizedText(value: DisplayText | undefined, locale: Locale) {
+  return value?.status === 'ready' && value.requestedLocale === locale && value.contentLocale?.split('-')[0] === locale
+    ? value.text : null;
+}
+
+function DisplayAudit({ vehicle, locale }: { vehicle: PublicVehicle; locale: Locale }) {
+  const display = vehicle.display;
+  if (!display) return <Alert showIcon type="warning" title="服务尚未提供多语展示资料" description="请确认API已更新；此处不会用原始中文代替所选语言。" />;
+  const fields: { key: string; label: string; value: DisplayText | undefined }[] = [
+    { key: 'make', label: '品牌', value: display.make }, { key: 'model', label: '车型', value: display.model },
+    { key: 'trim', label: '配置', value: display.trim }, { key: 'generation', label: '代际', value: display.generation },
+    { key: 'city', label: '城市', value: display.city }, { key: 'location', label: '地点说明', value: display.location },
+    { key: 'platform', label: '来源平台', value: display.platform },
+    ...display.priceIncludes.map((entry, index) => ({ key: entry.id, label: `价格说明 ${index + 1}`, value: entry.value })),
+    ...vehicle.images.map((image, index) => ({ key: image.id, label: `图片 ${index + 1} 说明`, value: display.mediaAlt.find(entry => entry.mediaId === image.id)?.value })),
+  ];
+  return <div className={styles.displayAudit}>
+    <Paragraph type="secondary">以下为已发布资料的{languageNames[locale]}展示词条。未填写与缺译均需另行核对，不代表事实为零或已完成翻译。</Paragraph>
+    <Descriptions size="small" bordered column={{ xs: 1, md: 2, xl: 3 }} items={fields.map(field => ({
+      key: field.key, label: field.label, children: <Space orientation="vertical" size={2}>
+        <Text>{localizedText(field.value, locale) ?? '未填写或待翻译'}</Text>
+        {localizedText(field.value, locale) && <Text type="secondary">{field.value?.provenance === 'catalog' ? '品牌词库' : field.value?.reviewed ? '已审核' : '待审核'}</Text>}
+      </Space>,
+    }))} />
+  </div>;
+}
 
 /** Inspect exactly what the public HTTP contract exposes, independently of the website. */
 export function PublicCatalogPage() {
@@ -34,13 +62,13 @@ export function PublicCatalogPage() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError(''); setResult(null);
-    const query = new URLSearchParams({ locale, catalog: 'curated', page: String(page), pageSize: '24' });
+    const query = new URLSearchParams({ locale, catalog: 'curated', view: 'localized', page: String(page), pageSize: '24' });
     if (make) query.set('make', make);
     if (model) query.set('model', model);
     if (powertrain) query.set('powertrain', powertrain);
     Promise.all([
       request(`/api/v1/vehicles?${query}`, PublicVehicleListSchema, { signal: controller.signal }),
-      request(`/api/v1/vehicle-filters?catalog=curated&locale=${locale}`, PublicVehicleFiltersSchema, { signal: controller.signal }),
+      request(`/api/v1/vehicle-filters?catalog=curated&view=localized&locale=${locale}`, PublicVehicleFiltersSchema, { signal: controller.signal }),
     ]).then(([vehicles, options]) => {
       if (!controller.signal.aborted) { setResult(vehicles); setFilters(options.data); }
     }).catch((failure: unknown) => {
@@ -56,7 +84,7 @@ export function PublicCatalogPage() {
     setParams(next);
   }
   return <section className={styles.page}>
-    <div className={styles.heading}><div><Text className={styles.eyebrow}>CATALOG / PUBLIC DATA</Text><Title level={2}>公开车源</Title><Paragraph type="secondary">核对访客可读取的标题、图片、价格与状态。草稿和下架内容不会出现在这里。</Paragraph></div><Button icon={<ReloadOutlined />} loading={loading} onClick={() => setRefresh(current => current + 1)}>重新核验</Button></div>
+    <div className={styles.heading}><div><Text className={styles.eyebrow}>CATALOG / PUBLIC DATA</Text><Title level={2}>公开车源</Title><Paragraph type="secondary">核对访客可读取的标题、图片、价格与状态。展开车辆可逐项检查所选语言的展示资料；草稿和下架内容不会出现在这里。</Paragraph></div><Button icon={<ReloadOutlined />} loading={loading} onClick={() => setRefresh(current => current + 1)}>重新核验</Button></div>
     <Card>
       <div className={styles.filters}>
         <label><Text strong>展示语言</Text><Select aria-label="展示语言" value={locale} onChange={value => update('locale', value)} options={[{ value: 'zh', label: '中文' }, { value: 'en', label: '英文' }, { value: 'ru', label: '俄文' }]} /></label>
@@ -74,18 +102,20 @@ export function PublicCatalogPage() {
         rowKey="id"
         loading={loading}
         dataSource={result?.data.items ?? []}
+        expandable={{ expandedRowRender: vehicle => <DisplayAudit vehicle={vehicle} locale={locale} />, columnTitle: '展示词条' }}
         scroll={{ x: 1080 }}
         locale={{ emptyText: error ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="读取失败，请重试" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<><strong>没有符合条件的公开车源</strong><br />可调整筛选，或确认车辆已发布。</>} /> }}
         pagination={result ? { current: page, pageSize: 24, total: result.meta.total ?? result.meta.accessibleTotal ?? result.data.items.length, showSizeChanger: false, showTotal: total => `共 ${total} 辆`, onChange: value => update('page', String(value)) } : false}
         columns={[
           { title: '车辆 / 稳定车号', width: 370, render: (_, vehicle) => {
             const cover = vehicle.images.find(item => item.isCover) ?? vehicle.images[0];
-            return <Space align="start"><div className={styles.thumbnail}>{cover && <Image src={cover.url} alt={cover.alt || '车辆封面'} width={80} height={58} preview={false} />}</div><Space orientation="vertical" size={3}><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text><Text type="secondary">{vehicle.facts.make?.name ?? '未填写'} {vehicle.facts.model?.name ?? ''}</Text></Space></Space>;
+            const alt = vehicle.display?.mediaAlt.find(entry => entry.mediaId === cover?.id)?.value;
+            return <Space align="start"><div className={styles.thumbnail}>{cover && <Image src={cover.url} alt={localizedText(alt, locale) ?? '车辆封面'} width={80} height={58} preview={false} />}</div><Space orientation="vertical" size={3}><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text><Text type="secondary">{localizedText(vehicle.display?.make, locale) ?? '品牌未填写或待翻译'} {localizedText(vehicle.display?.model, locale) ?? '车型未填写或待翻译'}</Text></Space></Space>;
           } },
           { title: '公开价格', width: 180, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text strong>{vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价'}</Text>{vehicle.price.kind === 'reference' && <Tag color="orange">参考价格</Tag>}</Space> },
-          { title: '来源 / 库存', width: 205, render: (_, vehicle) => vehicle.source.kind === 'external' ? <Space orientation="vertical"><Tag color="blue">外部挂牌 · 库存未知</Tag><a href={vehicle.source.listingUrl} target="_blank" rel="noreferrer">{vehicle.source.platform.name} ↗</a><Text type="secondary">采集：{formatTime(vehicle.fetchedAt)}</Text></Space> : String(vehicle.source.kind) === 'demo' ? <Tag color="gold">展示样例，非实际库存</Tag> : <Tag color={vehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[vehicle.availability]}</Tag> },
+          { title: '来源 / 库存', width: 205, render: (_, vehicle) => vehicle.source.kind === 'external' ? <Space orientation="vertical"><Tag color="blue">外部挂牌 · 库存未知</Tag><a href={vehicle.source.listingUrl} target="_blank" rel="noreferrer">{localizedText(vehicle.display?.platform, locale) ?? '来源平台未填写或待翻译'} ↗</a><Text type="secondary">采集：{formatTime(vehicle.fetchedAt)}</Text></Space> : String(vehicle.source.kind) === 'demo' ? <Tag color="gold">展示样例，非实际库存</Tag> : <Tag color={vehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[vehicle.availability]}</Tag> },
           { title: '内容审核', width: 160, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text>{vehicle.content.title.contentLocale}</Text><Tag color={vehicle.content.title.reviewed ? 'success' : 'default'}>{vehicle.content.title.reviewed ? '已审核' : '未审核'}</Tag></Space> },
-          { title: '核验', width: 130, fixed: 'right', render: (_, vehicle) => <Button type="link" icon={<ExportOutlined />} href={`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}`} target="_blank" rel="noreferrer">查看数据</Button> },
+          { title: '核验', width: 130, fixed: 'right', render: (_, vehicle) => <Button type="link" icon={<ExportOutlined />} href={`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}&view=localized`} target="_blank" rel="noreferrer">查看数据</Button> },
         ]}
       />
     </Card>

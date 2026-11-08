@@ -1,7 +1,6 @@
 'use client';
 import { useMemo, useRef } from 'react';
 import {
-  PublicHomeSectionsSchema,
   type PublicHomeSections,
   type PublicVehicleFilters,
   PublicVehicleFiltersSchema,
@@ -11,6 +10,7 @@ import {
   PublicFreshnessBoundary,
   usePublicResource,
   PublicResourceStatus,
+  localizedHomeSchema,
 } from '@/modules/vehicles';
 import { HomePage } from './home-page';
 
@@ -25,9 +25,9 @@ export function PublicHome({
   filters: PublicVehicleFilters['data'] | null;
   initialRetryAfter?: number;
 }) {
-  const url = `/api/v1/home/vehicles/?locale=${locale}`;
+  const url = `/api/v1/home/vehicles/?locale=${locale}&view=localized`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, home, PublicHomeSectionsSchema, {
+  const resource = usePublicResource(url, home, localizedHomeSchema(locale), {
     navigationPath: `/${locale}/`,
     initialRetryAfter,
     cooldown,
@@ -37,7 +37,7 @@ export function PublicHome({
     [filters],
   );
   const facets = usePublicResource(
-    `/api/v1/vehicle-filters/?catalog=curated&locale=${locale}`,
+    `/api/v1/vehicle-filters/?catalog=curated&locale=${locale}&view=localized`,
     initialFilters,
     PublicVehicleFiltersSchema,
     { cooldown },

@@ -1,6 +1,5 @@
 import {
   IdSchema,
-  PublicFilterQuerySchema,
   PublicHomeSectionsSchema,
   PublicLocaleQuerySchema,
   PublicMediaQuerySchema,
@@ -17,6 +16,12 @@ import {
   getPublicVehicle,
 } from './public-api';
 import type { Locale } from '@/i18n/routing';
+import { catalogQueryKeys, parseFilterQuery } from '../public-query';
+import {
+  localizedHomeSchema,
+  localizedListSchema,
+  localizedVehicleSchema,
+} from '../localized-projection';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 function failure(status: number, retryAfter?: string) {
@@ -64,10 +69,10 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   const allowed = isMedia
     ? ['variant']
     : path === 'vehicles'
-      ? ['catalog', 'locale', 'page', 'pageSize', 'q', 'make', 'model', 'powertrain']
+      ? catalogQueryKeys
       : path === 'vehicle-filters'
-        ? ['catalog', 'locale', 'q']
-        : ['locale'];
+        ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize')
+        : ['locale', 'view'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
@@ -80,12 +85,21 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         const parsed = parseCatalogQuery(raw, locale);
         if (!parsed || (raw.catalog && raw.catalog !== 'curated')) return failure(400);
         query = parsed;
-      } else if (path === 'vehicle-filters') query = PublicFilterQuerySchema.parse(raw);
-      else query = PublicLocaleQuerySchema.parse(raw);
+      } else if (path === 'vehicle-filters') {
+        const locale = PublicLocaleQuerySchema.parse({ locale: raw.locale }).locale;
+        const parsed = parseFilterQuery(raw, locale);
+        if (!parsed || (raw.catalog && raw.catalog !== 'curated')) return failure(400);
+        query = parsed;
+      } else query = PublicLocaleQuerySchema.parse(raw);
     }
     if (isDetail) IdSchema.parse(parts[1]);
     if (isDetail) {
-      const vehicle = await getPublicVehicle(parts[1]!, query.locale as Locale, request.headers);
+      const vehicle = await getPublicVehicle(
+        parts[1]!,
+        query.locale as Locale,
+        request.headers,
+        query.view as 'legacy' | 'localized' | undefined,
+      );
       return vehicle
         ? Response.json({ data: vehicle, meta: { requestId: crypto.randomUUID() } }, { headers })
         : failure(404);
@@ -133,9 +147,18 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
             ? PublicVehicleFiltersSchema
             : PublicVehicleResponseSchema;
     // Each schema projects/validates the public DTO; no incoming cookie, auth or upstream headers are forwarded.
+    const locale = query.locale as Locale;
+    const localized =
+      path === 'home/vehicles'
+        ? localizedHomeSchema(locale)
+        : path === 'vehicles'
+          ? localizedListSchema(locale)
+          : path === 'vehicle-filters'
+            ? schema
+            : localizedVehicleSchema(locale);
     const value = await readPublicJson(
       upstream,
-      schema as { parse: (value: unknown) => unknown },
+      (query.view === 'localized' ? localized : schema) as { parse: (value: unknown) => unknown },
       request.headers,
     );
     return Response.json(value, { headers });

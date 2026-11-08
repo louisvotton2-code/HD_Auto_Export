@@ -1,0 +1,38 @@
+{
+  "engine": {
+    "libretranslate": "1.9.6",
+    "argos-translate-lt": "1.12.1",
+    "ctranslate2": "4.7.2",
+    "minisbd": "0.9.5"
+  },
+  "translationModels": [
+    {
+      "from": "zh",
+      "to": "en",
+      "version": "1.9",
+      "file": "translate-zh_en-1_9.argosmodel",
+      "url": "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel",
+      "sha256": "62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d"
+    },
+    {
+      "from": "en",
+      "to": "ru",
+      "version": "1.9",
+      "file": "translate-en_ru-1_9.argosmodel",
+      "url": "https://argos-net.com/v1/translate-en_ru-1_9.argosmodel",
+      "sha256": "591d743ae103752b88ffc38785c50421320f4eff93c8967e0d3d2e14d4e27811"
+    }
+  ],
+  "sentenceModels": [
+    {
+      "file": "zh-hans.onnx",
+      "url": "https://github.com/LibreTranslate/MiniSBD/releases/download/v0.0.1/zh-hans.onnx",
+      "sha256": "b2a6e45ebb43df44ac3c8e4100ea1cb30ec8319c5698b678ed3f203e5edc5d0e"
+    },
+    {
+      "file": "en.onnx",
+      "url": "https://github.com/LibreTranslate/MiniSBD/releases/download/v0.0.1/en.onnx",
+      "sha256": "6fa9f3a3b201687bd43e329b2b0736789efc97b37883b5b759b31988dca9f353"
+    }
+  ]
+}

@@ -1,12 +1,13 @@
 'use client';
-import { useEffect, useMemo } from 'react';
-import { PublicVehicleResponseSchema, type PublicVehicle } from '@hd/contracts/public';
+import { useEffect, useMemo, type ReactNode } from 'react';
+import { type PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { liveVehicleCopy } from '../live-copy';
 import { publicVehicleMessages } from '../public-messages';
 import { PublicVehicleDetail } from './public-vehicle-detail';
 import { PublicResourceStatus } from './public-resource-status';
+import { localizedVehicleSchema } from '../localized-projection';
 import { PublicCatalogLink } from './public-catalog-link';
 
 export function PublicDetailResource({
@@ -15,19 +16,21 @@ export function PublicDetailResource({
   id,
   destinations,
   initialRetryAfter = 0,
+  renderBudget,
 }: {
   locale: Locale;
   vehicle: PublicVehicle | null;
   id: string;
   destinations: { slug: string; label: string }[];
   initialRetryAfter?: number;
+  renderBudget?: (vehicle: PublicVehicle, current: boolean) => ReactNode;
 }) {
   const initial = useMemo(
     () => (vehicle ? { data: vehicle, meta: { requestId: 'server-rendered' } } : null),
     [vehicle],
   );
-  const url = `/api/v1/vehicles/${id}/?locale=${locale}`;
-  const resource = usePublicResource(url, initial, PublicVehicleResponseSchema, {
+  const url = `/api/v1/vehicles/${id}/?locale=${locale}&view=localized`;
+  const resource = usePublicResource(url, initial, localizedVehicleSchema(locale), {
     navigationPath: `/${locale}/cars/${id}/`,
     initialRetryAfter,
   });
@@ -69,6 +72,7 @@ export function PublicDetailResource({
           locale={locale}
           vehicle={resource.data.data}
           destinations={destinations}
+          budget={renderBudget?.(resource.data.data, resource.phase === 'fresh')}
         />
       )}
       <PublicResourceStatus

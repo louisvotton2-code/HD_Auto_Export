@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
+import { Alert, App, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CheckCircleOutlined, CloudUploadOutlined, DeleteOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import {
   MediaAssetResponseSchema, MediaUploadResponseSchema,
@@ -33,6 +33,7 @@ type Props = {
 const stageText = { waiting: '等待上传', permit: '正在准备上传', upload: '正在上传并核验图片', complete: '正在确认图片处理结果', ready: '上传完成，已加入当前草稿', error: '上传未完成' };
 
 export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
+  const { message } = App.useApp();
   const external = source.kind === 'external';
   const [basis, setBasis] = useState<MediaRights['basis']>(external ? 'unverified' : 'owned');
   const [imageUrls, setImageUrls] = useState('');
@@ -41,6 +42,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [batchNotice, setBatchNotice] = useState('');
   const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
   const [previewAttempt, setPreviewAttempt] = useState(0);
   const [seenMedia, setSeenMedia] = useState<DraftMedia[]>(value);
@@ -108,6 +110,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       if (!mounted.current || signal.aborted) return;
       updateMedia(appendReadyMedia(currentMedia.current, final));
       updateTask(task.key, { stage: 'ready', retryable: false });
+      return true;
     } catch (failure) {
       if (!mounted.current || signal.aborted) return;
       // Upload permits have no idempotency key. A lost create response must not reserve another slot blindly.
@@ -118,6 +121,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
         ? '未能确认上传许可是否已经创建。请勿重复选择这张图片；保留此页面并联系维护人员核对，未使用的许可到期后会回收。'
         : failure instanceof Error ? failure.message : '图片上传未完成，请稍后重试。';
       updateTask(task.key, { asset, stage: 'error', error: message, retryable: !unknownPermit && !terminalAsset, permitUnknown: unknownPermit });
+      return false;
     }
   }
   async function recycle(id: string, taskKey?: string) {
@@ -142,6 +146,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       setRecycledIds(current => current.includes(id) ? current : [...current, id]);
       setTasks(current => current.filter(task => task.key !== taskKey && task.asset?.id !== id));
       setRecycleSuccess('图片已回收，上传名额已释放。');
+      void message.success('图片已回收，上传名额已释放。');
     } catch (failure) {
       if (!mounted.current || aborter.signal.aborted) return;
       setError(failure instanceof ApiClientError && failure.code === 'MEDIA_IN_USE'
@@ -161,10 +166,19 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
     if (active.current || disabled) return;
     active.current = true; setBusy(true); busyChanged.current?.(true);
     const aborter = new AbortController(); controller.current = aborter;
+    let completed = 0;
     try {
       for (const task of selected) {
         if (!mounted.current || aborter.signal.aborted) break;
-        await runTask(task, aborter.signal);
+        if (await runTask(task, aborter.signal)) completed += 1;
+      }
+      if (mounted.current && !aborter.signal.aborted) {
+        const failed = selected.length - completed;
+        const summary = failed ? `本次完成${completed}张，${failed}张未完成，请查看上传进度核对并重试。` : `${completed}张图片已上传，请保存草稿；发布后才会更新公开图片。`;
+        setBatchNotice(summary);
+        if (!failed) void message.success(summary);
+        else if (completed) void message.warning(summary);
+        else void message.error(summary);
       }
     } finally {
       active.current = false;
@@ -174,6 +188,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
   function chooseFiles(files: File[]) {
     if (!files.length || active.current || disabled) return;
     setError('');
+    setBatchNotice('');
     if (!note.trim()) { setError('请先填写图片来源或授权依据。'); return; }
     const outstanding = tasks.filter(task => task.stage !== 'ready' && !value.some(item => item.id === task.asset?.id)).length;
     if (value.length + outstanding + files.length > MAX_MEDIA_COUNT) { setError('每辆车最多 30 张图片，待完成的上传也占用名额。请减少本次选择。'); return; }
@@ -226,6 +241,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       </Form.Item>
       <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
         {error && <Alert showIcon type="error" title={error} />}
+        {batchNotice && <Alert showIcon type="info" title={batchNotice} />}
         {recycleSuccess && <Alert showIcon type="success" title={recycleSuccess} />}
         {busy && <Alert showIcon type="info" title="正在处理图片" description="请等待当前处理完成，再保存草稿或进行其它操作。" />}
       </Space>

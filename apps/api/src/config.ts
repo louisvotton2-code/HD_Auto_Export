@@ -14,6 +14,19 @@ const Env = z.object({
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
   TRUST_PROXY: z.string().max(2048).default('false'),
+  TRANSLATION_PROVIDER: z.enum(['disabled','libretranslate','aliyun']).default('disabled'),
+  LIBRETRANSLATE_URL: z.string().url().refine(value=>{
+    try {const url=new URL(value);return ['http:','https:'].includes(url.protocol) && ['127.0.0.1','localhost','[::1]','libretranslate'].includes(url.hostname) &&
+      !url.username && !url.password && url.pathname==='/' && !url.search && !url.hash;}catch{return false;}
+  }).optional(),
+  LIBRETRANSLATE_API_KEY: z.string().min(1).optional(),
+  LIBRETRANSLATE_ENGINE_VERSION: z.string().regex(/^[A-Za-z0-9_.:-]{1,100}$/).optional(),
+  ALI_MT_ACCESS_KEY_ID: z.string().min(1).optional(),
+  ALI_MT_ACCESS_KEY_SECRET: z.string().min(1).optional(),
+  ALI_MT_SECURITY_TOKEN: z.string().min(1).optional(),
+  ALI_MT_REGION: z.enum(['cn-hangzhou','ap-southeast-1']).default('cn-hangzhou'),
+  ALI_MT_CONFIG_VERSION: z.string().regex(/^[A-Za-z0-9_.-]{1,60}$/).default('1'),
+  TRANSLATION_MAX_CHARACTERS_PER_HOUR: z.coerce.number().int().min(1).max(1_000_000).default(50_000),
 });
 
 function parseTrustProxy(value: string): false | 'loopback' | string[] {
@@ -63,6 +76,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
     trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    translation: {provider:e.TRANSLATION_PROVIDER,accessKeyId:e.ALI_MT_ACCESS_KEY_ID,accessKeySecret:e.ALI_MT_ACCESS_KEY_SECRET,
+      libreUrl:e.LIBRETRANSLATE_URL,libreApiKey:e.LIBRETRANSLATE_API_KEY,libreEngineVersion:e.LIBRETRANSLATE_ENGINE_VERSION,
+      securityToken:e.ALI_MT_SECURITY_TOKEN,region:e.ALI_MT_REGION,configVersion:e.ALI_MT_CONFIG_VERSION,maxCharactersPerHour:e.TRANSLATION_MAX_CHARACTERS_PER_HOUR},
   };
 }
 export type Config = ReturnType<typeof readConfig>;

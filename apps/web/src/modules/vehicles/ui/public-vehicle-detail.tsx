@@ -1,6 +1,7 @@
 'use client';
 
 import type { PublicVehicle } from '@hd/contracts/public';
+import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { publicVehicleMessages } from '../public-messages';
@@ -25,10 +26,12 @@ export function PublicVehicleDetail({
   vehicle,
   locale,
   destinations = [],
+  budget,
 }: {
   locale: Locale;
   vehicle: PublicVehicle;
   destinations?: VehicleDestination[];
+  budget?: ReactNode;
 }) {
   const t = publicVehicleMessages(locale);
   const copy = detailContent[locale];
@@ -80,7 +83,12 @@ export function PublicVehicleDetail({
                   {t.yearLabel}: {vehicle.facts.modelYear}
                 </span>
               )}
-              <VehicleDetailActions detailPath={vehicle.detailPath} title={title} locale={locale} />
+              <VehicleDetailActions
+                vehicleId={vehicle.id}
+                detailPath={vehicle.detailPath}
+                title={title}
+                locale={locale}
+              />
             </div>
             <VehicleGallery images={vehicle.images} title={title} locale={locale} />
             <div className={styles.tiles}>
@@ -152,7 +160,7 @@ export function PublicVehicleDetail({
             </div>
             <div className={styles.budgetBody}>
               <p>{copy.budgetIntro}</p>
-              <VehicleBudgetPanel locale={locale} destinations={destinations} />
+              {budget ?? <VehicleBudgetPanel locale={locale} destinations={destinations} />}
               <p className={styles.smallNote}>{copy.budgetNote}</p>
             </div>
           </aside>

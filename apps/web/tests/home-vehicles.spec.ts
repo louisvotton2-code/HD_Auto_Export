@@ -157,16 +157,17 @@ test('HTTP vehicle rails support manual browsing, favorites, pause and automatic
   await expect(page.locator('main')).not.toContainText('展示样例，非实际库存');
 });
 
-test('parts placeholder and mobile menu are explicit and keyboard operable', async ({ page }) => {
+test('parts shortcut opens the catalog and mobile menu remains keyboard operable', async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/zh/');
   await page
     .locator('#home-shortcuts')
-    .getByRole('button', { name: /汽车配件/ })
+    .getByRole('link', { name: /汽车配件/ })
     .click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await expect(page).toHaveURL(/\/zh\/parts\/$/);
+  await expect(page.locator('main h1')).toBeVisible();
   const menu = page.locator('.site-header [aria-controls="site-mobile-nav"]');
   await menu.click();
   await expect(page.locator('#site-mobile-nav')).toBeVisible();

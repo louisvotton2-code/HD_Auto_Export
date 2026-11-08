@@ -163,7 +163,7 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await form.locator('select[name="make"]').selectOption('alpha');
     await form.locator('select[name="model"]').selectOption('alpha_model');
     await form.locator('select[name="powertrain"]').selectOption('bev');
-    await form.locator('[type="submit"]').click();
+    await form.locator('[type="submit"]').last().click();
     await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('1');
     const params = new URL(page.url()).searchParams;
     expect(params.get('make')).toBe('alpha');

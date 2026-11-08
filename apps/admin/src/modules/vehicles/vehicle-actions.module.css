@@ -14,7 +14,10 @@
 .publicArea { min-width: 0; }.publicArea > :global(.ant-card-head) { flex-wrap: wrap; }.publicArea :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 8px; padding-block: 10px; }
 .publicToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 22px; }.publicToolbar > :global(.ant-typography) { flex: 1; min-width: 180px; font-size: 12px; }
 .publicEmpty { min-height: 160px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: #fafcfd; border: 1px dashed #e3e9ee; border-radius: 10px; }.publicEmpty > :global(.anticon) { font-size: 30px; color: #a4b2bd; }
-.publicCard { min-width: 0; }.publicHeading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }.publicHeading h3 { margin: 6px 0 14px !important; }.price { color: #1e6750 !important; }
+.publicCard { min-width: 0; }.publicHeading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }.publicHeading h3 { margin: 6px 0 14px !important; }.price { color: #89671a !important; }
 .description { white-space: pre-wrap; overflow-wrap: anywhere; }
 .images { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 16px; margin-top: 24px; }.images figure { margin: 0; min-width: 0; }.images :global(.ant-image) { display: block; width: 100%; }.images :global(.ant-image-img) { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; }.images figcaption { margin-top: 8px; font-size: 12px; color: #73818b; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .summary { grid-template-columns: 1fr; }.summary > div { padding: 16px; }.summary > div + div { border-left: 0; border-top: 1px solid #e5ebef; }.inventory, .publicToolbar { align-items: stretch; }.inventory :global(.ant-form-item), .publicToolbar :global(.ant-form-item) { min-width: 0; width: 100%; }.publishBar { align-items: flex-start; }.publicEmpty { padding: 20px; text-align: center; } }
+
+.publicationStatus { margin: 20px 0; }
+.publicationStatus :global(.ant-alert-message) { font-weight: 600; }

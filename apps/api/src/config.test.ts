@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {readConfig} from './config.js';
 const base={DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/test',AUTH_SECRET:'test-only-long-secret-which-is-not-used-in-production'};
+test('translation defaults disabled; only trusted local service origins and explicit versions are accepted',()=>{
+  assert.equal(readConfig(base).translation.provider,'disabled');
+  for(const url of ['http://127.0.0.1:3340','http://localhost:3340','http://[::1]:3340','http://libretranslate:5000'])
+    assert.equal(readConfig({...base,LIBRETRANSLATE_URL:url}).translation.libreUrl,url);
+  for(const url of ['https://remote.example','file:///tmp/text','http://127.0.0.1:3340/translate','http://127.0.0.1:3340/?q=secret','http://user:password@localhost:3340'])
+    assert.throws(()=>readConfig({...base,LIBRETRANSLATE_URL:url}),error=>error instanceof Error && error.message.includes('LIBRETRANSLATE_URL') && !error.message.includes('secret'));
+});
+test('Aliyun translation selects only the two fixed regions and does not echo invalid settings',()=>{
+  assert.equal(readConfig(base).translation.region,'cn-hangzhou');
+  for(const region of ['cn-hangzhou','ap-southeast-1'])assert.equal(readConfig({...base,ALI_MT_REGION:region}).translation.region,region);
+  for(const region of ['','cn-beijing','AP-SOUTHEAST-1','mt.ap-southeast-1.aliyuncs.com','https://secret-endpoint.invalid'])
+    assert.throws(()=>readConfig({...base,ALI_MT_REGION:region}),error=>error instanceof Error && error.message.includes('ALI_MT_REGION') && !error.message.includes('secret-endpoint'));
+});
 test('invalid configuration fails without printing credentials',()=>{
   assert.throws(()=>readConfig({...base,DATABASE_URL:'secret-value'}),e=>e instanceof Error&&e.message.includes('DATABASE_URL')&&!e.message.includes('secret-value'));
   assert.throws(()=>readConfig({...base,AUTH_SECRET:'short'}),/AUTH_SECRET/);

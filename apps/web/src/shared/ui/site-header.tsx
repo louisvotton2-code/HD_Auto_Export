@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import Image from 'next/image';
 import { usePathname } from '@/i18n/navigation';
@@ -10,7 +10,7 @@ import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
-export function SiteHeader() {
+export function SiteHeader({ favoriteAction }: { favoriteAction?: ReactNode }) {
   const locale = useLocale();
   const t = useTranslations();
   const pathname = usePathname();
@@ -22,6 +22,7 @@ export function SiteHeader() {
   const calculatorActive = pathname === '/calculator' || pathname.startsWith('/calculator/');
   const carsActive = pathname === '/cars' || pathname.startsWith('/cars/');
   const buyActive = pathname.replace(/\/$/, '') === '/buy';
+  const partsActive = pathname === '/parts' || pathname.startsWith('/parts/');
 
   useEffect(() => {
     const update = () => setScrolled(window.scrollY > 16);
@@ -50,6 +51,14 @@ export function SiteHeader() {
         onClick={closeMenu}
       >
         {t('Nav.vehicles')}
+      </Link>
+      <Link
+        href="/parts/"
+        className={partsActive ? 'nav-active' : undefined}
+        aria-current={partsActive ? 'page' : undefined}
+        onClick={closeMenu}
+      >
+        {t('Nav.parts')}
       </Link>
       <Link
         href="/calculator/russia/"
@@ -112,6 +121,7 @@ export function SiteHeader() {
           {navigationLinks}
         </nav>
         <div className={`header-tools ${styles.headerTools}`}>
+          {favoriteAction}
           <nav
             className={`language-switch ${styles.languageSwitch}`}
             aria-label={t('Common.language')}

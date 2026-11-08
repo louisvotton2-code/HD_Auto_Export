@@ -11,6 +11,8 @@ import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type Powertrain } from '../index';
 import { createDefaultInput, convertTransactionPrice } from '../application/defaults';
 import { getClearanceDate } from '../application/current-date';
+import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
+import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
   CALCULATOR_DRAFT_STORAGE_KEY,
   CALCULATOR_POWERTRAINS,
@@ -87,6 +89,7 @@ export function CalculatorPage({
   const td = useTranslations('FeeDisplay');
   const tq = useTranslations('CopyQuote');
   const locale = useLocale();
+  const [activeRates, setActiveRates] = useState(initialRates);
   const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
   const [manualRates, setManualRates] = useState(false);
   const [ready, setReady] = useState(false);
@@ -96,6 +99,7 @@ export function CalculatorPage({
   const [expandedFees, setExpandedFees] = useState<Set<string>>(new Set());
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const countryNavRef = useRef<HTMLElement>(null);
+  const pendingSeedRef = useRef<ReturnType<typeof readVehicleEstimateFragment>>(null);
 
   useEffect(() => {
     const raw: StoredCalculatorDraft = { current: null };
@@ -107,14 +111,28 @@ export function CalculatorPage({
     }
     // The exported HTML contains the build date; fresh browser defaults use the visit date.
     // Explicit saved dates remain editable facts and must not be silently overwritten.
+    // Keep the consumed seed until its state is persisted; React development effects may replay.
+    const fragment = readVehicleEstimateFragment(window.location.hash, country.code)
+      ?? (pendingSeedRef.current?.seed.input.country === country.code ? pendingSeedRef.current : null);
+    pendingSeedRef.current = fragment;
+    const rates = fragment?.seed.rates ?? readStoredEstimateRates(raw.current, country.code) ?? initialRates;
     const restored = restoreCalculatorDraft(
       raw,
       country,
       getClearanceDate(new Date()),
-      initialRates,
+      rates,
     );
-    setInput(restored.input);
-    setManualRates(restored.manualRates);
+    setActiveRates(rates);
+    setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
+    setManualRates(fragment ? true : restored.manualRates);
+    if (fragment) {
+      // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
+      try {
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + fragment.remainingHash);
+      } catch {
+        /* Optional URL cleanup must not prevent editing or calculating the validated facts. */
+      }
+    }
     setTouched(new Set());
     setCopyState('idle');
     setAdvanced(true);
@@ -124,12 +142,13 @@ export function CalculatorPage({
 
   useEffect(() => {
     if (!ready || input.country !== country.code) return;
+    pendingSeedRef.current = null;
     try {
-      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates }));
+      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, ready, country.code]);
+  }, [input, manualRates, ready, country.code, activeRates]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -183,14 +202,14 @@ export function CalculatorPage({
     return match[2] ? `${whole}${decimalSeparator}${match[2]}` : whole;
   };
   function usdText(amount: string) {
-    const converted = convertImportAmountToUsd(amount, normalized, initialRates);
+    const converted = convertImportAmountToUsd(amount, normalized, activeRates);
     if (converted === null) return '— USD';
     const [integer, decimals] = converted.split('.');
     return `≈ ${formatter.format(BigInt(integer))}${decimalSeparator}${decimals.padEnd(2, '0')} USD`;
   }
   const isElectric = input.powertrain === 'bev';
   const needsDisplacement = !isElectric && !(country.code === 'KG' && input.powertrain === 'erev');
-  const fuelGroup = isElectric
+  const fuelGroup = !input.powertrain ? null : isElectric
     ? 'electric'
     : ['hev', 'phev', 'erev'].includes(input.powertrain)
       ? 'hybrid'
@@ -237,20 +256,21 @@ export function CalculatorPage({
     setInput((previous) => ({
       ...previous,
       currency,
-      price: convertTransactionPrice(previous.price, previous.currency, currency, initialRates),
-      freight: convertTransactionPrice(previous.freight, previous.currency, currency, initialRates),
+      price: convertTransactionPrice(previous.price, previous.currency, currency, activeRates),
+      freight: convertTransactionPrice(previous.freight, previous.currency, currency, activeRates),
       insurance: convertTransactionPrice(
         previous.insurance,
         previous.currency,
         currency,
-        initialRates,
+        activeRates,
       ),
-      ...deriveRates(initialRates, country.code, currency),
+      ...deriveRates(activeRates, country.code, currency),
     }));
     setManualRates(false);
     setCopyState('idle');
   }
   function reset() {
+    setActiveRates(initialRates);
     setInput(defaultInput(country, getClearanceDate(new Date()), initialRates));
     setManualRates(false);
     setTouched(new Set());
@@ -300,7 +320,7 @@ export function CalculatorPage({
         : value.namespace === 'Calculator'
           ? t(value.key)
           : tq(value.key);
-    const quoteFacts = getCopyQuoteFacts(normalized, result, country, initialRates, manualRates);
+    const quoteFacts = getCopyQuoteFacts(normalized, result, country, activeRates, manualRates);
     const text = [
       `${siteConfig.name} · ${tc(country.code)}`,
       ...(scopeLabel ? [scopeLabel] : []),
@@ -505,6 +525,7 @@ export function CalculatorPage({
                         update('condition', event.target.value as 'new' | 'used')
                       }
                     >
+                      {!input.condition && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
                       <option value="used">{t('usedVehicle')}</option>
                       <option value="new">{t('newVehicle')}</option>
                     </select>
@@ -559,6 +580,7 @@ export function CalculatorPage({
                             update('powertrain', event.target.value as Powertrain)
                           }
                         >
+                          {!input.powertrain && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
                           {CALCULATOR_POWERTRAINS.map((powertrain) => (
                             <option key={powertrain} value={powertrain}>
                               {t(powertrain)}
@@ -580,6 +602,7 @@ export function CalculatorPage({
                               update('steering', event.target.value as 'left' | 'right')
                             }
                           >
+                            {!input.steering && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
                             <option value="left">{t('left')}</option>
                             <option value="right">{t('right')}</option>
                           </select>
@@ -613,8 +636,8 @@ export function CalculatorPage({
                   <span>
                     {manualRates && country.needsPrice
                       ? t('ratesManual')
-                      : t(initialRates.status === 'live' ? 'ratesAuto' : 'ratesReference', {
-                          date: initialRates.asOf,
+                      : t(activeRates.status === 'live' ? 'ratesAuto' : 'ratesReference', {
+                          date: activeRates.asOf,
                         })}
                   </span>
                   <a href={EXCHANGE_RATE_ATTRIBUTION.url} target="_blank" rel="noreferrer">

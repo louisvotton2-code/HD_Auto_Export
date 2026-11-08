@@ -11,7 +11,7 @@ export async function mutateVehicleLifecycle(operation: 'delete' | 'restore', id
 }
 
 // Mutation receipts may be replayed historical snapshots. Always reconcile with this read.
-export async function readVehicleLifecycle(id: string): Promise<{ vehicle: AdminVehicle; isDeleted: boolean }> {
-  const vehicle = (await request(`/api/v1/admin/vehicles/${encodeURIComponent(id)}?includeDeleted=true`, AdminVehicleResponseSchema)).data;
+export async function readVehicleLifecycle(id: string, signal?: AbortSignal): Promise<{ vehicle: AdminVehicle; isDeleted: boolean }> {
+  const vehicle = (await request(`/api/v1/admin/vehicles/${encodeURIComponent(id)}?includeDeleted=true`, AdminVehicleResponseSchema, { signal })).data;
   return { vehicle, isDeleted: vehicle.deletedAt !== null };
 }

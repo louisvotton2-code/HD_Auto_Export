@@ -1,5 +1,8 @@
 import './ux-cases';
 import './lifecycle-cases';
+import './translation-cases';
+import './brand-cases';
+import './localization-cases';
 import { expect, test } from '@playwright/test';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';

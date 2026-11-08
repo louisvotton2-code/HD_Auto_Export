@@ -17,8 +17,6 @@ type DetailContent = {
   share: string;
   copied: string;
   copyFailed: string;
-  save: string;
-  unsave: string;
   gallery: string;
   previousImage: string;
   nextImage: string;
@@ -34,7 +32,7 @@ type DetailContent = {
 export const detailContent = {
   zh: {
     budgetTitle: '进口费用计算器',
-    budgetIntro: '选择目的国，使用完整计算器核对进口税费。',
+    budgetIntro: '选择目的国，核对车辆参数并测算进口税费。',
     destination: '目的国',
     fullCalculator: '打开完整计算器',
     budgetNote: '仅作参考测算。制造日期、排量或功率未知时，请补充确认；不把缺失费用按零计算。',
@@ -49,8 +47,6 @@ export const detailContent = {
     share: '分享',
     copied: '已复制详情链接',
     copyFailed: '请使用浏览器复制本页地址',
-    save: '收藏此车辆资料',
-    unsave: '取消收藏此车辆资料',
     gallery: '车辆照片',
     previousImage: '上一张照片',
     nextImage: '下一张照片',
@@ -64,7 +60,7 @@ export const detailContent = {
   },
   en: {
     budgetTitle: 'Import cost calculator',
-    budgetIntro: 'Choose a destination and review import charges in the full calculator.',
+    budgetIntro: 'Choose a destination, check the vehicle details and estimate import charges.',
     destination: 'Destination',
     fullCalculator: 'Open full calculator',
     budgetNote:
@@ -80,8 +76,6 @@ export const detailContent = {
     share: 'Share',
     copied: 'Detail link copied',
     copyFailed: 'Use your browser to copy this page address',
-    save: 'Save this vehicle information',
-    unsave: 'Unsave this vehicle information',
     gallery: 'Vehicle photos',
     previousImage: 'Previous photo',
     nextImage: 'Next photo',
@@ -95,7 +89,7 @@ export const detailContent = {
   },
   ru: {
     budgetTitle: 'Калькулятор ввоза',
-    budgetIntro: 'Выберите страну и проверьте импортные платежи в полном калькуляторе.',
+    budgetIntro: 'Выберите страну, проверьте параметры автомобиля и рассчитайте импортные платежи.',
     destination: 'Страна назначения',
     fullCalculator: 'Открыть полный калькулятор',
     budgetNote:
@@ -111,8 +105,6 @@ export const detailContent = {
     share: 'Поделиться',
     copied: 'Ссылка на автомобиль скопирована',
     copyFailed: 'Скопируйте адрес страницы средствами браузера',
-    save: 'Сохранить информацию об автомобиле',
-    unsave: 'Удалить информацию из избранного',
     gallery: 'Фотографии автомобиля',
     previousImage: 'Предыдущее фото',
     nextImage: 'Следующее фото',
