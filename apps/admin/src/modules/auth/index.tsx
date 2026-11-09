@@ -90,7 +90,7 @@ export function Workspace() {
   const navigation = <div className="sidebar-inner"><Link className="brand-mark" to="/vehicles"><BrandIdentity /></Link><div className="nav-caption">运营空间</div><nav aria-label="后台导航"><Menu theme="dark" selectedKeys={[current]} items={menuItems} /></nav><div className="nav-bottom"><SafetyCertificateOutlined /><div>内部协作空间<small>车源 · 内容 · 展示</small></div></div></div>;
   return <>
     <Layout className="workspace" key={staff.id} inert={expired}>
-      <Layout.Sider width={232} className="workspace-sidebar" style={{ display: narrow ? 'none' : undefined }}>{navigation}</Layout.Sider>
+      <Layout.Sider width={232} className="workspace-sidebar">{navigation}</Layout.Sider>
       <Layout className="workspace-body"><Layout.Header className="topbar"><Space size={16}>{narrow && <Button type="text" icon={<MenuOutlined />} aria-label="打开导航" onClick={() => setMenuOpen(true)} />}<Breadcrumb items={[{ title: '运营管理' }, { title: pageName }]} /></Space><Space size={14}><Tag className="local-tag" bordered={false}>本地工作台</Tag><Avatar className="staff-avatar" icon={<UserOutlined />} /><div className="staff-name">{staff.name}<small>{staff.role === 'admin' ? '管理员' : '编辑员'}</small></div><Button type="text" icon={<LogoutOutlined />} onClick={() => void logout()} loading={busy}>退出登录</Button></Space></Layout.Header>
         <Layout.Content id="main-content" className="page-content">{error && <Alert title={error} type="error" showIcon closable onClose={() => setError('')} />}<Outlet context={staff} /></Layout.Content><Layout.Footer className="app-footer">HD Auto Export <span>车辆运营工作台</span></Layout.Footer>
       </Layout>

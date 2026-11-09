@@ -50,14 +50,20 @@ test('public snapshot preview distinguishes a missing locale from a proxy route 
   await expect(page.getByText('服务暂时不可用，请稍后重试。', { exact: true }).first()).toBeVisible();
 });
 
-test('vehicle table fits a compact desktop and scrolls only inside the table on mobile', async ({ page }) => {
-  await installApi(page, { items: [vehicle()] });
-  await page.setViewportSize({ width: 1200, height: 960 });
-  await page.goto('/admin/vehicles');
-  await expect(page.getByText('FIXTURE-0001', { exact: true })).toBeVisible();
-  const overflow = () => page.locator('.table-region .ant-table-content').evaluate(node => node.scrollWidth - node.clientWidth);
-  expect(await overflow()).toBeLessThanOrEqual(0);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect.poll(overflow).toBeGreaterThan(0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
-});
+for (const startsOnDesktop of [false, true]) {
+  test(`vehicle table scrolls only inside the table on mobile ${startsOnDesktop ? 'after desktop resize' : 'on first load'}`, async ({ page }) => {
+    await installApi(page, { items: [vehicle()] });
+    await page.setViewportSize(startsOnDesktop ? { width: 1200, height: 960 } : { width: 390, height: 844 });
+    await page.goto('/admin/vehicles');
+    await expect(page.getByText('FIXTURE-0001', { exact: true })).toBeVisible();
+    const geometry = () => page.locator('.table-region .ant-table-content').evaluate(table => ({
+      pageWidth: document.documentElement.scrollWidth,
+      tableScrolls: table.scrollWidth > table.clientWidth,
+    }));
+    if (startsOnDesktop) {
+      await expect.poll(geometry).toEqual({ pageWidth: 1200, tableScrolls: false });
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
+    await expect.poll(geometry).toEqual({ pageWidth: 390, tableScrolls: true });
+  });
+}
