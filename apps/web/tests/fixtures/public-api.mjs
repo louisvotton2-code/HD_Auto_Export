@@ -192,6 +192,7 @@ const resetState = () => ({
   filtersRateLimited: false,
   longTitles: false,
   richCatalog: false,
+  usdRateAvailable: true,
 });
 function visibleVehicles(state, locale) {
   if (state.mode === 'empty') return [];
@@ -281,6 +282,28 @@ function localizedProjection(row, locale) {
     },
   };
 }
+function cents(text) {
+  const [whole, fraction = ''] = text.split('.');
+  return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
+}
+function fixtureUsdPrice(row, rateAvailable) {
+  const { kind, money } = row.price;
+  if (!money) return { status: 'on_request', money: null, conversion: null };
+  const native = money.currency === 'USD';
+  if (!native && (!rateAvailable || money.currency !== 'CNY'))
+    return { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
+  // The isolated sample rate is exactly 8 CNY per USD, with half-up cent rounding.
+  const value = native ? cents(money.amount) : (cents(money.amount) + 4n) / 8n;
+  return {
+    status: 'ready',
+    kind: native ? kind : 'reference',
+    money: { amount: `${value / 100n}.${String(value % 100n).padStart(2, '0')}`, currency: 'USD' },
+    conversion: native ? null : { asOf: timestamp, source: 'exchange_rate_api' },
+  };
+}
+function queryMoney(row, q) {
+  return q.priceView === 'usd' ? row.displayPrice?.money : row.price.money;
+}
 function queryMatches(row, q) {
   const f = row.facts;
   if (!searchMatches(row, q.q)) return false;
@@ -303,13 +326,10 @@ function queryMatches(row, q) {
     )
       return false;
   }
-  const cents = (text) => {
-    const [whole, fraction = ''] = text.split('.');
-    return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
-  };
   if (q.priceMin !== undefined || q.priceMax !== undefined) {
-    if (!row.price.money || row.price.money.currency !== q.priceCurrency) return false;
-    const amount = cents(row.price.money.amount);
+    const money = queryMoney(row, q);
+    if (!money || money.currency !== q.priceCurrency) return false;
+    const amount = cents(money.amount);
     if (q.priceMin !== undefined && amount < cents(q.priceMin)) return false;
     if (q.priceMax !== undefined && amount > cents(q.priceMax)) return false;
   }
@@ -392,6 +412,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           filtersRateLimited: (v) => typeof v === 'boolean',
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
+          usdRateAvailable: (v) => typeof v === 'boolean',
         };
         if (
           !patch ||
@@ -472,8 +493,13 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         !url.pathname.startsWith('/api/v1/media/')
       )
         return send(res, 200, { badFixture: true });
-      const project = (row) =>
-        url.searchParams.get('view') === 'localized' ? localizedProjection(row, locale) : row;
+      const priceProjection = (row) =>
+        url.searchParams.get('priceView') === 'usd'
+          ? { ...row, displayPrice: fixtureUsdPrice(row, state.usdRateAvailable) }
+          : row;
+      const project = (row) => priceProjection(
+        url.searchParams.get('view') === 'localized' ? localizedProjection(row, locale) : row,
+      );
       const staff = visibleVehicles(state, locale).map(project);
       const imports = state.importedPublished && state.mode !== 'empty' && url.searchParams.get('view') === 'localized'
         ? importStates.filter((kind) => kind !== 'supplier' || !state.importedWithdrawn)
@@ -485,7 +511,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           item.display.mediaAlt = [];
           item.external.issues.push({ field: 'images', code: 'expired' });
         }
-        return item;
+        return priceProjection(item);
       };
       const all = [...staff, ...imports.map((kind) => makeImport(kind))];
       if (url.pathname === '/api/v1/home/vehicles') {
@@ -614,10 +640,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                       count: searched.filter((v) => v.facts.modelYear === year).length,
                     })),
                     priceCurrencies: [
-                      ...new Set(searched.map((v) => v.price.money?.currency).filter(Boolean)),
+                      ...new Set(searched.map((v) => queryMoney(v, filterQuery)?.currency).filter(Boolean)),
                     ].map((id) => ({
                       id,
-                      count: searched.filter((v) => v.price.money?.currency === id).length,
+                      count: searched.filter((v) => queryMoney(v, filterQuery)?.currency === id).length,
                     })),
                   }
                 : {}),

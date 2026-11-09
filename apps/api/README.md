@@ -87,3 +87,24 @@ OpenAPI 由路由使用的 schema 生成到 `openapi/public.json` 和 `openapi/a
 The optional `view=localized` public projection, complete-catalog ranges/facets, protected vehicle localization sidecar routes and migration `0003_vehicle_localization` are implemented. See the authoritative vehicle contract, section 14, for exact query, length, revision, publishing and compatibility rules. Existing default public DTOs stay unchanged. `generation` and `drivetrain` belong to sidecars and remain null until supplied; no legacy fact is inferred.
 
 Before enabling this build, stop old writers, back up the authoritative database/media, apply migrations explicitly, then check readiness. Migration 0003 separates response metadata from old vehicle receipts without discarding historical results or expiry. A rollback must pause management writes and use matching consumers because older applications do not understand sidecars. Integration tests create/drop isolated random local databases; they never migrate the acceptance inventory. Runtime/provider enablement is recorded separately in the BE role log.
+
+## 二期容量和报价命令
+
+容量环境使用 `NODE_ENV=test`、`EXTERNAL_CATALOG_MODE=synthetic-scale`、`TRANSLATION_PROVIDER=disabled` 和专用 `hd_ext_scale_*` 数据库。仅允许本机回环或隔离 Compose 的 `postgres-scale:5432`。连接和员工密钥可各自通过绝对路径的 `DATABASE_URL_FILE`／`AUTH_SECRET_FILE` 提供。密钥文件限所有者读取，不能与对应内联变量并用。CLI 读取进程环境，启动前先配置上述测试环境。以已经单独迁移的空库执行以下命令。
+
+```sh
+pnpm --filter @hd/api external:scale-seed --count 1000
+pnpm --filter @hd/api external:fx --seed a
+pnpm --filter @hd/api external:fx --health
+pnpm --filter @hd/api external:scale-bench usd 20 400 --warm
+pnpm --filter @hd/api external:sync --seed 1
+pnpm --filter @hd/api external:sync --once
+```
+
+- 正式合成容量档位为100000／500000，每档使用新库。装载命令报告固定样本、品牌／价格分布及 `usd_toyota_a`、`usd_toyota_b`，对应 Toyota 和 $8000–$17000。合成汇率 A 为 7 CNY／USD，B 为 8 CNY／USD。可切换 `external:fx --seed b` 或 `--seed expired`。同日同组可安全重跑。
+- 容量场景支持 `list`、`facets`、`common`、`rare`、`mixed` 和 `usd`。并发值为20／50／100，请求总数在并发值至10000之间。每个路径分别报告成功请求 p50／p95／p99、状态分布、成功数和错误率。测试用访客身份只存在于进程内注入，没有新增对外容量通道。代理链和真实限流通过隔离 HTTPS 另验。
+- `EXTERNAL_PUBLIC_CACHE` 可选 `off`、`memory`、`redis`，默认关闭。容量 Redis 使用专用主机、账号及绝对路径的 `EXTERNAL_REDIS_PASSWORD_FILE`，仅允许 `GET/SET` 对 `<namespace>:slot:*`。缓存 TTL 由 `EXTERNAL_CACHE_TTL_MS` 控制，默认5000、最多30000毫秒；`EXTERNAL_CACHE_MAX_LOADS` 默认4、上限20。容量 API 每实例最多128个版本读取，数据库连接仍由 `DB_POOL_MAX` 限制。可在隔离环境读取 `/health/catalog-cache` 的计数。
+- `external:sync --run` 持续处理事件。`--seed [generation]` 写入固定33个事件，同一代重复不入队。`--once` 执行一次有限批次。独立池由 `EXTERNAL_SYNC_POOL_MAX` 控制，默认2、范围1–5。轮询空闲间隔由 `EXTERNAL_SYNC_IDLE_MS` 控制，默认1000、范围250–10000毫秒。`--health` 返回 `ready/checkpoint/enqueued_seq`，心跳窗口为30秒。
+- `external:trial-fake --seed` 生成固定100条的模拟计划；`--grant <trialId> <characters>` 只写隔离模拟额度；`--run <trialId> [limit]` 使用模拟文本。`--interrupt-after-dispatch` 可用于单独验证中断留账，修复后重跑。脚本输出 `realCalls:0`，不会写公开译文。
+
+真实参考汇率的 `external:fx --refresh` 仅在新建回环预览库 `hd_ext_fx_preview_*`、`NODE_ENV=test`、`EXTERNAL_CATALOG_MODE=synthetic` 和 `EXTERNAL_FX_NETWORK=enabled` 下显式执行。可由隔离调度器每小时尝试，数据库限制滚动24小时最多一次外呼。失败保留原快照且不会延长有效期。页面请求和容量环境均无外呼。`--health` 返回快照及最近尝试状态，`retained` 表示已超过24小时且仍在七天有效期内；不输出汇率。健康命令读到缺失或过期仍正常退出，告警应判断状态。刷新在24小时冷却时正常退出且报告未发起；本次实际刷新失败返回非零退出码。接口与署名见[车辆接口第16节](../../docs/开发/车辆接口.md#16-be-ext-02-目录容量与美元展示)。

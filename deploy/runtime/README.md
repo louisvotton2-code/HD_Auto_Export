@@ -78,6 +78,25 @@ python3 deploy/runtime/runtime.py --env /absolute/private/restore.env --project 
 
 恢复拒绝已有PG或媒体数据、运行中目标服务、摘要不符、重复/越界/链接归档项；不自动清空或覆盖失败目标。先将dump单事务恢复至空库，再放回已校验媒体；失败目标保持隔离、不要对外切换。接着用该项目和env执行 `run --rm migrate`、`up -d --wait api web proxy`。重新登录并核对记录、发布/下架状态、图片字节hash、权限，执行容器重建后再验证。源环境和目标均保留至用户确认。
 
+### 定期备份上线步骤
+
+1. 从受审发布目录固定 Python 路径、项目名、私有 env 和该项目全部 Compose override。先用合成项目手动执行同一条命令。备份目标须在 `DATA_ROOT` 外，父目录仅运行账户可访问。为每次运行生成新的 UTC 目录名，避免重试覆盖旧备份。
+
+   ```sh
+   set -eu
+   cd /absolute/reviewed-release
+   umask 077
+   backup_root=/absolute/private/backups/hd-ops01
+   install -d -m 700 "$backup_root"
+   /usr/bin/python3 deploy/runtime/runtime.py --env /absolute/private/ops01.env --project hd-ops01 \
+     --compose-override deploy/runtime/compose.proxy.yaml \
+     --compose-override deploy/runtime/compose.media.yaml \
+     backup --backup "$backup_root/$(date -u +%Y%m%dT%H%M%SZ)"
+   ```
+
+2. 授权后将核验过的命令放入主机受限脚本，由系统定时器每日在已批准的停写窗口调用。双域追加 `compose.domains.yaml`，外部车源和容量项目追加本项目实际启用的 overlay，顺序与启动一致。窗口内先暂停外部 SQL、导入和任务等写入者。普通配置的独立 worker 也须先停，合成容量配置的 API 与 worker 由脚本暂停和恢复。锁冲突、非零退出、只有 `.partial`、服务恢复失败或连续一天无新完整快照均应告警。
+3. 每次核对 `manifest.json` 中的 `databaseSha256`、`mediaTarSha256` 与对应文件的 SHA-256，并确认原服务恢复健康。保留最近 7 个日备份及 4 个周备份。每月按上节恢复到新的隔离项目，核对业务记录和媒体摘要，记录快照时间及恢复用时。异地位置、凭据、实际启用及清理策略在上线窗口单独授权和验证。
+
 ## 新服务器迁移与回滚
 
 1. 新服务器接入授权后才核验Linux/架构/磁盘/时间/防火墙/已有服务；不连接历史服务器。使用目标架构构建固定版本镜像，登记各镜像ID和源码清单。全量依赖当前随API镜像复制（包含构建工具）；生产缩减依赖作为后续优化，不能从Mac复制node_modules。
@@ -89,6 +108,12 @@ python3 deploy/runtime/runtime.py --env /absolute/private/restore.env --project 
 ## 当前代理限制
 
 API `TRUST_PROXY=false` 是初始快照的安全默认值，限流会聚合到代理地址。新BE已加入明确IP/CIDR配置；使用最终新API时每条正式Compose命令追加 `-f deploy/runtime/compose.proxy.yaml -f deploy/runtime/compose.media.yaml`，并在env配置已确认空闲的 `PROXY_SUBNET`、`PROXY_DYNAMIC_RANGE`、`PROXY_GATEWAY`、`PROXY_IP` 与 `WEB_IP`。例如/24子网的高半/25仅作动态池，网关.1、代理.2、官网.3留在低半（示例见.env.example）；两套环境用不同网段，防止先启动的数据库抢占代理IP。先执行 `runtime.py --env ... --project ... --compose-override deploy/runtime/compose.proxy.yaml --compose-override deploy/runtime/compose.media.yaml validate` 核对地址不重叠，再执行其他生命周期命令。overlay仅信任代理和官网各自固定地址/32，官网在overlay显式启用 `VEHICLE_API_TRUST_PROXY_IP=true`，Nginx向官网覆盖 `X-HD-Visitor-IP` 为直接连接地址，官网校验后向API构造单个X-Forwarded-For；官网和API均不向宿主映射端口，API仍无宿主公开端口，Nginx覆盖X-Forwarded-For/Host/Proto并清除Forwarded与内部IP头，对直接API请求清除X-HD-Visitor-IP。不要信任整网或客户端传入头。备份/恢复命令也按上例同时传入两个 `--compose-override`。更换已有Docker网络子网需要先停止该隔离组合并重建网络，不能在线改生产网络；初始已验镜像不启用此overlay。3412最终API与Nginx已完成多访客、伪造来源头及SSR/BFF身份核验；具体证据见[本轮日志](../../docs/日志/2026-11-08/运维-OPS-01-本机持久化与恢复.md)。此方案依赖该Docker网络内服务及宿主管理员可信；若同网络容器被攻陷，它可直连Web伪造访客头，该边界不提供隔离防护。
+
+单域和双域入口从同一份 `nginx-edge.conf` 加载约束。按 Nginx 直连地址为页面 SSR（8 次/秒，突发 16）、目录列表／筛选／首页目录（12 次/秒，突发 24）、公开车辆详情（12 次/秒，突发 24）、认证（15 次/分钟，突发 8）分别计数。目录转发与直接访问相同目录路径共用目录桶。坏图 POST 保留独立的 15 次/分钟、突发 5 和 256 字节请求体限制。过限返回 429。静态资源和授权媒体只计连接预算，不占这些请求速率桶。
+
+进入访问检查的并行请求按代理实例 192 个、每直连地址 32 个封顶。重定向、探活等提前返回的请求在该阶段前结束。请求头等待 10 秒，单个大请求头字段上限 8 KiB，普通请求体上限 10 MiB，读取请求体的连续无数据超时为 15 秒。保活闲置 15 秒，代理连接上游为 3 秒，连续写入与读出超时为 15 秒、30 秒。经可信负载均衡器接入时，须先确认连接来源和可信转发边界；当前配置按直连地址聚合。
+
+入口访问日志仅含固定路径族、HTTP 状态和请求耗时（秒），例如 `{"family":"catalog","status":429,"request_seconds":0.001}`。请求级 Nginx 错误明细可能带真实 URI 或地址，现由代理丢弃；进程启动诊断和 HTTP 状态仍可见。正式 Compose 的 `local` 日志驱动每文件 10 MiB、保留 3 个文件。按路径族和状态汇总，日志无需带 IP、真实路径、查询参数或认证信息。
 
 如果API入口报告 `Unexpected media entry`，先保持该隔离实例停机，核对是否为中断上传留下的点号`.tmp`文件；确认无任何写入者后将这些文件移到数据根之外的私有隔离目录并记录，不直接删除不明文件或放宽目录检查。恢复失败后的目标同样保留诊断，重新选择全新DATA_ROOT，不能在半恢复目标上直接重复覆盖。
 
@@ -121,7 +146,7 @@ API和Nginx worker使用相同 `APP_UID/APP_GID`，目录0700、文件0600无需
 
 ## 双域部署与证书（新服务器，实施前核对最终SHA）
 
-用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域开发配置不变。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网代理仅允许公开GET/HEAD，其余API和后台入口拒绝；两域均要求SNI与Host匹配，未知SNI拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
+用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域和双域沿用同一份入口约束。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网域仅开放白名单内的公开 GET／HEAD 和精确的坏图 POST，坏图 POST 转给官网 BFF。其余 API 和后台入口返回 404。两域均要求 SNI 与 Host 匹配，未知 SNI 拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
 
 本机3430/3431以历史冻结应用及临时双域证书验证了域名隔离、后台登录Secure/HttpOnly/host-only cookie、官网canonical、ACME webroot、未知和错配SNI；2026-11-08两次本机自签证书原子切换/reload及运维脚本测试在本机非root环境16项通过、1项root专测跳过；独立Linux root容器17项全通过。该结果并非最终应用SHA、真实证书或Linux/amd64目标机上线验收；具体证据见[OPS记录](../../docs/日志/2026-11-08/运维-OPS-02-新服务器准备.md)。Docker发布端口可能绕过UFW，必须核对阿里云安全策略、Docker监听和主机规则；DB/API/web不可映射公网。HTTP 80仅响应ACME路径或重定向至对应HTTPS主机。默认Compose绑定127.0.0.1；公网监听仅在明确部署授权和安全策略核验后配置。
 
@@ -162,10 +187,32 @@ compose=(docker compose --env-file "$OPS_EXT_ENV" -p hd-ops-ext01
 curl --cacert "$DATA_ROOT/tls/server.crt" -fsS https://127.0.0.1:3440/health/proxy
 ```
 
-内部网只供数据库、API、官网、缓存和代理使用，只有代理加入入口网并发布 loopback 端口。代理覆盖外来转发头；API 继续只信任两个固定地址。隔离 Nginx 对 `/api/auth` 路径族（含会话查询）按直连地址限 6 次/分钟，允许 4 次突发；目录 API 路径限 30 次/秒，允许 40 次突发。目录桶不覆盖官网 SSR 入口。限制按匹配路径处理请求，不依赖请求自报地址；原 API 保护仍生效。翻译配置显式关闭。Redis 无宿主端口，禁用默认用户，`hd-cache` 仅可操作 `hd-ext:*` 的基础缓存命令；上限 128 MiB，按 LRU 淘汰，无持久化，授权键在容器内使用。BE 冻结缓存客户端与独立 worker 入口后，再按实际命令和密钥读取方式接线。
+内部网只供数据库、API、官网、缓存和代理使用，只有代理加入入口网并发布 loopback 端口。代理覆盖外来转发头；API 继续只信任两个固定地址。Nginx 使用上文两套拓扑共用的入口约束，原 API 保护继续生效。翻译配置显式关闭。Redis 无宿主端口，禁用默认用户，`hd-cache` 仅可操作 `hd-ext:*` 的基础缓存命令；上限 128 MiB，按 LRU 淘汰，无持久化，授权键在容器内使用。BE 冻结缓存客户端与独立 worker 入口后，再按实际命令和密钥读取方式接线。
 
 运行预算为 PostgreSQL 1.5 CPU／1152 MiB、API 1.5 CPU／640 MiB、官网 1 CPU／768 MiB、代理与缓存各 0.5 CPU／192 MiB，合计 5 CPU／2944 MiB。迁移单独执行；为后续 worker 预留 0.5 CPU／512 MiB，未计入当前运行上限。先采集宿主余量、容器 CPU/内存和 OOM/重启次数；每档负载另记 HTTP 状态、连接错误与成功请求 P95，记录数据规模、镜像与缓存冷热。没有持续告警任务。
 
 联合备份使用 `runtime.py backup`，同次传入 proxy、media、ops-ext 三个 override；暂停该项目所有写入者，今后包括独立 worker。恢复时用新的项目名、`DATA_ROOT`、空闲入口及网段（如 3441 和 172.30.87.0/24），重新生成 DB、认证和缓存秘密。仅从已核验的数据库与媒体包恢复；检查迁移记录、合成记录及媒体实际摘要，再启动恢复验证所需服务。缓存重建由应用负责。备份恢复只覆盖合成环境，另行核验真实数据和恢复目标。
 
 压测脚本 `ops-ext/bench.py` 只发 loopback HTTPS 的目录、筛选、首页数据及详情 GET，验证本机证书，并按路由记录 2xx 的 P95、全量错误占比与原始状态（包括 429）。等 BE 提供 10 万／50 万合成装载入口和查询分布后，分别跑 20／50／100 并发，每档按冷／热缓存记录。启用现有限流的单来源测试会限速，429 必须单列；真实性能测试需由 BE 提供只在隔离环境启用的策略，或使用独立可信合成来源，不能把限流当查询容量。PM 初始门槛为 20 并发常用列表及筛选 P95 ≤800 ms 且错误率 <1%。
+
+### OPS-EXT-02 容量环境
+
+容量模式由本机非 root 用户运行，容器内 API 和 worker 使用同一数值 UID 读取私有秘密。使用独立项目 `hd-ops-ext02-<用途>`、私有数据根及空闲 loopback 入口。初始选型为 3442（测试入口）及 3443（恢复验证），启动前重新检查端口及子网。保留一期 3440。用该任务确认的同一源码快照构建 API、官网、后台代理和 PostgreSQL 镜像。依次传入 base、proxy、media、可选 domains、ops-ext、ops-scale 六层配置；运行 `runtime.py` 时同样带齐 overrides。域名拓扑在本机使用带双域 SAN 的私有测试证书和本机解析；SNI 及 Host 由测试客户设置，不查询生产。
+
+额外环境项：
+
+- `OPS_EXT_SCALE_DATABASE=hd_ext_scale_<小写后缀>`。初始化为该库生成单独的数据库 URL 文件。API/worker 读取私有秘密文件，应用和迁移使用 `synthetic-scale`、`NODE_ENV=test`、禁用翻译。API、数据库、Redis 和 worker 都不发布端口，内部网仅代理连接入口网。
+- `EXTERNAL_CACHE_NAMESPACE=hd-ext-scale-<slug>`。Redis 只允许认证用户对该命名空间槽位执行 GET 和 SET。Redis 默认不持久化，禁止管理命令。使用 `EXTERNAL_PUBLIC_CACHE=off|memory|redis` 切换对照，`EXTERNAL_CACHE_TTL_MS`、`EXTERNAL_CACHE_MAX_LOADS` 需记入证据。缓存密码用私有随机文件 `$DATA_ROOT/secrets/ext_cache_password`。
+- worker 只在显式启动时加入，使用独立池和同一隔离数据库。启动后用健康检查观察数据库心跳，无独立监听。合成 CLI 的 `--seed <generation>` 写入本机假事件，`--run` 消费，`--health` 汇报。合成 worker 未接真实供应商及翻译。
+
+迁移成功后在空库执行一次 `docker compose ... run --rm -T --no-deps api dist/external/scale-seed.js --count 1000|100000|500000`。命令中的条数任选一档；切换档位时新建专库及独立数据根。保存装载结果与代表查询预期，运行 `ANALYZE` 后采集实际查询计划和数据库大小。验证三语、常见品牌、罕见品牌、组合区间、员工优先、传统分页和游标边界。
+
+容量主测量使用 `docker compose ... run --rm -T --no-deps api dist/external/scale-bench.js <场景> <并发> <请求数> [--warm]`。后端合成命令在 API 进程内运行真实路由并模拟独立访客身份，不启用网络旁路。按 20／50／100 并发记录各路由延迟、请求数、吞吐、非 2xx 和 429。关闭缓存建立对照；冷缓存重启专用非持久缓存、请求数等于并发数并跳过预热；热缓存使用 `--warm`。同步档运行隔离 worker 并投递可核验的合成事件，记录与查询重叠的时间。记录器的内部 HTTP 模式可核验固定 API 服务在测试子网内可达，但同一 runner 仍受 Fastify 每来源 120 次／分钟限制。公网式防护用宿主 `bench.py --host cars.hongdingauto.com --port 3442 --ca <测试证书>` 单独核验，域名仅用于本机 TLS 和 Host；由真实限流产生的 429 不计作查询容量结果。
+
+`ops-ext/observe.py --project hd-ops-ext02-<用途> --samples <次数>` 输出运行状态、健康、重启、OOM 和 CPU／内存快照。采集目标限定专用项目，临时 runner 单独观察。PostgreSQL 缓冲区、临时文件、连接／等待和 worker 积压按阶段分别记录，观察数据留在忽略目录。
+
+容量备份会先暂停运行中的 worker 和 API；另外停止手工或一次性导入／装载容器。在库内确认其他连接为零后备份数据库和媒体，完成后恢复之前运行的写入服务。恢复只能读取同一合成 profile 的快照，使用全新数据根、独立项目及秘密，并在应用启动前轮换公共缓存 epoch。核对版本、查询、worker 检查点和媒体哈希后才启动恢复副本。保持生产和其他本机项目的备份路径独立。
+
+美元场景用 `fx-cli.js --seed a`、`--seed b` 与 `--seed expired` 写入固定合成快照。运行 `--health` 采集时效状态，与 USD 区间查询、缓存命中和旧游标拒绝结果并列。将健康 JSON 送入 `ops-ext/fx-health.py` 可映射退出码：新鲜且最近尝试未失败为 0，保留或最近刷新失败为 1，缺失、过期或无法读取为 2。该探针不输出汇率，也不发送外部通知。生产式 API 和隔离容量容器均保持外呼关闭。
+
+真实参考汇率的定时模板只供另行授权的原生预览实例。`ops-ext/hd-auto-fx-preview.service` 和 `.timer` 要求专用非特权用户 `hd-fx-preview`、冻结 Node 24／API 产物、loopback 的 `hd_ext_fx_preview_*` 数据库，以及归该服务用户所有的 0400／0600 数据库 URL 文件。安装后的 Node、API 产物、环境配置和启用标记由运维管理，对服务用户只读。示例环境默认 `EXTERNAL_FX_NETWORK=disabled`，服务也要求显式启用标记 `/etc/hd-auto/fx-preview.enabled`。启用后每小时唤醒 `fx-cli.js --refresh`，数据库的 24 小时持久限次确保预算未到时跳过外呼。用同一私有配置运行 `--health` 观察新鲜、保留或过期状态；容量测试不安装模板、不启用外连。预览库的参考快照不会自动写入生产。

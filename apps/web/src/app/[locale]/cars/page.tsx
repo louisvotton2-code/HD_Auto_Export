@@ -8,7 +8,7 @@ import { PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
 import {
   getPublicCatalog,
   getPublicFilters,
-  parseCatalogQuery,
+  parseCatalogPageQuery,
   publicRetryAfter,
 } from '@/modules/vehicles/server';
 import { localizedAlternates } from '@/shared/config/site';
@@ -33,11 +33,11 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   await connection();
-  const query = parseCatalogQuery(await searchParams, locale);
+  const query = parseCatalogPageQuery(await searchParams, locale);
   if (!query) notFound();
   const [result, filters] = await Promise.allSettled([
     getPublicCatalog(query),
-    getPublicFilters(locale, query.q),
+    getPublicFilters(locale, query),
   ]);
   return (
     <PublicVehicleList

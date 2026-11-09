@@ -4,6 +4,7 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
 import { usePublicFreshness } from '../application/use-public-resource';
@@ -15,6 +16,7 @@ import {
 import { ExternalVehicleInformation } from './external-vehicle-information';
 import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
+import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -35,6 +37,7 @@ export function PublicVehicleDetail({
   budget?: ReactNode;
 }) {
   const t = publicVehicleMessages(locale);
+  const quote = publicUsdQuote(vehicle);
   const copy = detailContent[locale];
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
@@ -105,13 +108,16 @@ export function PublicVehicleDetail({
 
             <div className={styles.mobilePrice}>
               <div>
-                {vehicle.price.kind !== 'on_request' && (
-                  <span>{t.priceLabels[vehicle.price.kind]}</span>
-                )}
+                {quote && <span>{t.priceLabels[quote.kind]}</span>}
                 <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
               </div>
               <a href={`#${contactId}`}>{sold ? t.similar : copy.consultTitle} →</a>
             </div>
+            <VehicleRateAttribution
+              vehicles={[vehicle]}
+              locale={locale}
+              className={styles.mobileRateNote}
+            />
 
             <section className={styles.card}>
               <details className={styles.information}>
@@ -171,13 +177,16 @@ export function PublicVehicleDetail({
 
           <aside className={styles.side}>
             <section className={styles.priceCard}>
-              {vehicle.price.kind !== 'on_request' && (
-                <p className={styles.priceLabel}>{t.priceLabels[vehicle.price.kind]}</p>
-              )}
+              {quote && <p className={styles.priceLabel}>{t.priceLabels[quote.kind]}</p>}
               <div className={`${styles.priceTile} ${sold ? styles.soldPrice : ''}`}>
                 <p>{formatPublicVehiclePrice(vehicle, locale)}</p>
               </div>
               <p className={styles.priceNote}>{t.priceNote}</p>
+              <VehicleRateAttribution
+                vehicles={[vehicle]}
+                locale={locale}
+                className={styles.desktopRateNote}
+              />
               {availability && (
                 <p className={styles.status} data-availability={vehicle.availability}>
                   {availability}

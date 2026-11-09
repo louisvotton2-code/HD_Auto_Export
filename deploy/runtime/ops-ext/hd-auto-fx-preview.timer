@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule reference-rate refreshes for the FX preview database
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=hd-auto-fx-preview.service
+
+[Install]
+WantedBy=timers.target

@@ -138,12 +138,16 @@ test('external model fact change must be saved separately from a new model trans
   await page.getByRole('button', { name: '人工修订' }).click();
   const dialog = page.getByRole('dialog');
   async function chooseModel(label: string) {
-    await dialog.getByRole('combobox', { name: label }).click();
-    await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content')
-      .filter({ hasText: /^车型$/ }).click({ timeout: 5000 });
+    const field = dialog.getByRole('combobox', { name: label, exact: true });
+    await field.click();
+    await expect(field).toHaveAttribute('aria-expanded', 'true');
+    const listId = await field.getAttribute('aria-controls');
+    expect(listId).toBeTruthy();
+    const list = page.getByRole('listbox').and(page.locator(`[id=${JSON.stringify(listId)}]`));
+    await list.getByRole('option', { name: '车型', exact: true }).click({ timeout: 5000 });
+    await expect(field).toHaveAttribute('aria-expanded', 'false');
   }
   await chooseModel('译文修订字段');
-  await expect(page.locator('.ant-select-dropdown:visible')).toHaveCount(0);
   await dialog.getByRole('textbox', { name: '人工译文' }).fill('待保存车型译文');
   await chooseModel('事实字段');
   await dialog.getByLabel('名称', { exact: true }).fill('另一个车型名称');

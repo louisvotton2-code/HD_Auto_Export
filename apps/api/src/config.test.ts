@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {readConfig} from './config.js';
 const base={DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/test',AUTH_SECRET:'test-only-long-secret-which-is-not-used-in-production'};
+test('capacity mode is isolated from the original synthetic guard and accepts only its dedicated Compose aliases',()=>{
+  const env={...base,NODE_ENV:'test',EXTERNAL_CATALOG_MODE:'synthetic-scale',TRANSLATION_PROVIDER:'disabled',HOST:'0.0.0.0',
+    DATABASE_URL:'postgresql://local:local@postgres-scale:5432/hd_ext_scale_config'};
+  assert.equal(readConfig(env).externalScale,true);
+  assert.equal(readConfig(env).externalCatalog,true);
+  for(const invalid of [{NODE_ENV:'development'}, {EXTERNAL_CATALOG_MODE:'synthetic'}, {TRANSLATION_PROVIDER:'aliyun'},
+    {DATABASE_URL:'postgresql://local:local@postgres-scale/hd_auto'}, {DATABASE_URL:'postgresql://local:local@postgres-scale.invalid/hd_ext_scale_config'},
+    {DATABASE_URL:env.DATABASE_URL+'?sslmode=require'},{HOST:'127.0.0.1'}]) assert.throws(()=>readConfig({...env,...invalid}));
+  assert.throws(()=>readConfig({...base,EXTERNAL_PUBLIC_CACHE:'memory'}),/isolated capacity/);
+  assert.throws(()=>readConfig({...env,EXTERNAL_PUBLIC_CACHE:'redis'}),/isolated endpoint/);
+  const redis=readConfig({...env,EXTERNAL_PUBLIC_CACHE:'redis',EXTERNAL_CACHE_NAMESPACE:'hd-ext-scale-config',EXTERNAL_REDIS_HOST:'redis-scale',
+    EXTERNAL_REDIS_USER:'scale_cache',EXTERNAL_REDIS_PASSWORD_FILE:'/run/secrets/scale-cache'});
+  assert.equal(redis.publicCache?.redis?.host,'redis-scale');
+});
 test('synthetic source ingestion is restricted to isolated loopback databases without a translation provider',()=>{
   const fixture={...base,DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/hd_ext_config_test',EXTERNAL_CATALOG_MODE:'synthetic'};
   assert.equal(readConfig(base).externalCatalog,false);

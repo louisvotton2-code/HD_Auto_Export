@@ -5,6 +5,7 @@ import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
 import type { PublicVehicle } from '@hd/contracts/public';
 import { NavigationLink } from '@/shared/ui/navigation-link';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import {
   readFavoriteVehicle,
   type FavoriteVehicleResult,
@@ -18,6 +19,7 @@ import {
   publicAvailabilityLabel,
 } from '../public-presentation';
 import { PublicCatalogLink } from './public-catalog-link';
+import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import styles from './vehicle-favorites.module.css';
 
 type Row = FavoriteVehicleResult | { kind: 'loading' };
@@ -48,6 +50,7 @@ function SavedCar({
 }) {
   const cover = publicVehicleCover(vehicle);
   const copy = publicVehicleMessages(locale);
+  const quote = publicUsdQuote(vehicle);
   const status =
     vehicle.availability === 'sold' || vehicle.availability === 'reserved'
       ? publicAvailabilityLabel(vehicle, locale)
@@ -77,9 +80,7 @@ function SavedCar({
             {status}
           </span>
         )}
-        {vehicle.price.kind !== 'on_request' && (
-          <span className={styles.priceKind}>{copy.priceLabels[vehicle.price.kind]}</span>
-        )}
+        {quote && <span className={styles.priceKind}>{copy.priceLabels[quote.kind]}</span>}
         <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
       </div>
     </>
@@ -155,6 +156,10 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
   }, [retryAfter > 0]);
 
   const failed = ids.some((id) => rows[id]?.kind === 'error' || rows[id]?.kind === 'limited');
+  const displayedVehicles = ids.flatMap((id) => {
+    const row = rows[id];
+    return row?.kind === 'vehicle' ? [row.vehicle] : [];
+  });
   return (
     <>
       <button
@@ -251,6 +256,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
               })}
             </ul>
           )}
+          <VehicleRateAttribution vehicles={displayedVehicles} locale={locale} />
           {failed && (
             <div className={styles.status} role="status">
               <button

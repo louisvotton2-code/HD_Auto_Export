@@ -2,6 +2,7 @@ import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { resolveSiteOrigin } from '@/shared/config/site-origin';
 import type { PublicVehicle } from '@hd/contracts/public';
+import { publicUsdQuote } from './public-vehicle-price';
 
 /** Structural input shared by home and catalog; never imports a business module. */
 export interface VehicleContactFacts {
@@ -200,10 +201,10 @@ export function buildPublicVehicleContactLinks(
   if (vehicle.detailPath !== `/${locale}/cars/${vehicle.id}/`)
     throw new Error('Vehicle detailPath must match its locale and stable ID.');
   const t = publicCopy[locale];
-  const price =
-    vehicle.price.kind === 'on_request'
-      ? t.onRequest
-      : `${vehicle.price.kind === 'reference' ? t.reference : t.asking}: ${vehicle.price.money.amount} ${vehicle.price.money.currency}`;
+  const quote = publicUsdQuote(vehicle);
+  const price = quote
+    ? `${quote.kind === 'reference' ? t.reference : t.asking}: ${quote.money.amount} ${quote.money.currency}`
+    : t.onRequest;
   const message = [
     vehicle.availability === 'sold' ? t.similar : t.intro,
     `${t.id}: ${vehicle.stockCode}`,

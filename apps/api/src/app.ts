@@ -8,7 +8,8 @@ import { z } from 'zod';
 import * as pub from '@hd/contracts/public';
 import * as adm from '@hd/contracts/admin';
 import { readConfig, type Config } from './config.js';
-import { createDatabase } from './db/index.js';
+import { classifyCapacityFailure, createDatabase, type PublicFailureDiagnostic } from './db/index.js';
+import { LoginAccountLimiter } from './login-account-limiter.js';
 import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './auth.js';
 import { InventoryService, type Actor } from './vehicles/service.js';
 import { MediaService } from './media/service.js';
@@ -16,6 +17,7 @@ import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalMediaFailurePath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
+import { createPublicCatalogCache, type PublicCacheRoute } from './external/public-cache.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
 const versionHeader=z.object({'if-match':z.string().regex(/^\d+$/)});
@@ -28,9 +30,14 @@ const schema=(tag:string,operationId:string,options:Record<string,unknown>)=>({t
 
 function rateLimitKey(request:FastifyRequest) {
   const route=request.routeOptions.url??'';
+  const upload=request.method==='PUT'&&route==='/api/v1/admin/media/:id/content' ||
+    request.method==='POST'&&['/api/v1/admin/media/uploads','/api/v1/admin/media/:id/complete'].includes(route);
+  const translate=request.method==='POST'&&['/api/v1/admin/vehicles/:id/translation-suggestions',
+    '/api/v1/admin/vehicles/:id/localization/translation-suggestions'].includes(route);
   // Matched route families, never a caller-supplied ID/query/header, select the budget.
   const bucket=route===externalMediaFailurePath?'external-media-report':
     request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
+    upload?'admin-upload':translate?'admin-translation':
     route==='/api/v1/media/:id'?'public-media':
     route.startsWith('/api/v1/admin/')?'admin':route.startsWith('/health/')?'health':
       route.startsWith('/api/auth/')?'auth':'public-json';
@@ -47,9 +54,19 @@ function sendInternalMedia(reply:FastifyReply,file:{filename:string}) {
     .header('X-Accel-Expires','0').send();
 }
 
-export async function buildApp(config:Config=readConfig(), options:{logger?:boolean;translator?:VehicleTranslator}={}) {
-  const db=createDatabase(config.databaseUrl,config.poolMax);
+const capacityRoutes = new Set<string>(['/api/v1/vehicles','/api/v1/vehicle-filters','/api/v1/vehicles/:id','/api/v1/home/vehicles']);
+
+export async function buildApp(config:Config=readConfig(), options:{
+  logger?:boolean;translator?:VehicleTranslator;onPublicFailure?:(event:PublicFailureDiagnostic)=>void;
+}={}) {
+  const db=createDatabase(config.databaseUrl,config.poolMax,Boolean(options.onPublicFailure));
+  let catalogCache;
+  try { catalogCache = config.publicCache ? await createPublicCatalogCache(db, {
+    ...config.publicCache, maxConcurrentRevisionReads: config.externalScale ? 128 : 32,
+  }) : null; }
+  catch (error) { await db.close(); throw error; }
   const auth=createAuth(db,config);
+  const loginAccounts=new LoginAccountLimiter(config.authSecret);
   const inventory=new InventoryService(db,config.externalCatalog);
   const translator=options.translator??createVehicleTranslator(config.translation);
   const media=new MediaService(db,new LocalMediaStore(config.mediaRoot));
@@ -59,7 +76,8 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   app.setValidatorCompiler(validatorCompiler);app.setSerializerCompiler(serializerCompiler);
   await app.register(swagger,{openapi:{openapi:'3.0.3',info:{title:'HD Auto API',version:pub.CONTRACT_VERSION},
     components:{securitySchemes:{staffSession:{type:'apiKey',in:'cookie',name:config.environment==='production'?'__Secure-hd-auto.session_token':'hd-auto.session_token'}}}},transform:jsonSchemaTransform});
-  await app.register(rateLimit,{max:120,timeWindow:60_000,keyGenerator:rateLimitKey,errorResponseBuilder:()=>({statusCode:429,code:'RATE_LIMITED',message:'Request rate exceeded.'})});
+  await app.register(rateLimit,{max:(_request,key)=>key.startsWith('admin-translation:')?20:120,timeWindow:60_000,
+    keyGenerator:rateLimitKey,errorResponseBuilder:()=>({statusCode:429,code:'RATE_LIMITED',message:'Request rate exceeded.'})});
   const staff=new WeakMap<object,adm.StaffMe>();
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
@@ -115,6 +133,12 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
     else if(detail.statusCode===415) problem=new ApiError(400,'UNSUPPORTED_MEDIA_TYPE','Content type is not supported.');
     else if(['ECONNREFUSED','ETIMEDOUT','57P01','53300','08006'].includes(detail.code??'')) problem=new ApiError(503,'SERVICE_UNAVAILABLE','A required service is unavailable.',undefined,true);
     else problem=new ApiError(500,'INTERNAL_ERROR','Request could not be completed.');
+    const route=request.routeOptions.url;
+    if(options.onPublicFailure && route && capacityRoutes.has(route)) {
+      // Report only fixed categories. Diagnostics must not alter the public response.
+      try {options.onPublicFailure({route:route as PublicFailureDiagnostic['route'],status:problem.status,...classifyCapacityFailure(error)});}
+      catch {/* capacity observer only */}
+    }
     if(problem.status>=500) app.log.error({requestId:request.id,errorCode:detail.code??detail.name},'Request failed');
     // The limiter already supplies the rounded-up remaining window. Preserve it;
     // only an otherwise unspecified 429 falls back to our full 60-second window.
@@ -123,20 +147,25 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
     return reply.code(problem.status).send({error:{code:problem.code,message:problem.message,...(problem.fields?{fields:problem.fields}:{}),retryable:problem.retryable},meta:{requestId:request.id}});
   });
   app.setNotFoundHandler((request,reply)=>reply.code(404).send({error:{code:'NOT_FOUND',message:'Resource is not available.',retryable:false},meta:{requestId:request.id}}));
-  app.addHook('onClose',async()=>{await db.close();});
+  app.addHook('onClose',async()=>{try{await catalogCache?.close();}finally{await db.close();}});
   const actor=(request:{id:string}):Actor=>({id:staff.get(request)!.id,requestId:request.id});
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
+  const cached=<T,Q extends {priceView?:'usd'}>(route:PublicCacheRoute,query:Q,load:()=>Promise<T>)=>
+    catalogCache ? catalogCache.get(route,query,load,query.priceView==='usd') : load();
 
   app.get('/health/live',{schema:schema('health','liveness',{response:{200:z.object({status:z.literal('ok')})}})},async()=>({status:'ok' as const}));
+  if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:!!catalogCache,metrics:catalogCache?.metrics()??null}));
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT h.id,v.deleted_at,l.revision,pl.projections,im.receipt_hash FROM home_config h
+      const ready=await db.pool.query(`SELECT h.id,v.deleted_at,l.revision,pl.projections,im.receipt_hash,fx.version FROM home_config h
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
-        LEFT JOIN idempotency_vehicle_metadata im ON false WHERE h.id=1`);
+        LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT state.revision FROM external_catalog_state state
-          LEFT JOIN external_catalog c ON false LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false WHERE state.id=1`);
+        const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask FROM external_catalog_state state
+          JOIN public_catalog_state s ON s.id=state.id
+          LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
+          LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false WHERE state.id=1`);
         if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
       }
       return {status:'ready' as const};
@@ -148,6 +177,13 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
     const allowed=(request.method==='POST'&&['/api/auth/sign-in/email','/api/auth/sign-out'].includes(path??'')) || (request.method==='GET'&&path==='/api/auth/get-session');
     if(!allowed) return reply.code(404).send({code:'NOT_FOUND',message:'Authentication route is not exposed.'});
     if(request.method==='POST' && !config.trustedOrigins.includes(request.headers.origin??'')) return reply.code(403).send({code:'INVALID_ORIGIN',message:'Trusted Origin is required.'});
+    if(request.method==='POST'&&path==='/api/auth/sign-in/email') {
+      const retryAfter=loginAccounts.retryAfter((request.body as {email?:unknown}|null)?.email);
+      if(retryAfter!==null) {
+        reply.header('Retry-After',String(retryAfter));
+        throw new ApiError(429,'RATE_LIMITED','Request rate exceeded.',undefined,true);
+      }
+    }
     const headers=authHeaders(request);
     const result=await auth.handler(new Request(`${config.authBaseUrl}${request.url}`,{method:request.method,headers,
       ...(request.method==='POST'?{body:JSON.stringify(request.body??{})}:{})}));
@@ -157,11 +193,22 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   }});
 
   app.get('/api/v1/vehicles',{schema:schema('public','listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:pub.PublicVehicleListSchema,...errorResponses}})},
-    async request=>inventory.listPublic(request.query as pub.PublicVehicleQuery,request.id));
+    async request=>{
+      const query=request.query as pub.PublicVehicleQuery;
+      const loaded=await cached('list',query,async()=>{
+        const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id);
+        return {data,meta};
+      });
+      return {...loaded,meta:{...loaded.meta,requestId:request.id}};
+    });
   app.get('/api/v1/vehicles/:id',{schema:schema('public','getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return response(await inventory.getPublic(p.id,q.locale,q.view),request);});
-  app.get('/api/v1/vehicle-filters',{schema:schema('public','vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>response(await inventory.filters(request.query as pub.PublicFilterQuery),request));
-  app.get('/api/v1/home/vehicles',{schema:schema('public','homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>{const query=request.query as pub.PublicLocaleQuery;return response(await inventory.publicHome(query.locale,query.view),request);});
+    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return response(await cached('detail',{id:p.id,...q},()=>inventory.getPublic(p.id,q.locale,q.view,q.priceView)),request);});
+  app.get('/api/v1/vehicle-filters',{schema:schema('public','vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>{
+    const query=request.query as pub.PublicFilterQuery;return response(await cached('filters',query,()=>inventory.filters(query)),request);
+  });
+  app.get('/api/v1/home/vehicles',{schema:schema('public','homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>{
+    const query=request.query as pub.PublicLocaleQuery;return response(await cached('home',query,()=>inventory.publicHome(query.locale,query.view,query.priceView)),request);
+  });
   app.get('/api/v1/media/:id',{schema:schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema})},async(request,reply)=>{
     const id=(request.params as {id:string}).id;const variant=(request.query as pub.PublicMediaQuery).variant;
     if(config.mediaDelivery==='nginx') return sendInternalMedia(reply,await media.publicFile(id,variant));

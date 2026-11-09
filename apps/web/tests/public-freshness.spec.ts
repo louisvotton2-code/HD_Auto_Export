@@ -407,6 +407,37 @@ test.describe('explicit public queries, stable activation and media regression',
     expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
   });
 
+  test('Escape and the gallery close button restore the original overflow before the dialog disappears', async ({ page }) => {
+    await page.goto('/en/cars/fixture_car_2/');
+    const gallery = page.locator('[data-vehicle-gallery]');
+    const opener = gallery.getByRole('button', { name: /Open gallery/ });
+    const dialog = gallery.locator('dialog');
+    await page.evaluate(() => { document.body.style.overflow = 'auto'; });
+
+    for (const close of [
+      () => page.keyboard.press('Escape'),
+      () => dialog.getByRole('button', { name: 'Close photo viewer', exact: true }).click(),
+    ]) {
+      await opener.click();
+      await expect(dialog).toBeVisible();
+      expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+      await dialog.evaluate((viewer) => {
+        viewer.removeAttribute('data-overflow-at-close');
+        const observeClose = new MutationObserver(() => {
+          if (viewer.hasAttribute('open')) return;
+          viewer.setAttribute('data-overflow-at-close', document.body.style.overflow);
+          observeClose.disconnect();
+        });
+        observeClose.observe(viewer, { attributes: true, attributeFilter: ['open'] });
+      });
+
+      await close();
+      await expect(dialog).not.toBeVisible();
+      await expect(dialog).toHaveAttribute('data-overflow-at-close', 'auto');
+      await expect(opener).toBeFocused();
+    }
+  });
+
   test('a loaded photo stays ready when immediately selecting another and returning', async ({
     page,
   }) => {

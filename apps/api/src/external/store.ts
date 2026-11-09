@@ -155,36 +155,39 @@ export class ExternalStore {
   constructor(private db: Database, private importProfile: ExternalSourceProfile = syntheticProfile) {}
 
   async importBatch(input: ExternalImportBatchRequest, key: string, actor: Actor): Promise<ExternalBatch> {
+    return this.db.transaction(tx => this.importBatchWithClient(tx, input, key, actor));
+  }
+
+  // The worker commits an import receipt and its checkpoint under the same fence.
+  async importBatchWithClient(tx: PoolClient, input: ExternalImportBatchRequest, key: string, actor: Actor): Promise<ExternalBatch> {
     if (input.provider !== this.importProfile.id) throw new ApiError(422, 'EXTERNAL_RESTRICTION', 'This source profile is not registered.');
     const hash = jsonHash(input);
-    return this.db.transaction(async tx => {
-      await lockExternalWrites(tx);
-      const prior = (await tx.query<BatchRow>(`SELECT ${batchColumns},request_hash FROM external_import_batches WHERE provider=$1 AND idempotency_key=$2`, [input.provider, key])).rows[0];
-      if (prior) {
-        if (prior.request_hash !== hash) throw sameKeyConflict();
-        return batchView(prior);
-      }
-      const id = randomUUID();
-      const counts: ExternalBatch['counts'] = { total: input.records.length, applied: 0, unchanged: 0, ignored: 0, rejected: 0 };
-      await tx.query('INSERT INTO external_import_batches(id,provider,idempotency_key,request_hash,actor_id,counts) VALUES($1,$2,$3,$4,$5,$6)',
-        [id, input.provider, key, hash, actor.id, JSON.stringify(counts)]);
-      let publicChanged = false;
-      for (const [position, record] of input.records.entries()) {
-        const parsed = ExternalCandidateSchema.safeParse(record.candidate);
-        const candidate = parsed.success && isDatabaseJson(parsed.data) ? parsed.data : null;
-        const reason = !parsed.success && parsed.error.issues.some(issue => issue.path[0] === 'platformId' || issue.path[0] === 'externalId')
-          ? 'identity_unconfirmed' : 'invalid_record';
-        const applied = candidate ? await applyCandidate(tx, this.importProfile, candidate) : noChange('rejected', reason);
-        publicChanged ||= applied.publicChanged;
-        counts[applied.status]++;
-        const encoded = JSON.stringify(record.raw);
-        await tx.query(`INSERT INTO external_import_records(batch_id,row_number,listing_id,operation,status,reason,issues,candidate,raw_encoded,raw_hash)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [id, position + 1, applied.listing_id, candidate?.operation ?? null,
-          applied.status, applied.reason, JSON.stringify(applied.issues), candidate && JSON.stringify(candidate), encoded, sha256(encoded)]);
-      }
-      if (publicChanged) await advanceRevision(tx);
-      return batchView((await tx.query<BatchRow>(`UPDATE external_import_batches SET counts=$2 WHERE id=$1 RETURNING ${batchColumns}`, [id, JSON.stringify(counts)])).rows[0]!);
-    });
+    await lockExternalWrites(tx);
+    const prior = (await tx.query<BatchRow>(`SELECT ${batchColumns},request_hash FROM external_import_batches WHERE provider=$1 AND idempotency_key=$2`, [input.provider, key])).rows[0];
+    if (prior) {
+      if (prior.request_hash !== hash) throw sameKeyConflict();
+      return batchView(prior);
+    }
+    const id = randomUUID();
+    const counts: ExternalBatch['counts'] = { total: input.records.length, applied: 0, unchanged: 0, ignored: 0, rejected: 0 };
+    await tx.query('INSERT INTO external_import_batches(id,provider,idempotency_key,request_hash,actor_id,counts) VALUES($1,$2,$3,$4,$5,$6)',
+      [id, input.provider, key, hash, actor.id, JSON.stringify(counts)]);
+    let publicChanged = false;
+    for (const [position, record] of input.records.entries()) {
+      const parsed = ExternalCandidateSchema.safeParse(record.candidate);
+      const candidate = parsed.success && isDatabaseJson(parsed.data) ? parsed.data : null;
+      const reason = !parsed.success && parsed.error.issues.some(issue => issue.path[0] === 'platformId' || issue.path[0] === 'externalId')
+        ? 'identity_unconfirmed' : 'invalid_record';
+      const applied = candidate ? await applyCandidate(tx, this.importProfile, candidate) : noChange('rejected', reason);
+      publicChanged ||= applied.publicChanged;
+      counts[applied.status]++;
+      const encoded = JSON.stringify(record.raw);
+      await tx.query(`INSERT INTO external_import_records(batch_id,row_number,listing_id,operation,status,reason,issues,candidate,raw_encoded,raw_hash)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [id, position + 1, applied.listing_id, candidate?.operation ?? null,
+        applied.status, applied.reason, JSON.stringify(applied.issues), candidate && JSON.stringify(candidate), encoded, sha256(encoded)]);
+    }
+    if (publicChanged) await advanceRevision(tx);
+    return batchView((await tx.query<BatchRow>(`UPDATE external_import_batches SET counts=$2 WHERE id=$1 RETURNING ${batchColumns}`, [id, JSON.stringify(counts)])).rows[0]!);
   }
 
   async listBatches(query: ExternalAdminPageQuery) {

@@ -29,7 +29,7 @@ describe('public vehicle contact drafts', () => {
       expect(links.message).not.toContain('2024');
     },
   );
-  it('keeps original currency and reference meaning, and asks for similar cars when sold', () => {
+  it('uses the same USD reference quote, and asks for similar cars when sold', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.detailPath = `/en/cars/${vehicle.id}/`;
     vehicle.price = {
@@ -38,11 +38,19 @@ describe('public vehicle contact drafts', () => {
       includes: [],
     };
     vehicle.availability = 'sold';
+    vehicle.displayPrice = {
+      status: 'ready', kind: 'reference', money: { amount: '30250.07', currency: 'USD' },
+      conversion: { asOf: '2026-11-09T00:00:00Z', source: 'synthetic' },
+    };
     const links = buildPublicVehicleContactLinks(vehicle, 'en');
     expect(links.message).toContain('similar vehicles');
-    expect(links.message).toContain('Reference price: 218000.50 CNY');
-    expect(links.message).not.toContain('USD');
+    expect(links.message).toContain('Reference price: 30250.07 USD');
+    expect(links.message).not.toContain('218000.50 CNY');
     expect(links.message).not.toContain('Demo');
+    vehicle.displayPrice = {
+      status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable',
+    };
+    expect(buildPublicVehicleContactLinks(vehicle, 'en').message).not.toMatch(/218000|30250/);
   });
   it('refuses a mismatched public URL instead of sending the inquiry to a different vehicle', () => {
     const vehicle = makePublicVehicleFixture();

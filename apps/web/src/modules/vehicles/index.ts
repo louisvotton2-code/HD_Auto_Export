@@ -22,3 +22,5 @@ export { VehicleFavorites } from './ui/vehicle-favorites';
 
 export { localizedHomeSchema } from './localized-projection';
 export { VehiclePhoto } from './ui/vehicle-photo';
+export { publicUsdFilterQuery, publicUsdView, publicQueryString } from './public-query';
+export { VehicleRateAttribution } from './ui/vehicle-rate-attribution';

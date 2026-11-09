@@ -70,7 +70,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
       ? catalogQueryKeys
       : path === 'vehicle-filters'
         ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize')
-        : ['locale', 'view'];
+        : ['locale', 'view', 'priceView'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
@@ -97,6 +97,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         query.locale as Locale,
         request.headers,
         query.view as 'legacy' | 'localized' | undefined,
+        query.priceView as 'usd' | undefined,
       );
       return vehicle
         ? Response.json({ data: vehicle, meta: { requestId: crypto.randomUUID() } }, { headers })
@@ -139,10 +140,11 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
     // Each schema validates only the public DTO. Browser credentials are never forwarded.
     const locale = query.locale as Locale;
     const localized = query.view === 'localized';
+    const priceView = query.priceView as 'usd' | undefined;
     const schema = path === 'home/vehicles'
-      ? (localized ? localizedHomeSchema(locale) : legacyHomeSchema)
+      ? (localized ? localizedHomeSchema(locale, priceView) : legacyHomeSchema)
       : path === 'vehicles'
-        ? (localized ? localizedListSchema(locale) : legacyListSchema)
+        ? (localized ? localizedListSchema(locale, priceView) : legacyListSchema)
         : PublicVehicleFiltersSchema;
     const value = await readPublicJson(
       upstream,

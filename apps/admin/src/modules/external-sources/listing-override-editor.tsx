@@ -13,6 +13,7 @@ import { request } from '../../shared/api/client';
 
 const factFields = ExternalFactsSchema.keyof().options;
 const textFields = ['title', 'model', 'description'] as const;
+const fieldPopupContainer = (trigger: HTMLElement) => trigger.parentElement ?? trigger;
 
 export function ListingOverrideEditor({ listing, onClose, onRefresh }: {
   listing: ExternalListing; onClose: () => void; onRefresh: () => void;
@@ -28,10 +29,12 @@ export function ListingOverrideEditor({ listing, onClose, onRefresh }: {
   const [invalid, setInvalid] = useState('');
   const [latest, setLatest] = useState<ExternalListing>();
   const [checking, setChecking] = useState(false);
+  const [opened, setOpened] = useState(false);
   const present = Object.hasOwn(facts, fact);
   const currentText = text.find(item => item.field === field && item.locale === locale);
   const sourceHash = listing.sourceHashes[field];
   const locked = action.busy || action.uncertain;
+  const editorDisabled = locked || !opened;
   const conflict = action.errorCode === 'VERSION_CONFLICT';
   const dirty = JSON.stringify({ hidden, facts, text }) !== JSON.stringify(listing.overrides);
   const modelBindingChanged = (['make', 'model'] as const).some(key => JSON.stringify(facts[key]) !== JSON.stringify(listing.overrides.facts[key]));
@@ -90,17 +93,17 @@ export function ListingOverrideEditor({ listing, onClose, onRefresh }: {
     setText(value ? [...next, { field, locale, sourceHash, text: value }] : next);
   }
 
-  return <Modal open width={740} title="人工修订挂牌" okText="保存修订" cancelText="取消"
+  return <Modal open afterOpenChange={setOpened} width={740} title="人工修订挂牌" okText="保存修订" cancelText="取消"
     closable={!locked} keyboard={!locked} mask={{ closable: false }} confirmLoading={action.busy}
-    okButtonProps={{ disabled: locked || !dirty || conflict || splitModelEdit }} cancelButtonProps={{ disabled: locked }}
+    okButtonProps={{ disabled: editorDisabled || !dirty || conflict || splitModelEdit }} cancelButtonProps={{ disabled: locked }}
     onCancel={() => { if (!locked) void discard(); }} onOk={() => void submit()}>
-    <Form layout="vertical" disabled={locked}>
+    <Form layout="vertical" disabled={editorDisabled}>
       <Typography.Paragraph>基于挂牌版本 {listing.version}。保存后，公开目录按最新有效资料展示。</Typography.Paragraph>
       <Form.Item label="展示状态">
         <Checkbox checked={hidden} disabled={listing.state === 'withdrawn'} onChange={event => setHidden(event.target.checked)}>人工隐藏</Checkbox>
       </Form.Item>
       <Form.Item label="事实字段">
-        <Select aria-label="事实字段" value={fact} onChange={setFact}
+        <Select aria-label="事实字段" virtual={false} getPopupContainer={fieldPopupContainer} value={fact} onChange={setFact}
           options={factFields.map(value => ({ value, label: fieldLabels[value] }))} />
       </Form.Item>
       <Form.Item label={`人工修订 · ${fieldLabels[fact]}`}>
@@ -116,7 +119,7 @@ export function ListingOverrideEditor({ listing, onClose, onRefresh }: {
       </Form.Item>
       <Form.Item label="译文修订">
         <Space wrap>
-          <Select aria-label="译文修订字段" value={field} onChange={setField}
+          <Select aria-label="译文修订字段" virtual={false} getPopupContainer={fieldPopupContainer} value={field} onChange={setField}
             options={textFields.map(value => ({ value, label: fieldLabels[value] }))} />
           <Select aria-label="译文修订语言" value={locale} onChange={setLocale}
             options={Object.entries(languageLabels).map(([value, label]) => ({ value, label }))} />
@@ -126,7 +129,7 @@ export function ListingOverrideEditor({ listing, onClose, onRefresh }: {
         {currentText && currentText.sourceHash !== sourceHash && <Alert type="warning" title="原文已变化，请核对后重新填写译文。" />}
         <Typography.Paragraph type="secondary">{listing.source?.copy[field]?.original.text ?? '来源未提供原文'}</Typography.Paragraph>
         {field === 'model' && modelBindingChanged && <Alert type="warning" title="请先保存品牌或车型事实，再核对当前车型原文。" />}
-        <Input.TextArea aria-label="人工译文" value={currentText?.text ?? ''} disabled={!sourceHash || locked || (field === 'model' && modelBindingChanged)}
+        <Input.TextArea aria-label="人工译文" value={currentText?.text ?? ''} disabled={!sourceHash || editorDisabled || (field === 'model' && modelBindingChanged)}
           maxLength={{ title: 500, model: 120, description: 2000 }[field]} onChange={event => changeText(event.target.value)} rows={3} />
         {currentText && <Button type="link" onClick={() => setText(items => items.filter(item => item.field !== field || item.locale !== locale))}>移除此语言的人工译文</Button>}
       </Form.Item>

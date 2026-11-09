@@ -5,6 +5,10 @@ import { readFavoriteVehicle } from './read-favorite-vehicle';
 const envelope = () => {
   const vehicle = makeLocalizedPublicVehicleFixture();
   vehicle.detailPath = `/en/cars/${vehicle.id}/`;
+  vehicle.displayPrice = {
+    status: 'ready', kind: 'asking',
+    money: { amount: '23500.00', currency: 'USD' }, conversion: null,
+  };
   return { data: vehicle, meta: { requestId: 'favorite-check' } };
 };
 
@@ -16,7 +20,7 @@ describe('saved vehicle public resolution', () => {
       await readFavoriteVehicle(value.data.id, 'en', new AbortController().signal, fetcher),
     ).toEqual({ kind: 'vehicle', vehicle: value.data });
     expect(fetcher).toHaveBeenCalledWith(
-      `/api/v1/vehicles/${value.data.id}/?locale=en&view=localized`,
+      `/api/v1/vehicles/${value.data.id}/?locale=en&view=localized&priceView=usd`,
       expect.objectContaining({ cache: 'no-store', credentials: 'omit', redirect: 'error' }),
     );
   });

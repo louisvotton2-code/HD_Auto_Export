@@ -33,8 +33,6 @@ services:
         ipv4_address: ${PROXY_IP:?set the fixed local proxy address}
       ingress:
         gw_priority: 1
-    volumes:
-      - ./ops-ext/limits.conf:/etc/nginx/conf.d/00-ops-ext-limits.conf:ro
   redis:
     image: redis:7.4-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     user: '${APP_UID:?set local owner UID}:${APP_GID:?set local owner GID}'

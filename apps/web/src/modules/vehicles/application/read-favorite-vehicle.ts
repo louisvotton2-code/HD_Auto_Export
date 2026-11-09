@@ -1,6 +1,7 @@
 import { type PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { localizedVehicleSchema } from '../localized-projection';
+import { publicQueryString, publicUsdView } from '../public-query';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
 
 export type FavoriteVehicleResult =
@@ -19,7 +20,7 @@ export async function readFavoriteVehicle(
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return { kind: 'missing' };
   try {
     const response = await fetcher(
-      `/api/v1/vehicles/${encodeURIComponent(id)}/?locale=${locale}&view=localized`,
+      `/api/v1/vehicles/${encodeURIComponent(id)}/?${publicQueryString({ locale, ...publicUsdView })}`,
       {
         signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
         credentials: 'omit',
@@ -40,7 +41,7 @@ export async function readFavoriteVehicle(
       await response.body?.cancel();
       return { kind: 'error' };
     }
-    const parsed = localizedVehicleSchema(locale).parse(await response.json());
+    const parsed = localizedVehicleSchema(locale, 'usd').parse(await response.json());
     if (parsed.data.id !== id || parsed.data.detailPath !== `/${locale}/cars/${id}/`)
       return { kind: 'error' };
     return { kind: 'vehicle', vehicle: parsed.data };

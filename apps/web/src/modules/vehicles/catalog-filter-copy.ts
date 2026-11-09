@@ -11,7 +11,6 @@ type Copy = {
   year: string;
   from: string;
   to: string;
-  currency: string;
   rangeError: string;
   selected: string;
   drives: Record<Drivetrain, string>;
@@ -27,7 +26,6 @@ export const catalogFilterCopy = {
     year: '年款',
     from: '下限',
     to: '上限',
-    currency: '价格币种',
     rangeError: '请检查筛选条件：上限不能低于下限，价格范围需选择币种。',
     selected: '当前所选条件',
     drives: { fwd: '前轮驱动', rwd: '后轮驱动', awd: '全轮驱动', four_wd: '四轮驱动' },
@@ -42,7 +40,6 @@ export const catalogFilterCopy = {
     year: 'Model year',
     from: 'From',
     to: 'To',
-    currency: 'Price currency',
     rangeError:
       'Check the filters: the upper limit must not be below the lower limit. Price ranges require a currency.',
     selected: 'Current selection',
@@ -63,7 +60,6 @@ export const catalogFilterCopy = {
     year: 'Модельный год',
     from: 'От',
     to: 'До',
-    currency: 'Валюта цены',
     rangeError:
       'Проверьте фильтры: верхняя граница не должна быть ниже нижней. Для диапазона цен выберите валюту.',
     selected: 'Текущее условие',

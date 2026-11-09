@@ -2,6 +2,7 @@ import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
+import { publicUsdFilterQuery, publicUsdView, type UsdFilterScope } from '../public-query';
 import {
   legacyListSchema,
   legacyVehicleSchema,
@@ -9,7 +10,7 @@ import {
   localizedListSchema,
   localizedVehicleSchema,
 } from '../localized-projection';
-export { parseCatalogQuery } from '../public-query';
+export { parseCatalogQuery, parseCatalogPageQuery } from '../public-query';
 
 export class PublicApiError extends Error {
   constructor(
@@ -133,20 +134,20 @@ export const queryString = (query: Record<string, string | number | undefined>) 
 
 export function getPublicHome(locale: Locale) {
   return readPublicJson(
-    `/api/v1/home/vehicles?locale=${locale}&view=localized`,
-    localizedHomeSchema(locale),
+    `/api/v1/home/vehicles?${queryString({ locale, ...publicUsdView })}`,
+    localizedHomeSchema(locale, 'usd'),
   );
 }
-export function getPublicFilters(locale: Locale, q?: string) {
+export function getPublicFilters(locale: Locale, scope?: UsdFilterScope) {
   return readPublicJson(
-    `/api/v1/vehicle-filters?${queryString({ catalog: 'curated', locale, q, view: 'localized' })}`,
+    `/api/v1/vehicle-filters?${queryString(publicUsdFilterQuery(locale, scope))}`,
     PublicVehicleFiltersSchema,
   );
 }
 export function getPublicCatalog(query: PublicVehicleQuery) {
   return readPublicJson(
-    `/api/v1/vehicles?${queryString({ ...query, view: 'localized' })}`,
-    localizedListSchema(query.locale),
+    `/api/v1/vehicles?${queryString({ ...query, ...publicUsdView })}`,
+    localizedListSchema(query.locale, 'usd'),
   );
 }
 /** Keep sitemap traversal on the bounded editorial catalog when localized browsing includes imports. */
@@ -161,12 +162,13 @@ export async function getPublicVehicle(
   locale: Locale,
   incoming?: Pick<Headers, 'get'>,
   view?: 'legacy' | 'localized',
+  priceView?: 'usd',
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const result = await readPublicJson(
-      `/api/v1/vehicles/${id}?${queryString({ locale, view })}`,
-      view === 'localized' ? localizedVehicleSchema(locale) : legacyVehicleSchema,
+      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView })}`,
+      view === 'localized' ? localizedVehicleSchema(locale, priceView) : legacyVehicleSchema,
       incoming,
     );
     if (result.data.id !== id || result.data.detailPath !== `/${locale}/cars/${id}/`)

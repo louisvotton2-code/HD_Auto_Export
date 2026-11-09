@@ -62,4 +62,18 @@ describe('localized public projection boundary', () => {
       }).data.items,
     ).toEqual([]);
   });
+
+  it('requires the USD price only on opt-in projections', () => {
+    const vehicle = makeLocalizedPublicVehicleFixture('en');
+    const envelope = { data: vehicle, meta: { requestId: 'price-view' } };
+    expect(() => localizedVehicleSchema('en', 'usd').parse(envelope)).toThrow();
+    vehicle.displayPrice = {
+      status: 'ready', kind: 'asking',
+      money: { amount: '23500.00', currency: 'USD' }, conversion: null,
+    };
+    expect(localizedVehicleSchema('en', 'usd').parse(envelope).data.displayPrice).toEqual(
+      vehicle.displayPrice,
+    );
+    expect(() => localizedVehicleSchema('en').parse(envelope)).toThrow();
+  });
 });

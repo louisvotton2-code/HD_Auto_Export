@@ -2,22 +2,23 @@ import type { PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { catalogFilterKeys } from './public-query';
 import { catalogFilterCopy } from './catalog-filter-copy';
 
-/** Price is displayed in its original currency. No exchange rate or tax assumption is introduced. */
-export function formatPublicAmount(amount: string, locale: Locale): string {
+/** Keep amounts exact, including values too large for precise Number formatting. */
+export function formatPublicAmount(amount: string, locale: Locale, minimumFractionDigits = 0): string {
   const [whole, fraction = ''] = amount.split('.');
   const formatter = new Intl.NumberFormat(locale);
   const decimal =
     formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
-  const significantFraction = fraction.replace(/0+$/, '');
+  const significantFraction = fraction.replace(/0+$/, '').padEnd(minimumFractionDigits, '0');
   return `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
 }
 export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
-  const { price } = vehicle;
-  if (price.kind === 'on_request') return publicVehicleMessages(locale).priceLabels.on_request;
-  return `${formatPublicAmount(price.money.amount, locale)} ${price.money.currency}`;
+  const quote = publicUsdQuote(vehicle);
+  if (!quote) return publicVehicleMessages(locale).priceLabels.on_request;
+  return `${formatPublicAmount(quote.money.amount, locale, 2)} ${quote.money.currency}`;
 }
 
 export function publicAvailabilityLabel(vehicle: PublicVehicle, locale: Locale): string {

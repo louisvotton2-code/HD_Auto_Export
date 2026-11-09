@@ -8,6 +8,7 @@ import { publicVehicleMessages } from '../public-messages';
 import { PublicVehicleDetail } from './public-vehicle-detail';
 import { PublicResourceStatus } from './public-resource-status';
 import { localizedVehicleSchema } from '../localized-projection';
+import { publicQueryString, publicUsdView } from '../public-query';
 import { PublicCatalogLink } from './public-catalog-link';
 
 export function PublicDetailResource({
@@ -29,8 +30,8 @@ export function PublicDetailResource({
     () => (vehicle ? { data: vehicle, meta: { requestId: 'server-rendered' } } : null),
     [vehicle],
   );
-  const url = `/api/v1/vehicles/${id}/?locale=${locale}&view=localized`;
-  const resource = usePublicResource(url, initial, localizedVehicleSchema(locale), {
+  const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicUsdView })}`;
+  const resource = usePublicResource(url, initial, localizedVehicleSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/${id}/`,
     initialRetryAfter,
   });

@@ -10,15 +10,25 @@ import {
 } from './public-presentation';
 
 describe('public vehicle presentation', () => {
-  it('retains the original currency and decimal precision at the contract money limit', () => {
+  it('formats exact USD amounts at the money limit with two locale-aware decimal places', () => {
     const vehicle = makePublicVehicleFixture();
-    vehicle.price = {
-      kind: 'reference',
-      money: { amount: '99999999999999.99', currency: 'CNY' },
-      includes: [],
+    vehicle.displayPrice = {
+      status: 'ready', kind: 'asking',
+      money: { amount: '99999999999999.99', currency: 'USD' }, conversion: null,
     };
-    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('99,999,999,999,999.99 CNY');
-    expect(formatPublicVehiclePrice(vehicle, 'ru')).toContain(',99 CNY');
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('99,999,999,999,999.99 USD');
+    expect(formatPublicVehiclePrice(vehicle, 'ru')).toContain(',99 USD');
+    vehicle.displayPrice.money.amount = '23500';
+    expect(formatPublicVehiclePrice(vehicle, 'zh')).toBe('23,500.00 USD');
+  });
+
+  it('shows price on request when conversion is unavailable, even with a known original price', () => {
+    const vehicle = makePublicVehicleFixture();
+    vehicle.price.money!.currency = 'CNY';
+    vehicle.displayPrice = {
+      status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable',
+    };
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('Price on request');
   });
 
   it.each(['zh', 'en', 'ru'] as const)(

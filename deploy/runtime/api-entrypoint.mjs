@@ -1,9 +1,17 @@
 import {readFile, readdir, lstat, chown} from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-const password=(await readFile('/run/secrets/app_db_password','utf8')).trim();
-process.env.DATABASE_URL=`postgresql://hd_app:${encodeURIComponent(password)}@postgres:5432/hd_auto`;
-process.env.AUTH_SECRET=(await readFile('/run/secrets/auth_secret','utf8')).trim();
+const scale=process.env.EXTERNAL_CATALOG_MODE==='synthetic-scale';
+if(scale) {
+  if(process.env.NODE_ENV!=='test' || process.env.TRANSLATION_PROVIDER!=='disabled' ||
+    !/^hd_ext_scale_[a-z0-9_]{1,50}$/.test(process.env.OPS_EXT_SCALE_DATABASE??'')) throw new Error('Expected a dedicated synthetic scale database');
+  process.env.DATABASE_URL_FILE='/run/secrets/scale_database_url';
+  process.env.AUTH_SECRET_FILE='/run/secrets/auth_secret';
+} else {
+  const password=(await readFile('/run/secrets/app_db_password','utf8')).trim();
+  process.env.DATABASE_URL=`postgresql://hd_app:${encodeURIComponent(password)}@postgres:5432/hd_auto`;
+  process.env.AUTH_SECRET=(await readFile('/run/secrets/auth_secret','utf8')).trim();
+}
 // Docker Desktop may expose host bind mounts as root; fix ownership while root,
 // then permanently drop privileges before executing application code.
 const uid=Number(process.env.APP_UID),gid=Number(process.env.APP_GID);

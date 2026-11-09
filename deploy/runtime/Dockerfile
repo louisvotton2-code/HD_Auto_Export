@@ -46,10 +46,11 @@ FROM build AS admin-build
 RUN pnpm --filter @hd/admin build
 FROM ${NGINX_IMAGE} AS proxy
 COPY deploy/runtime/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/runtime/nginx-edge.conf /etc/nginx/conf.d/00-edge.conf
+COPY deploy/runtime/nginx-domains /etc/nginx/hd-domains
 COPY deploy/runtime/nginx-media-main.conf /etc/nginx/nginx-media-main.conf
 COPY deploy/runtime/nginx-media-entrypoint.sh /etc/nginx/nginx-media-entrypoint.sh
 COPY --from=admin-build /app/apps/admin/dist /srv/admin
 # Two-host production topology; the original proxy target remains available for local development.
 FROM proxy AS proxy-domains
 COPY deploy/runtime/nginx-domains.conf /etc/nginx/conf.d/default.conf
-COPY deploy/runtime/nginx-domains /etc/nginx/hd-domains

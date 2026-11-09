@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -51,6 +53,7 @@ export function VehicleGallery({
   const [previousId, setPreviousId] = useState<string | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const pageOverflow = useRef<string | null>(null);
   const openButton = useRef<HTMLButtonElement>(null);
   const emptyPhoto = useRef<HTMLDivElement>(null);
   const selectedImage = useRef<HTMLImageElement>(null);
@@ -67,21 +70,21 @@ export function VehicleGallery({
   const hasPhoto = Boolean(selected);
   const previous = ordered.find((image) => image.id === previousId && image.id !== selected?.id);
 
+  const restorePageScroll = useCallback(() => {
+    if (pageOverflow.current === null) return;
+    document.body.style.overflow = pageOverflow.current;
+    pageOverflow.current = null;
+  }, []);
+  // A detail refresh can remove the last photo while the viewer owns the scroll lock.
+  useLayoutEffect(() => restorePageScroll, [hasPhoto, restorePageScroll]);
   useEffect(() => setEnhanced(true), []);
   useEffect(() => {
     if (!selected) return;
     if (selectedId !== selected.id) setSelectedId(selected.id);
   }, [selected?.id, selectedId]);
   useEffect(() => {
-    if (!opened || !hasPhoto) return;
-    const before = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = before;
-    };
-  }, [opened, hasPhoto]);
-  useEffect(() => {
     if (hasPhoto || !opened) return;
+    opener.current = null;
     setOpened(false);
     emptyPhoto.current?.focus({ preventScroll: true });
   }, [hasPhoto, opened]);
@@ -114,16 +117,29 @@ export function VehicleGallery({
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (event.currentTarget.tagName === 'A' && Date.now() - lastSwipeAt.current < 450) return;
+    const viewer = dialog.current;
+    if (!viewer || viewer.open) return;
+    viewer.showModal();
     opener.current = event.currentTarget;
+    pageOverflow.current ??= document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     setOpened(true);
-    if (dialog.current && !dialog.current.open) dialog.current.showModal();
   }
   function closeViewer() {
-    dialog.current?.close();
+    const viewer = dialog.current;
+    if (!viewer?.open) return;
+    // Native close events are queued. Restore scrolling before closing the visible dialog.
+    restorePageScroll();
+    viewer.close();
+    finishClose();
   }
   function finishClose() {
+    const trigger = opener.current;
+    if (!trigger || dialog.current?.open) return;
+    opener.current = null;
+    restorePageScroll();
     setOpened(false);
-    const target = opener.current?.isConnected ? opener.current : openButton.current;
+    const target = trigger.isConnected ? trigger : openButton.current;
     target?.focus({ preventScroll: true });
   }
   function keyNavigation(event: KeyboardEvent<HTMLElement>) {
@@ -325,6 +341,10 @@ export function VehicleGallery({
         className={styles.dialog}
         aria-label={t.gallery}
         aria-describedby={captionId}
+        onCancel={(event) => {
+          event.preventDefault();
+          closeViewer();
+        }}
         onClose={finishClose}
         onClick={(event) => {
           if (event.target === event.currentTarget) closeViewer();

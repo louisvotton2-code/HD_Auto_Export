@@ -11,6 +11,9 @@ import {
   usePublicResource,
   PublicResourceStatus,
   localizedHomeSchema,
+  publicQueryString,
+  publicUsdFilterQuery,
+  publicUsdView,
 } from '@/modules/vehicles';
 import { HomePage } from './home-page';
 
@@ -25,9 +28,10 @@ export function PublicHome({
   filters: PublicVehicleFilters['data'] | null;
   initialRetryAfter?: number;
 }) {
-  const url = `/api/v1/home/vehicles/?locale=${locale}&view=localized`;
+  const projection = { locale, ...publicUsdView };
+  const url = `/api/v1/home/vehicles/?${publicQueryString(projection)}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, home, localizedHomeSchema(locale), {
+  const resource = usePublicResource(url, home, localizedHomeSchema(locale, 'usd'), {
     navigationPath: `/${locale}/`,
     initialRetryAfter,
     cooldown,
@@ -37,7 +41,7 @@ export function PublicHome({
     [filters],
   );
   const facets = usePublicResource(
-    `/api/v1/vehicle-filters/?catalog=curated&locale=${locale}&view=localized`,
+    `/api/v1/vehicle-filters/?${publicQueryString(publicUsdFilterQuery(locale))}`,
     initialFilters,
     PublicVehicleFiltersSchema,
     { cooldown },

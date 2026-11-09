@@ -44,6 +44,16 @@ export const SourceSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('external'), platform: ExternalPlatformSchema, listingUrl: SafeHttpUrlSchema }),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
+/** Opt-in USD display; original price remains the immutable source quotation. */
+export const PublicUsdPriceSchema=z.discriminatedUnion('status',[
+  z.strictObject({status:z.literal('ready'),kind:z.enum(['asking','reference']),money:MoneySchema.extend({currency:z.literal('USD')}),
+    conversion:z.strictObject({asOf:TimestampSchema,source:z.enum(['exchange_rate_api','synthetic'])}).nullable()}).superRefine((value,ctx)=>{
+      if(value.conversion&&value.kind!=='reference')ctx.addIssue({code:'custom',path:['kind'],message:'Converted amounts are reference prices'});
+    }),
+  z.strictObject({status:z.literal('on_request'),money:z.null(),conversion:z.null()}),
+  z.strictObject({status:z.literal('unavailable'),money:z.null(),conversion:z.null(),reason:z.enum(['rate_unavailable','amount_out_of_range'])}),
+]);
+export type PublicUsdPrice=z.infer<typeof PublicUsdPriceSchema>;
 export const PublicVehicleSchema = z.strictObject({
   id: IdSchema,
   stockCode: z.string().min(1).max(60),
@@ -51,6 +61,7 @@ export const PublicVehicleSchema = z.strictObject({
   facts: VehicleFactsSchema.extend({generation:NamedValueSchema.nullable().optional(),drivetrain:DrivetrainSchema.nullable().optional()}),
   display:VehicleDisplaySchema.optional(),
   price: PublicPriceSchema,
+  displayPrice:PublicUsdPriceSchema.optional(),
   content: z.strictObject({ title: PublicTextSchema, description: PublicTextSchema.nullable() }),
   images: z.array(PublicMediaSchema).max(30),
   external: ExternalPublicSummarySchema.optional(),
@@ -61,6 +72,10 @@ export const PublicVehicleSchema = z.strictObject({
   publishedAt: TimestampSchema,
   detailPath: z.string().regex(/^\/(?:zh|en|ru)\/cars\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/$/),
 }).superRefine((value, ctx) => {
+  if(value.displayPrice?.status==='ready' && value.displayPrice.conversion && value.displayPrice.kind!=='reference')
+    ctx.addIssue({code:'custom',path:['displayPrice','kind'],message:'Converted amounts are reference prices'});
+  if(value.displayPrice && value.price.kind==='on_request' && value.displayPrice.status!=='on_request')
+    ctx.addIssue({code:'custom',path:['displayPrice'],message:'Missing original prices must stay on request'});
   if (value.external) {
     if (value.source.kind !== 'external' || !ExternalListingIdSchema.safeParse(value.id).success || value.price.money && value.price.money.currency !== 'CNY') {
       ctx.addIssue({ code: 'custom', path: ['external'], message: 'Imported listings require an external identity and CNY reference or on-request pricing' });
@@ -98,6 +113,7 @@ const catalogQueryFields={
   locale: LocaleSchema.default('ru'),
   catalog: z.literal('curated').default('curated'),
   view:z.enum(['legacy','localized']).optional(),
+  priceView:z.literal('usd').optional(),
   make: IdSchema.optional(),
   model: IdSchema.optional(),
   trim:IdSchema.optional(),generation:IdSchema.optional(),drivetrain:DrivetrainSchema.optional(),
@@ -109,17 +125,26 @@ const catalogQueryFields={
 };
 const cents=(value:string)=>{const [whole,fraction='']=value.split('.');return BigInt(whole!)*100n+BigInt(fraction.padEnd(2,'0'));};
 function validateCatalogQuery(value:z.infer<z.ZodObject<typeof catalogQueryFields>>,ctx:z.RefinementCtx) {
+  if(value.priceView && value.view!=='localized')ctx.addIssue({code:'custom',path:['priceView'],message:'USD display requires localized view'});
+  if(value.priceView==='usd' && value.priceCurrency && value.priceCurrency!=='USD')ctx.addIssue({code:'custom',path:['priceCurrency'],message:'USD display ranges use USD'});
   if((value.priceMin!==undefined||value.priceMax!==undefined)&&!value.priceCurrency)ctx.addIssue({code:'custom',path:['priceCurrency'],message:'Price ranges require an explicit currency'});
   if(value.priceMin!==undefined&&value.priceMax!==undefined&&MoneySchema.shape.amount.safeParse(value.priceMin).success&&MoneySchema.shape.amount.safeParse(value.priceMax).success&&cents(value.priceMin)>cents(value.priceMax))ctx.addIssue({code:'custom',path:['priceMax'],message:'Maximum must not be below minimum'});
   for(const [min,max] of [['mileageMin','mileageMax'],['yearMin','yearMax']] as const)
     if(value[min]!==undefined&&value[max]!==undefined&&value[min]>value[max])ctx.addIssue({code:'custom',path:[max],message:'Maximum must not be below minimum'});
   if((value.trim||value.generation)&&(!value.make||!value.model))ctx.addIssue({code:'custom',path:['model'],message:'Trim and generation require make and model IDs'});
 }
+export const PublicCatalogCursorSchema = z.string().min(1).max(2048).regex(/^[A-Za-z0-9_-]+$/);
 export const PublicVehicleQuerySchema = z.strictObject({...catalogQueryFields,
+  cursor:PublicCatalogCursorSchema.optional(),pagination:z.literal('cursor').optional(),
   page:z.number().int().min(1).max(1_000_000).default(1),pageSize:z.number().int().min(1).max(48).default(24),
-}).superRefine(validateCatalogQuery);
+}).superRefine((value,ctx)=>{
+  validateCatalogQuery(value,ctx);
+  if((value.cursor||value.pagination) && (value.page!==1 || value.view!=='localized')) ctx.addIssue({code:'custom',path:['cursor'],message:'Cursor requires localized view and page 1 (or omitted page)'});
+});
 export type PublicVehicleQuery = z.infer<typeof PublicVehicleQuerySchema>;
-export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.default('ru'),view:z.enum(['legacy','localized']).optional() });
+export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.default('ru'),view:z.enum(['legacy','localized']).optional(),priceView:z.literal('usd').optional() }).superRefine((value,ctx)=>{
+  if(value.priceView&&value.view!=='localized')ctx.addIssue({code:'custom',path:['priceView'],message:'USD display requires localized view'});
+});
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicFilterQuerySchema = z.strictObject(catalogQueryFields).superRefine(validateCatalogQuery);
 export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
@@ -142,6 +167,7 @@ export const PublicVehicleListSchema = z.strictObject({
     page: z.number().int().min(1),
     pageSize: z.number().int().min(1).max(48),
     hasMore: z.boolean(),
+    nextCursor: PublicCatalogCursorSchema.nullable().optional(),
   }),
   meta: CatalogMetaSchema,
 });

@@ -1,0 +1,95 @@
+# Local only. Apply after the base, proxy, media, optional domains, and ops-ext overlays.
+x-scale-env: &scale-env
+  NODE_ENV: test
+  HOST: 0.0.0.0
+  EXTERNAL_CATALOG_MODE: synthetic-scale
+  TRANSLATION_PROVIDER: disabled
+  OPS_EXT_SCALE_DATABASE: ${OPS_EXT_SCALE_DATABASE:?set the dedicated hd_ext_scale_ database}
+services:
+  postgres:
+    environment:
+      OPS_EXT_SCALE_DATABASE: ${OPS_EXT_SCALE_DATABASE:?set the dedicated hd_ext_scale_ database}
+    networks:
+      default:
+        aliases: [postgres-scale]
+    volumes:
+      - ./ops-ext/init-scale.sql:/docker-entrypoint-initdb.d/20-scale.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -h 127.0.0.1 -U postgres -d "$$OPS_EXT_SCALE_DATABASE" &&
+          psql -U postgres -d "$$OPS_EXT_SCALE_DATABASE" -Atqc "SELECT 1 FROM pg_roles WHERE rolname = 'hd_app'" | grep -qx 1
+  api:
+    environment:
+      <<: *scale-env
+      EXTERNAL_PUBLIC_CACHE: ${EXTERNAL_PUBLIC_CACHE:-off}
+      EXTERNAL_CACHE_NAMESPACE: ${EXTERNAL_CACHE_NAMESPACE:?set the dedicated cache namespace}
+      EXTERNAL_CACHE_TTL_MS: ${EXTERNAL_CACHE_TTL_MS:-5000}
+      EXTERNAL_CACHE_MAX_LOADS: ${EXTERNAL_CACHE_MAX_LOADS:-4}
+      EXTERNAL_REDIS_HOST: redis-scale
+      EXTERNAL_REDIS_USER: hd-cache
+      EXTERNAL_REDIS_PASSWORD_FILE: /run/secrets/ext_cache_password
+    secrets: !override [scale_database_url, auth_secret, ext_cache_password]
+  migrate:
+    environment: *scale-env
+    secrets: !override [scale_database_url, auth_secret]
+  redis:
+    environment:
+      OPS_EXT_SCALE_CACHE_NAMESPACE: ${EXTERNAL_CACHE_NAMESPACE:?set the dedicated cache namespace}
+    networks:
+      default:
+        aliases: [redis-scale]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          REDISCLI_AUTH=$$(cat /run/secrets/ext_cache_password)
+          redis-cli -e -h redis-scale --user hd-cache GET "$$OPS_EXT_SCALE_CACHE_NAMESPACE:slot:0" >/dev/null
+  worker:
+    image: hd-auto-api:${RELEASE_ID:?set the isolated scale release}
+    platform: ${TARGET_PLATFORM:-linux/arm64}
+    profiles: [scale-sync]
+    user: '${APP_UID:?set local owner UID}:${APP_GID:?set local owner GID}'
+    init: true
+    entrypoint: [node, dist/external/sync/cli.js]
+    command: ['--run']
+    environment:
+      <<: *scale-env
+      DATABASE_URL_FILE: /run/secrets/scale_database_url
+      EXTERNAL_SYNC_POOL_MAX: ${EXTERNAL_SYNC_POOL_MAX:-2}
+      EXTERNAL_SYNC_IDLE_MS: ${EXTERNAL_SYNC_IDLE_MS:-1000}
+    depends_on:
+      postgres: {condition: service_healthy}
+    secrets: [scale_database_url]
+    healthcheck:
+      test: [CMD, node, dist/external/sync/cli.js, '--health']
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    cpus: 0.5
+    mem_limit: 512m
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: local
+      options: {max-size: '10m', max-file: '3'}
+  bench:
+    image: python:3.13.5-slim-bookworm
+    profiles: [scale-tools]
+    user: '${APP_UID:?set local owner UID}:${APP_GID:?set local owner GID}'
+    entrypoint: [python3, -B, /bench/bench.py]
+    environment:
+      OPS_EXT_SCALE_BENCH_SUBNET: ${PROXY_SUBNET:?set the dedicated scale subnet}
+    volumes:
+      - ./ops-ext/bench.py:/bench/bench.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 256m
+secrets:
+  scale_database_url:
+    file: ${DATA_ROOT:?use an isolated data root}/secrets/scale_database_url

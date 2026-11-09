@@ -1,5 +1,17 @@
-import { PublicFilterQuerySchema, PublicVehicleQuerySchema } from '@hd/contracts/public';
+import {
+  PublicFilterQuerySchema,
+  PublicVehicleQuerySchema,
+  type PublicVehicleQuery,
+} from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+
+export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
+
+export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;
+export function publicUsdFilterQuery(locale: Locale, scope: UsdFilterScope = {}) {
+  const { q, priceMin, priceMax, priceCurrency } = scope;
+  return { catalog: 'curated', locale, q, priceMin, priceMax, priceCurrency, ...publicUsdView };
+}
 
 export const catalogFilterKeys = [
   'q',
@@ -21,6 +33,7 @@ export const catalogQueryKeys = [
   'catalog',
   'locale',
   'view',
+  'priceView',
   ...catalogFilterKeys,
   'page',
   'pageSize',
@@ -33,9 +46,9 @@ export function parseCatalogQuery(
   locale: Locale,
 ) {
   const input: Record<string, unknown> = { locale, catalog: 'curated' };
-  for (const key of [...catalogFilterKeys, 'view', 'page', 'pageSize']) {
+  for (const key of [...catalogFilterKeys, 'view', 'priceView', 'page', 'pageSize']) {
     const value = params[key];
-    if (value === undefined || value === '') continue;
+    if (value === undefined || (value === '' && key !== 'priceView')) continue;
     if (Array.isArray(value)) return null;
     input[key] = integerKeys.has(key)
       ? /^(0|[1-9]\d*)$/.test(value)
@@ -45,6 +58,21 @@ export function parseCatalogQuery(
   }
   const parsed = PublicVehicleQuerySchema.safeParse(input);
   return parsed.success ? parsed.data : null;
+}
+
+/** Old non-USD page bookmarks retain the vehicle filters without reinterpreting their amounts. */
+export function parseCatalogPageQuery(
+  params: Record<string, string | string[] | undefined>,
+  locale: Locale,
+) {
+  const input = { ...params };
+  if (typeof input.priceCurrency === 'string' && input.priceCurrency && input.priceCurrency !== 'USD') {
+    if (!parseCatalogQuery(input, locale)) return null;
+    delete input.priceMin;
+    delete input.priceMax;
+    delete input.priceCurrency;
+  }
+  return parseCatalogQuery({ ...input, ...publicUsdView }, locale);
 }
 export function parseFilterQuery(
   params: Record<string, string | string[] | undefined>,

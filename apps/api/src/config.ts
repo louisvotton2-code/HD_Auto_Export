@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { BlockList, isIP } from 'node:net';
 import { z } from 'zod';
+import { readDatabaseEnvironment, readLocalSecret } from './local-secrets.js';
 
 const Env = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -14,7 +15,15 @@ const Env = z.object({
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
   TRUST_PROXY: z.string().max(2048).default('false'),
-  EXTERNAL_CATALOG_MODE: z.enum(['disabled', 'synthetic']).default('disabled'),
+  EXTERNAL_CATALOG_MODE: z.enum(['disabled', 'synthetic', 'synthetic-scale']).default('disabled'),
+  EXTERNAL_PUBLIC_CACHE: z.enum(['off', 'memory', 'redis']).default('off'),
+  EXTERNAL_CACHE_NAMESPACE: z.string().regex(/^hd-ext-scale-[a-z0-9-]{1,48}$/).optional(),
+  EXTERNAL_CACHE_TTL_MS: z.coerce.number().int().min(250).max(30_000).default(5000),
+  EXTERNAL_CACHE_MAX_LOADS: z.coerce.number().int().min(1).max(20).default(4),
+  EXTERNAL_REDIS_HOST: z.enum(['127.0.0.1','redis-scale']).optional(),
+  EXTERNAL_REDIS_PORT: z.coerce.number().int().min(1).max(65535).default(6379),
+  EXTERNAL_REDIS_USER: z.string().regex(/^[a-z][a-z0-9_-]{0,48}$/).optional(),
+  EXTERNAL_REDIS_PASSWORD_FILE: z.string().min(1).max(1024).optional(),
   TRANSLATION_PROVIDER: z.enum(['disabled','libretranslate','aliyun']).default('disabled'),
   LIBRETRANSLATE_URL: z.string().url().refine(value=>{
     try {const url=new URL(value);return ['http:','https:'].includes(url.protocol) && ['127.0.0.1','localhost','[::1]','libretranslate'].includes(url.hostname) &&
@@ -61,7 +70,10 @@ function parseTrustProxy(value: string): false | 'loopback' | string[] {
 }
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
-  const parsed = Env.safeParse(env);
+  const databaseEnvironment = readDatabaseEnvironment(env);
+  if (env.AUTH_SECRET_FILE !== undefined && env.AUTH_SECRET !== undefined) throw new Error('Set exactly one staff authentication secret source');
+  const parsed = Env.safeParse(env.AUTH_SECRET_FILE === undefined ? databaseEnvironment :
+    { ...databaseEnvironment, AUTH_SECRET: readLocalSecret(env.AUTH_SECRET_FILE) });
   if (!parsed.success) throw new Error(`Invalid API configuration: ${parsed.error.issues.map(i => i.path.join('.')).join(', ')}`);
   const e = parsed.data;
   if(e.AUTH_SECRET==='replace-with-a-random-local-secret-before-starting') throw new Error('Replace the example AUTH_SECRET before starting');
@@ -79,11 +91,32 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       throw new Error('Synthetic external catalog requires a loopback API, an isolated hd_ext_* database and disabled translation');
     }
   }
+  const externalScale = e.EXTERNAL_CATALOG_MODE === 'synthetic-scale';
+  if (externalScale) {
+    const database = new URL(e.DATABASE_URL);
+    const native = e.HOST === '127.0.0.1' && database.hostname === '127.0.0.1';
+    const compose = e.HOST === '0.0.0.0' && database.hostname === 'postgres-scale' && ['', '5432'].includes(database.port);
+    if (e.NODE_ENV !== 'test' || !(native || compose) || !/^\/hd_ext_scale_[a-z0-9_]+$/.test(database.pathname) ||
+        database.search || database.hash || e.TRANSLATION_PROVIDER !== 'disabled') {
+      throw new Error('Capacity mode requires a dedicated hd_ext_scale_* test database and disabled translation');
+    }
+  }
+  if (e.EXTERNAL_PUBLIC_CACHE !== 'off' && !externalScale) throw new Error('Public cache requires the isolated capacity mode');
+  if (e.EXTERNAL_PUBLIC_CACHE === 'redis' && (!e.EXTERNAL_CACHE_NAMESPACE || !e.EXTERNAL_REDIS_HOST || !e.EXTERNAL_REDIS_USER ||
+      !e.EXTERNAL_REDIS_PASSWORD_FILE || !path.isAbsolute(e.EXTERNAL_REDIS_PASSWORD_FILE) ||
+      (e.HOST === '127.0.0.1' ? e.EXTERNAL_REDIS_HOST !== '127.0.0.1' : e.EXTERNAL_REDIS_HOST !== 'redis-scale'))) {
+    throw new Error('Redis capacity mode requires the isolated endpoint, namespace, user and an absolute password file');
+  }
   return {
     environment: e.NODE_ENV, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
-    trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog: e.EXTERNAL_CATALOG_MODE === 'synthetic',
+    trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog: e.EXTERNAL_CATALOG_MODE !== 'disabled', externalScale,
+    publicCache: e.EXTERNAL_PUBLIC_CACHE === 'off' ? null : {
+      namespace: e.EXTERNAL_CACHE_NAMESPACE ?? 'hd-ext-scale-memory', ttlMs: e.EXTERNAL_CACHE_TTL_MS, maxConcurrentLoads: e.EXTERNAL_CACHE_MAX_LOADS,
+      redis: e.EXTERNAL_PUBLIC_CACHE === 'redis' ? { host: e.EXTERNAL_REDIS_HOST!, port: e.EXTERNAL_REDIS_PORT,
+        username: e.EXTERNAL_REDIS_USER!, passwordFile: e.EXTERNAL_REDIS_PASSWORD_FILE! } : undefined,
+    },
     translation: {provider:e.TRANSLATION_PROVIDER,accessKeyId:e.ALI_MT_ACCESS_KEY_ID,accessKeySecret:e.ALI_MT_ACCESS_KEY_SECRET,
       libreUrl:e.LIBRETRANSLATE_URL,libreApiKey:e.LIBRETRANSLATE_API_KEY,libreEngineVersion:e.LIBRETRANSLATE_ENGINE_VERSION,
       securityToken:e.ALI_MT_SECURITY_TOKEN,region:e.ALI_MT_REGION,configVersion:e.ALI_MT_CONFIG_VERSION,maxCharactersPerHour:e.TRANSLATION_MAX_CHARACTERS_PER_HOUR},

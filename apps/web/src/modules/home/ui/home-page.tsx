@@ -12,12 +12,14 @@ import {
   usePublicFreshness,
   FavoriteVehicleButton,
   VehiclePhoto,
+  VehicleRateAttribution,
 } from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { HeroCanvas } from './hero-canvas';
 import { HomeSections } from './home-sections';
 import { HeroStats } from './hero-stats';
@@ -112,6 +114,7 @@ function VehicleRail({
           const links = buildPublicVehicleContactLinks(v, locale);
           const image = publicVehicleCover(v);
           const name = v.content.title.text;
+          const quote = publicUsdQuote(v);
           return (
             <div className={styles.vehicleSlot} key={v.id}>
               <article
@@ -158,8 +161,8 @@ function VehicleRail({
                     <span>{vehicleCopy.powertrains[v.facts.powertrain]}</span>
                   </div>
                   <div className={styles.price}>
-                    {v.price.kind !== 'on_request' && (
-                      <span>{vehicleCopy.priceLabels[v.price.kind]}</span>
+                    {quote && (
+                      <span>{vehicleCopy.priceLabels[quote.kind]}</span>
                     )}
                     <strong>{formatPublicVehiclePrice(v, locale)}</strong>
                   </div>
@@ -195,6 +198,7 @@ function VehicleRail({
           );
         })}
       </div>
+      <VehicleRateAttribution vehicles={vehicles} locale={locale} />
     </section>
   );
 }

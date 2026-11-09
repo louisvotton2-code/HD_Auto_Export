@@ -6,7 +6,7 @@ import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from '../public-messages';
 import { liveVehicleCopy } from '../live-copy';
 import { catalogFilterCopy } from '../catalog-filter-copy';
-import { catalogFilterKeys, parseCatalogQuery } from '../public-query';
+import { catalogFilterKeys, parseCatalogPageQuery } from '../public-query';
 import { formatPublicAmount, publicCatalogHref } from '../public-presentation';
 import styles from './public-vehicles.module.css';
 
@@ -48,14 +48,6 @@ export function PublicVehicleFiltersForm({
   const showGeneration = Boolean(filters?.generations?.length || query.generation);
   const showTrim = Boolean(filters?.trims?.length || query.trim);
   const showDrive = Boolean(filters?.drivetrains?.length || query.drivetrain);
-  const currencies = [
-    ...new Set([
-      'USD',
-      'CNY',
-      ...(filters?.priceCurrencies ?? []).map((x) => x.id),
-      ...(query.priceCurrency ? [query.priceCurrency] : []),
-    ]),
-  ];
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget),
@@ -65,7 +57,7 @@ export function PublicVehicleFiltersForm({
       if (typeof value === 'string' && value.trim()) input[key] = value.trim();
     }
     if (input.priceMin === undefined && input.priceMax === undefined) delete input.priceCurrency;
-    const parsed = parseCatalogQuery({ ...input, pageSize: String(query.pageSize) }, locale);
+    const parsed = parseCatalogPageQuery({ ...input, pageSize: String(query.pageSize) }, locale);
     if (!parsed) {
       setError(true);
       return;
@@ -241,17 +233,8 @@ export function PublicVehicleFiltersForm({
         </label>
       )}
       <div className={styles.filterDivider} />
-      <label>
-        <span>{c.currency}</span>
-        <select name="priceCurrency" defaultValue={query.priceCurrency ?? 'USD'}>
-          {currencies.map((x) => (
-            <option key={x} value={x}>
-              {x}
-            </option>
-          ))}
-        </select>
-      </label>
-      {range(c.price, 'priceMin', 'priceMax', priceSteps)}
+      <input type="hidden" name="priceCurrency" value="USD" />
+      {range(`${c.price} (USD)`, 'priceMin', 'priceMax', priceSteps)}
       {range(c.mileage, 'mileageMin', 'mileageMax', mileageSteps)}
       {range(
         c.year,

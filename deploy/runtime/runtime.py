@@ -4,6 +4,7 @@ import argparse, contextlib, fcntl, hashlib, ipaddress, json, os, pathlib, re, s
 from datetime import datetime, timezone
 os.umask(0o077)
 HERE=pathlib.Path(__file__).resolve().parent
+SCALE_PROJECT=re.compile(r'hd-ops-ext02(?:-[a-z0-9][a-z0-9-]*)?')
 
 def run(args, **kw):
     return subprocess.run(args, check=True, **kw)
@@ -39,6 +40,14 @@ def validate_domains(values):
     if values.get('WEB_SITE_ORIGIN') != 'https://cars.hongdingauto.com' or values.get('ADMIN_ORIGIN') != 'https://admin.hongdingauto.com' or values.get('SITE_ORIGIN') != values.get('WEB_SITE_ORIGIN'):
         raise ValueError('Two-domain origins must match the configured HTTPS hosts')
 
+def scale_database(values, project):
+    name=values.get('OPS_EXT_SCALE_DATABASE','')
+    if (os.getuid()==0 or not re.fullmatch(r'hd_ext_scale_[a-z0-9_]{1,50}',name) or
+        not SCALE_PROJECT.fullmatch(project) or
+        values.get('BIND_ADDRESS')!='127.0.0.1'):
+        raise ValueError('Use a non-root operator and a dedicated scale database, project and loopback bind address')
+    return name
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--env',type=pathlib.Path,required=True)
@@ -53,10 +62,18 @@ def main():
     env=os.environ.copy()
     for key in values: env.pop(key,None)
     dc=['docker','compose','--project-name',a.project,'--env-file',str(a.env.resolve()),'-f',str(HERE/'compose.yaml')]
+    scale=False
+    database='hd_auto'
     for override in a.compose_override:
         if override.name=='compose.proxy.yaml': validate_proxy(values)
         if override.name=='compose.domains.yaml': validate_domains(values)
+        if override.name=='compose.ops-scale.yaml':
+            scale=True
+            database=scale_database(values,a.project)
         dc += ['-f',str(override.resolve())]
+    if not scale and ('OPS_EXT_SCALE_DATABASE' in values or SCALE_PROJECT.fullmatch(a.project)):
+        raise ValueError('Scale environment requires the dedicated Compose overlay')
+    if scale: dc += ['--profile','scale-sync']
     def compose(*args,**kw): return run(dc+list(args),env=env,**kw)
     if a.action=='validate':
         compose('config','--quiet');print('Runtime configuration validated.');return
@@ -68,6 +85,9 @@ def main():
         # is separately owned by the non-root Nginx worker for ACME reads.
         if os.getuid()==0: os.chown(root/'acme',app_uid,app_gid)
         for name in ['postgres_password','app_db_password','auth_secret']: (root/'secrets'/name).write_text(secrets.token_hex(32)+'\n')
+        if scale:
+            password=(root/'secrets/app_db_password').read_text().strip()
+            (root/'secrets/scale_database_url').write_text(f'postgresql://hd_app:{password}@postgres-scale:5432/{database}\n')
         run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-days','30','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1','-keyout',str(root/'tls/server.key'),'-out',str(root/'tls/server.crt')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         print('Created private data directories and local-only TLS certificate. No application started.')
         return
@@ -82,23 +102,46 @@ def main():
             # Caller must also suspend external SQL/CLI writers for this project.
             stage=backup.with_name(backup.name+'.partial')
             stage.mkdir(parents=True,mode=0o700)
+            paused=[]
+            backup_failed=False
             try:
+                if scale and 'worker' in running:
+                    paused.append('worker')
+                    compose('stop','--timeout','30','worker')
+                if 'api' in running: paused.append('api')
                 compose('stop','--timeout','30','api')
+                if scale:
+                    clients=compose('exec','-T','postgres','psql','-X','-U','postgres','-d',database,'-Atc',
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'",
+                        capture_output=True,text=True).stdout.strip()
+                    if clients!='0': raise ValueError('Scale database still has clients; stop all writers before backup')
                 with (stage/'database.dump').open('wb') as f:
-                    compose('exec','-T','postgres','pg_dump','-U','postgres','-d','hd_auto','--format=custom','--no-owner','--no-acl',stdout=f)
+                    compose('exec','-T','postgres','pg_dump','-U','postgres','-d',database,'--format=custom','--no-owner','--no-acl',stdout=f)
                 media={}
                 with tarfile.open(stage/'media.tar','w') as tar:
                     for item in sorted((root/'media').iterdir()):
                         if not re.fullmatch(r'[0-9a-f-]{36}(?:\.thumb)?\.webp',item.name) or item.is_symlink() or not item.is_file() or item.stat().st_nlink!=1: raise ValueError('Unexpected media entry; reconcile before backup')
                         media[item.name]=digest(item); tar.add(item,arcname=item.name,recursive=False)
                 manifest={'format':1,'createdAt':datetime.now(timezone.utc).isoformat(),'release':values['RELEASE_ID'],'platform':values.get('TARGET_PLATFORM'),'media':media,'databaseSha256':digest(stage/'database.dump'),'mediaTarSha256':digest(stage/'media.tar')}
+                if scale: manifest.update(profile='synthetic-scale',sourceDatabase=database)
                 (stage/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
                 stage.rename(backup)
                 print(f'Consistent backup completed: {len(media)} media files. This is a local copy, not offsite disaster recovery.')
+            except BaseException:
+                backup_failed=True
+                raise
             finally:
-                if 'api' in running: compose('start','api')
+                failed_to_resume=[]
+                for service in reversed(paused):
+                    try: compose('start',service)
+                    except (OSError,subprocess.CalledProcessError): failed_to_resume.append(service)
+                if failed_to_resume:
+                    print('Failed to resume services: '+', '.join(failed_to_resume),file=sys.stderr)
+                    if not backup_failed: raise ValueError('Backup saved but service resumption failed')
         else:
             manifest=json.loads((backup/'manifest.json').read_text())
+            if manifest.get('profile','default')!=('synthetic-scale' if scale else 'default'):
+                raise ValueError('Backup and target profiles must match')
             if manifest['format']!=1 or digest(backup/'database.dump')!=manifest['databaseSha256'] or digest(backup/'media.tar')!=manifest['mediaTarSha256']: raise ValueError('Backup checksum mismatch')
             if any((root/'media').iterdir()) or any((root/'postgres').iterdir()): raise ValueError('Restore only into freshly initialized empty data directories')
             running=compose('ps','--status','running','--services',capture_output=True,text=True).stdout.split()
@@ -115,7 +158,12 @@ def main():
                 if names!=set(manifest['media']): raise ValueError('Media manifest mismatch')
                 compose('up','-d','--wait','postgres')
                 with (backup/'database.dump').open('rb') as f:
-                    compose('exec','-T','postgres','pg_restore','-U','postgres','-d','hd_auto','--role=hd_app','--no-owner','--no-acl','--exit-on-error','--single-transaction',stdin=f)
+                    compose('exec','-T','postgres','pg_restore','-U','postgres','-d',database,'--role=hd_app','--no-owner','--no-acl','--exit-on-error','--single-transaction',stdin=f)
+                if scale:
+                    epoch=compose('exec','-T','postgres','psql','-X','-U','postgres','-d',database,'-v','ON_ERROR_STOP=1','-Atqc',
+                        'UPDATE public.public_catalog_state SET epoch=gen_random_uuid() WHERE id=1 RETURNING 1',
+                        capture_output=True,text=True).stdout.strip()
+                    if epoch!='1': raise ValueError('Restored public catalog epoch was not rotated')
                 for file in pathlib.Path(tmp).iterdir(): shutil.copyfile(file,root/'media'/file.name)
             print('Restored database and verified media. Run migrations once, then start API/web/proxy and verify before cutover.')
 

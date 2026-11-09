@@ -45,6 +45,10 @@ describe('vehicle facts to import estimate', () => {
   it('uses only supported snapshot currencies and preserves missing/on-request prices', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.price = { kind: 'reference', money: { amount: '69000', currency: 'CNY' }, includes: [] };
+    vehicle.displayPrice = {
+      status: 'ready', kind: 'reference', money: { amount: '9900.00', currency: 'USD' },
+      conversion: { asOf: '2026-11-09T00:00:00Z', source: 'synthetic' },
+    };
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).price).toBe('10000.00');
     vehicle.price.money!.currency = 'KRW';
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).price).toBe('');

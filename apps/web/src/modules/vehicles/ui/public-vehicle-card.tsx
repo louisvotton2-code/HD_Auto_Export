@@ -2,6 +2,7 @@
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import type { PointerTiltHandlers } from '@/shared/ui/use-pointer-tilt';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { usePublicFreshness } from '../application/use-public-resource';
 import { publicVehicleMessages } from '../public-messages';
 import {
@@ -27,6 +28,7 @@ export function PublicVehicleCard({
   const t = publicVehicleMessages(locale),
     cover = publicVehicleCover(vehicle);
   const trusted = usePublicFreshness() === 'fresh';
+  const quote = publicUsdQuote(vehicle);
   const availability = trusted ? publicAvailabilityLabel(vehicle, locale) : '';
   return (
     <div className={styles.cardSlot}>
@@ -80,9 +82,7 @@ export function PublicVehicleCard({
             <span>{t.powertrains[vehicle.facts.powertrain]}</span>
           </div>
           <div className={styles.price}>
-            {vehicle.price.kind !== 'on_request' && (
-              <small>{t.priceLabels[vehicle.price.kind]}</small>
-            )}
+            {quote && <small>{t.priceLabels[quote.kind]}</small>}
             <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
           </div>
           <div className={styles.cardActions}>

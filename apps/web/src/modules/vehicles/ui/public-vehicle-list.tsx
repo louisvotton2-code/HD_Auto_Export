@@ -12,12 +12,18 @@ import type { Locale } from '@/i18n/routing';
 import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleMessages } from '../public-messages';
 import { publicCatalogHref } from '../public-presentation';
-import { parseCatalogQuery, publicQueryString } from '../public-query';
+import {
+  parseCatalogPageQuery,
+  publicQueryString,
+  publicUsdFilterQuery,
+  publicUsdView,
+} from '../public-query';
 import { localizedListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
 import { PublicVehicleFiltersForm } from './public-vehicle-filters';
 import { PublicResourceStatus } from './public-resource-status';
+import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import styles from './public-vehicles.module.css';
 
 export function PublicVehicleList({
@@ -42,12 +48,12 @@ export function PublicVehicleList({
       const all = search.getAll(key);
       input[key] = all.length > 1 ? all : all[0]!;
     }
-    return parseCatalogQuery(input, locale);
+    return parseCatalogPageQuery(input, locale);
   }, [search, locale]);
   const selected = query ?? initialQuery;
-  const url = `/api/v1/vehicles/?${publicQueryString({ ...selected, view: 'localized' })}`;
+  const url = `/api/v1/vehicles/?${publicQueryString({ ...selected, ...publicUsdView })}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, result, localizedListSchema(locale), {
+  const resource = usePublicResource(url, result, localizedListSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/`,
     initialRetryAfter,
     cooldown,
@@ -56,7 +62,7 @@ export function PublicVehicleList({
     () => (filters ? { data: filters, meta: { requestId: 'server-rendered' } } : null),
     [filters],
   );
-  const filterUrl = `/api/v1/vehicle-filters/?${publicQueryString({ catalog: 'curated', locale, q: selected.q, view: 'localized' })}`;
+  const filterUrl = `/api/v1/vehicle-filters/?${publicQueryString(publicUsdFilterQuery(locale, selected))}`;
   const facets = usePublicResource(filterUrl, initialFilters, PublicVehicleFiltersSchema, {
     cooldown,
   });
@@ -157,6 +163,7 @@ export function PublicVehicleList({
                       </a>
                     </div>
                   )}
+                  <VehicleRateAttribution vehicles={data.data.items} locale={locale} />
                   <div className={styles.resultsHeading}>
                     <p className={styles.count} aria-live="polite">
                       {data.meta.totalKind === 'exact' && data.meta.total !== null

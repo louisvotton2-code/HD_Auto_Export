@@ -228,7 +228,6 @@ test('reset clears unapplied drafts and validation on the already-unfiltered URL
     generation: 'beta_model_gen',
     powertrain: 'petrol',
     drivetrain: 'awd',
-    priceCurrency: 'CNY',
     priceMin: '50000',
     priceMax: '10000',
     mileageMin: '0',

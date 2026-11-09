@@ -1,15 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { PoolClient } from 'pg';
+import type { PoolClient, QueryResult } from 'pg';
 import { AdminVehicleSchema, VehicleDraftInputSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
   type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
-import { PublicVehicleSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
+import { PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
+import {readFxQuote,type FxQuote} from '../external/fx.js';
+import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { locales, normalizeContent } from './content.js';
 import type { VehicleTranslator } from './translation.js';
 import {emptyLocalization,syncLocalization,applyLocalizationInput,validateLocalizationPublication,projectDisplay,type StoredLocalization,type PublishedLocalization,type DisplayProjection} from './localization.js';
-import { countExternal, externalFacetRows, getExternalPublic, listExternal, listingUuid } from '../external/catalog.js';
+import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 
 export type Actor = { id: string; requestId: string };
 type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'price'|'content'> & { images: PublicMedia[] };
@@ -33,7 +35,7 @@ export function toAdmin(row: Row): AdminVehicle {
     publicationState:row.publication_state, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
     deletedAt:iso(row.deleted_at), hasUnpublishedChanges:hasUnpublishedChanges(row.data,row.publication_data,row.localization_data,row.published_localization), draft:row.data, publishedRevisionId:row.published_revision_id, publishedAt:iso(row.published_at), createdAt:iso(row.created_at), updatedAt:iso(row.updated_at) });
 }
-function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized'): PublicVehicle {
+function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null): PublicVehicle {
   const p = row.publication_data!;
   const text = (key: 'title'|'description') => {
     const field = p.content[key]; const item = field.translations[locale];
@@ -43,7 +45,7 @@ function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized'): PublicVe
   };
   return PublicVehicleSchema.parse({id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
     source:p.source.kind==='external'?{kind:'external',platform:p.source.platform,listingUrl:p.source.listingUrl}:{kind:p.source.kind},
-    facts:p.facts, price:p.price, content:{title:text('title'),description:text('description')},
+    facts:p.facts, price:p.price,...(priceView==='usd'?{displayPrice:projectUsdPrice(p.price,quote)}:{}), content:{title:text('title'),description:text('description')},
     images:p.images, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
     sourceUpdatedAt:p.source.kind==='external'?p.source.sourceUpdatedAt:null, fetchedAt:p.source.kind==='external'?p.source.collectedAt:null,
     publishedAt:iso(row.published_at), detailPath:`/${locale}/cars/${row.id}/`,
@@ -164,37 +166,82 @@ function localeVisible(locale:Locale,params:unknown[]):string {
   return `(${text} IS NOT NULL AND ${text}->>'text' IS NOT NULL AND ${text}->>'sourceVersion'=${field}->>'sourceVersion' AND
     CASE WHEN p.data->'source'->>'kind'='manual' THEN ${text}->>'reviewStatus'='approved' ELSE ${text}->>'reviewStatus'<>'stale' END)`;
 }
-function publicConditions(query:PublicFilterQuery,params:unknown[]):string {
+function publicConditions(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null):string {
   const where=[catalogVisible,localeVisible(query.locale,params)];
   for(const [key,jsonPath] of [['make',"p.data->'facts'->'make'->>'id'"],['model',"p.data->'facts'->'model'->>'id'"],['trim',"p.data->'facts'->'trim'->>'id'"],['powertrain',"p.data->'facts'->>'powertrain'"],['generation',"pl.data->'facts'->'generation'->>'id'"],['drivetrain',"pl.data->'facts'->>'drivetrain'"]] as const){
     if(query[key]){params.push(query[key]);where.push(`${jsonPath}=$${params.length}`);}
   }
-  for(const [min,max,column] of [['mileageMin','mileageMax',"(p.data->'facts'->>'mileageKm')::numeric"],['yearMin','yearMax',"(p.data->'facts'->>'modelYear')::numeric"],['priceMin','priceMax',"(p.data->'price'->'money'->>'amount')::numeric"]] as const){
+  for(const [min,max,column] of [['mileageMin','mileageMax',"(p.data->'facts'->>'mileageKm')::numeric"],['yearMin','yearMax',"(p.data->'facts'->>'modelYear')::numeric"]] as const){
     if(query[min]!==undefined){params.push(query[min]);where.push(`${column}>=$${params.length}::numeric`);}
     if(query[max]!==undefined){params.push(query[max]);where.push(`${column}<=$${params.length}::numeric`);}
   }
-  if(query.priceMin!==undefined||query.priceMax!==undefined){params.push(query.priceCurrency);where.push(`p.data->'price'->'money'->>'currency'=$${params.length}`);}
+  if(query.priceMin!==undefined||query.priceMax!==undefined){
+    if(query.priceView==='usd')where.push(staffUsdCondition(params,quote,query.priceMin,query.priceMax));
+    else {
+      if(query.priceMin!==undefined){params.push(query.priceMin);where.push(`(${staffPriceAmountSql})>=$${params.length}::numeric`);}
+      if(query.priceMax!==undefined){params.push(query.priceMax);where.push(`(${staffPriceAmountSql})<=$${params.length}::numeric`);}
+      params.push(query.priceCurrency);where.push(`p.data->'price'->'money'->>'currency'=$${params.length}`);
+    }
+  }
   const search=publicSearch(query,params);if(search)where.push(search);
   return where.join(' AND ');
 }
-function extraOptions(vehicles:Array<{facts:PublicVehicle['facts'];price:{money:Pick<NonNullable<PublicVehicle['price']['money']>,'currency'>|null}}>){
-  const trims=new Map<string,{id:string;name:string;makeId:string;modelId:string;count:number}>(),generations=new Map<string,{id:string;name:string;makeId:string;modelId:string;count:number}>();
-  const years=new Map<number,number>(),drives=new Map<NonNullable<PublicVehicle['facts']['drivetrain']>,number>(),currencies=new Map<NonNullable<PublicVehicle['price']['money']>['currency'],number>();
-  for(const vehicle of vehicles){
-    const facts=vehicle.facts;
-    for(const [value,target] of [[facts.trim,trims],[facts.generation,generations]] as const)if(value&&facts.make&&facts.model){
-      const key=JSON.stringify([facts.make.id,facts.model.id,value.id]);const old=target.get(key);
-      target.set(key,{id:value.id,name:old?.name??value.name,makeId:facts.make.id,modelId:facts.model.id,count:(old?.count??0)+1});
-    }
-    if(facts.modelYear!==null)years.set(facts.modelYear,(years.get(facts.modelYear)??0)+1);
-    if(facts.drivetrain)drives.set(facts.drivetrain,(drives.get(facts.drivetrain)??0)+1);
-    if(vehicle.price.money)currencies.set(vehicle.price.money.currency,(currencies.get(vehicle.price.money.currency)??0)+1);
+function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null) {
+  const where=publicConditions(query,params,quote),fact="p.data->'facts'";
+  const names:Record<string,string>={};
+  if(query.view==='localized') {
+    params.push(query.locale);const language=`$${params.length}::text`;
+    params.push(JSON.stringify(brandLabels));const dictionary=`$${params.length}::jsonb`;
+    params.push({zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[query.locale]);const placeholder=`$${params.length}::text`;
+    const knownBrand=`coalesce(${dictionary}->'ids'->lower(${fact}->'make'->>'id'),${dictionary}->'aliases'->lower(btrim(regexp_replace(normalize(${fact}->'make'->>'name',NFKC),'[\\s﻿]+',' ','g'))))->>${language}`;
+    for(const field of ['make','model','trim','generation']) names[field]=`coalesce(pl.projections->${language}->'facts'->'${field}'->>'name',${field==='make'?`${knownBrand},`:''}${placeholder})`;
+  } else for(const field of ['make','model','trim','generation']) names[field]=`${fact}->'${field}'->>'name'`;
+  const currency=query.priceView==='usd'?`CASE WHEN ${staffUsdCondition(params,quote)} THEN 'USD'::text END`:"p.data->'price'->'money'->>'currency'";
+  return `SELECT ${facetLabelOrder('v.published_at','v.id')} AS label_order,${fact}->'make'->>'id' AS make_id,${fact}->'model'->>'id' AS model_id,
+    ${fact}->'trim'->>'id' AS trim_id,pl.data->'facts'->'generation'->>'id' AS generation_id,
+    ${names.make} AS make_name,${names.model} AS model_name,${names.trim} AS trim_name,${names.generation} AS generation_name,
+    ${fact}->>'powertrain' AS powertrain,pl.data->'facts'->>'drivetrain' AS drivetrain,
+    (${fact}->>'modelYear')::integer AS model_year,${currency} AS currency
+    ${publicFrom} WHERE ${where}`;
+}
+function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],localized:boolean,includeTotal:boolean) {
+  const groups=new Map<string,CatalogFacetRow>();let total=0;
+  // Employee labels win. Each stream retains its newest publication / ascending UUID label.
+  for(const row of [...staff,...external]) {
+    if(row.kind==='total'){total+=row.count;continue;}
+    const key=JSON.stringify([row.kind,row.make_id,row.model_id,row.id]);const old=groups.get(key);
+    if(old)old.count+=row.count;else groups.set(key,{...row});
   }
-  const order=(a:{makeId:string;modelId:string;id:string},b:{makeId:string;modelId:string;id:string})=>a.makeId.localeCompare(b.makeId)||a.modelId.localeCompare(b.modelId)||a.id.localeCompare(b.id);
-  return {trims:[...trims.values()].sort(order),generations:[...generations.values()].sort(order),
-    modelYears:[...years].map(([year,count])=>({year,count})).sort((a,b)=>b.year-a.year),
-    drivetrains:[...drives].map(([id,count])=>({id,count})).sort((a,b)=>a.id.localeCompare(b.id)),
-    priceCurrencies:[...currencies].map(([id,count])=>({id,count})).sort((a,b)=>a.id.localeCompare(b.id))};
+  const rows=(kind:string)=>[...groups.values()].filter(row=>row.kind===kind);
+  const order=(a:{id:string;makeId?:string;modelId?:string},b:{id:string;makeId?:string;modelId?:string})=>(a.makeId??'').localeCompare(b.makeId??'')||(a.modelId??'').localeCompare(b.modelId??'')||a.id.localeCompare(b.id);
+  const named=(kind:string)=>rows(kind).map(row=>({id:row.id!,name:row.name!,count:row.count,
+    ...(row.make_id?{makeId:row.make_id}:{}),...(row.model_id?{modelId:row.model_id}:{})})).sort(order);
+  const enums=(kind:string)=>rows(kind).map(row=>({id:row.id!,count:row.count})).sort(order);
+  return PublicVehicleFiltersSchema.shape.data.parse({catalog:'curated',...(includeTotal?{total}:{}),makes:named('make'),models:named('model'),powertrains:enums('powertrain'),
+    ...(localized?{trims:named('trim'),generations:named('generation'),drivetrains:enums('drivetrain'),priceCurrencies:enums('currency'),
+      modelYears:rows('year').map(row=>({year:Number(row.id),count:row.count})).sort((a,b)=>b.year-a.year)}:{})});
+}
+type CatalogVersion={epoch:string;revision:string};
+// These short indexed catalog queries should spend their budget on data, not LLVM compilation.
+const catalogReadTransaction='SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL jit=off';
+type Cursor={v:1;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string};
+const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
+  const {page,cursor,pagination,...filters}=query;
+  return createHash('sha256').update(canonical({...filters,q:filters.q||undefined,external})).digest('hex');
+};
+function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:string):Cursor {
+  let item:Cursor;
+  try {
+    item=JSON.parse(Buffer.from(value,'base64url').toString('utf8')) as Cursor;
+    if(!item||item.v!==1||!['staff','external'].includes(item.stream)||!Number.isSafeInteger(item.page)||item.page<2||item.page>1_000_001||
+      !item.after||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(item.after.publishedAt)||!Number.isFinite(Date.parse(item.after.publishedAt))||item.after.publishedAt.startsWith('0000-')||
+      new Date(Date.parse(item.after.publishedAt)).toISOString().slice(0,19)!==item.after.publishedAt.slice(0,19)||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.after.id)||item.query!==binding)
+      throw new Error('invalid cursor');
+  } catch {throw new ApiError(400,'INVALID_REQUEST','The catalog cursor does not match this query.');}
+  if(item.epoch!==version.epoch||item.revision!==version.revision)throw new ApiError(409,'VERSION_CONFLICT','The catalog changed. Restart from the first page.');
+  if(fx!==undefined&&item.fx!==fx)throw new ApiError(409,'VERSION_CONFLICT','The exchange-rate quote changed or expired. Restart from the first page.');
+  return item;
 }
 export class InventoryService {
   constructor(private db: Database, private externalCatalog=false) {}
@@ -427,52 +474,75 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized') {
-    if(id.startsWith('ext-')) {
-      if(!this.externalCatalog || view!=='localized') throw notFound();
-      return this.db.transaction(async tx=>{
-        await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-        const item=await getExternalPublic(tx,listingUuid(id),locale);
-        if(!item) throw notFound();
-        return item;
-      });
-    }
-    const params:unknown[]=[id];const visible=localeVisible(locale,params);
-    const result=await this.db.pool.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
-    if (!result.rows[0]) throw notFound();return toPublic(result.rows[0],locale,view);
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd') {
+    if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
+    return this.db.transaction(async tx=>{
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const quote=priceView==='usd'?await readFxQuote(tx):null;
+      if(id.startsWith('ext-')) {
+        const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote);
+        if(!item)throw notFound();return item;
+      }
+      const params:unknown[]=[id];const visible=localeVisible(locale,params);
+      const result=await tx.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
+      if(!result.rows[0])throw notFound();return toPublic(result.rows[0],locale,view,priceView,quote);
+    });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string) {
     return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-      const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params)}`;
+      await tx.query(catalogReadTransaction);
+      const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+      const fx=query.priceView==='usd'?(quote?.version??'none'):undefined;
+      const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
+      const version=cursorMode?(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!:null;
+      const binding=queryBinding(query,includeExternal);
+      const cursor=query.cursor?decodeCursor(query.cursor,binding,version!,fx):null;
+      if(cursor?.stream==='external'&&!includeExternal)throw new ApiError(400,'INVALID_REQUEST','External cursor is unavailable.');
+      const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params,quote)}`;
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
       const staffTotal:number=count.rows[0].total;
-      const includeExternal=this.externalCatalog&&query.view==='localized';
-      const total=staffTotal+(includeExternal?await countExternal(tx,query):0);
-      const offset=(query.page-1)*query.pageSize;
-      const time=Date.now();
-      const staff=offset<staffTotal ? await tx.query<Row>(`${publicSelect}${where} ORDER BY v.published_at DESC,v.id LIMIT $${params.length+1} OFFSET $${params.length+2}`,
-        [...params,query.pageSize,offset]) : null;
-      const items=staff?.rows.map(r=>toPublic(r,query.locale,query.view))??[];
-      if(includeExternal && items.length<query.pageSize && offset+items.length<total) {
-        items.push(...await listExternal(tx,query,query.pageSize-items.length,Math.max(0,offset-staffTotal),time));
+      const total=staffTotal+(includeExternal?await countExternal(tx,query,quote):0);
+      const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
+      const limit=query.pageSize+(cursorMode?1:0);
+      const selected=publicSelect.replace('SELECT v.*,',`SELECT to_char(v.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at,v.*,`);
+      let staff:QueryResult<Row & {cursor_published_at:string}>|null=null;
+      if(cursor?.stream!=='external'&&(cursor||offset<staffTotal)) {
+        let sql:string;
+        if(cursor?.stream==='staff') {
+          params.push(cursor.after.publishedAt,cursor.after.id);
+          const time=`$${params.length-1}::timestamptz`,id=`$${params.length}::uuid`,size=`$${params.length+1}`;
+          sql=`SELECT * FROM (
+            (${selected}${where} AND v.published_at=${time} AND v.id>${id} ORDER BY v.published_at DESC,v.id LIMIT ${size})
+            UNION ALL (${selected}${where} AND v.published_at<${time} ORDER BY v.published_at DESC,v.id LIMIT ${size})
+          ) picked ORDER BY published_at DESC,id LIMIT ${size}`;
+          params.push(limit);
+        } else {sql=`${selected}${where} ORDER BY v.published_at DESC,v.id LIMIT $${params.length+1} OFFSET $${params.length+2}`;params.push(limit,offset);}
+        staff=await tx.query<Row & {cursor_published_at:string}>(sql,params);
       }
-      return {data:{items,page:query.page,pageSize:query.pageSize,hasMore:query.page*query.pageSize<total},
+      const items=staff?.rows.map(row=>toPublic(row,query.locale,query.view,query.priceView,quote))??[];
+      const anchors:Array<{stream:'staff'|'external';after:CatalogAnchor}>=(staff?.rows??[]).map(row=>({stream:'staff',after:{id:row.id,publishedAt:row.cursor_published_at}}));
+      if(includeExternal&&items.length<limit) {
+        const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,cursor?.stream==='external'?cursor.after:undefined,quote);
+        items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));
+      }
+      const page=cursor?.page??query.page,hasMore=cursorMode?items.length>query.pageSize:offset+items.length<total;
+      items.splice(query.pageSize);anchors.splice(query.pageSize);
+      const last=anchors.at(-1);
+      const nextCursor=hasMore&&last&&version?Buffer.from(JSON.stringify({v:1,...version,query:binding,...last,page:page+1,...(fx!==undefined?{fx}: {})} satisfies Cursor)).toString('base64url'):null;
+      return {data:{items,page,pageSize:query.pageSize,hasMore,...(cursorMode?{nextCursor}: {})},
         meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date(time).toISOString(),freshness:'fresh' as const}};
     });
   }
   async filters(query:PublicFilterQuery) {
-    const params:unknown[]=[];const where=publicConditions(query,params);
-    if(this.externalCatalog&&query.view==='localized') return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const staff=await tx.query<Row>(`${publicSelect} WHERE ${where} ORDER BY v.published_at DESC,v.id`,params);
-      const staffRows=staff.rows.map(row=>toPublic(row,query.locale,query.view));
-      const vehicles=[...staffRows,...await externalFacetRows(tx,query)];
-      return {catalog:'curated' as const,total:vehicles.length,...vehicleOptions(vehicles.map(row=>row.facts),undefined,staffRows.length),...extraOptions(vehicles)};
+    return this.db.transaction(async tx=>{
+      await tx.query(catalogReadTransaction);
+      const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+      const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote);
+      const staff=await aggregateCatalogFacets(tx,selection,params);
+      const includeExternal=this.externalCatalog&&query.view==='localized';
+      const external=includeExternal?await externalFacets(tx,query,quote):[];
+      return facetData(staff,external,query.view==='localized',includeExternal);
     });
-    const result=await this.db.pool.query<Row>(`${publicSelect} WHERE ${where} ORDER BY v.published_at DESC,v.id`,params);
-    const vehicles=result.rows.map(row=>toPublic(row,query.locale,query.view));
-    return {catalog:'curated' as const,...vehicleOptions(vehicles.map(vehicle=>vehicle.facts)),...(query.view==='localized'?extraOptions(vehicles):{})};
   }
   async getHome():Promise<AdminHomeSections> {
     return (await this.db.pool.query('SELECT version,sections FROM home_config WHERE id=1')).rows[0];
@@ -490,14 +560,15 @@ export class InventoryService {
       return {version:input.version+1,sections};
     });
   }
-  async publicHome(locale:Locale,view?:'legacy'|'localized') {
+  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd') {
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      const quote=priceView==='usd'?await readFxQuote(tx):null;
       const config=(await tx.query('SELECT sections FROM home_config WHERE id=1')).rows[0] as Pick<AdminHomeSections,'sections'>;
       const ids=[...new Set(config.sections.flatMap(s=>s.vehicleIds).map(id=>id.toLowerCase()))];
       const params:unknown[]=[ids];const visible=localeVisible(locale,params);
       const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
-      const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view)]));
+      const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view,priceView,quote)]));
       return {sections:config.sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
     });
   }

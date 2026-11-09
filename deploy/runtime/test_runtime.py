@@ -10,8 +10,12 @@ class RuntimeFailureTests(unittest.TestCase):
         self.uid=os.getuid() or 1000;self.gid=os.getgid() or 1000
         self.env=self.base/'runtime.env';self.env.write_text(f'DATA_ROOT={self.root}\nRELEASE_ID=test\nAPP_UID={self.uid}\nAPP_GID={self.gid}\n')
         self.backup=self.base/'backup';self.calls=[]
-    def invoke(self,action='backup'):
-        args=['runtime.py','--env',str(self.env),'--project','test-runtime',action,'--backup',str(self.backup)]
+    def invoke(self,action='backup',scale=False):
+        project='hd-ops-ext02-test' if scale else 'test-runtime'
+        options=['--compose-override','compose.ops-scale.yaml'] if scale else []
+        if scale:
+            with self.env.open('a') as env: env.write('OPS_EXT_SCALE_DATABASE=hd_ext_scale_test\nBIND_ADDRESS=127.0.0.1\n')
+        args=['runtime.py','--env',str(self.env),'--project',project,*options,action,'--backup',str(self.backup)]
         with patch.object(sys,'argv',args): r.main()
     def fake(self,args,**kw):
         self.calls.append(args)
@@ -51,6 +55,40 @@ class RuntimeFailureTests(unittest.TestCase):
         with patch.object(r,'run',side_effect=self.fake),self.assertRaises(subprocess.CalledProcessError): self.invoke()
         self.assertTrue(any('stop' in c for c in self.calls));self.assertTrue(any('start' in c for c in self.calls))
         self.assertFalse(self.backup.exists())
+    @unittest.skipIf(os.getuid()==0,'scale profile requires non-root host operator')
+    def test_scale_backup_with_remaining_client_does_not_dump_and_resumes_writers(self):
+        def busy(args,**kw):
+            self.calls.append(args)
+            stdout='api\nworker\n' if 'ps' in args else '1\n' if 'psql' in args else ''
+            return subprocess.CompletedProcess(args,0,stdout=stdout)
+        with patch.object(r,'run',side_effect=busy),self.assertRaisesRegex(ValueError,'still has clients'):
+            self.invoke(scale=True)
+        self.assertEqual([c[-1] for c in self.calls if 'stop' in c],['worker','api'])
+        self.assertEqual([c[-1] for c in self.calls if 'start' in c],['api','worker'])
+        self.assertFalse(any('pg_dump' in c for c in self.calls))
+        self.assertFalse(self.backup.exists())
+    @unittest.skipIf(os.getuid()==0,'scale profile requires non-root host operator')
+    def test_scale_failed_api_restart_still_attempts_worker_and_keeps_backup_error(self):
+        def busy(args,**kw):
+            self.calls.append(args)
+            if args[-2:]==['start','api']: raise subprocess.CalledProcessError(1,args)
+            stdout='api\nworker\n' if 'ps' in args else '1\n' if 'psql' in args else ''
+            return subprocess.CompletedProcess(args,0,stdout=stdout)
+        stderr=io.StringIO()
+        with patch.object(r,'run',side_effect=busy),patch.object(sys,'stderr',stderr),self.assertRaisesRegex(ValueError,'still has clients'):
+            self.invoke(scale=True)
+        self.assertEqual([c[-1] for c in self.calls if 'start' in c],['api','worker'])
+        self.assertIn('Failed to resume services: api',stderr.getvalue())
+    def test_scale_rejects_root_operator(self):
+        values={'BIND_ADDRESS':'127.0.0.1','OPS_EXT_SCALE_DATABASE':'hd_ext_scale_test'}
+        with patch.object(r.os,'getuid',return_value=0),self.assertRaisesRegex(ValueError,'non-root'):
+            r.scale_database(values,'hd-ops-ext02-test')
+    def test_normal_restore_refuses_scale_backup_before_docker(self):
+        self.backup.mkdir()
+        (self.backup/'manifest.json').write_text(json.dumps({'profile':'synthetic-scale'}))
+        with patch.object(r,'run',side_effect=self.fake),self.assertRaisesRegex(ValueError,'profiles must match'):
+            self.invoke('restore')
+        self.assertEqual(self.calls,[])
     def test_uid_mismatch_rejected_before_docker(self):
         self.env.write_text(self.env.read_text().replace(f'APP_UID={self.uid}',f'APP_UID={self.uid+1}'))
         with patch.object(r.os,'getuid',return_value=self.uid),patch.object(r.os,'getgid',return_value=self.gid),patch.object(r,'run',side_effect=self.fake),self.assertRaises(ValueError): self.invoke()

@@ -165,6 +165,9 @@
 .mobilePrice {
   display: none;
 }
+.mobileRateNote {
+  display: none;
+}
 .card {
   margin-top: 20px;
   overflow: hidden;
@@ -385,6 +388,12 @@
   }
 }
 @media (max-width: 1023px) {
+  .mobileRateNote {
+    display: block;
+  }
+  .desktopRateNote {
+    display: none;
+  }
   .grid {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: 'main' 'budget' 'side';

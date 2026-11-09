@@ -1,0 +1,12 @@
+.note {
+  margin: 12px 0;
+  color: #aaa5a0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.note a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

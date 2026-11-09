@@ -43,7 +43,7 @@ test('a direct photo error is reported once and a translated detail exposes orig
   const card = page.locator(`[data-public-vehicle="${sample.id}"]`);
   await expect(card.locator('[data-vehicle-photo-unavailable]')).toBeVisible();
   await expect(card.locator('h2')).toHaveAttribute('lang', 'en');
-  await expect(card).toContainText('128,000.5 CNY');
+  await expect(card).toContainText('16,000.06 USD');
   const response = await report;
   expect(response.status()).toBe(202);
   expect(response.request().postDataJSON()).toEqual({ revision: 1 });
