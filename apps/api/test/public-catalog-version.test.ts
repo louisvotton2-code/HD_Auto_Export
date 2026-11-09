@@ -88,11 +88,12 @@ before(async () => {
   });
 });
 after(async () => {
-  try { if (db) await db.end(); }
-  finally {
-    try { if (created) await maintenance.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`); }
-    finally { await maintenance.end(); }
-  }
+  try {
+    await db?.end();
+    // The pool can drain before PostgreSQL finishes disconnecting its backends.
+    // A regular drop waits for them without interrupting the client shutdown.
+    if (created) await maintenance.query(`DROP DATABASE "${databaseName}"`);
+  } finally { await maintenance.end(); }
 });
 
 test('migration installs one epoch/version row and statement-level business triggers', async () => {
