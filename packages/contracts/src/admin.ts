@@ -1,4 +1,5 @@
 import { z } from 'zod';
+export * from './external-admin.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, MoneySchema, NamedValueSchema, PowertrainSchema, PublicationStateSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema, VehicleFactsSchema,

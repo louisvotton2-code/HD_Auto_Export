@@ -25,11 +25,11 @@ export function publicAvailabilityLabel(vehicle: PublicVehicle, locale: Locale):
   return publicVehicleMessages(locale).availability[vehicle.availability];
 }
 
-export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia {
+export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia | null {
   const cover =
     vehicle.images.find((image) => image.isCover) ??
-    [...vehicle.images].sort((a, b) => a.sortOrder - b.sortOrder)[0]!;
-  return { ...cover, url: publicMediaUrl(cover.url) };
+    [...vehicle.images].sort((a, b) => a.sortOrder - b.sortOrder)[0];
+  return cover ? { ...cover, url: publicMediaUrl(cover.url) } : null;
 }
 
 /** Unknown facts remain explicit; model year never substitutes for manufacturing date. */

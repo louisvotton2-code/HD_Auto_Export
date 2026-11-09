@@ -3,6 +3,7 @@ import { App, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import 'antd/dist/reset.css';
 import { HomeSectionsPage } from './modules/home';
+import { ExternalSourcesPage, ExternalBatchPage, ExternalBatchRecordPage, ExternalListingPage, ExternalWorkspace } from './modules/external-sources';
 import { createBrowserRouter, Navigate, RouterProvider, useOutletContext, useParams, Link } from 'react-router-dom';
 import type { StaffMe, StaffPermission } from '@hd/contracts/admin';
 import { Workspace, AccessDenied } from './modules/auth';
@@ -28,6 +29,12 @@ const router = createBrowserRouter([{
     { path: 'vehicles/:id', element: <VehicleEditorRoute /> },
     { path: 'home-sections', element: <RequirePermission permission="home:write"><HomeSectionsPage /></RequirePermission> },
     { path: 'public-catalog', element: <RequirePermission permission="vehicles:read"><PublicCatalogPage /></RequirePermission> },
+    { path: 'external-sources', element: <RequirePermission permission="vehicles:read"><ExternalWorkspace /></RequirePermission>, children: [
+      { index: true, element: <ExternalSourcesPage /> },
+      { path: 'batches/:batchId', element: <ExternalBatchPage /> },
+      { path: 'batches/:batchId/records/:row', element: <ExternalBatchRecordPage /> },
+      { path: 'listings/:listingId', element: <ExternalListingPage /> },
+    ] },
     { path: '*', element: <section><h1>页面不存在</h1><Link to="/vehicles">返回车辆管理</Link></section> },
   ],
 }], { basename: '/admin' });

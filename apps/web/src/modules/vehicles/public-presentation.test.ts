@@ -68,10 +68,10 @@ describe('public vehicle presentation', () => {
       { ...image, id: 'second', sortOrder: 1, isCover: false },
       { ...image, id: 'first', sortOrder: 0, isCover: false },
     ];
-    expect(publicVehicleCover(vehicle).id).toBe('first');
+    expect(publicVehicleCover(vehicle)?.id).toBe('first');
     expect(vehicle.images.map((item) => item.id)).toEqual(['second', 'first']);
     vehicle.images[0]!.isCover = true;
-    expect(publicVehicleCover(vehicle).id).toBe('second');
+    expect(publicVehicleCover(vehicle)?.id).toBe('second');
   });
 
   it('preserves server filter criteria across pagination and can return to page one', () => {

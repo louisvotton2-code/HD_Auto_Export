@@ -9,6 +9,7 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { locales, normalizeContent } from './content.js';
 import type { VehicleTranslator } from './translation.js';
 import {emptyLocalization,syncLocalization,applyLocalizationInput,validateLocalizationPublication,projectDisplay,type StoredLocalization,type PublishedLocalization,type DisplayProjection} from './localization.js';
+import { countExternal, externalFacetRows, getExternalPublic, listExternal, listingUuid } from '../external/catalog.js';
 
 export type Actor = { id: string; requestId: string };
 type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'price'|'content'> & { images: PublicMedia[] };
@@ -66,7 +67,7 @@ export async function audit(tx: PoolClient, actor: Actor, operation: string, veh
   await tx.query('INSERT INTO audit_events(id,actor_id,operation,vehicle_id,old_version,new_version,request_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
     [randomUUID(),actor.id,operation,vehicleId,oldVersion,newVersion,actor.requestId]);
 }
-async function idempotent<T>(tx: PoolClient, actor: Actor, operation: string, key: string, input: unknown, work:()=>Promise<T>):Promise<T> {
+export async function idempotent<T>(tx: PoolClient, actor: Actor, operation: string, key: string, input: unknown, work:()=>Promise<T>):Promise<T> {
   const hash = createHash('sha256').update(canonical(input)).digest('hex');
   await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`${actor.id}:${operation}:${key}`]);
   const found = await tx.query('SELECT k.request_hash,k.response,m.has_unpublished_changes FROM idempotency_keys k LEFT JOIN idempotency_vehicle_metadata m ON m.actor_id=k.actor_id AND m.operation=k.operation AND m.key=k.key AND m.receipt_hash=md5(k.response::text) WHERE k.actor_id=$1 AND k.operation=$2 AND k.key=$3 AND k.expires_at>now()', [actor.id,operation,key]);
@@ -127,16 +128,16 @@ async function archiveVehicle(tx:PoolClient,row:Row,actor:Actor) {
   await audit(tx,actor,'vehicle.archive',row.id,row.version,row.version+1);
   return lockVehicle(tx,row.id);
 }
-function vehicleOptions(factsRows:VehicleDraftInput['facts'][],selectedMake?:string) {
+function vehicleOptions(factsRows:VehicleDraftInput['facts'][],selectedMake?:string,staffCount=factsRows.length) {
   const makes=new Map<string,{id:string;name:string;count:number}>();
   const models=new Map<string,{id:string;name:string;makeId:string;count:number}>();
   const powers=new Map<PublicVehicle['facts']['powertrain'],number>();
   // Rows arrive newest first; retain that display name when historical names differ.
-  for(const facts of factsRows) {
+  for(const [index,facts] of factsRows.entries()) {
     const make=facts.make;const model=facts.model;
     if(make) {const old=makes.get(make.id);makes.set(make.id,{id:make.id,name:old?.name??make.name,count:(old?.count??0)+1});}
     if(model&&make) {const key=`${make.id}:${model.id}`,old=models.get(key);models.set(key,{id:model.id,name:old?.name??model.name,makeId:make.id,count:(old?.count??0)+1});}
-    powers.set(facts.powertrain,(powers.get(facts.powertrain)??0)+1);
+    if(index<staffCount || facts.powertrain!=='unknown') powers.set(facts.powertrain,(powers.get(facts.powertrain)??0)+1);
   }
   return {makes:[...makes.values()].sort((a,b)=>a.id.localeCompare(b.id)),
     models:[...models.values()].filter(m=>!selectedMake||m.makeId===selectedMake).sort((a,b)=>a.makeId.localeCompare(b.makeId)||a.id.localeCompare(b.id)),
@@ -176,7 +177,7 @@ function publicConditions(query:PublicFilterQuery,params:unknown[]):string {
   const search=publicSearch(query,params);if(search)where.push(search);
   return where.join(' AND ');
 }
-function extraOptions(vehicles:PublicVehicle[]){
+function extraOptions(vehicles:Array<{facts:PublicVehicle['facts'];price:{money:Pick<NonNullable<PublicVehicle['price']['money']>,'currency'>|null}}>){
   const trims=new Map<string,{id:string;name:string;makeId:string;modelId:string;count:number}>(),generations=new Map<string,{id:string;name:string;makeId:string;modelId:string;count:number}>();
   const years=new Map<number,number>(),drives=new Map<NonNullable<PublicVehicle['facts']['drivetrain']>,number>(),currencies=new Map<NonNullable<PublicVehicle['price']['money']>['currency'],number>();
   for(const vehicle of vehicles){
@@ -196,7 +197,7 @@ function extraOptions(vehicles:PublicVehicle[]){
     priceCurrencies:[...currencies].map(([id,count])=>({id,count})).sort((a,b)=>a.id.localeCompare(b.id))};
 }
 export class InventoryService {
-  constructor(private db: Database) {}
+  constructor(private db: Database, private externalCatalog=false) {}
   async getLocalization(id:string){
     const result=await this.db.pool.query<Row>(`${adminSelect} WHERE v.id=$1 AND v.deleted_at IS NULL`,[id]);
     if(!result.rows[0])throw notFound();return localizationResponse(result.rows[0]);
@@ -427,6 +428,15 @@ export class InventoryService {
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
   async getPublic(id:string,locale:Locale,view?:'legacy'|'localized') {
+    if(id.startsWith('ext-')) {
+      if(!this.externalCatalog || view!=='localized') throw notFound();
+      return this.db.transaction(async tx=>{
+        await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+        const item=await getExternalPublic(tx,listingUuid(id),locale);
+        if(!item) throw notFound();
+        return item;
+      });
+    }
     const params:unknown[]=[id];const visible=localeVisible(locale,params);
     const result=await this.db.pool.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
     if (!result.rows[0]) throw notFound();return toPublic(result.rows[0],locale,view);
@@ -436,14 +446,30 @@ export class InventoryService {
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
       const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params)}`;
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
-      const total:number=count.rows[0].total;
-      const result=await tx.query<Row>(`${publicSelect}${where} ORDER BY v.published_at DESC,v.id LIMIT $${params.length+1} OFFSET $${params.length+2}`,[...params,query.pageSize,(query.page-1)*query.pageSize]);
-      return {data:{items:result.rows.map(r=>toPublic(r,query.locale,query.view)),page:query.page,pageSize:query.pageSize,hasMore:query.page*query.pageSize<total},
-        meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date().toISOString(),freshness:'fresh' as const}};
+      const staffTotal:number=count.rows[0].total;
+      const includeExternal=this.externalCatalog&&query.view==='localized';
+      const total=staffTotal+(includeExternal?await countExternal(tx,query):0);
+      const offset=(query.page-1)*query.pageSize;
+      const time=Date.now();
+      const staff=offset<staffTotal ? await tx.query<Row>(`${publicSelect}${where} ORDER BY v.published_at DESC,v.id LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+        [...params,query.pageSize,offset]) : null;
+      const items=staff?.rows.map(r=>toPublic(r,query.locale,query.view))??[];
+      if(includeExternal && items.length<query.pageSize && offset+items.length<total) {
+        items.push(...await listExternal(tx,query,query.pageSize-items.length,Math.max(0,offset-staffTotal),time));
+      }
+      return {data:{items,page:query.page,pageSize:query.pageSize,hasMore:query.page*query.pageSize<total},
+        meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date(time).toISOString(),freshness:'fresh' as const}};
     });
   }
   async filters(query:PublicFilterQuery) {
     const params:unknown[]=[];const where=publicConditions(query,params);
+    if(this.externalCatalog&&query.view==='localized') return this.db.transaction(async tx=>{
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const staff=await tx.query<Row>(`${publicSelect} WHERE ${where} ORDER BY v.published_at DESC,v.id`,params);
+      const staffRows=staff.rows.map(row=>toPublic(row,query.locale,query.view));
+      const vehicles=[...staffRows,...await externalFacetRows(tx,query)];
+      return {catalog:'curated' as const,total:vehicles.length,...vehicleOptions(vehicles.map(row=>row.facts),undefined,staffRows.length),...extraOptions(vehicles)};
+    });
     const result=await this.db.pool.query<Row>(`${publicSelect} WHERE ${where} ORDER BY v.published_at DESC,v.id`,params);
     const vehicles=result.rows.map(row=>toPublic(row,query.locale,query.view));
     return {catalog:'curated' as const,...vehicleOptions(vehicles.map(vehicle=>vehicle.facts)),...(query.view==='localized'?extraOptions(vehicles):{})};

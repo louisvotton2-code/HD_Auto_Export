@@ -1,0 +1,15 @@
+.fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  background: #1b1917;
+  color: #c3aea1;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}

@@ -1,12 +1,10 @@
-import {
-  PublicVehicleFiltersSchema,
-  PublicVehicleResponseSchema,
-  type PublicVehicleQuery,
-} from '@hd/contracts/public';
+import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
 import {
+  legacyListSchema,
+  legacyVehicleSchema,
   localizedHomeSchema,
   localizedListSchema,
   localizedVehicleSchema,
@@ -55,6 +53,7 @@ export async function requestPublicApi(
   path: string,
   fetcher: typeof fetch = fetch,
   incoming?: Pick<Headers, 'get'>,
+  postJson?: string,
 ) {
   const target = new URL(path, publicApiOrigin());
   if (target.origin !== publicApiOrigin() || !target.pathname.startsWith('/api/v1/'))
@@ -62,10 +61,12 @@ export async function requestPublicApi(
   try {
     const response = await fetcher(target.href, {
       cache: 'no-store',
+      ...(postJson !== undefined ? { method: 'POST', body: postJson } : {}),
       redirect: 'error',
       signal: AbortSignal.timeout(5000),
       headers: {
         Accept: 'application/json, image/*;q=0.9',
+        ...(postJson !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(await publicRequestHeaders(incoming)),
       },
     });
@@ -89,9 +90,10 @@ export async function readPublicJson<T>(
   path: string,
   schema: { parse: (value: unknown) => T },
   incoming?: Pick<Headers, 'get'>,
+  postJson?: string,
 ) {
   try {
-    const response = await requestPublicApi(path, fetch, incoming);
+    const response = await requestPublicApi(path, fetch, incoming, postJson);
     if (!response.headers.get('content-type')?.includes('application/json'))
       throw new PublicApiError(503);
     const reader = response.body?.getReader();
@@ -147,6 +149,13 @@ export function getPublicCatalog(query: PublicVehicleQuery) {
     localizedListSchema(query.locale),
   );
 }
+/** Keep sitemap traversal on the bounded editorial catalog when localized browsing includes imports. */
+export function getPublicSitemapCatalog(locale: Locale, page: number) {
+  return readPublicJson(
+    `/api/v1/vehicles?${queryString({ locale, catalog: 'curated', view: 'legacy', page, pageSize: 48 })}`,
+    legacyListSchema,
+  );
+}
 export async function getPublicVehicle(
   id: string,
   locale: Locale,
@@ -157,7 +166,7 @@ export async function getPublicVehicle(
   try {
     const result = await readPublicJson(
       `/api/v1/vehicles/${id}?${queryString({ locale, view })}`,
-      view === 'localized' ? localizedVehicleSchema(locale) : PublicVehicleResponseSchema,
+      view === 'localized' ? localizedVehicleSchema(locale) : legacyVehicleSchema,
       incoming,
     );
     if (result.data.id !== id || result.data.detailPath !== `/${locale}/cars/${id}/`)

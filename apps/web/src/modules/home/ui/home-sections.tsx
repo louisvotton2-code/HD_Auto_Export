@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
+import { VehiclePhoto } from '@/modules/vehicles';
 import { sectionContent } from '../content/section-content';
 import styles from './home-sections.module.css';
 import type { HomeModel } from '../types';
@@ -184,13 +185,7 @@ export function HomeSections({
                   key={`${model.brand}-${model.name}-${index}`}
                 >
                   <span className={styles.modelPhoto}>
-                    <img
-                      src={model.image.url}
-                      alt={model.image.alt}
-                      width={model.image.width}
-                      height={model.image.height}
-                      loading="lazy"
-                    />
+                    <VehiclePhoto image={model.image} locale={locale} alt={model.image.alt} />
                   </span>
                   <span className={styles.modelBody}>
                     <span className={styles.modelBrand}>{model.brand}</span>

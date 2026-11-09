@@ -143,3 +143,29 @@ python3 deploy/runtime/install-domain-certificate.py --env /absolute/private/run
 将最终SHA中 `deploy/runtime/` 的工具作为受控只读副本部署在 `/srv/hd-auto/tools/`，root专属 `/etc/hd-auto/cert-renew.json`（600）写入 `{"runtime_env":"/absolute/private/runtime.env","project":"hd-auto","lineage":"/etc/letsencrypt/live/hd-auto"}`；再运行 `certbot reconfigure --cert-name hd-auto --authenticator webroot --webroot-path /absolute/data-root/acme --deploy-hook /srv/hd-auto/tools/domain-cert-deploy-hook.py`。该操作自带staging验证，通过后才持久保存该证书的webroot及hook选项。钩子只接受匹配root私有配置的 `RENEWED_LINEAGE` 并调用证书安装脚本。检查reconfigure结果与Certbot原生timer，再执行 `certbot renew --cert-name hd-auto --dry-run`；dry-run默认不运行部署钩子，因此另以root执行 `RENEWED_LINEAGE=/etc/letsencrypt/live/hd-auto /srv/hd-auto/tools/domain-cert-deploy-hook.py`，用当前有效证书安全验证钩子，并核对新旧证书、日志和reload；不能把dry-run单独当完整续期验证。若reconfigure/挑战失败，明确记为未完成、处理告警，不声称已自动续期；不要随意禁用系统全局timer。目标机Certbot 2.9.0已确认能解析这些参数，真实证书、staging、配置持久和续期仍待执行。
 
 真实数据切换须临近上线协调AD/BE短暂停写，采集**当时**权威native验收库及其实际MEDIA_ROOT，包含全部资料；校验DB与完整媒体清单，在目标新数据根恢复并核账。不要使用本轮18:48旧快照或3412测试克隆，不预设8辆车；原库不清理并保留回退。正式证书、云防火墙、域名连通、AMD64构建、迁移及真实业务上线均未发生。
+
+## OPS-EXT-01 外部车源隔离环境
+
+只用于本机合成数据。独立项目 `hd-ops-ext01` 使用私有 `DATA_ROOT`、独立数据库和秘密。先用监听及 Docker 网络清单核对本机入口、网段和项目名。已为本轮选择 `127.0.0.1:3440`、`172.30.86.0/24`（固定代理 .2、官网 .3、动态池 .128/25）。`SITE_ORIGIN=https://127.0.0.1:3440`、`SITE_INDEXABLE=false`，本轮 Mac 使用本机 UID/GID 和 arm64 镜像。应用镜像从共同提交的干净导出构建，Compose 配置在当前工作区单独验证。在权限为 0700 的私有父目录中，用 `git -c tar.umask=0022 archive <SHA>` 和 `tar -xpf` 导出并保留归档权限，确保 PostgreSQL 初始化 SQL 在容器中可由非 root 用户读取。
+
+在新目录执行既有 `runtime.py init`，以 `umask 077; openssl rand -hex 32 > "$DATA_ROOT/secrets/ext_cache_password"` 生成缓存秘密，再按下列顺序使用四层 Compose 文件。本轮使用 Compose 5.0.2，覆盖层需要支持 `!override` 和 `gw_priority`。初始化、迁移、启动与恢复见本手册前文。实际环境文件、生成数据和输出留在忽略目录。
+
+```bash
+compose=(docker compose --env-file "$OPS_EXT_ENV" -p hd-ops-ext01
+  -f deploy/runtime/compose.yaml -f deploy/runtime/compose.proxy.yaml
+  -f deploy/runtime/compose.media.yaml -f deploy/runtime/compose.ops-ext.yaml)
+"${compose[@]}" config --quiet
+"${compose[@]}" run --rm -T migrate </dev/null
+"${compose[@]}" up -d --wait redis proxy
+"${compose[@]}" ps
+"${compose[@]}" stats --no-stream
+curl --cacert "$DATA_ROOT/tls/server.crt" -fsS https://127.0.0.1:3440/health/proxy
+```
+
+内部网只供数据库、API、官网、缓存和代理使用，只有代理加入入口网并发布 loopback 端口。代理覆盖外来转发头；API 继续只信任两个固定地址。隔离 Nginx 对 `/api/auth` 路径族（含会话查询）按直连地址限 6 次/分钟，允许 4 次突发；目录 API 路径限 30 次/秒，允许 40 次突发。目录桶不覆盖官网 SSR 入口。限制按匹配路径处理请求，不依赖请求自报地址；原 API 保护仍生效。翻译配置显式关闭。Redis 无宿主端口，禁用默认用户，`hd-cache` 仅可操作 `hd-ext:*` 的基础缓存命令；上限 128 MiB，按 LRU 淘汰，无持久化，授权键在容器内使用。BE 冻结缓存客户端与独立 worker 入口后，再按实际命令和密钥读取方式接线。
+
+运行预算为 PostgreSQL 1.5 CPU／1152 MiB、API 1.5 CPU／640 MiB、官网 1 CPU／768 MiB、代理与缓存各 0.5 CPU／192 MiB，合计 5 CPU／2944 MiB。迁移单独执行；为后续 worker 预留 0.5 CPU／512 MiB，未计入当前运行上限。先采集宿主余量、容器 CPU/内存和 OOM/重启次数；每档负载另记 HTTP 状态、连接错误与成功请求 P95，记录数据规模、镜像与缓存冷热。没有持续告警任务。
+
+联合备份使用 `runtime.py backup`，同次传入 proxy、media、ops-ext 三个 override；暂停该项目所有写入者，今后包括独立 worker。恢复时用新的项目名、`DATA_ROOT`、空闲入口及网段（如 3441 和 172.30.87.0/24），重新生成 DB、认证和缓存秘密。仅从已核验的数据库与媒体包恢复；检查迁移记录、合成记录及媒体实际摘要，再启动恢复验证所需服务。缓存重建由应用负责。备份恢复只覆盖合成环境，另行核验真实数据和恢复目标。
+
+压测脚本 `ops-ext/bench.py` 只发 loopback HTTPS 的目录、筛选、首页数据及详情 GET，验证本机证书，并按路由记录 2xx 的 P95、全量错误占比与原始状态（包括 429）。等 BE 提供 10 万／50 万合成装载入口和查询分布后，分别跑 20／50／100 并发，每档按冷／热缓存记录。启用现有限流的单来源测试会限速，429 必须单列；真实性能测试需由 BE 提供只在隔离环境启用的策略，或使用独立可信合成来源，不能把限流当查询容量。PM 初始门槛为 20 并发常用列表及筛选 P95 ≤800 ms 且错误率 <1%。

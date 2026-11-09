@@ -1,24 +1,18 @@
 import { z } from 'zod';
 import {
-  AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, LocaleSchema, PowertrainSchema,
-  PublicPriceSchema, RequestMetaSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema,
+  AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
+  PublicPriceSchema, RequestMetaSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
   VehicleFactsSchema, CurrencySchema, MoneySchema, NamedValueSchema, responseSchema,
 } from './common.js';
 import {DrivetrainSchema,VehicleDisplaySchema} from './localization.js';
+import { ExternalHttpsUrlSchema, ExternalListingIdSchema, ExternalMediaIdSchema, ExternalPublicSummarySchema, PublicTextSchema, RemoteMediaMetadataSchema } from './external-public.js';
 
 export * from './common.js';
 export {DrivetrainSchema,VehicleExtraFactsSchema,DisplayTextSchema,VehicleDisplaySchema} from './localization.js';
 export type {Drivetrain,VehicleExtraFacts,DisplayText,VehicleDisplay} from './localization.js';
 export * from './catalog.js';
+export * from './external-public.js';
 
-export const PublicTextSchema = z.strictObject({
-  text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
-  requestedLocale: LocaleSchema,
-  contentLocale: LanguageTagSchema,
-  kind: TranslationKindSchema,
-  reviewed: z.boolean(),
-});
-export type PublicText = z.infer<typeof PublicTextSchema>;
 export const MediaUrlSchema = z.string().max(2048).refine((value) => {
   if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+(?:\?variant=thumb)?$/.test(value)) return true;
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; }
@@ -28,10 +22,18 @@ export const PublicMediaSchema = z.strictObject({
   id: IdSchema,
   url: MediaUrlSchema,
   alt: z.string().max(500),
-  width: z.number().int().positive().max(100_000),
-  height: z.number().int().positive().max(100_000),
+  width: z.number().int().positive().max(100_000).nullable(),
+  height: z.number().int().positive().max(100_000).nullable(),
   sortOrder: z.number().int().min(0).max(29),
   isCover: z.boolean(),
+  remote: RemoteMediaMetadataSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.remote && (!ExternalMediaIdSchema.safeParse(value.id).success || !ExternalHttpsUrlSchema.safeParse(value.url).success)) {
+    ctx.addIssue({ code: 'custom', path: ['url'], message: 'Remote media requires its own ID and a safe HTTPS URL' });
+  }
+  if ((value.width === null) !== (value.height === null) || (!value.remote && value.width === null)) {
+    ctx.addIssue({ code: 'custom', path: ['width'], message: 'Only remote images can omit both dimensions' });
+  }
 });
 export type PublicMedia = z.infer<typeof PublicMediaSchema>;
 export const PublicMediaQuerySchema = z.strictObject({ variant: z.literal('thumb').optional() });
@@ -50,7 +52,8 @@ export const PublicVehicleSchema = z.strictObject({
   display:VehicleDisplaySchema.optional(),
   price: PublicPriceSchema,
   content: z.strictObject({ title: PublicTextSchema, description: PublicTextSchema.nullable() }),
-  images: z.array(PublicMediaSchema).min(1).max(30),
+  images: z.array(PublicMediaSchema).max(30),
+  external: ExternalPublicSummarySchema.optional(),
   availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   sourceUpdatedAt: TimestampSchema.nullable(),
@@ -58,6 +61,17 @@ export const PublicVehicleSchema = z.strictObject({
   publishedAt: TimestampSchema,
   detailPath: z.string().regex(/^\/(?:zh|en|ru)\/cars\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/$/),
 }).superRefine((value, ctx) => {
+  if (value.external) {
+    if (value.source.kind !== 'external' || !ExternalListingIdSchema.safeParse(value.id).success || value.price.money && value.price.money.currency !== 'CNY') {
+      ctx.addIssue({ code: 'custom', path: ['external'], message: 'Imported listings require an external identity and CNY reference or on-request pricing' });
+    }
+    if (value.images.some(image => !image.remote)) ctx.addIssue({ code: 'custom', path: ['images'], message: 'Imported listing photos must use direct remote media' });
+  } else {
+    if (!value.images.length || value.images.some(image => image.remote)) ctx.addIssue({ code: 'custom', path: ['images'], message: 'Staff publications require their existing stored media' });
+    if ([value.content.title.kind, value.content.description?.kind].some(kind => kind === 'supplier' || kind === 'catalog')) {
+      ctx.addIssue({ code: 'custom', path: ['content'], message: 'Supplier text and generic catalogue labels are limited to imported listings' });
+    }
+  }
   if (value.source.kind === 'demo') {
     const facts = DemoVehicleFactsSchema.extend({generation:NamedValueSchema.nullable().optional(),drivetrain:DrivetrainSchema.nullable().optional()}).safeParse(value.facts);
     if (!facts.success) for (const issue of facts.error.issues) {
@@ -143,6 +157,7 @@ export type PublicHomeSections = z.infer<typeof PublicHomeSectionsSchema>;
 const FilterOptionSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(120), count: z.number().int().nonnegative() });
 export const PublicVehicleFiltersSchema = responseSchema(z.strictObject({
   catalog: z.literal('curated'),
+  total: z.number().int().nonnegative().optional(),
   makes: z.array(FilterOptionSchema),
   models: z.array(FilterOptionSchema.extend({ makeId: IdSchema })),
   powertrains: z.array(z.strictObject({ id: PowertrainSchema, count: z.number().int().nonnegative() })),

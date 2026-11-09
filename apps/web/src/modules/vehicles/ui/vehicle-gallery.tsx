@@ -14,12 +14,14 @@ import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
+import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
+import { VehiclePhotoFallback } from './vehicle-photo';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string };
-const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}`;
+const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
 
 /** Only selected originals load; a previously visited image stays briefly for the slide. */
 export function VehicleGallery({
@@ -50,6 +52,7 @@ export function VehicleGallery({
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const openButton = useRef<HTMLButtonElement>(null);
+  const emptyPhoto = useRef<HTMLDivElement>(null);
   const selectedImage = useRef<HTMLImageElement>(null);
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const lastSwipeAt = useRef(0);
@@ -61,6 +64,7 @@ export function VehicleGallery({
     ordered.findIndex((image) => image.id === selectedId),
   );
   const selected = ordered[index];
+  const hasPhoto = Boolean(selected);
   const previous = ordered.find((image) => image.id === previousId && image.id !== selected?.id);
 
   useEffect(() => setEnhanced(true), []);
@@ -69,13 +73,18 @@ export function VehicleGallery({
     if (selectedId !== selected.id) setSelectedId(selected.id);
   }, [selected?.id, selectedId]);
   useEffect(() => {
-    if (!opened) return;
+    if (!opened || !hasPhoto) return;
     const before = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = before;
     };
-  }, [opened]);
+  }, [opened, hasPhoto]);
+  useEffect(() => {
+    if (hasPhoto || !opened) return;
+    setOpened(false);
+    emptyPhoto.current?.focus({ preventScroll: true });
+  }, [hasPhoto, opened]);
   useEffect(() => {
     if (!previousId) return;
     const timeout = setTimeout(() => setPreviousId(null), 450);
@@ -87,7 +96,7 @@ export function VehicleGallery({
     // An SSR image may finish before hydration, or remain mounted during a quick return.
     if (image.naturalWidth > 0) loaded(selected);
     else failed(selected);
-  }, [selected?.id, selected?.url, retry]);
+  }, [selected?.id, selected?.url, selected?.remote?.revision, retry]);
 
   function choose(nextIndex: number) {
     if (!ordered.length) return;
@@ -152,6 +161,7 @@ export function VehicleGallery({
     setFailedId((current) => (current === key ? null : current));
   }
   function failed(image: PublicMedia) {
+    reportExternalPhotoFailure(image);
     const key = imageResourceKey(image);
     loadedImages.current.delete(key);
     failedImages.current.add(key);
@@ -167,7 +177,15 @@ export function VehicleGallery({
     setLoadingId(key);
     setRetry((value) => value + 1);
   }
-  if (!selected) return <p>{t.imageUnavailable}</p>;
+  if (!selected) {
+    return (
+      <div className={styles.root}>
+        <div className={styles.viewport} ref={emptyPhoto} tabIndex={-1} role="group" aria-label={t.gallery}>
+          <VehiclePhotoFallback locale={locale} />
+        </div>
+      </div>
+    );
+  }
   const selectedKey = imageResourceKey(selected);
 
   return (
@@ -197,7 +215,7 @@ export function VehicleGallery({
         >
           {[...(previous ? [previous] : []), selected].map((image) => (
             <img
-              key={`${image.id}:${retry}`}
+              key={`${imageResourceKey(image)}:${retry}`}
               ref={(element) => {
                 if (image.id === selected.id) selectedImage.current = element;
               }}
@@ -208,8 +226,9 @@ export function VehicleGallery({
               src={publicMediaUrl(image.url)}
               alt={image.id === selected.id ? image.alt || title : ''}
               aria-hidden={image.id !== selected.id ? true : undefined}
-              width={image.width}
-              height={image.height}
+              width={image.width ?? undefined}
+              height={image.height ?? undefined}
+              referrerPolicy={image.url.startsWith('https:') ? 'no-referrer' : undefined}
               fetchPriority="high"
               onLoad={() => loaded(image)}
               onError={() => failed(image)}
@@ -334,11 +353,12 @@ export function VehicleGallery({
           <div className={styles.viewerImage}>
             {opened && (
               <img
-                key={`${selected.id}:${retry}`}
+                key={`${selectedKey}:${retry}`}
                 src={publicMediaUrl(selected.url)}
+                referrerPolicy={selected.url.startsWith('https:') ? 'no-referrer' : undefined}
                 alt={selected.alt || title}
-                width={selected.width}
-                height={selected.height}
+                width={selected.width ?? undefined}
+                height={selected.height ?? undefined}
                 onLoad={() => loaded(selected)}
                 onError={() => failed(selected)}
               />

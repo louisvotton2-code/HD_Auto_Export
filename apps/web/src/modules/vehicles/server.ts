@@ -6,6 +6,7 @@ export {
   getPublicHome,
   getPublicFilters,
   getPublicCatalog,
+  getPublicSitemapCatalog,
   parseCatalogQuery,
   PublicApiError,
   publicRetryAfter,
@@ -14,3 +15,4 @@ export const getPublicVehicleById = cache((id: string, locale: Locale) =>
   getPublicVehicle(id, locale, undefined, 'localized'),
 );
 export { proxyPublicRequest } from './infrastructure/public-proxy';
+export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';

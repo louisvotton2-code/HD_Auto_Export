@@ -14,6 +14,7 @@ const Env = z.object({
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
   TRUST_PROXY: z.string().max(2048).default('false'),
+  EXTERNAL_CATALOG_MODE: z.enum(['disabled', 'synthetic']).default('disabled'),
   TRANSLATION_PROVIDER: z.enum(['disabled','libretranslate','aliyun']).default('disabled'),
   LIBRETRANSLATE_URL: z.string().url().refine(value=>{
     try {const url=new URL(value);return ['http:','https:'].includes(url.protocol) && ['127.0.0.1','localhost','[::1]','libretranslate'].includes(url.hostname) &&
@@ -71,11 +72,18 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   if (!trustedOrigins.includes(new URL(e.AUTH_BASE_URL).origin)) throw new Error('AUTH_BASE_URL origin must be trusted');
   if (new URL(e.AUTH_BASE_URL).origin !== e.AUTH_BASE_URL) throw new Error('AUTH_BASE_URL must be an origin without a path');
   if (e.NODE_ENV === 'production' && trustedOrigins.some(o => !o.startsWith('https://'))) throw new Error('Production origins must use HTTPS');
+  if (e.EXTERNAL_CATALOG_MODE === 'synthetic') {
+    const database = new URL(e.DATABASE_URL);
+    if (e.NODE_ENV === 'production' || e.HOST !== '127.0.0.1' || database.hostname !== '127.0.0.1' ||
+        !/^\/hd_ext_[a-z0-9_]+$/.test(database.pathname) || database.search || database.hash || e.TRANSLATION_PROVIDER !== 'disabled') {
+      throw new Error('Synthetic external catalog requires a loopback API, an isolated hd_ext_* database and disabled translation');
+    }
+  }
   return {
     environment: e.NODE_ENV, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
-    trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog: e.EXTERNAL_CATALOG_MODE === 'synthetic',
     translation: {provider:e.TRANSLATION_PROVIDER,accessKeyId:e.ALI_MT_ACCESS_KEY_ID,accessKeySecret:e.ALI_MT_ACCESS_KEY_SECRET,
       libreUrl:e.LIBRETRANSLATE_URL,libreApiKey:e.LIBRETRANSLATE_API_KEY,libreEngineVersion:e.LIBRETRANSLATE_ENGINE_VERSION,
       securityToken:e.ALI_MT_SECURITY_TOKEN,region:e.ALI_MT_REGION,configVersion:e.ALI_MT_CONFIG_VERSION,maxCharactersPerHour:e.TRANSLATION_MAX_CHARACTERS_PER_HOUR},

@@ -3,9 +3,12 @@ import { AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutation
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
+import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
+import { makeExternalImportFixture } from '@hd/contracts/fixtures';
 
 async function login(page: Page, path = '/admin/vehicles') {
-  if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !/^hd_admin_test_[a-f0-9]{16}$/.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
+  const allowedDatabase = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only' ? /^hd_ext_ad_[a-f0-9]{16}$/ : /^hd_admin_test_[a-f0-9]{16}$/;
+  if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !allowedDatabase.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
   await page.goto(path);
   await page.getByLabel('账号或工作邮箱').fill('browser-test@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TEST_PASSWORD);
@@ -76,6 +79,45 @@ async function readRespectingRateLimit(page: Page, url: string) {
   }
   throw new Error('Unreachable bounded read retry.');
 }
+
+test('real external catalog supports admin import, trial and override', async ({ page }) => {
+  test.skip(process.env.ADMIN_LIVE_EXTERNAL !== 'synthetic-only');
+  expect(process.env.EXTERNAL_CATALOG_MODE).toBe('synthetic');
+  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
+  await login(page);
+  await page.getByRole('link', { name: '外部车源管理' }).click();
+  await page.getByRole('button', { name: '导入批次' }).click();
+  const input = makeExternalImportFixture(100);
+  await page.getByLabel('规范化批次 JSON').setInputFiles({
+    name: 'synthetic-batch.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(input)),
+  });
+  await page.getByRole('button', { name: '确认导入' }).click();
+  await expect(page.getByText('导入完成，请查看批次结果。')).toBeVisible();
+  await page.getByRole('link', { name: '查看批次' }).click();
+  const batchId = new URL(page.url()).pathname.split('/').at(-1);
+  const batchPath = `/api/v1/admin/external/batches/${batchId}`;
+  const records = ExternalBatchRecordsResponseSchema.parse(await (await page.request.get(`${batchPath}/records?page=1&pageSize=100`)).json());
+  const ids = records.data.items.flatMap(item => item.listingId ? [item.listingId] : []);
+  expect(new Set(ids).size).toBe(100);
+  await page.getByRole('textbox', { name: '试译挂牌编号' }).fill(ids.join('\n'));
+  await page.getByRole('button', { name: '测算试译用量' }).click();
+  await expect(page.getByText('已记录试译测算')).toBeVisible();
+  const trial = ExternalTrialResponseSchema.parse(await (await page.request.get(`${batchPath}/translation-trial`)).json());
+  expect(trial.data?.budget).toMatchObject({ accountFreeRemaining: null, attemptedCharacters: 0, realCalls: 0 });
+  await page.getByRole('link', { name: '查看来源' }).first().click();
+  await page.getByRole('button', { name: '读取受保护原档' }).click();
+  await expect(page.getByText(/PRIVATE_RAW_MARKER/)).toBeVisible();
+  await page.getByRole('link', { name: '查看当前挂牌' }).click();
+  await page.getByRole('button', { name: '人工修订' }).click();
+  await page.getByRole('dialog').getByRole('textbox', { name: '人工译文' }).fill('员工修订的合成标题');
+  await page.getByRole('dialog').getByRole('button', { name: '保存修订' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const publicResponse = await page.request.get(`/api/v1/vehicles/${ids[0]}?locale=zh&view=localized`);
+  expect(publicResponse.ok()).toBe(true);
+  const published = PublicVehicleResponseSchema.parse(await publicResponse.json());
+  expect(published.data.content.title.text).toBe('员工修订的合成标题');
+  expect(JSON.stringify(published)).not.toContain('PRIVATE_RAW_MARKER');
+});
 
 test('real localization sidecar preserves public language snapshots with disabled translation', async ({ page }) => {
   test.setTimeout(180_000);

@@ -1,0 +1,89 @@
+import { useState } from 'react';
+import { Link, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
+import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from 'antd';
+import { ExternalListingResponseSchema, LocaleSchema, type ExternalListing, type Locale, type StaffMe } from '@hd/contracts/admin';
+import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels } from './external-labels';
+import { ListingOverrideEditor } from './listing-override-editor';
+import { ResourceContent } from './resource-content';
+import { SourceRecordDetails } from './source-record-details';
+import { useExternalResource } from './use-external-resource';
+import styles from './external-sources.module.css';
+
+const fields = ['title', 'model', 'description'] as const;
+const locales = ['zh', 'en', 'ru'] as const;
+
+function ListingContent({ listing, locale, changeLocale, reload }: {
+  listing: ExternalListing; locale: Locale; changeLocale: (locale: Locale) => void; reload: () => void;
+}) {
+  const staff = useOutletContext<StaffMe>();
+  const [editing, setEditing] = useState(false);
+  const vehicle = listing.vehicle;
+  const source = listing.source;
+  return <>
+    <Card title="当前挂牌">
+      <Space wrap>
+        <Tag>{listingLabels[listing.state]}</Tag>
+        <span>来源版本 {listing.sourceRevision}</span>
+        <span>管理版本 {listing.version}</span>
+        <Button onClick={reload} disabled={editing}>重新读取</Button>
+        {listing.state !== 'withdrawn' && staff.permissions.includes('vehicles:write') &&
+          <Button type="primary" onClick={() => setEditing(true)}>人工修订</Button>}
+      </Space>
+    </Card>
+    <SourceRecordDetails
+      source={listing.identity.platformId}
+      identity={listing.identity.externalId}
+      listingUrl={source?.listingUrl ?? null}
+      comparisons={fields.map(field => ({
+        key: field, label: fieldLabels[field], original: source?.copy[field]?.original.text ?? null,
+        translations: locales.map(language => {
+          const manual = listing.overrides.text.find(item => item.field === field && item.locale === language);
+          const supplier = source?.copy[field]?.translations[language];
+          return {
+            language: languageLabels[language],
+            text: manual?.text ?? supplier?.text ?? null,
+            status: manual ? (manual.sourceHash === listing.sourceHashes[field] ? '人工修订' : '原文变化，人工译文待核对')
+              : supplier ? '供应商译文' : undefined,
+          };
+        }),
+      }))}
+      conflicts={[
+        ...(source?.disputes ?? []).map(field => ({
+          key: field, label: fieldLabels[field], reason: Object.hasOwn(listing.overrides.facts, field)
+            ? '来源有冲突，当前使用人工修订。' : '来源有冲突，请核对来源值。',
+        })),
+        ...(vehicle?.external?.issues ?? []).filter(issue => !source?.disputes.some(field => field === issue.field)).map(issue => ({
+          key: `${issue.field}:${issue.code}`, label: fieldLabels[issue.field], reason: issueLabels[issue.code],
+        })),
+      ]}
+    />
+    <Card title="公开展示核对" extra={<Select aria-label="公开展示语言" value={locale} onChange={changeLocale} disabled={editing}
+      options={Object.entries(languageLabels).map(([value, label]) => ({ value, label }))} />}>
+      {vehicle ? <Descriptions size="small" column={1} items={[
+        { key: 'title', label: '标题', children: <div className={styles.sourceText}>{vehicle.content.title.text} <Tag>{vehicle.content.title.contentLocale}</Tag></div> },
+        { key: 'model', label: '车型', children: vehicle.display?.model.text ? <div className={styles.sourceText}>{vehicle.display.model.text} <Tag>{vehicle.display.model.contentLocale}</Tag></div> : '暂无展示值' },
+        { key: 'description', label: '描述', children: vehicle.content.description ? <div className={styles.sourceText}>{vehicle.content.description.text} <Tag>{vehicle.content.description.contentLocale}</Tag></div> : '暂无展示值' },
+        { key: 'price', label: '参考价', children: vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价' },
+      ]} /> : <Alert type="info" title="此挂牌暂无公开展示快照。" />}
+    </Card>
+    {editing && <ListingOverrideEditor listing={listing} onClose={() => setEditing(false)}
+      onRefresh={() => { setEditing(false); reload(); }} />}
+  </>;
+}
+
+export function ExternalListingPage() {
+  const { listingId = '' } = useParams();
+  const [params, setParams] = useSearchParams();
+  const locale = LocaleSchema.catch('zh').parse(params.get('locale'));
+  const resource = useExternalResource(`${externalRoot}/listings/${encodeURIComponent(listingId)}?locale=${locale}`, ExternalListingResponseSchema);
+  return <section className={styles.stack}>
+    <Link to="/external-sources">返回批次列表</Link>
+    <Typography.Title level={2}>外部挂牌详情</Typography.Title>
+    <ResourceContent {...resource} retry={resource.reload}>{resource.data && (
+      resource.data.data.id === listingId
+        ? <ListingContent key={`${listingId}:${resource.data.data.version}`} listing={resource.data.data}
+          locale={locale} changeLocale={next => setParams({ locale: next }, { replace: true })} reload={resource.reload} />
+        : <Alert type="error" title="服务返回的挂牌编号与当前页面不一致。" />
+    )}</ResourceContent>
+  </section>;
+}

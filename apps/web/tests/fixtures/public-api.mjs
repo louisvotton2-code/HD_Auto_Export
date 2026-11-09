@@ -2,9 +2,10 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import {
   ApiErrorSchema,
+  ExternalMediaFailureRequestSchema,
   IdSchema,
   PublicFilterQuerySchema,
   PublicHomeSectionsSchema,
@@ -19,6 +20,7 @@ import {
 
 export const fixtureSuite = 'hd-web-public-catalog-v1';
 const timestamp = '2026-11-08T00:00:00Z';
+const importStates = ['supplier', 'original', 'conflict', 'missing', 'machine'];
 // Independent deterministic originals and small previews; no remote images or image library.
 const imageCache = new Map();
 function pngChunk(type, data) {
@@ -181,6 +183,10 @@ const resetState = () => ({
   futureArchived: false,
   filtersUnavailable: false,
   externalPublished: false,
+  externalRemotePhoto: false,
+  importedPublished: false,
+  importedWithdrawn: false,
+  importedPhotosRemoved: false,
   responseDelayMs: 0,
   publicRateLimited: false,
   filtersRateLimited: false,
@@ -196,7 +202,12 @@ function visibleVehicles(state, locale) {
   ];
   if (state.futurePublished && !state.futureArchived && state.futureAvailability !== 'sold')
     rows.unshift(vehicle('fixture_future', locale, { availability: state.futureAvailability }));
-  if (state.externalPublished) rows.push(vehicle('fixture_external', locale));
+  if (state.externalPublished) {
+    const external = vehicle('fixture_external', locale);
+    if (state.externalRemotePhoto)
+      external.images[0].url = 'https://photos.example.invalid/fixture-external.jpg';
+    rows.push(external);
+  }
   if (state.richCatalog) {
     for (const [index, row] of rows.entries()) {
       if (row.source.kind !== 'manual' || row.id === 'fixture_reserved') continue;
@@ -372,6 +383,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           futureArchived: (v) => typeof v === 'boolean',
           filtersUnavailable: (v) => typeof v === 'boolean',
           externalPublished: (v) => typeof v === 'boolean',
+          externalRemotePhoto: (v) => typeof v === 'boolean',
+          importedPublished: (v) => typeof v === 'boolean',
+          importedWithdrawn: (v) => typeof v === 'boolean',
+          importedPhotosRemoved: (v) => typeof v === 'boolean',
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
@@ -395,11 +410,20 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       if (url.pathname.startsWith('/api/v1/')) {
         requests.push({
           path: url.pathname,
+          method: req.method,
           query: Object.fromEntries(url.searchParams),
           cookie: req.headers.cookie ?? null,
           authorization: req.headers.authorization ?? null,
         });
         if (requests.length > 1000) requests.shift();
+      }
+      const mediaFailure = /^\/api\/v1\/external-media\/(ximg-[a-f0-9-]+)\/failure$/.exec(url.pathname);
+      if (mediaFailure && req.method === 'POST') {
+        const report = ExternalMediaFailureRequestSchema.safeParse(await body(req));
+        if (!report.success) return send(res, 400, error('INVALID_REQUEST'));
+        const active = state.importedPublished && !state.importedWithdrawn &&
+          mediaFailure[1] === makeImportedPublicVehicleFixture('en').images[0].id;
+        return send(res, 202, {data:{queued:active && report.data.revision===1},meta:{requestId:'fixture-media-report'}});
       }
       if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
       let catalogQuery, filterQuery, mediaQuery;
@@ -450,25 +474,38 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, { badFixture: true });
       const project = (row) =>
         url.searchParams.get('view') === 'localized' ? localizedProjection(row, locale) : row;
-      const all = visibleVehicles(state, locale).map(project);
+      const staff = visibleVehicles(state, locale).map(project);
+      const imports = state.importedPublished && state.mode !== 'empty' && url.searchParams.get('view') === 'localized'
+        ? importStates.filter((kind) => kind !== 'supplier' || !state.importedWithdrawn)
+        : [];
+      const makeImport = (kind, detail = false) => {
+        const item = makeImportedPublicVehicleFixture(locale, kind, detail);
+        if (state.importedPhotosRemoved && kind === 'supplier') {
+          item.images = [];
+          item.display.mediaAlt = [];
+          item.external.issues.push({ field: 'images', code: 'expired' });
+        }
+        return item;
+      };
+      const all = [...staff, ...imports.map((kind) => makeImport(kind))];
       if (url.pathname === '/api/v1/home/vehicles') {
         const sections =
-          state.sectionCount > 0 && all.length
+          state.sectionCount > 0 && staff.length
             ? [
                 {
                   id: 'featured',
                   title: localized[locale].first,
-                  vehicles: all
+                  vehicles: staff
                     .filter((v) => v.source.kind === 'demo' || v.availability === 'available')
                     .slice(0, 3),
                 },
               ]
             : [];
-        if (state.sectionCount === 2 && all.length)
+        if (state.sectionCount === 2 && staff.length)
           sections.push({
             id: 'recent',
             title: localized[locale].second,
-            vehicles: all
+            vehicles: staff
               .filter((v) => v.source.kind === 'demo' || v.availability === 'available')
               .slice(3, 4),
           });
@@ -508,32 +545,27 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       }
       if (url.pathname === '/api/v1/vehicle-filters') {
         const searched = all.filter((v) => queryMatches(v, filterQuery));
-        const makes = ['alpha', 'beta']
-          .map((id) => ({
-            id,
-            name: `${id === 'alpha' ? 'Alpha' : 'Beta'} Motors`,
-            count: searched.filter((v) => v.facts.make?.id === id).length,
-          }))
-          .filter((v) => v.count);
+        const makes = new Map(), models = new Map(), powertrains = new Map();
+        for (const row of searched) {
+          const { make, model, powertrain } = row.facts;
+          if (make) makes.set(make.id, {...make,count:(makes.get(make.id)?.count ?? 0)+1});
+          if (make && model) {
+            const key = `${make.id}:${model.id}`;
+            models.set(key, {...model,makeId:make.id,count:(models.get(key)?.count ?? 0)+1});
+          }
+          if (!row.external || powertrain !== 'unknown')
+            powertrains.set(powertrain,(powertrains.get(powertrain) ?? 0)+1);
+        }
         return send(
           res,
           200,
           PublicVehicleFiltersSchema.parse({
             data: {
               catalog: 'curated',
-              makes,
-              models: makes.map(({ id, count }) => ({
-                id: `${id}_model`,
-                makeId: id,
-                name: `${id === 'alpha' ? 'Alpha' : 'Beta'} Model`,
-                count,
-              })),
-              powertrains: ['bev', 'petrol']
-                .map((id) => ({
-                  id,
-                  count: searched.filter((v) => v.facts.powertrain === id).length,
-                }))
-                .filter((v) => v.count),
+              ...(state.importedPublished && filterQuery.view === 'localized' ? { total: searched.length } : {}),
+              makes: [...makes.values()].sort((a,b)=>a.id.localeCompare(b.id)),
+              models: [...models.values()].sort((a,b)=>a.makeId.localeCompare(b.makeId)||a.id.localeCompare(b.id)),
+              powertrains: [...powertrains].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})),
               ...(url.searchParams.get('view') === 'localized'
                 ? {
                     trims: [
@@ -596,6 +628,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       }
       const detailId = url.pathname.match(/^\/api\/v1\/vehicles\/([A-Za-z0-9_-]+)$/)?.[1];
       if (detailId) {
+        const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
+        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:{requestId:'fixture-import-detail'}}));
         const found =
           all.find((v) => v.id === detailId) ??
           (detailId === 'fixture_sold'

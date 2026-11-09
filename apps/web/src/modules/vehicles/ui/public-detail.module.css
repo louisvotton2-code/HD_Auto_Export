@@ -462,3 +462,64 @@
     transition: none;
   }
 }
+
+.externalIssues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.externalIssues li {
+  padding: 5px 10px;
+  border: 1px solid #b677494d;
+  border-radius: 8px;
+  color: #dba171;
+  font-size: 13px;
+}
+.externalSections {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.externalSections h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.externalEntries,
+.externalComparison {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+.externalComparison {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+.externalEntries > div,
+.externalComparison > div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff09;
+  overflow-wrap: anywhere;
+}
+.externalEntries dt,
+.externalComparison dt {
+  color: #a9a3a0;
+  font-size: 12px;
+}
+.externalEntries dd,
+.externalComparison dd {
+  margin: 4px 0 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+.externalLink {
+  display: block;
+  width: fit-content;
+  margin-top: 12px;
+  color: #dba171;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

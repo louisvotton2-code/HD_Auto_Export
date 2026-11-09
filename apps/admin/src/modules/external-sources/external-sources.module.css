@@ -1,0 +1,51 @@
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.stack > * {
+  min-width: 0;
+}
+
+.heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.comparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 8px;
+}
+
+.comparison > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dcd7ca;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.sourceText {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.translationStatus {
+  margin-inline-start: 8px;
+}
+
+.reason {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fileInput {
+  max-width: 100%;
+}

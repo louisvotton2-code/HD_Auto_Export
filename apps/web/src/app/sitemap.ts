@@ -1,7 +1,7 @@
 import type { MetadataRoute } from 'next';
 import { connection } from 'next/server';
 import { countries } from '@/modules/calculator/config/countries';
-import { getPublicCatalog, PublicApiError } from '@/modules/vehicles/server';
+import { getPublicSitemapCatalog, PublicApiError } from '@/modules/vehicles/server';
 import { routing } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 
@@ -24,7 +24,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   for (const locale of routing.locales) {
     let hasMore = true;
     for (let page = 1; hasMore && page <= 100; page++) {
-      const list = await getPublicCatalog({ locale, catalog: 'curated', page, pageSize: 48 });
+      const list = await getPublicSitemapCatalog(locale, page);
       for (const vehicle of list.data.items) {
         if (vehicle.source.kind !== 'manual' || vehicle.availability !== 'available') continue;
         result.push({

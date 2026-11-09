@@ -13,8 +13,9 @@ import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './a
 import { InventoryService, type Actor } from './vehicles/service.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
-import { ApiError } from './errors.js';
+import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
+import { externalBatchPath, externalMediaFailurePath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
 const versionHeader=z.object({'if-match':z.string().regex(/^\d+$/)});
@@ -28,7 +29,9 @@ const schema=(tag:string,operationId:string,options:Record<string,unknown>)=>({t
 function rateLimitKey(request:FastifyRequest) {
   const route=request.routeOptions.url??'';
   // Matched route families, never a caller-supplied ID/query/header, select the budget.
-  const bucket=route==='/api/v1/media/:id'?'public-media':
+  const bucket=route===externalMediaFailurePath?'external-media-report':
+    request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
+    route==='/api/v1/media/:id'?'public-media':
     route.startsWith('/api/v1/admin/')?'admin':route.startsWith('/health/')?'health':
       route.startsWith('/api/auth/')?'auth':'public-json';
   // Retain the plugin's IPv4-mapped and IPv6 /64 normalization with our custom key.
@@ -47,7 +50,7 @@ function sendInternalMedia(reply:FastifyReply,file:{filename:string}) {
 export async function buildApp(config:Config=readConfig(), options:{logger?:boolean;translator?:VehicleTranslator}={}) {
   const db=createDatabase(config.databaseUrl,config.poolMax);
   const auth=createAuth(db,config);
-  const inventory=new InventoryService(db);
+  const inventory=new InventoryService(db,config.externalCatalog);
   const translator=options.translator??createVehicleTranslator(config.translation);
   const media=new MediaService(db,new LocalMediaStore(config.mediaRoot));
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.body','res.headers.set-cookie']} : false,
@@ -68,9 +71,16 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   // unauthenticated uploads from being read or decoded before access checks.
   app.addHook('preParsing',async(request,_reply,payload)=>{
     // Use the matched route, not the raw URL (which may contain encoded static segments).
-    if(request.routeOptions.url?.startsWith('/api/v1/admin/')) {
-      staff.set(request,await requireStaff(request,auth,db));
+    const route=request.routeOptions.url??'';
+    const external=route.startsWith('/api/v1/admin/external/') || route===externalMediaFailurePath;
+    if(external&&!config.externalCatalog) throw notFound();
+    if(route.startsWith('/api/v1/admin/')) {
+      const member=await requireStaff(request,auth,db);
+      staff.set(request,member);
       requireTrustedOrigin(request,config);
+      if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath].includes(route))) {
+        throw new ApiError(403,'FORBIDDEN','Administrator role is required for this external catalog operation.');
+      }
     }
     return payload;
   });
@@ -124,6 +134,11 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
+      if(config.externalCatalog) {
+        const externalReady=await db.pool.query(`SELECT state.revision FROM external_catalog_state state
+          LEFT JOIN external_catalog c ON false LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false WHERE state.id=1`);
+        if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
+      }
       return {status:'ready' as const};
     }
     catch{return reply.code(503).send({status:'unavailable' as const});}
@@ -143,7 +158,7 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
 
   app.get('/api/v1/vehicles',{schema:schema('public','listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:pub.PublicVehicleListSchema,...errorResponses}})},
     async request=>inventory.listPublic(request.query as pub.PublicVehicleQuery,request.id));
-  app.get('/api/v1/vehicles/:id',{schema:schema('public','getVehicle',{params:IdParams,querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
+  app.get('/api/v1/vehicles/:id',{schema:schema('public','getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return response(await inventory.getPublic(p.id,q.locale,q.view),request);});
   app.get('/api/v1/vehicle-filters',{schema:schema('public','vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>response(await inventory.filters(request.query as pub.PublicFilterQuery),request));
   app.get('/api/v1/home/vehicles',{schema:schema('public','homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>{const query=request.query as pub.PublicLocaleQuery;return response(await inventory.publicHome(query.locale,query.view),request);});
@@ -154,6 +169,7 @@ export async function buildApp(config:Config=readConfig(), options:{logger?:bool
   });
 
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
+  registerExternalRoutes(app,db,actor);
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
   app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>response(await inventory.listAdmin(request.query as z.infer<typeof adm.AdminVehicleQuerySchema>),request));
   app.get('/api/v1/admin/vehicle-filters',{schema:adminSchema('adminVehicleFilters',{querystring:adm.AdminVehicleFiltersQuerySchema,response:{200:adm.AdminVehicleFiltersResponseSchema,...errorResponses}})},async request=>response(await inventory.adminFilters(request.query as adm.AdminVehicleFiltersQuery),request));

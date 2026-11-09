@@ -12,7 +12,13 @@ const adminRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const repositoryRoot = path.resolve(adminRoot, '../..');
 const translationProvider = process.env.ADMIN_LIVE_TRANSLATION_PROVIDER ?? 'disabled';
 const aliyunCase = '(?:^| )real Aliyun international Chinese suggestion persistence$';
+const externalCase = '(?:^| )real external catalog supports admin import, trial and override$';
 const playwrightArgs = process.argv.slice(2);
+const external = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only';
+if (process.env.ADMIN_LIVE_EXTERNAL && (!external || translationProvider !== 'disabled' ||
+  playwrightArgs.length !== 2 || playwrightArgs[0] !== '--grep' || playwrightArgs[1] !== externalCase)) {
+  throw new Error('External catalog tests require the single synthetic case with translation disabled.');
+}
 if (!['disabled', 'libretranslate', 'aliyun'].includes(translationProvider)) throw new Error('Unsupported isolated translation test mode.');
 let localTranslationUrl;
 if (translationProvider === 'libretranslate') {
@@ -34,7 +40,10 @@ const maintenanceUrl = new URL(process.env.API_TEST_DATABASE_URL ?? 'postgresql:
 if (!['localhost', '127.0.0.1'].includes(maintenanceUrl.hostname) || maintenanceUrl.pathname !== '/postgres') {
   throw new Error('Live browser tests require a local /postgres maintenance database.');
 }
-const databaseName = `hd_admin_test_${randomBytes(8).toString('hex')}`;
+if (external && (maintenanceUrl.hostname !== '127.0.0.1' || maintenanceUrl.search || maintenanceUrl.hash)) {
+  throw new Error('Synthetic external catalog tests require the 127.0.0.1 maintenance database without URL options.');
+}
+const databaseName = `${external ? 'hd_ext_ad_' : 'hd_admin_test_'}${randomBytes(8).toString('hex')}`;
 const databaseUrl = new URL(maintenanceUrl);
 databaseUrl.pathname = `/${databaseName}`;
 const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'hd-admin-browser-'));
@@ -46,6 +55,7 @@ const env = {
   HOST: '127.0.0.1', PORT: '3322', MEDIA_ROOT: path.join(temporaryRoot, 'media'),
   ADMIN_API_TARGET: 'http://127.0.0.1:3322', ADMIN_LIVE_TEST: '1', TRANSLATION_PROVIDER: translationProvider,
   ADMIN_LIVE_TRANSLATION_PROVIDER: translationProvider,
+  EXTERNAL_CATALOG_MODE: external ? 'synthetic' : 'disabled',
   ADMIN_TEST_PASSWORD: randomBytes(24).toString('base64url'),
 };
 // Generic credential aliases and local-service API keys never enter a test child process.
@@ -88,7 +98,8 @@ async function database(operation) {
   await command(['--filter', '@hd/api', 'exec', 'node', '--input-type=module', '--eval', `
     import pg from 'pg';
     const name = process.env.ADMIN_TEST_DB_NAME;
-    if (!/^hd_admin_test_[a-f0-9]{16}$/.test(name)) throw new Error('Invalid isolated database name');
+    const allowed = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only' ? /^hd_ext_ad_[a-f0-9]{16}$/ : /^hd_admin_test_[a-f0-9]{16}$/;
+    if (!allowed.test(name)) throw new Error('Invalid isolated database name');
     const client = new pg.Client({ connectionString: process.env.API_TEST_DATABASE_URL });
     await client.connect();
     try { await client.query('${operation === 'create' ? 'CREATE DATABASE' : 'DROP DATABASE IF EXISTS'} "' + name + '"${operation === 'drop' ? ' WITH (FORCE)' : ''}'); }
@@ -102,7 +113,7 @@ try {
   await database('create');
   created = true;
   await command(['--filter', '@hd/api', 'db:migrate']);
-  await command(['--filter', '@hd/api', 'staff', 'create', 'browser-test@example.invalid', '浏览器测试员工', 'editor'], env.ADMIN_TEST_PASSWORD);
+  await command(['--filter', '@hd/api', 'staff', 'create', 'browser-test@example.invalid', '浏览器测试员工', external ? 'admin' : 'editor'], env.ADMIN_TEST_PASSWORD);
   api = spawn('pnpm', ['--filter', '@hd/api', 'exec', 'node', 'dist/main.js'], {
     cwd: repositoryRoot, env, stdio: 'inherit', detached: process.platform !== 'win32',
   });

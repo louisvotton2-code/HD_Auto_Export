@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
 import type { PublicVehicle } from '@hd/contracts/public';
 import { NavigationLink } from '@/shared/ui/navigation-link';
@@ -61,10 +62,10 @@ function SavedCar({
         aria-hidden="true"
         onClick={close}
       >
-        <img src={cover.url} alt="" width={cover.width} height={cover.height} loading="lazy" />
+        <VehiclePhoto image={cover} locale={locale} alt="" compact />
       </PublicCatalogLink>
       <div className={styles.info}>
-        <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close}>
+        <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close} lang={vehicle.content.title.contentLocale}>
           {vehicle.content.title.text}
         </PublicCatalogLink>
         <small>

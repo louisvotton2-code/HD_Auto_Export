@@ -60,6 +60,12 @@ pnpm --filter @hd/api start
 
 迁移位于 `migrations/`，SQL 是数据库结构的维护入口；Better Auth 的 Drizzle 映射在 `src/db/schema.ts`。通过 Drizzle migrator 和 advisory lock 显式应用已审 SQL，不在应用启动或构建时改库。不要对已有环境使用 schema push，也不要修改已发布迁移；下一变更追加 SQL 与 journal。生产应分别配置迁移身份和最小权限运行身份，本地 Compose 不代表生产权限验证。
 
+### 外部目录隔离验证
+
+0004 增加外部批次、挂牌、媒体、覆盖和试译账本。`EXTERNAL_CATALOG_MODE=synthetic` 仅接受 `HOST=127.0.0.1`、无连接选项的本机 `127.0.0.1/hd_ext_*` 测试库、非生产环境及 `TRANSLATION_PROVIDER=disabled`。默认关闭。先显式迁移新库，再使用独立端口与媒体根启动。导入需要管理员会话，可用 `@hd/contracts/fixtures.makeExternalImportFixture(200)` 作为 `/api/v1/admin/external/batches` 请求体。回归 `pnpm --filter @hd/api test:integration` 会创建并清理自己的随机库。接口、角色和后续依赖见[车辆接口第15节](../../docs/开发/车辆接口.md#15-be-ext-01-外部挂牌与试译干跑)。
+
+已核验的 PA 私有样本可用 `pnpm --filter @hd/api external:sample --inspect-local <私有样本目录>` 重跑。命令只用本机 `/postgres` 维护连接，自动创建并清理独立 `hd_ext_real_*` 数据库。它导入固定试译组与对照组，测算100条并只输出汇总，不加载 `.env`、启动监听或调用外部服务。合成 HTTP 导入仍只允许合成供应商。
+
 OpenAPI 由路由使用的 schema 生成到 `openapi/public.json` 和 `openapi/admin.json`，生成不需要数据库在线。二进制图片及原生登录协议另见车辆接口说明。生成产物可交给 FE/AD 导入工具，但不手工维护。根 `pnpm check` 已包含后端集成测试，先启动本地数据库；CI 使用隔离 PostgreSQL 服务。根 `pnpm build` 构建契约、API、OpenAPI 和官网。
 
 ## 运行边界

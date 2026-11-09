@@ -12,6 +12,7 @@ import {
   publicAvailabilityLabel,
   publicVehicleFacts,
 } from '../public-presentation';
+import { ExternalVehicleInformation } from './external-vehicle-information';
 import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
 import {
@@ -59,7 +60,7 @@ export function PublicVehicleDetail({
         </PublicCatalogLink>
         <div className={styles.grid}>
           <div className={styles.mainColumn}>
-            <h1 className={styles.title}>
+            <h1 className={styles.title} lang={vehicle.content.title.contentLocale}>
               {titleRemainder ? (
                 <>
                   {make} <span>{titleRemainder}</span>
@@ -135,9 +136,12 @@ export function PublicVehicleDetail({
                   <span aria-hidden="true" />
                   {copy.publicDescription}
                 </h2>
-                <p className={styles.description}>{vehicle.content.description.text}</p>
+                <p className={styles.description} lang={vehicle.content.description.contentLocale}>
+                  {vehicle.content.description.text}
+                </p>
               </section>
             )}
+            <ExternalVehicleInformation vehicle={vehicle} locale={locale} />
           </div>
 
           <aside className={styles.budget} aria-label={copy.budgetTitle}>

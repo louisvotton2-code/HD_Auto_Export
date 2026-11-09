@@ -31,6 +31,7 @@ type FixturePatch = {
   futureAvailability?: 'available' | 'reserved' | 'sold' | 'unknown';
   futureArchived?: boolean;
   externalPublished?: boolean;
+  externalRemotePhoto?: boolean;
 };
 async function patchFixture(request: APIRequestContext, data: FixturePatch) {
   expect(
@@ -199,7 +200,12 @@ test.describe('explicit public queries, stable activation and media regression',
     expect(backRequests).toHaveLength(1);
     expect(cleanPath(backRequests[0]!.url())).toBe('/api/v1/vehicles');
     expect(audit.documents()).toHaveLength(0);
-    expect(audit.rsc()).toHaveLength(0);
+    // Global navigation can prefetch its unfiltered destinations when the footer enters view.
+    const queryRsc = audit.rsc().filter((request) => {
+      const params = new URL(request.url()).searchParams;
+      return request.headers()['next-router-prefetch'] !== '1' || params.has('q') || params.has('page');
+    });
+    expect(queryRsc).toHaveLength(0);
     await expectShellPreserved(page);
     audit.stop();
   });
@@ -252,6 +258,27 @@ test.describe('explicit public queries, stable activation and media regression',
       expect(draft).toContain('/en/cars/fixture_external/');
       expect(draft).not.toMatch(/third.party listing|external listing|stock not verified|display example|not actual inventory/i);
     }
+  });
+
+  test('an expired external photo keeps the catalog card and detail usable', async ({ page, request }) => {
+    await patchFixture(request, { externalPublished: true, externalRemotePhoto: true });
+    const image = 'https://photos.example.invalid/fixture-external.jpg';
+    const remoteRequests: Request[] = [];
+    await page.route(image, async (route) => {
+      remoteRequests.push(route.request());
+      await route.fulfill({ status: 410, body: 'Expired fixture photo' });
+    });
+    await page.goto('/en/cars/?q=HD-fixture_external');
+    const card = page.locator('[data-public-vehicle="fixture_external"]');
+    await expect(card.locator('[data-vehicle-photo-unavailable]')).toBeVisible();
+    await expect(card.locator('img')).toHaveCount(0);
+    await expect(card.locator('[data-availability]')).toHaveCount(0);
+    await card.getByRole('link', { name: /View details/ }).click();
+    await expect(page.locator('[data-vehicle-gallery] [data-loading]').getByText('This photo is temporarily unavailable.')).toBeVisible();
+    await expect(page.locator('main h1')).toBeVisible();
+    await expect(contactLinks(page.locator('main'))).toHaveCount(2);
+    expect(remoteRequests.length).toBeGreaterThanOrEqual(2);
+    for (const remote of remoteRequests) expect((await remote.allHeaders()).referer).toBeUndefined();
   });
 
   test('focus, visibility and ordinary pageshow do not update public resources in any language', async ({ page }) => {

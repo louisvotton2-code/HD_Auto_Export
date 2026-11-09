@@ -16,6 +16,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/db/migrate.ts",
     "staff": "node --env-file-if-exists=.env --import tsx src/staff-cli.ts",
     "media:cleanup": "node --env-file-if-exists=.env --import tsx src/cleanup.ts",
+    "external:sample": "node --import tsx src/external/sample-cli.ts",
     "openapi": "node --import tsx src/openapi.ts"
   },
   "dependencies": {

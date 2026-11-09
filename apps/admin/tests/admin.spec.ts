@@ -4,6 +4,7 @@ import './translation-cases';
 import './brand-cases';
 import './localization-cases';
 import './vehicle-entry-cases';
+import './external-source-cases';
 import { expect, test } from '@playwright/test';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';

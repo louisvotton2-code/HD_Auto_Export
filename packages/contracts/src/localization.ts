@@ -61,7 +61,7 @@ export const DisplayTranslationSuggestionsResponseSchema=responseSchema(DisplayT
 /** Public metadata contains no original text, source hashes, engine IDs or task details. */
 export const DisplayTextSchema=z.discriminatedUnion('status',[
   z.strictObject({status:z.literal('ready'),text:z.string().min(1).max(500).regex(/\S/),requestedLocale:LocaleSchema,contentLocale:LanguageTagSchema,
-    provenance:z.enum(['catalog','original','machine','human']),reviewed:z.boolean()}),
+    provenance:z.enum(['catalog','original','machine','human','supplier']),reviewed:z.boolean()}),
   z.strictObject({status:z.literal('missing'),text:z.null(),requestedLocale:LocaleSchema,contentLocale:z.null(),provenance:z.null(),reviewed:z.literal(false)}),
 ]);
 export type DisplayText=z.infer<typeof DisplayTextSchema>;

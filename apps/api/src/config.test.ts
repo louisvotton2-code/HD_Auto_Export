@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {readConfig} from './config.js';
 const base={DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/test',AUTH_SECRET:'test-only-long-secret-which-is-not-used-in-production'};
+test('synthetic source ingestion is restricted to isolated loopback databases without a translation provider',()=>{
+  const fixture={...base,DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/hd_ext_config_test',EXTERNAL_CATALOG_MODE:'synthetic'};
+  assert.equal(readConfig(base).externalCatalog,false);
+  assert.equal(readConfig(fixture).externalCatalog,true);
+  for(const change of [{DATABASE_URL:base.DATABASE_URL},{DATABASE_URL:`${fixture.DATABASE_URL}?host=example.invalid`},
+    {HOST:'0.0.0.0'},{TRANSLATION_PROVIDER:'aliyun'},
+    {NODE_ENV:'production',AUTH_BASE_URL:'https://example.invalid',TRUSTED_ORIGINS:'https://example.invalid'}]) {
+    assert.throws(()=>readConfig({...fixture,...change}),/isolated hd_ext_\*/);
+  }
+});
 test('translation defaults disabled; only trusted local service origins and explicit versions are accepted',()=>{
   assert.equal(readConfig(base).translation.provider,'disabled');
   for(const url of ['http://127.0.0.1:3340','http://localhost:3340','http://[::1]:3340','http://libretranslate:5000'])

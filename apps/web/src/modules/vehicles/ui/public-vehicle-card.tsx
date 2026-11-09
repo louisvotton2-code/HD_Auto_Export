@@ -11,6 +11,7 @@ import {
 } from '../public-presentation';
 import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
+import { VehiclePhoto } from './vehicle-photo';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './public-vehicles.module.css';
 
@@ -43,13 +44,7 @@ export function PublicVehicleCard({
           tabIndex={-1}
           aria-hidden="true"
         >
-          <img
-            src={cover.url}
-            alt={cover.alt || vehicle.content.title.text}
-            loading="lazy"
-            width={cover.width}
-            height={cover.height}
-          />
+          <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || vehicle.content.title.text} />
           {vehicle.facts.modelYear !== null && (
             <span className={styles.year}>{vehicle.facts.modelYear}</span>
           )}
@@ -61,7 +56,7 @@ export function PublicVehicleCard({
           className={styles.favorite}
         />
         <div className={styles.cardBody}>
-          <h2 title={vehicle.content.title.text}>
+          <h2 lang={vehicle.content.title.contentLocale} title={vehicle.content.title.text}>
             <PublicCatalogLink locale={locale} href={vehicle.detailPath}>
               {vehicle.content.title.text}
             </PublicCatalogLink>

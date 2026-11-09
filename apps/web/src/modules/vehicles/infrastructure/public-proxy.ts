@@ -1,11 +1,8 @@
 import {
   IdSchema,
-  PublicHomeSectionsSchema,
   PublicLocaleQuerySchema,
   PublicMediaQuerySchema,
   PublicVehicleFiltersSchema,
-  PublicVehicleListSchema,
-  PublicVehicleResponseSchema,
 } from '@hd/contracts/public';
 import {
   PublicApiError,
@@ -18,9 +15,10 @@ import {
 import type { Locale } from '@/i18n/routing';
 import { catalogQueryKeys, parseFilterQuery } from '../public-query';
 import {
+  legacyHomeSchema,
+  legacyListSchema,
   localizedHomeSchema,
   localizedListSchema,
-  localizedVehicleSchema,
 } from '../localized-projection';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -138,27 +136,17 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
       }
       return new Response(bytes, { headers: { ...headers, 'Content-Type': type } });
     }
-    const schema =
-      path === 'home/vehicles'
-        ? PublicHomeSectionsSchema
-        : path === 'vehicles'
-          ? PublicVehicleListSchema
-          : path === 'vehicle-filters'
-            ? PublicVehicleFiltersSchema
-            : PublicVehicleResponseSchema;
-    // Each schema projects/validates the public DTO; no incoming cookie, auth or upstream headers are forwarded.
+    // Each schema validates only the public DTO. Browser credentials are never forwarded.
     const locale = query.locale as Locale;
-    const localized =
-      path === 'home/vehicles'
-        ? localizedHomeSchema(locale)
-        : path === 'vehicles'
-          ? localizedListSchema(locale)
-          : path === 'vehicle-filters'
-            ? schema
-            : localizedVehicleSchema(locale);
+    const localized = query.view === 'localized';
+    const schema = path === 'home/vehicles'
+      ? (localized ? localizedHomeSchema(locale) : legacyHomeSchema)
+      : path === 'vehicles'
+        ? (localized ? localizedListSchema(locale) : legacyListSchema)
+        : PublicVehicleFiltersSchema;
     const value = await readPublicJson(
       upstream,
-      (query.view === 'localized' ? localized : schema) as { parse: (value: unknown) => unknown },
+      schema as { parse: (value: unknown) => unknown },
       request.headers,
     );
     return Response.json(value, { headers });

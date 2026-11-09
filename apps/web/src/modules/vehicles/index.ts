@@ -21,3 +21,4 @@ export { FavoriteVehicleButton } from './ui/favorite-vehicle-button';
 export { VehicleFavorites } from './ui/vehicle-favorites';
 
 export { localizedHomeSchema } from './localized-projection';
+export { VehiclePhoto } from './ui/vehicle-photo';

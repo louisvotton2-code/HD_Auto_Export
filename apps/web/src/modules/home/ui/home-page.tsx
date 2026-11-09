@@ -1,6 +1,5 @@
 'use client';
 
-import Image from 'next/image';
 import NextLink from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
@@ -12,6 +11,7 @@ import {
   publicVehicleMessages,
   usePublicFreshness,
   FavoriteVehicleButton,
+  VehiclePhoto,
 } from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
@@ -123,13 +123,7 @@ function VehicleRail({
                 <div className={styles.cardLight} aria-hidden="true" />
                 <div className={styles.vehicleImage}>
                   <NextLink href={v.detailPath} prefetch={false} tabIndex={-1} aria-hidden="true">
-                    <Image
-                      src={image.url}
-                      alt={image.alt || name}
-                      width={image.width}
-                      height={image.height}
-                      sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 1023px) 48vw, 404px"
-                    />
+                    <VehiclePhoto image={image} locale={locale} alt={image?.alt || name} />
                   </NextLink>
                   <FavoriteVehicleButton
                     className={styles.save}
@@ -144,7 +138,7 @@ function VehicleRail({
                   )}
                 </div>
                 <div className={styles.vehicleBody}>
-                  <h3 title={name}>{name}</h3>
+                  <h3 lang={v.content.title.contentLocale} title={name}>{name}</h3>
                   <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
                   <p className={styles.stockCode}>
                     {vehicleCopy.stockCodeLabel}: {v.stockCode}
@@ -224,10 +218,10 @@ export function HomePage({
   const visibleSections = unavailable
     ? []
     : sections.filter((section) => section.vehicles.length > 0);
-  // Powertrain facets partition the entire unfiltered public catalog, including unknowns.
-  // Homepage sections contain only configured selections and cannot serve as a catalog total.
+  // Older APIs without an exact total returned a complete powertrain partition.
   const catalogCount = catalogFilters
-    ? catalogFilters.powertrains.reduce((total, powertrain) => total + powertrain.count, 0)
+    ? (catalogFilters.total ??
+      catalogFilters.powertrains.reduce((total, powertrain) => total + powertrain.count, 0))
     : null;
   const brands =
     catalogFilters?.makes.filter((make) => make.count > 0).map((make) => make.name) ?? [];
@@ -239,10 +233,13 @@ export function HomePage({
           .flatMap((section) => section.vehicles)
           .find(
             (vehicle) =>
-              vehicle.facts.make?.id === model.makeId && vehicle.facts.model?.id === model.id,
+              vehicle.facts.make?.id === model.makeId &&
+              vehicle.facts.model?.id === model.id &&
+              vehicle.images.length > 0,
           );
         if (!representative) return [];
         const image = publicVehicleCover(representative);
+        if (!image) return [];
         return [
           {
             name: model.name,
@@ -250,10 +247,8 @@ export function HomePage({
             count: model.count,
             href: `/${locale}/cars/?${new URLSearchParams({ make: model.makeId, model: model.id }).toString()}`,
             image: {
-              url: image.url,
+              ...image,
               alt: image.alt || representative.content.title.text,
-              width: image.width,
-              height: image.height,
             },
           },
         ];
