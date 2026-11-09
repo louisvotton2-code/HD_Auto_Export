@@ -9,6 +9,7 @@
 .thumbnail { width: 80px; height: 58px; overflow: hidden; border-radius: 8px; flex: none; background: #f3f0e8; }
 .thumbnail img { object-fit: cover; }
 .asOf { font-size: 12px; }
+.page :global(.ant-table-cell) { overflow-wrap: anywhere; }
 .displayAudit { min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 1000px) { .filters { grid-template-columns: repeat(2,minmax(0,1fr)); }.asOf { display: none; } }
 @media (max-width: 540px) { .filters { grid-template-columns: minmax(0,1fr); }.heading { flex-direction: column; }.heading h2 { font-size: 25px; } }

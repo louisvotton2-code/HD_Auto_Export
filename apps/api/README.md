@@ -41,7 +41,9 @@ pnpm --filter @hd/api staff disable editor@example.invalid
 pnpm --filter @hd/api staff enable editor@example.invalid
 ```
 
-实际邮箱和姓名由管理员提供；示例地址不发送邮件。创建管理员时最后一个参数为 `admin`。启用/禁用均撤销旧会话；启用后须重新登录。后台通过 Better Auth 客户端或同一 HTTP 协议登录，不能自建 token。
+后台可用完整邮箱或 1–32 位短账号登录。短账号由小写字母、数字、下划线和连字符组成，首位须为字母或数字；系统将它映射到保留的 `staff.hd-auto.invalid` 邮箱域。邮箱和短账号都可用于 `staff create`、`enable` 和 `disable`。创建管理员时最后一个参数为 `admin`。启用或禁用都会撤销旧会话。
+
+使用 `staff change-login <原账号或邮箱> <新账号或邮箱>` 改登录名和密码，密码同样从标准输入读取。原员工 ID、姓名和角色保留，改密成功会撤销该员工的既有会话。更改环境账号前先核对目标数据库，部署代码与账号变更分别执行。
 
 ## 构建、检查与迁移
 

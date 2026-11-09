@@ -5,8 +5,9 @@ import { useTranslations } from 'next-intl';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
 
-const linkedContacts = ['telegram', 'whatsapp', 'facebook', 'phone', 'phone2'] as const;
-const copyContacts = ['instagram', 'wechat'] as const;
+const phones = ['phone', 'phone2'] as const;
+const socialContacts = ['telegram', 'whatsapp', 'facebook', 'instagram', 'tiktok'] as const;
+const copyContacts = ['wechat'] as const;
 type CopyContact = (typeof copyContacts)[number];
 
 export function ContactLinks() {
@@ -37,17 +38,14 @@ export function ContactLinks() {
   return (
     <>
       <div className="hd-contact-grid">
-        {linkedContacts.map((key) => (
+        {phones.map((key) => (
           <a
             key={key}
             className="hd-contact-item"
             href={siteConfig.contacts[key].href}
-            {...(key === 'phone' || key === 'phone2'
-              ? {}
-              : { target: '_blank', rel: 'noopener noreferrer' })}
           >
             <span>
-              <strong>{t(key === 'phone2' ? 'phone' : key)}</strong>
+              <strong>{t('phone')}</strong>
               <span dir="ltr">{siteConfig.contacts[key].display}</span>
             </span>
             <Icon name="diagonal" size={15} />
@@ -70,6 +68,24 @@ export function ContactLinks() {
               <small>{t(copied === key ? 'copied' : 'copy')}</small>
             </span>
           </button>
+        ))}
+      </div>
+      <h3>{t('follow')}</h3>
+      <div className="hd-contact-grid">
+        {socialContacts.map((key) => (
+          <a
+            key={key}
+            className="hd-contact-item"
+            href={siteConfig.contacts[key].href}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span>
+              <strong>{t(key)}</strong>
+              <span dir="ltr">{siteConfig.contacts[key].display}</span>
+            </span>
+            <Icon name="diagonal" size={15} />
+          </a>
         ))}
       </div>
       <span className="hd-contact-status" role="status" aria-live="polite">

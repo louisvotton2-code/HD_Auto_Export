@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Avatar, Breadcrumb, Button, Card, Drawer, Form, Grid, Input, Layout, Menu, Modal, Result, Space, Spin, Tag, Typography } from 'antd';
 import { CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
-import { StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
+import { StaffLoginSchema, StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request, signIn, signOut } from '../../shared/api/client';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -16,14 +16,14 @@ function BrandIdentity() {
 function LoginForm({ onLogin, expired = false }: { onLogin: (staff: StaffMe) => void; expired?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  async function submit(values: { email: string; password: string }) {
+  async function submit(values: { login: string; password: string }) {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      await signIn(values.email.trim(), values.password);
+      await signIn(values.login, values.password);
       onLogin((await request('/api/v1/admin/me', StaffMeResponseSchema)).data);
     } catch (failure) {
-      setError(failure instanceof ApiClientError && failure.status === 401 ? '邮箱或密码不正确，请重新输入。' : failure instanceof Error ? failure.message : '登录失败，请稍后重试。');
+      setError(failure instanceof ApiClientError && failure.status === 401 ? '账号或密码不正确，请重新输入。' : failure instanceof Error ? failure.message : '登录失败，请稍后重试。');
     } finally { setBusy(false); }
   }
   return <div className="login-form">
@@ -31,7 +31,7 @@ function LoginForm({ onLogin, expired = false }: { onLogin: (staff: StaffMe) => 
     <Typography.Title id="login-title" level={2}>{expired ? '重新登录' : '登录员工工作台'}</Typography.Title>
     <Typography.Paragraph type="secondary">{expired ? '登录已失效，当前编辑已保留。使用原账号登录即可继续。' : '欢迎回来。登录后管理车辆、审核资料与安排展示。'}</Typography.Paragraph>
     <Form layout="vertical" onFinish={submit} requiredMark={false} size="large" autoComplete="on">
-      <Form.Item label="工作邮箱" name="email" rules={[{ required: true, message: '请输入工作邮箱' }, { type: 'email', message: '请输入有效邮箱' }]}><Input prefix={<UserOutlined />} placeholder="name@company.com" autoComplete="username" autoFocus /></Form.Item>
+      <Form.Item label="账号或工作邮箱" name="login" rules={[{ validator: (_, value) => StaffLoginSchema.safeParse(value).success ? Promise.resolve() : Promise.reject(new Error('请输入有效的账号或邮箱')) }]}><Input prefix={<UserOutlined />} placeholder="请输入账号或工作邮箱" autoComplete="username" autoFocus /></Form.Item>
       <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}><Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete="current-password" /></Form.Item>
       {error && <Alert title={error} type="error" showIcon className="login-alert" />}
       <Button type="primary" htmlType="submit" block loading={busy}>登录工作台</Button>

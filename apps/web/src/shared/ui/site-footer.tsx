@@ -65,6 +65,16 @@ export async function SiteFooter() {
           >
             <h2 id="contact-title">{t('Contacts.title')}</h2>
             <ContactLinks />
+            <div className={styles.footerPayment}>
+              <h3>{t('Contacts.payment')}</h3>
+              <ul aria-label={t('Contacts.payment')}>
+                <li>PayPal</li>
+                <li>Visa</li>
+                <li>Mastercard</li>
+                <li>{t('Contacts.bankTransfer')}</li>
+              </ul>
+              <p>{t('Contacts.confirmPayment')}</p>
+            </div>
           </section>
         </div>
         <div className={`hd-footer-bottom ${styles.footerBottom}`}>

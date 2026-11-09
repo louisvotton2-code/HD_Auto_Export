@@ -13,6 +13,7 @@ import { TranslationEditor } from './translation-editor';
 import { MachineTranslationActions } from './machine-translation-actions';
 import { VehicleLocalizationEditor, type LocalizationGuard } from './vehicle-localization-editor';
 import { brandIdentityOptions } from './vehicle-localization-model';
+import { modelIdentityOptions } from './model-suggestions';
 import styles from './vehicle-editor.module.css';
 import { externalSourceFormKeys, formForDemo, formForExternal, hasDemoRestrictedValues, sourceForKind } from './vehicle-editor-helpers';
 
@@ -146,6 +147,9 @@ export function VehicleEditorPage() {
       if (!mounted.current) return;
       setForm(current => formForExternal(current));
     }
+    if (next === 'manual' && (!sourceKind || sourceKind === 'demo')) {
+      setForm(current => ({ ...current, country: current.country || 'CN', registrationStatus: current.registrationStatus === 'unknown' ? 'registered' : current.registrationStatus }));
+    }
     setSourceKind(next); setSuccess('');
   }
   async function loadRemote() {
@@ -215,7 +219,7 @@ export function VehicleEditorPage() {
   function textField(key: keyof DraftForm, options: { multiline?: boolean; hint?: string; inputMode?: 'decimal' | 'numeric'; maxLength?: number; label?: string; placeholder?: string } = {}) {
     const invalid = issues.some(issue => issue.key === key);
     const label = options.label ?? fieldLabels[key];
-    const attrs = { id: key, name: key, value: form[key], disabled: locked || (isDemo && ['mileageKm', 'manufacturedAt', 'firstRegistration', 'city', 'locationName', 'vin'].includes(key)) || (!!record && isExternal && ['sourcePlatformId', 'sourceExternalId'].includes(key)), onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const attrs = { id: key, name: key, value: form[key], disabled: locked || (isDemo && ['mileageKm', 'manufacturedAt', 'firstRegistration', 'vin'].includes(key)) || (!!record && isExternal && ['sourcePlatformId', 'sourceExternalId'].includes(key)), onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       change(key, event.target.value as DraftForm[typeof key]);
       if (key === 'trimName' && event.target.value && !form.trimId) change('trimId', `manual_${crypto.randomUUID().replaceAll('-', '')}`);
       if (key === 'trimName' && !event.target.value) change('trimId', '');
@@ -231,7 +235,7 @@ export function VehicleEditorPage() {
     const choices = kind === 'make' ? dictionary.data?.makes ?? [] : (dictionary.data?.models ?? []).filter(item => item.makeId === form.makeId);
     const selected = kind === 'make' ? { id: form.makeId, name: form.makeName } : { id: form.modelId, name: form.modelName };
     if (kind === 'make') return brandIdentityOptions(choices, selected);
-    return [...choices, ...(selected.id && !choices.some(item => item.id === selected.id) ? [selected] : [])].map(item => ({ value: item.id, label: item.name, rawName: item.name }));
+    return modelIdentityOptions({ id: form.makeId, name: form.makeName }, choices, selected);
   }
   function chooseIdentity(kind: 'make' | 'model', value: string | undefined) {
     if (kind === 'make') {
@@ -239,7 +243,7 @@ export function VehicleEditorPage() {
       setForm(current => ({ ...current, makeId: value ?? '', makeName: option?.rawName ?? '', ...(current.makeId !== value ? { modelId: '', modelName: '' } : {}) }));
     } else {
       const option = identityOptions('model').find(item => item.value === value);
-      setForm(current => ({ ...current, modelId: value ?? '', modelName: option?.label ?? '' }));
+      setForm(current => ({ ...current, modelId: value ?? '', modelName: option?.rawName ?? '' }));
     }
     setSuccess('');
   }
@@ -325,17 +329,14 @@ export function VehicleEditorPage() {
         <Col xs={24} md={12}>{selectField('registrationPrecision', { year: '仅年份', month: '精确到月', day: '精确到日' })}</Col>
         <Col xs={24} md={12}>{textField('firstRegistration', { hint: '首次登记与制造日期独立，未知留空。' })}</Col>
         <Col xs={24} md={8}><Form.Item label="所在地国家" htmlFor="country" extra={isDemo ? '样例可留空，不推测所在地。' : '正式发布前核实。'} validateStatus={issues.some(issue => issue.key === 'country') ? 'error' : undefined} help={issues.some(issue => issue.key === 'country') ? '请选择实际所在地' : undefined}><Select id="country" aria-label="所在地国家" showSearch optionFilterProp="label" allowClear placeholder={isDemo ? "展示样例不填写所在地" : "选择国家"} disabled={locked || isDemo} value={form.country || undefined} options={countries.some(country => country.value === form.country) || !form.country ? countries : [...countries, { value: form.country, label: form.country }]} onChange={value => change('country', value ?? '')} /></Form.Item></Col>
-        <Col xs={24} md={8}>{textField('city', { maxLength: 120 })}</Col>
-        <Col xs={24} md={8}>{textField('locationName', { maxLength: 200 })}</Col>
       </Row>
     </Card>
   </div>;
   const commercial = <div className={styles.sectionStack} data-editor-section="commercial" tabIndex={-1}>
     <Card title="公开价格" extra={isDemo ? <Tag color="gold">样例不报价</Tag> : <Tag>公开字段</Tag>} className={styles.card}>
-      {isDemo ? <Alert type="info" showIcon title="展示样例不填写价格" description="公开数据保持待询价，不把展示样例当成可购买库存。" /> : <><Typography.Paragraph type="secondary">{isExternal ? '来源参考价格不代表本店报价或成交承诺。保留原币种与价格范围，缺少价格时选择待询价。' : '金额使用原始币种。待询价不代表零元，参考价须说明包含范围。'}</Typography.Paragraph><Row gutter={[24, 0]}>
+      {isDemo ? <Alert type="info" showIcon title="展示样例不填写价格" description="公开数据保持待询价，不把展示样例当成可购买库存。" /> : <><Typography.Paragraph type="secondary">{isExternal ? '来源参考价格不代表本店报价或成交承诺。保留原币种与价格范围，缺少价格时选择待询价。' : '金额使用原始币种。未知价格选择待询价。'}</Typography.Paragraph><Row gutter={[24, 0]}>
         <Col xs={24} md={8}>{selectField('priceKind', isExternal ? { on_request: '待询价', reference: '来源参考价格' } : { on_request: '待询价', asking: '公开报价', reference: '参考价格' })}</Col>
         {form.priceKind !== 'on_request' && <><Col xs={24} md={8}>{textField('amount', { inputMode: 'decimal', hint: '最多两位小数，不使用千位分隔符。' })}</Col><Col xs={24} md={8}>{selectField('currency', currencyOptions)}</Col></>}
-        <Col span={24}>{textField('includes', { multiline: true, hint: '每行一项，例如车辆本身；不含运费。' })}</Col>
       </Row></>}
     </Card>
     <Card title="内部信息" extra={<Tag>仅员工可见</Tag>} className={styles.card}>
@@ -351,7 +352,7 @@ export function VehicleEditorPage() {
     <Card title={form.descriptionLanguage.split('-')[0] === 'zh' ? '中文描述' : '原文描述'} className={styles.card}><Typography.Paragraph type="secondary">{isExternal ? '先保存来源原文，再核对对应版本的三语内容。外部资料公开时不标为人工审核通过，请保留译文的实际来源。没有描述可全部留空。' : '先保存原文，再逐语核对并审核对应版本。没有描述时可以全部留空。'}</Typography.Paragraph><Row gutter={[24, 0]}><Col xs={24} md={8}>{!record || form.descriptionLanguage.split('-')[0] === 'zh' ? <Form.Item label="描述原文语言"><Tag color="green">中文</Tag></Form.Item> : textField('descriptionLanguage', { maxLength: 35, hint: '请先整理为中文再改为zh；保留原始来源。' })}</Col><Col xs={24} md={16}>{textField('description', { multiline: true })}</Col></Row></Card>
     {record ? <MachineTranslationActions key={record.id} vehicle={record} content={extras.content} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || localizationLocked || conflict} onBusyChange={setTranslationBusy} onChange={content => { setExtras(previous => ({ ...previous, content })); setSuccess('译文已填入当前草稿，请核对并保存。'); }} onConflict={() => { setConflict(true); void loadRemote(); }} /> : <Alert showIcon type="info" title="先保存中文原文，再生成英俄译文" />}
     {(['title', 'description'] as const).map(name => <TranslationEditor key={name} name={name} value={extras.content[name]} sourceText={form[name]} sourceLanguage={form[name === 'title' ? 'titleLanguage' : 'descriptionLanguage']} onChange={value => { setExtras(previous => ({ ...previous, content: { ...previous.content, [name]: value } })); setSuccess(''); }} disabled={locked} />)}
-    <Alert className={styles.localizationPrompt} showIcon type="info" title="标题描述完成不代表全部公开字段已译" description="请另到“公开字段多语”明确来源语言、保存展示资料并核对车型、配置、所在地、费用与图片说明。" action={<Button disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy} onClick={() => { setLocalizationOpened(true);setActiveTab('localization'); }}>整理公开字段多语</Button>} />
+    <Alert className={styles.localizationPrompt} showIcon type="info" title="标题描述完成不代表全部公开字段已译" description="请另到“公开字段多语”明确来源语言，并核对车型、配置与图片说明。" action={<Button disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy} onClick={() => { setLocalizationOpened(true);setActiveTab('localization'); }}>整理公开字段多语</Button>} />
     {record ? <VehicleActions vehicle={record} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onUpdated={accept} onConflict={() => { setConflict(true); void loadRemote(); }} onLocalizationIssue={() => { setLocalizationOpened(true);setActiveTab('localization'); }} onBusyChange={setActionsBusy} /> : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、三语审核和库存核验完成后，可在这里单独发布。" />}
   </div>;
   const localization = <div className={styles.sectionStack} data-editor-section="localization" tabIndex={-1}>{record && localizationOpened ? <VehicleLocalizationEditor key={record.id} vehicle={record} hasUnsavedChanges={coreDirty} disabled={saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || conflict} onGuardChange={localizationGuardChanged} canAdoptVehicle={vehicle => !!acceptedRecord.current && acceptedRecord.current.id === vehicle.id && !acceptedRecord.current.deletedAt && vehicle.version >= acceptedRecord.current.version} onVehicleUpdated={accept} onConflict={() => { setConflict(true);void loadRemote(); }} /> : <Alert showIcon type="info" title="先保存车辆草稿，再整理公开字段多语" />}</div>;

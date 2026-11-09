@@ -7,7 +7,7 @@ import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 async function login(page: Page, path = '/admin/vehicles') {
   if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !/^hd_admin_test_[a-f0-9]{16}$/.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
   await page.goto(path);
-  await page.getByLabel('工作邮箱').fill('browser-test@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('browser-test@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TEST_PASSWORD);
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();

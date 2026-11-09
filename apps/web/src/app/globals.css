@@ -104,6 +104,48 @@ input,
 select {
   min-width: 0;
 }
+/* Native selects keep form submission and keyboard behavior in every browser. */
+select:not([multiple]):not([size]) {
+  appearance: none;
+  padding-inline-end: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='m3 5 4 4 4-4' fill='none' stroke='%23a5a09b' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+@supports (appearance: base-select) and selector(::picker(select)) {
+  select:not([multiple]):not([size]),
+  select:not([multiple]):not([size])::picker(select) {
+    appearance: base-select;
+  }
+  select:not([multiple]):not([size])::picker-icon {
+    content: none;
+  }
+  select:not([multiple]):not([size])::picker(select) {
+    position-area: block-end span-inline-end;
+    justify-self: start;
+    position-try-fallbacks: flip-block;
+    position-try-order: normal;
+    box-sizing: border-box;
+    inline-size: anchor-size(inline);
+    min-inline-size: anchor-size(inline);
+    max-block-size: min(300px, 50dvh);
+    overflow: auto;
+    margin: 4px 0;
+    padding: 4px;
+    border: 1px solid #4f4035;
+    border-radius: 8px;
+    background: #242222;
+    color: #f5f0eb;
+  }
+  select:not([multiple]):not([size]) option {
+    padding: 7px 8px;
+    white-space: normal;
+  }
+  select:not([multiple]):not([size]) option:checked {
+    background-color: #3b2b20;
+  }
+}
+
 svg {
   flex-shrink: 0;
 }
@@ -545,26 +587,19 @@ svg {
 }
 .input-wrap > select {
   width: 100%;
-  appearance: none;
   color: #e2e2e3;
   border: 0;
-  background: none;
-  padding: 0 14px;
+  background-color: transparent;
+  padding: 0 32px 0 14px;
   height: 46px;
   font-size: 12px;
-}
-.input-wrap > select + svg {
-  position: absolute;
-  right: 13px;
-  pointer-events: none;
-  color: #83858b;
 }
 .input-wrap > select.currency-select {
   border-left: 1px solid #343538;
   flex-shrink: 0;
   width: 89px;
   height: 26px;
-  padding: 0 12px;
+  padding: 0 32px 0 12px;
   font-size: 11px;
   color: #c6c7ca;
   cursor: pointer;

@@ -103,19 +103,19 @@ export function PublicCatalogPage() {
         loading={loading}
         dataSource={result?.data.items ?? []}
         expandable={{ expandedRowRender: vehicle => <DisplayAudit vehicle={vehicle} locale={locale} />, columnTitle: '展示词条' }}
-        scroll={{ x: 1080 }}
+        scroll={{ x: 850 }}
         locale={{ emptyText: error ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="读取失败，请重试" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<><strong>没有符合条件的公开车源</strong><br />可调整筛选，或确认车辆已发布。</>} /> }}
         pagination={result ? { current: page, pageSize: 24, total: result.meta.total ?? result.meta.accessibleTotal ?? result.data.items.length, showSizeChanger: false, showTotal: total => `共 ${total} 辆`, onChange: value => update('page', String(value)) } : false}
         columns={[
-          { title: '车辆 / 稳定车号', width: 370, render: (_, vehicle) => {
+          { title: '车辆 / 稳定车号', width: 260, render: (_, vehicle) => {
             const cover = vehicle.images.find(item => item.isCover) ?? vehicle.images[0];
             const alt = vehicle.display?.mediaAlt.find(entry => entry.mediaId === cover?.id)?.value;
             return <Space align="start"><div className={styles.thumbnail}>{cover && <Image src={cover.url} alt={localizedText(alt, locale) ?? '车辆封面'} width={80} height={58} preview={false} />}</div><Space orientation="vertical" size={3}><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text><Text type="secondary">{localizedText(vehicle.display?.make, locale) ?? '品牌未填写或待翻译'} {localizedText(vehicle.display?.model, locale) ?? '车型未填写或待翻译'}</Text></Space></Space>;
           } },
-          { title: '公开价格', width: 180, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text strong>{vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价'}</Text>{vehicle.price.kind === 'reference' && <Tag color="orange">参考价格</Tag>}</Space> },
-          { title: '来源 / 库存', width: 205, render: (_, vehicle) => vehicle.source.kind === 'external' ? <Space orientation="vertical"><Tag color="blue">外部挂牌 · 库存未知</Tag><a href={vehicle.source.listingUrl} target="_blank" rel="noreferrer">{localizedText(vehicle.display?.platform, locale) ?? '来源平台未填写或待翻译'} ↗</a><Text type="secondary">采集：{formatTime(vehicle.fetchedAt)}</Text></Space> : String(vehicle.source.kind) === 'demo' ? <Tag color="gold">展示样例，非实际库存</Tag> : <Tag color={vehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[vehicle.availability]}</Tag> },
-          { title: '内容审核', width: 160, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text>{vehicle.content.title.contentLocale}</Text><Tag color={vehicle.content.title.reviewed ? 'success' : 'default'}>{vehicle.content.title.reviewed ? '已审核' : '未审核'}</Tag></Space> },
-          { title: '核验', width: 130, fixed: 'right', render: (_, vehicle) => <Button type="link" icon={<ExportOutlined />} href={`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}&view=localized`} target="_blank" rel="noreferrer">查看数据</Button> },
+          { title: '公开价格', width: 130, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text strong>{vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价'}</Text>{vehicle.price.kind === 'reference' && <Tag color="orange">参考价格</Tag>}</Space> },
+          { title: '来源 / 库存', width: 165, render: (_, vehicle) => vehicle.source.kind === 'external' ? <Space orientation="vertical"><Tag color="blue">外部挂牌 · 库存未知</Tag><a href={vehicle.source.listingUrl} target="_blank" rel="noreferrer">{localizedText(vehicle.display?.platform, locale) ?? '来源平台未填写或待翻译'} ↗</a><Text type="secondary">采集：{formatTime(vehicle.fetchedAt)}</Text></Space> : String(vehicle.source.kind) === 'demo' ? <Tag color="gold">展示样例，非实际库存</Tag> : <Tag color={vehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[vehicle.availability]}</Tag> },
+          { title: '内容审核', width: 120, render: (_, vehicle) => <Space orientation="vertical" size={2}><Text>{vehicle.content.title.contentLocale}</Text><Tag color={vehicle.content.title.reviewed ? 'success' : 'default'}>{vehicle.content.title.reviewed ? '已审核' : '未审核'}</Tag></Space> },
+          { title: '核验', width: 105, render: (_, vehicle) => <Button type="link" icon={<ExportOutlined />} href={`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}&view=localized`} target="_blank" rel="noreferrer">查看数据</Button> },
         ]}
       />
     </Card>

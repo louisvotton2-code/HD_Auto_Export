@@ -36,8 +36,20 @@ describe('staff HTTP boundary', () => {
     await expect(request('/api/v1/admin/me', {parse(){ throw new Error('schema'); }})).rejects.toMatchObject({code:'INVALID_RESPONSE'});
   });
   it('supports native auth envelopes without a business data wrapper', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"user":{"id":"test"}}')));
-    await expect(signIn('staff@example.invalid', 'synthetic')).resolves.toBeUndefined();
+    const fetcher = vi.fn().mockResolvedValue(new Response('{"user":{"id":"test"}}'));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(signIn(' Staff@Example.invalid ', 'synthetic')).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledWith('/api/auth/sign-in/email', expect.objectContaining({
+      body: JSON.stringify({ email: 'staff@example.invalid', password: 'synthetic' }),
+    }));
+  });
+  it('maps short staff names to the internal email namespace', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetcher);
+    await signIn(' Staff-Editor ', 'synthetic');
+    expect(fetcher).toHaveBeenCalledWith('/api/auth/sign-in/email', expect.objectContaining({
+      body: JSON.stringify({ email: 'staff-editor@staff.hd-auto.invalid', password: 'synthetic' }),
+    }));
   });
   it('rejects third party URLs before sending cookies', async () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);

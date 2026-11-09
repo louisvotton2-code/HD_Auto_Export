@@ -36,7 +36,7 @@ for (const [width, columns] of [
     if (width >= 1024) expect(geometry.filters.right).toBeLessThanOrEqual(geometry.grid.left);
     else expect(geometry.filters.bottom).toBeLessThanOrEqual(geometry.grid.top);
     const cards = page.locator('main [data-part]');
-    expect(await cards.count()).toBe(44);
+    expect(await cards.count()).toBe(24);
     const actionFits = await cards.evaluateAll((nodes) =>
       nodes.every((node) => {
         const footer = node.querySelector('footer') ?? node.lastElementChild?.lastElementChild;
@@ -51,3 +51,41 @@ for (const [width, columns] of [
     expect(actionFits).toBe(true);
   });
 }
+
+test('native select leaves room for its arrow and opens aligned beneath the field', async ({ page }) => {
+  await page.goto('/en/parts/');
+  const select = page.locator('select[name="brand"]');
+  await select.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  const trigger = await select.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      padding: style.paddingRight,
+      arrow: style.backgroundPosition,
+      supportsPicker: CSS.supports('appearance', 'base-select'),
+    };
+  });
+  expect(trigger.padding).toBe('32px');
+  expect(trigger.arrow).toContain('12px');
+  if (!trigger.supportsPicker) return;
+
+  await select.click();
+  const geometry = await select.evaluate((node) => {
+    const field = node.getBoundingClientRect();
+    const firstOption = node.querySelector('option')!.getBoundingClientRect();
+    const picker = getComputedStyle(node, '::picker(select)');
+    const leftInset = parseFloat(picker.borderLeftWidth) + parseFloat(picker.paddingLeft);
+    return {
+      open: node.matches(':open'),
+      leftDelta: firstOption.left - leftInset - field.left,
+      gap: firstOption.top - field.bottom,
+      widthDelta: parseFloat(picker.width) - field.width,
+    };
+  });
+  expect(geometry.open).toBe(true);
+  expect(Math.abs(geometry.leftDelta)).toBeLessThan(1);
+  expect(Math.abs(geometry.widthDelta)).toBeLessThan(1);
+  expect(geometry.gap).toBeGreaterThan(0);
+  expect(geometry.gap).toBeLessThan(16);
+  await page.keyboard.press('Escape');
+  await expect(select).not.toHaveCSS('outline-style', 'none');
+});

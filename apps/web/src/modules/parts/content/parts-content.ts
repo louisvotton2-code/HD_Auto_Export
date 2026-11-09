@@ -19,6 +19,9 @@ type PartsCopy = {
   serviceTitle: string; serviceBody: string; services: [string, string, string];
   enquiryTitle: string; enquiryBody: string;
   categories: Record<PartCategory, string>;
+  demoNotice: string; demoSearched: string; demoPart: string; demoUnavailable: string;
+  demoPagination: string; previousPage: string; nextPage: string;
+  demoCount: (total: number, page: number, pages: number) => string;
 };
 
 export const partsContent = {
@@ -42,10 +45,14 @@ export const partsContent = {
     previousImage: '上一张图片', nextImage: '下一张图片', image: (n) => `查看第${n}张图片`,
     related: '更多相关配件', relatedBody: '同一类别的配件资料，具体适配请按配件号确认。', save: '收藏配件', unsave: '取消收藏配件',
     favorites: '已收藏', allParts: '全部配件', favoritesEmpty: '暂无符合条件的收藏配件。可先收藏配件，或清除筛选后查看。',
-    stats: ['配件资料', '配件类别', '参考价币种'], quickBrowse: '按类别快速浏览',
+    stats: ['演示配件数', '配件类别', '参考价币种'], quickBrowse: '按类别快速浏览',
     serviceTitle: '从选型到交付，沟通每个细节', serviceBody: '告诉我们配件号与使用车型，一起确认采购和运输方案。',
     services: ['核对配件号与适配', '确认数量与报价', '沟通包装与运输'],
     enquiryTitle: '没有找到需要的配件？', enquiryBody: '把配件号、车辆信息或图片发给我们，沟通你需要的型号与数量。',
+    demoNotice: '配件目录演示。查询和翻页均保留当前展示样例。', demoSearched: '演示查询已完成。当前展示样例保持不变。',
+    demoPart: '演示配件', demoUnavailable: '暂不可询价', demoPagination: '演示分页',
+    previousPage: '上一页', nextPage: '下一页',
+    demoCount: (total, page, pages) => `演示共 ${total} 条 · 第 ${page} / ${pages} 页`,
     categories: { chassis: '底盘与车轮', transmission: '传动系统', components: '机电与通用部件', body: '车身与灯具' },
   },
   en: {
@@ -68,10 +75,14 @@ export const partsContent = {
     previousImage: 'Previous image', nextImage: 'Next image', image: (n) => `View image ${n}`,
     related: 'Related parts', relatedBody: 'Other records in this category. Confirm exact fitment by part number.', save: 'Save part', unsave: 'Unsave part',
     favorites: 'Saved parts', allParts: 'All parts', favoritesEmpty: 'No saved parts match these filters. Save a part or clear the filters to see more.',
-    stats: ['Part records', 'Categories', 'Reference currency'], quickBrowse: 'Browse by category',
+    stats: ['Demo part count', 'Categories', 'Reference currency'], quickBrowse: 'Browse by category',
     serviceTitle: 'Discuss every detail, from selection to delivery', serviceBody: 'Share the part number and vehicle information to plan sourcing and delivery.',
     services: ['Confirm part numbers and fitment', 'Agree quantities and pricing', 'Discuss packing and delivery'],
     enquiryTitle: 'Looking for another part?', enquiryBody: 'Send the part number, vehicle information or a photo to discuss the item and quantity you need.',
+    demoNotice: 'Catalog preview. Searches and page changes keep the same sample records.', demoSearched: 'Demo search complete. The sample records stay the same.',
+    demoPart: 'Sample part', demoUnavailable: 'Unavailable for enquiry', demoPagination: 'Demo pagination',
+    previousPage: 'Previous page', nextPage: 'Next page',
+    demoCount: (total, page, pages) => `${total} demo records · Page ${page} of ${pages}`,
     categories: { chassis: 'Chassis & wheels', transmission: 'Transmission', components: 'Assemblies & components', body: 'Body & lighting' },
   },
   ru: {
@@ -94,10 +105,14 @@ export const partsContent = {
     previousImage: 'Предыдущее изображение', nextImage: 'Следующее изображение', image: (n) => `Посмотреть изображение ${n}`,
     related: 'Другие детали', relatedBody: 'Другие записи этой категории. Совместимость уточняется по номеру детали.', save: 'Сохранить деталь', unsave: 'Убрать деталь',
     favorites: 'Сохранённые', allParts: 'Все запчасти', favoritesEmpty: 'Нет сохранённых деталей по этим условиям. Сохраните деталь или сбросьте фильтры.',
-    stats: ['Записей о деталях', 'Категорий', 'Валюта справочной цены'], quickBrowse: 'Выбрать категорию',
+    stats: ['Деталей в демокаталоге', 'Категорий', 'Валюта справочной цены'], quickBrowse: 'Выбрать категорию',
     serviceTitle: 'От подбора до доставки — обсудим детали', serviceBody: 'Сообщите номер детали и сведения об автомобиле для согласования заказа и доставки.',
     services: ['Номера деталей и совместимость', 'Количество и стоимость', 'Упаковка и доставка'],
     enquiryTitle: 'Нужна другая запчасть?', enquiryBody: 'Пришлите номер, сведения об автомобиле или фото, чтобы обсудить нужную деталь и количество.',
+    demoNotice: 'Демонстрационный каталог. Поиск и смена страницы сохраняют те же примеры.', demoSearched: 'Демонстрационный поиск завершён. Примеры остались прежними.',
+    demoPart: 'Пример детали', demoUnavailable: 'Недоступно для запроса', demoPagination: 'Страницы демокаталога',
+    previousPage: 'Предыдущая страница', nextPage: 'Следующая страница',
+    demoCount: (total, page, pages) => `${total} демозаписей · Страница ${page} из ${pages}`,
     categories: { chassis: 'Шасси и колёса', transmission: 'Трансмиссия', components: 'Узлы и компоненты', body: 'Кузов и свет' },
   },
 } satisfies Record<Locale, PartsCopy>;

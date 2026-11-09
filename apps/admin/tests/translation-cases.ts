@@ -21,7 +21,7 @@ const publishButton = (page: Page) => page.getByRole('button', { name: /发布�
 function requestSnapshot(route: Route) { return { key: route.request().headers()['idempotency-key'], body: route.request().postData() }; }
 async function openReview(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '三语与发布'); }
 async function signInAgain(page: Page) {
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -160,7 +160,7 @@ test('translation a first 401 requests login and leaves saved source text unchan
   const record = chineseVehicle(); const api = await installApi(page, { items: [record] }); let calls = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => { calls++; api.authenticated = false; return reply(route, error('UNAUTHENTICATED'), 401); });
   await openReview(page, record); await mtButton(page).click();
-  await expect(page.getByLabel('工作邮箱')).toBeVisible();
+  await expect(page.getByLabel('账号或工作邮箱')).toBeVisible();
   await signInAgain(page);
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('描述原文', { exact: true })).toHaveValue(record.draft.content.description.sourceText!);
@@ -179,7 +179,7 @@ test('translation an ambiguous request retries its frozen version and key after 
   await openReview(page, record); await mtButton(page).click();
   await expect(page.getByRole('button', { name: /重试原翻译请求$/ })).toBeVisible();
   await page.getByRole('button', { name: /重试原翻译请求$/ }).click();
-  await expect(page.getByLabel('工作邮箱')).toBeVisible(); await signInAgain(page);
+  await expect(page.getByLabel('账号或工作邮箱')).toBeVisible(); await signInAgain(page);
   await page.getByRole('button', { name: /重试原翻译请求$/ }).click();
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Machine generated title');
   expect(calls).toHaveLength(3); expect(calls[1]).toEqual(calls[0]); expect(calls[2]).toEqual(calls[0]);

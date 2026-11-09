@@ -48,9 +48,12 @@ describe('草稿表单与统一契约', () => {
   });
   it('切到待询价时清空金额但保留价格包含项目', () => {
     const draft = makeVehicleDraftFixture();
+    draft.price.includes = [' 已有范围 ', ' 已有范围 '];
+    draft.facts.location = { country: 'CN', city: ' 成都 ', displayName: ' 已有公开说明 ' };
     const result = formToDraft(draft, { ...draftToForm(draft), priceKind: 'on_request' });
     expect(result.price.money).toBeNull();
     expect(result.price.includes).toEqual(draft.price.includes);
+    expect(result.facts.location).toEqual(draft.facts.location);
   });
   it('保留年精度，不把首次登记填成制造日期', () => {
     const draft = emptyDraft();

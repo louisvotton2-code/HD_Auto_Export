@@ -3,6 +3,7 @@ import { hasLocale } from 'next-intl';
 import { notFound } from 'next/navigation';
 import { setRequestLocale } from 'next-intl/server';
 import { routing } from '@/i18n/routing';
+import { DetailScrollTop } from '@/shared/ui/detail-scroll-top';
 import { localizedAlternates } from '@/shared/config/site';
 import { PartDetail, partsContent, partHref, parsePartQuantity } from '@/modules/parts';
 import { getPart, listParts } from '@/modules/parts/server';
@@ -28,5 +29,8 @@ export default async function PartPage({ params, searchParams }: Props) {
   if (quantity === null) notFound();
   const all = await listParts();
   const related = all.filter((item) => item.slug !== part.slug && item.category === part.category).slice(0, 4);
-  return <PartDetail key={`${part.slug}:${quantity}`} part={part} locale={locale} related={related} knownPartIds={all.map((item) => item.slug)} initialQuantity={quantity} />;
+  return <>
+    <DetailScrollTop path={partHref(locale, part.slug)} />
+    <PartDetail key={`${part.slug}:${quantity}`} part={part} locale={locale} related={related} knownPartIds={all.map((item) => item.slug)} initialQuantity={quantity} />
+  </>;
 }

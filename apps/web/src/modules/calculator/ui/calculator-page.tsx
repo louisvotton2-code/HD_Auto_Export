@@ -529,7 +529,6 @@ export function CalculatorPage({
                       <option value="used">{t('usedVehicle')}</option>
                       <option value="new">{t('newVehicle')}</option>
                     </select>
-                    <Icon name="chevron" size={15} />
                   </div>
                   <small className="condition-help">{t('conditionHelp')}</small>
                 </div>
@@ -566,7 +565,6 @@ export function CalculatorPage({
                             <option value="individual">{t('personal')}</option>
                             <option value="company">{t('company')}</option>
                           </select>
-                          <Icon name="chevron" size={15} />
                         </div>
                       </div>
                     )}
@@ -587,7 +585,6 @@ export function CalculatorPage({
                             </option>
                           ))}
                         </select>
-                        <Icon name="chevron" size={15} />
                       </div>
                     </div>
                     {field('customsDate', t('customsDate'), { type: 'date' })}
@@ -606,7 +603,6 @@ export function CalculatorPage({
                             <option value="left">{t('left')}</option>
                             <option value="right">{t('right')}</option>
                           </select>
-                          <Icon name="chevron" size={15} />
                         </div>
                       </div>
                     )}

@@ -841,19 +841,25 @@ test('HD Auto Export uses its logo and real contact links; account numbers are c
     'https://t.me/HD_Auto_CN',
   );
   await expect(footer.getByRole('link', { name: /^Telegram/ })).toContainText('@HD_Auto_CN');
-  await expect(footer.getByRole('link', { name: /Instagram|微信/ })).toHaveCount(0);
-  await expect(page.locator('a[href*="instagram.com"]')).toHaveCount(0);
+  await expect(footer.getByRole('link', { name: /^Instagram/ })).toHaveAttribute(
+    'href',
+    'https://www.instagram.com/hongding_auto/',
+  );
+  await expect(footer.getByRole('link', { name: /^TikTok/ })).toHaveAttribute(
+    'href',
+    'https://www.tiktok.com/@votton.louis?is_from_webapp=1&sender_device=pc',
+  );
+  await expect(footer.getByRole('list', { name: '付款方式参考' })).toContainText('Mastercard');
+  await expect(footer.getByText('请先向销售确认订单可用的付款方式。')).toBeVisible();
 
-  for (const platform of ['Instagram', '微信']) {
-    const button = footer.getByRole('button', { name: `复制${platform}联系号码`, exact: true });
-    await expect(button).toContainText('18215932610');
-    await page.evaluate(() => navigator.clipboard.writeText(''));
-    await button.click();
-    await expect
-      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-      .toBe('18215932610');
-    await expect(button).toContainText('已复制');
-  }
+  const button = footer.getByRole('button', { name: '复制微信联系号码', exact: true });
+  await expect(button).toContainText('18215932610');
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await button.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe('18215932610');
+  await expect(button).toContainText('已复制');
 });
 
 test('an unknown destination returns HTTP 404', async ({ page }) => {

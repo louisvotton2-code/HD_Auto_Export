@@ -285,7 +285,7 @@
   font-weight: 500;
 }
 .footerNavigation h2,
-.footer:global(.hd-footer) .footerContacts h2 {
+.footer:global(.hd-footer) .footerContacts :is(h2, h3) {
   margin: 0 0 16px;
   color: #f5f0eb;
   font-size: 14px;
@@ -306,6 +306,31 @@
 .footerNav > a {
   padding-block: 2px;
   transition: color 200ms;
+}
+.footer:global(.hd-footer) .footerContacts h3 {
+  margin-top: 16px;
+  font-size: 12px;
+}
+.footerPayment ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.footerPayment li {
+  padding: 5px 8px;
+  border: 1px solid #4a4a4a;
+  border-radius: 5px;
+  color: #f0e9e2;
+  font-size: 11px;
+}
+.footerPayment p {
+  color: #aaa5a0;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 8px;
 }
 .footerContacts :global(.hd-contact-grid) {
   display: grid;

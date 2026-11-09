@@ -26,7 +26,7 @@ async function setup(t:TestContext,trustProxy='false') {
     if(sql==='SELECT id,name,role,banned FROM staff WHERE id=$1') {
       return {rows:[{id:'traffic-test-staff',name:'Test editor',role:'editor',banned:false}],rowCount:1};
     }
-    if(sql.includes('FROM home_config h') && sql.includes('WHERE h.id=1')) {
+    if(typeof sql === 'string' && sql.includes('FROM home_config h') && sql.includes('WHERE h.id=1')) {
       return {rows:[{id:1}],rowCount:1};
     }
     throw new Error('Unexpected database query in a traffic-limit test.');

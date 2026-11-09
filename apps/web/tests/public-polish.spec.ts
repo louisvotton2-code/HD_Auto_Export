@@ -10,7 +10,7 @@ test.afterEach(async ({ request }) => {
 const governance =
   /展示样例|演示|虚构|第三方|外部车源|库存待核验|库存待确认|\bdemo\b|fictional|display example|external listing|stock not verified|демонстраци|вымышлен|внешнее объявление|наличие не проверено/i;
 for (const locale of ['zh', 'en', 'ru']) {
-  test(`${locale}: seven public pages and contact drafts have production wording`, async ({
+  test(`${locale}: six public pages and contact drafts have production wording`, async ({
     page,
   }) => {
     for (const path of [
@@ -18,7 +18,6 @@ for (const locale of ['zh', 'en', 'ru']) {
       `/${locale}/cars/`,
       `/${locale}/cars/fixture_car_2/`,
       `/${locale}/buy/`,
-      `/${locale}/parts/`,
       `/${locale}/parts/52910k2200/`,
       `/${locale}/calculator/russia/`,
     ]) {

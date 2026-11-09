@@ -1,4 +1,4 @@
-import { ApiErrorSchema } from '@hd/contracts/admin';
+import { ApiErrorSchema, staffLoginEmail } from '@hd/contracts/admin';
 
 const messages: Record<string, string> = {
   INVALID_REQUEST: '请检查填写内容后重试。',
@@ -70,7 +70,8 @@ export async function request<T>(path: string, schema: { parse(data: unknown): T
 }
 
 // Better Auth responses deliberately do not use the business envelope.
-export async function signIn(email: string, password: string): Promise<void> {
+export async function signIn(login: string, password: string): Promise<void> {
+  const email = staffLoginEmail(login);
   await send('/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify({ email, password }) });
 }
 export async function signOut(): Promise<void> {

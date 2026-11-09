@@ -5,9 +5,9 @@
 .field{min-width:0;display:grid;gap:6px}
 .field label{display:flex;align-items:baseline;flex-wrap:wrap;justify-content:space-between;gap:3px 8px;font-size:11px;color:#bbb}
 .field label span{font-size:9px;color:#888}
-.field input,.field select{font:inherit;min-height:40px;width:100%;min-width:0;box-sizing:border-box;border:1px solid #ffffff17;border-radius:8px;background:#ffffff07;color:#eee;padding:9px 10px;transition:border-color .2s,background .2s}
-.field select{padding-right:22px;color-scheme:dark;white-space:normal}
-.field input:focus-visible,.field select:focus-visible{outline:2px solid #b67749;outline-offset:2px;background:#ffffff0c}
+.field input,.field select{font:inherit;min-height:40px;width:100%;min-width:0;box-sizing:border-box;border:1px solid #ffffff17;border-radius:8px;background-color:#ffffff07;color:#eee;padding:9px 10px;transition:border-color .2s,background .2s}
+.field select{color-scheme:dark;white-space:normal}
+.field input:focus-visible,.field select:focus-visible{outline:2px solid #b67749;outline-offset:2px;background-color:#ffffff0c}
 .field input[aria-invalid=true]{border-color:#df7771}
 .priceRow{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px}
 .note{font-size:10px;line-height:1.7;color:#999;margin:0;overflow-wrap:anywhere}

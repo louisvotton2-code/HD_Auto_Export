@@ -14,7 +14,7 @@ import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createDatabase} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
-import {createStaff,setStaffEnabled} from '../src/staff-cli.js';
+import {changeStaffLogin,createStaff,setStaffEnabled} from '../src/staff-cli.js';
 import {VehicleTranslator} from '../src/vehicles/translation.js';
 
 const baseUrl=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
@@ -827,6 +827,29 @@ test('new vehicle receipts remain readable by the old strict DTO and preserve im
   assert.deepEqual((await runtime.db.pool.query('SELECT response,expires_at,request_hash FROM idempotency_keys WHERE actor_id=$1 AND operation=$2 AND key=$3',[editorId,'vehicle.create',key])).rows[0],stored);
 });
 
+test('changing a staff login preserves identity and role, rotates credentials and revokes sessions',async()=>{
+  const login = (email: string, secret: string) => call({
+    method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password:secret},
+  });
+  const previous = await login('admin@example.invalid', password);
+  assert.equal(previous.statusCode,200);
+  const oldCookie = previous.cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  const before = await call({method:'GET',url:'/api/v1/admin/me',headers:{cookie:oldCookie,origin}});
+  assert.equal(before.statusCode,200);
+  const replacement = 'Synthetic_replacement_472!';
+  await assert.rejects(changeStaffLogin(runtime.db,'admin@example.invalid','editor@example.invalid',replacement));
+  assert.equal((await call({method:'GET',url:'/api/v1/admin/me',headers:{cookie:oldCookie,origin}})).statusCode,200);
+  await changeStaffLogin(runtime.db,'admin@example.invalid','test-admin',replacement);
+  assert.equal((await login('admin@example.invalid',password)).statusCode,401);
+  assert.equal((await login('test-admin@staff.hd-auto.invalid',password)).statusCode,401);
+  assert.equal((await call({method:'GET',url:'/api/v1/admin/me',headers:{cookie:oldCookie,origin}})).statusCode,401);
+  const current = await login('test-admin@staff.hd-auto.invalid',replacement);
+  assert.equal(current.statusCode,200);
+  const me = await call({method:'GET',url:'/api/v1/admin/me',headers:{cookie:current.cookies.map(c => `${c.name}=${c.value}`).join('; '),origin}});
+  assert.equal(me.statusCode,200);
+  assert.equal(me.json().data.id,before.json().data.id);
+  assert.equal(me.json().data.role,'admin');
+});
 test('disabled staff sessions fail immediately and sign-out invalidates the session',async()=>{
   await setStaffEnabled(runtime.db,'editor@example.invalid',false);
   assert.equal((await call({method:'GET',url:'/api/v1/admin/me',headers:headers()})).statusCode,401);

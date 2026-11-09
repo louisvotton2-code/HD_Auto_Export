@@ -24,12 +24,16 @@ type Operation = 'availability' | 'publish' | 'archive';
 const operationLabels = { availability: '库存核验', publish: '发布', archive: '下架' };
 const localeLabels = { zh: '中文', en: '英文', ru: '俄文' };
 
+function proposedAvailability(vehicle: AdminVehicle): Availability {
+  return vehicle.publicationState === 'draft' && vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null ? 'available' : vehicle.availability;
+}
+
 export function VehicleActions({ vehicle, hasUnsavedChanges, disabled = false, onUpdated, onConflict, onLocalizationIssue, onBusyChange }: Props) {
   const staff = useOutletContext<StaffMe>();
   const { modal, message: toast } = App.useApp();
   const canWrite = staff.permissions.includes('vehicles:write');
   const canPublish = staff.permissions.includes('vehicles:publish');
-  const [availability, setAvailability] = useState<Availability>(vehicle.availability);
+  const [availability, setAvailability] = useState<Availability>(() => proposedAvailability(vehicle));
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [activeOperation, setActiveOperation] = useState<Operation | 'reconcile' | null>(null);
@@ -57,14 +61,16 @@ export function VehicleActions({ vehicle, hasUnsavedChanges, disabled = false, o
   const locked = unconfirmed !== null;
   const unavailable = disabled || hasUnsavedChanges || busy || confirming || locked;
   const publicationStatus = publicationControlState(vehicle);
+  const canReadPublic = vehicle.publicationState === 'published';
+  const publicUrl = `/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}&view=localized`;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; confirmation.current?.cancel(); parentBusy.current?.(false); }; }, []);
   useEffect(() => { parentBusy.current?.(busy || confirming || locked); }, [busy, confirming, locked]);
-  useEffect(() => { setAvailability(vehicle.availability); }, [vehicle.availability, vehicle.version]);
+  useEffect(() => { setAvailability(proposedAvailability(vehicle)); }, [vehicle.id, vehicle.availability, vehicle.availabilityCheckedAt, vehicle.publicationState, vehicle.version]);
   useEffect(() => {
     publicRequest.current += 1; publicInFlight.current = false;
     setPublicVehicle(null); setPublicError(''); setPublicLoading(false);
-  }, [vehicle.version, locale]);
+  }, [vehicle.id, vehicle.version, locale]);
 
   async function confirmAction(title: string, content: string, danger = false): Promise<boolean> {
     if (confirmation.current || !mounted.current) return false;
@@ -184,17 +190,17 @@ export function VehicleActions({ vehicle, hasUnsavedChanges, disabled = false, o
   }
 
   async function readPublic() {
-    if (publicInFlight.current) return;
+    if (!canReadPublic || publicInFlight.current) return;
     publicInFlight.current = true;
     const sequence = ++publicRequest.current;
     setPublicLoading(true); setPublicError(''); setPublicVehicle(null);
     try {
-      const response = await request(`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}`, PublicVehicleResponseSchema);
+      const response = await request(publicUrl, PublicVehicleResponseSchema);
       if (mounted.current && sequence === publicRequest.current) { setPublicVehicle(response.data); void toast.success('已读取当前公开内容。'); }
     } catch (failure) {
       if (mounted.current && sequence === publicRequest.current) {
-        const missing = failure instanceof ApiClientError && failure.status === 404;
-        const detail = missing ? '公开接口返回 404：这辆车尚未发布或已经下架。' : failure instanceof Error ? failure.message : '读取公开数据失败。';
+        const missing = failure instanceof ApiClientError && failure.code === 'NOT_FOUND';
+        const detail = missing ? '当前没有这个语言的公开版本，或车辆的发布状态已变化。可切换语言或刷新页面后重试。' : failure instanceof Error ? failure.message : '读取公开数据失败。';
         setPublicError(detail); if (missing) void toast.info('当前没有可读取的公开记录。'); else void toast.error(detail);
       }
     } finally { if (sequence === publicRequest.current) { publicInFlight.current = false; if (mounted.current) setPublicLoading(false); } }
@@ -244,22 +250,22 @@ export function VehicleActions({ vehicle, hasUnsavedChanges, disabled = false, o
       {canWrite && !allowsPending && <div className={styles.inventory}>
         <Form.Item label="核验后的库存状态" htmlFor="verified-availability"><Select id="verified-availability" aria-label="核验后的库存状态" value={availability} disabled={unavailable} onChange={setAvailability} options={Object.entries(availabilityLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
         <Button icon={<SafetyCertificateOutlined />} loading={busy && activeOperation === 'availability'} disabled={unavailable} onClick={() => void perform('availability')}>核验并更新库存</Button>
-        <Typography.Text type="secondary">当前：{availabilityLabels[vehicle.availability]} · 最近核验：{formatTime(vehicle.availabilityCheckedAt)}</Typography.Text>
+        <Typography.Text type="secondary">当前：{availabilityLabels[vehicle.availability]} · 最近核验：{formatTime(vehicle.availabilityCheckedAt)}。请按实际库存确认后更新。</Typography.Text>
       </div>}
       <div className={styles.publishBar}>
         <Space wrap>{canPublish && <Button type="primary" size="large" icon={<CloudUploadOutlined />} disabled={unavailable || publicationStatus.blocked} loading={busy && activeOperation === 'publish'} onClick={() => void perform('publish')}>{hasUnsavedChanges ? '先保存当前修改' : publicationStatus.actionLabel}</Button>}{canWrite && <Button danger icon={<StopOutlined />} loading={busy && activeOperation === 'archive'} disabled={unavailable || vehicle.publicationState === 'archived'} onClick={() => void perform('archive')}>下架车辆</Button>}</Space>
         <Typography.Text type="secondary">发布后更新公开内容，下架立即撤销公开访问。</Typography.Text>
       </div>
     </Card>
-    <Card className={styles.publicArea} title={<Space><EyeOutlined />当前公开内容</Space>} extra={<Button type="link" icon={<LinkOutlined />} href={`/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}`} target="_blank" rel="noreferrer">查看公开接口响应 ↗</Button>}>
-      <div className={styles.publicToolbar}>
+    <Card className={styles.publicArea} title={<Space><EyeOutlined />官网公开内容</Space>} extra={canReadPublic && <Button type="link" icon={<LinkOutlined />} href={publicUrl} target="_blank" rel="noreferrer">查看公开接口响应 ↗</Button>}>
+      {canReadPublic ? <div className={styles.publicToolbar}>
         <Form.Item label="公开内容语言" htmlFor="public-content-locale"><Select id="public-content-locale" aria-label="公开内容语言" value={locale} onChange={setLocale} options={Object.entries(localeLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
-        <Button icon={<ReloadOutlined />} loading={publicLoading} onClick={() => void readPublic()}>读取公开数据</Button>
+        <Button icon={<ReloadOutlined />} loading={publicLoading} onClick={() => void readPublic()}>预览官网公开内容</Button>
         <Typography.Text type="secondary">仅展示当前发布版本，不包含未发布草稿与内部资料。</Typography.Text>
-      </div>
+      </div> : <Alert showIcon type="info" title={vehicle.publicationState === 'draft' ? '草稿尚未发布' : '车辆已下架'} description="发布后可在这里查看官网访客能读取的内容。" />}
       {publicError && <Alert showIcon type="info" title={publicError} />}
-      {!publicVehicle && !publicError && <div className={styles.publicEmpty}><EyeOutlined /><Typography.Text type="secondary">选择语言并读取，核对访客实际可以看到的内容。</Typography.Text></div>}
-      {publicVehicle && <article className={styles.publicCard}>
+      {canReadPublic && !publicVehicle && !publicError && <div className={styles.publicEmpty}><EyeOutlined /><Typography.Text type="secondary">选择语言后预览已发布的车辆资料。</Typography.Text></div>}
+      {canReadPublic && publicVehicle && <article className={styles.publicCard}>
         {String(publicVehicle.source.kind) === 'demo' && <Alert className={styles.notice} showIcon type="warning" title="展示样例，非实际库存" />}
         {publicVehicle.source.kind === 'external' && <Alert className={styles.notice} showIcon type="info" title={`外部挂牌 · ${publicVehicle.source.platform.name}`} description={<Space wrap><a href={publicVehicle.source.listingUrl} target="_blank" rel="noreferrer">查看原始挂牌 ↗</a><span>采集：{formatTime(publicVehicle.fetchedAt)}</span><span>外部资料不代表自有现货，译文未经人工审核。</span></Space>} />}
         <div className={styles.publicHeading}><div><Typography.Text type="secondary">{publicVehicle.stockCode}</Typography.Text><Typography.Title level={3}>{publicVehicle.content.title.text}</Typography.Title></div><Tag color={publicVehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[publicVehicle.availability]}</Tag></div>

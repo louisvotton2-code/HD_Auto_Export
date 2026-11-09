@@ -257,3 +257,13 @@ test('reset clears unapplied drafts and validation on the already-unfiltered URL
   await expect(form.locator('[name=model]')).toBeDisabled();
   await expect(page).toHaveURL(/\/en\/cars\/$/);
 });
+
+test('vehicle detail opens at the top from a scrolled catalog', async ({ page }) => {
+  await page.goto('/en/cars/');
+  const link = page.locator('main').getByRole('link', { name: 'View details', exact: true }).last();
+  await link.evaluate((node) => node.scrollIntoView({ block: 'start', behavior: 'instant' }));
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(100);
+  await link.click();
+  await expect(page).toHaveURL(/\/en\/cars\/fixture_car_\d+\/$/);
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
+});

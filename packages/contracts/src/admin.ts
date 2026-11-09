@@ -9,6 +9,15 @@ export * from './common.js';
 export * from './localization.js';
 export * from './catalog.js';
 
+export const StaffLoginSchema = z.string().trim().toLowerCase().pipe(
+  z.union([z.email(), z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/)]),
+);
+
+export function staffLoginEmail(input: string): string {
+  const login = StaffLoginSchema.parse(input);
+  return login.includes('@') ? login : `${login}@staff.hd-auto.invalid`;
+}
+
 export const LocalizedTextSchema = z.strictObject({
   text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
   kind: TranslationKindSchema,

@@ -63,7 +63,7 @@ test('brand login matches the public logo and fits desktop 900px and 320px with 
     await expect(page.getByRole('heading', { name: '登录员工工作台' })).toBeVisible();
     if (width <= 900) await expect(page.locator('.login-story')).toBeHidden();
     await expect.poll(() => page.locator('img.brand-logo:visible').evaluateAll(images => images.every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)) ).toBe(true);
-    await focusUncovered(page.getByLabel('工作邮箱'));
+    await focusUncovered(page.getByLabel('账号或工作邮箱'));
     await focusUncovered(page.getByLabel('密码', { exact: true }));
     const login = page.getByRole('button', { name: /登录工作台$/ });
     await focusUncovered(login); palette.push({ width, ...(await primaryContrast(login)) });

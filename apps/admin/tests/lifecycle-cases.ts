@@ -186,9 +186,9 @@ test('lifecycle unknown deletion survives a 401 retry and same-account reauthent
   await openDelete(page); await confirm(page, '删除');
   await expect(page.getByText('删除结果尚未确认', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /重试原删除请求$/ }).click();
-  await expect(page.getByRole('dialog').filter({ has: page.getByLabel('工作邮箱', { exact: true }) })).toBeVisible();
+  await expect(page.getByRole('dialog').filter({ has: page.getByLabel('账号或工作邮箱', { exact: true }) })).toBeVisible();
   expect(original.deletedAt).toBeNull();
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -209,9 +209,9 @@ test('lifecycle an initial explicit 401 performs no mutation and requires a fres
   });
   await page.goto(`/admin/vehicles/${original.id}`);
   await openDelete(page); await confirm(page, '删除');
-  await expect(page.getByLabel('工作邮箱', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('账号或工作邮箱', { exact: true })).toBeVisible();
   expect(original.deletedAt).toBeNull(); expect(api.lifecycle).toEqual([]);
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);

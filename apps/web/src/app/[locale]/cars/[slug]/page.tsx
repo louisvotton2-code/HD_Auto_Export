@@ -5,6 +5,7 @@ import { setRequestLocale } from 'next-intl/server';
 import { getMessages, getTranslations } from 'next-intl/server';
 import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
+import { DetailScrollTop } from '@/shared/ui/detail-scroll-top';
 import { publicVehicleMessages } from '@/modules/vehicles';
 import { countries } from '@/modules/calculator/config/countries';
 import { getPublicVehicleById, PublicApiError } from '@/modules/vehicles/server';
@@ -63,6 +64,7 @@ export default async function CarPage({ params }: Props) {
   const calculatorMessages = getVehicleCalculatorMessages(await getMessages());
   return (
     <ScopedMessagesProvider messages={calculatorMessages}>
+      <DetailScrollTop path={`${locale}:${slug}`} />
       <VehicleDetailPage
         key={`${locale}:${slug}`}
         locale={locale}

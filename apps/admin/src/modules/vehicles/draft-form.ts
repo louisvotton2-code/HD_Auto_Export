@@ -61,20 +61,20 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
     firstRegistration: partialDate(form.firstRegistration, form.registrationPrecision) as PartialDate | null,
     registrationStatus: form.registrationStatus, powertrain: form.powertrain,
     body: form.body || null, transmission: form.transmission || null,
-    location: !form.country.trim() && !form.city.trim() && !form.locationName.trim() ? null : { country: form.country.trim().toUpperCase(), city: nullable(form.city), displayName: nullable(form.locationName) },
+    location: form.country.trim() ? { country: form.country.trim().toUpperCase(), city: base.facts.location?.city ?? null, displayName: base.facts.location?.displayName ?? null } : null,
   };
   const factFields: Record<keyof VehicleDraftInput['facts'], (keyof DraftForm)[]> = {
     make: ['makeId', 'makeName'], model: ['modelId', 'modelName'], trim: ['trimId', 'trimName'],
     modelYear: ['modelYear'], mileageKm: ['mileageKm'], engineCc: ['engineCc'], powerKw: ['powerKw'],
     manufacturedAt: ['manufacturedAt', 'manufacturedPrecision'], firstRegistration: ['firstRegistration', 'registrationPrecision'],
-    registrationStatus: ['registrationStatus'], powertrain: ['powertrain'], body: ['body'], transmission: ['transmission'], location: ['country', 'city', 'locationName'],
+    registrationStatus: ['registrationStatus'], powertrain: ['powertrain'], body: ['body'], transmission: ['transmission'], location: ['country'],
   };
   for (const [key, keys] of Object.entries(factFields)) {
     if (unchanged(...keys)) Object.assign(result.facts, { [key]: structuredClone(base.facts[key as keyof typeof base.facts]) });
   }
-  const includes = form.includes.split('\n').map((value) => value.trim()).filter(Boolean);
+  const includes = result.price.includes;
   result.price = form.priceKind === 'on_request' ? { kind: 'on_request', money: null, includes } : { kind: form.priceKind, money: { amount: form.amount.trim(), currency: form.currency }, includes };
-  if (unchanged('priceKind', 'amount', 'currency', 'includes')) result.price = structuredClone(base.price);
+  if (unchanged('priceKind', 'amount', 'currency')) result.price = structuredClone(base.price);
   if (!unchanged('titleLanguage')) result.content.title.sourceLanguage = form.titleLanguage.trim();
   if (!unchanged('title')) result.content.title.sourceText = nullable(form.title);
   if (!unchanged('descriptionLanguage')) result.content.description.sourceLanguage = form.descriptionLanguage.trim();

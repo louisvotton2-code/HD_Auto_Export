@@ -3,6 +3,7 @@ import './lifecycle-cases';
 import './translation-cases';
 import './brand-cases';
 import './localization-cases';
+import './vehicle-entry-cases';
 import { expect, test } from '@playwright/test';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
@@ -13,10 +14,14 @@ test('initial authentication, native auth error and explicit sign out', async ({
   await page.goto('/admin/vehicles');
   await expect(page.getByRole('heading', { name: '登录员工工作台' })).toBeVisible();
   await expect(page.getByRole('navigation')).toHaveCount(0);
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill(' Fixture-Editor ');
   await page.getByLabel('密码', { exact: true }).fill('incorrect-password');
-  await page.getByRole('button', { name: /登录工作台$/ }).click();
-  await expect(page.getByRole('alert')).toContainText('邮箱或密码不正确');
+  const [login] = await Promise.all([
+    page.waitForRequest(request => request.url().endsWith('/api/auth/sign-in/email')),
+    page.getByRole('button', { name: /登录工作台$/ }).click(),
+  ]);
+  expect(login.postDataJSON()).toMatchObject({ email: 'fixture-editor@staff.hd-auto.invalid' });
+  await expect(page.getByRole('alert')).toContainText('账号或密码不正确');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
@@ -89,7 +94,7 @@ test('an ambiguous create retry uses the original body and idempotency key', asy
   await expect(page.getByLabel('标题原文', { exact: true })).toBeDisabled();
   await page.getByRole('button', { name: '重试原创建请求' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -199,7 +204,7 @@ test('session expiry locks the editor and same-account reauthentication preserve
   api.authenticated = false;
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByLabel('工作邮箱').fill('editor@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -216,7 +221,7 @@ test('signing in as another employee discards the previous employee unsaved memo
   await expect(page.getByRole('dialog')).toBeVisible();
   api.me.id = 'fixture_other_staff';
   api.me.name = '另一位测试员工';
-  await page.getByLabel('工作邮箱').fill('other@example.invalid');
+  await page.getByLabel('账号或工作邮箱').fill('other@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
