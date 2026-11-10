@@ -8,29 +8,29 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1",
-    "build": "node scripts/prepare-static-build.mjs && next build",
-    "typecheck": "next typegen && tsc --noEmit",
-    "check": "pnpm typecheck && pnpm check:boundaries && pnpm test",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "check:boundaries": "node --test scripts/check-boundaries.test.mjs && node scripts/check-boundaries.mjs",
-    "preview": "node scripts/serve-static.mjs"
-  },
-  "dependencies": {
-    "decimal.js": "10.6.0",
-    "next": "16.4.2",
-    "next-intl": "4.14.9",
-    "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "dev": "pnpm dev:web",
+    "build": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api build && pnpm --filter @hd/api openapi && pnpm --filter @hd/admin build && pnpm --filter @hd/web build",
+    "preview": "pnpm --filter @hd/web preview",
+    "typecheck": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api typecheck && pnpm --filter @hd/admin typecheck && pnpm --filter @hd/web typecheck",
+    "test": "pnpm --filter @hd/contracts build && pnpm --filter @hd/contracts test && pnpm --filter @hd/api test && pnpm --filter @hd/admin test && pnpm --filter @hd/web test",
+    "test:watch": "pnpm --filter @hd/web test:watch",
+    "test:e2e": "pnpm --filter @hd/web test:e2e && pnpm --filter @hd/admin test:e2e",
+    "check": "pnpm check:git-workflow && pnpm check:workspace && pnpm --filter @hd/contracts check && pnpm --filter @hd/api check && pnpm --filter @hd/api test:integration && pnpm --filter @hd/admin check && pnpm --filter @hd/web check",
+    "dev:api": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api dev",
+    "db:up": "docker compose -p hd-auto-be -f apps/api/compose.yaml up -d --wait",
+    "db:down": "docker compose -p hd-auto-be -f apps/api/compose.yaml down",
+    "check:git-workflow": "node --test scripts/git-workflow.test.mjs",
+    "hooks:install": "node scripts/git-workflow.mjs hooks-install",
+    "hooks:check": "node scripts/git-workflow.mjs hooks-check",
+    "verify:push": "node scripts/git-workflow.mjs verify",
+    "review:record": "node scripts/git-workflow.mjs review-record",
+    "prepare": "node scripts/git-workflow.mjs prepare",
+    "check:workspace": "node --test scripts/check-workspace.test.mjs && node scripts/check-workspace.mjs",
+    "check:boundaries": "pnpm check:workspace && pnpm --filter @hd/web check:boundaries",
+    "dev:admin": "pnpm --filter @hd/contracts build && pnpm --filter @hd/admin dev",
+    "dev:web": "pnpm --filter @hd/contracts build && pnpm --filter @hd/web dev --port 3317"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.1",
-    "@types/node": "^20.19.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "typescript": "^5.9.0",
-    "vitest": "^4.0.0"
+    "typescript": "^5.9.0"
   }
 }

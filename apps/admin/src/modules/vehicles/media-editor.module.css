@@ -1,0 +1,26 @@
+.editor { min-width: 0; }
+.uploadFields { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; }
+.uploadFields :global(.ant-select) { width: 100%; }
+.note { min-width: 0; }
+.externalSources { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 18px; }
+.externalSources :global(.ant-form-item) { min-width: 0; margin-bottom: 0; }
+.tasksCollapse { margin: 24px 0; }
+.tasks { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
+.tasks > li { min-width: 0; display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #eef1f4; }
+.tasks > li:last-child { padding-bottom: 0; border-bottom: 0; }
+.taskHeading { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.taskHeading > :first-child { min-width: 0; max-width: 100%; }
+.gallery { list-style: none; margin: 24px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 20px; }
+.gallery > li { min-width: 0; }
+.imageCard { overflow: hidden; height: 100%; }
+.imageCard :global(.ant-form-item) { margin-bottom: 14px; }
+.preview { position: relative; aspect-ratio: 4 / 3; background: #f0f3f5; overflow: hidden; }
+.preview :global(.ant-image), .preview :global(.ant-image-img) { display: block; width: 100%; height: 100%; object-fit: cover; }
+.previewFallback { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.imageTags { position: absolute; top: 12px; left: 12px; pointer-events: none; display: flex; gap: 4px; }
+.cardActions { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.empty { padding: 28px 0; }
+.removed { margin-top: 24px; }
+.removed .tasks { margin-top: 18px; }
+.footerNote { margin: 20px 0 0 !important; font-size: 12px; }
+@media (max-width: 600px) { .uploadFields { grid-template-columns: minmax(0, 1fr); gap: 0; }.gallery { gap: 14px; }.taskHeading { align-items: flex-start; } }

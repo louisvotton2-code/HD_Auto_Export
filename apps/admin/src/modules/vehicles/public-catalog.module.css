@@ -1,0 +1,15 @@
+.page { display: grid; grid-template-columns: minmax(0,1fr); gap: 22px; min-width: 0; }
+.page > * { min-width: 0; }
+.heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.heading h2 { margin: 4px 0 10px !important; }
+.eyebrow { font-size: 11px; letter-spacing: .14em; color: #89671a; }
+.filters { display: grid; grid-template-columns: minmax(90px,.65fr) repeat(3,minmax(140px,1fr)) auto; align-items: end; gap: 16px; }
+.filters label { display: grid; gap: 8px; min-width: 0; }
+.filterHint { margin: 14px 0 0 !important; font-size: 12px; }
+.thumbnail { width: 80px; height: 58px; overflow: hidden; border-radius: 8px; flex: none; background: #f3f0e8; }
+.thumbnail img { object-fit: cover; }
+.asOf { font-size: 12px; }
+.page :global(.ant-table-cell) { overflow-wrap: anywhere; }
+.displayAudit { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .filters { grid-template-columns: repeat(2,minmax(0,1fr)); }.asOf { display: none; } }
+@media (max-width: 540px) { .filters { grid-template-columns: minmax(0,1fr); }.heading { flex-direction: column; }.heading h2 { font-size: 25px; } }

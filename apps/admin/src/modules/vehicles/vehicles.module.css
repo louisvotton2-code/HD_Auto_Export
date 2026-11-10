@@ -1,0 +1,63 @@
+.page { width: 100%; max-width: 1240px; margin: 0 auto; min-width: 0; }
+.heading { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin: 12px 0 28px; }
+.heading h1 { margin: 4px 0 10px; font-size: clamp(1.6rem, 3vw, 2.1rem); letter-spacing: -.04em; }
+.heading p { margin: 0; color: #716b5f; line-height: 1.7; }
+.eyebrow { font-size: .75rem; font-weight: 700; letter-spacing: .12em; color: #89671a !important; }
+.primaryLink, .primaryButton { display: inline-flex; align-items: center; justify-content: center; background: #94701f; color: white; padding: 12px 20px; border: 1px solid #94701f; border-radius: 8px; text-decoration: none; font-weight: 650; white-space: nowrap; }
+.primaryButton:disabled { opacity: .5; }
+.toolbar { display: flex; gap: 16px; align-items: end; flex-wrap: wrap; padding: 20px; background: white; border: 1px solid #e5dfd1; border-radius: 12px; }
+.toolbar label { display: grid; gap: 8px; font-size: .85rem; min-width: 160px; }
+.toolbar select { min-height: 42px; }
+.subtle { color: #716b5f; line-height: 1.7; font-size: .85rem; }
+.tableScroll { overflow-x: auto; max-width: 100%; border: 1px solid #e5dfd1; border-radius: 12px; background: white; }
+.table { border-collapse: collapse; width: 100%; min-width: 700px; font-size: .85rem; text-align: left; }
+.table th { padding: 15px 18px; color: #716b5f; background: #faf9f5; font-weight: 500; }
+.table td { padding: 20px 18px; border-top: 1px solid #eeebe3; line-height: 1.6; overflow-wrap: anywhere; max-width: 320px; }
+.table td a { color: #89671a; font-weight: 650; text-decoration: none; }
+.table td small { display: block; color: #827b6e; margin-top: 6px; }
+.badge { display: inline-flex; border-radius: 5px; padding: 4px 9px; background: #f6f0df; color: #775f27; white-space: nowrap; font-size: .75rem; }
+.statusGroup, .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.pagination { display: flex; justify-content: flex-end; align-items: center; gap: 18px; margin: 24px 0; font-size: .85rem; }
+.empty { background: white; padding: 60px 28px; border: 1px dashed #dcd3bf; border-radius: 12px; text-align: center; }
+.empty h2 { font-size: 1.1rem; }
+.empty p { color: #716b5f; line-height: 1.8; }
+.notice, .error, .success { margin: 20px 0; padding: 18px 22px; border-radius: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+.notice { background: #faf5e7; color: #6e5e39; border: 1px solid #e8dcc0; }
+.notice h2 { margin-top: 0; font-size: 1rem; }
+.notice p { margin: 8px 0; }
+.notice .tableScroll { margin: 16px 0; }
+.error { background: #fff1ed; color: #9b3b28; border: 1px solid #f0d8d1; }
+.error p, .success p { margin: 0; }
+.success { background: #e7f2e9; color: #245b38; }
+.backLink { display: inline-block; margin-bottom: 16px; color: #89671a; text-decoration: none; font-size: .85rem; }
+.formFields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.card { background: white; border: 1px solid #e5dfd1; border-radius: 12px; padding: 26px; margin-bottom: 20px; min-width: 0; }
+.card h2 { font-size: 1.05rem; margin: 0 0 8px; }
+.card > p { margin: 0 0 24px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 28px; }
+.field, .wideField { display: flex; flex-direction: column; gap: 8px; font-size: .86rem; min-width: 0; }
+.wideField { grid-column: 1 / -1; }
+.field input, .field select, .wideField textarea, .toolbar select { width: 100%; padding: 10px 12px; border: 1px solid #dcd7ca; border-radius: 7px; background: #fff; color: #29261f; font: inherit; box-sizing: border-box; min-width: 0; }
+.wideField textarea { resize: vertical; min-height: 96px; line-height: 1.6; }
+.field small, .wideField small { color: #827b6e; line-height: 1.6; }
+.field input[aria-invalid='true'], .wideField textarea[aria-invalid='true'] { border-color: #bd583f; background: #fff9f6; }
+.translations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+.translations article { background: #f8f6f0; padding: 18px; border-radius: 8px; min-width: 0; }
+.translations h3 { font-size: .9rem; margin: 0 0 16px; }
+.translations strong { font-size: .75rem; color: #716b5f; }
+.translations p { font-size: .85rem; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.saveBar { position: sticky; bottom: 0; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; background: #fff; border: 1px solid #e5dfd1; border-radius: 10px; box-shadow: 0 -6px 30px #30271308; color: #716b5f; font-size: .85rem; margin-bottom: 20px; }
+.dialog { width: min(calc(100% - 40px), 440px); box-sizing: border-box; padding: 28px; background: white; color: #29261f; border: 1px solid #dcd7ca; border-radius: 12px; line-height: 1.8; }
+.dialog::backdrop { background: #19181570; }
+.dialog h2 { font-size: 1.2rem; }
+@media (max-width: 700px) {
+  .heading { align-items: flex-start; flex-direction: column; gap: 18px; }
+  .heading h1 { font-size: 1.6rem; }
+  .grid, .translations { grid-template-columns: minmax(0, 1fr); }
+  .toolbar { padding: 16px; gap: 12px; }
+  .toolbar label { min-width: 0; width: 100%; }
+  .card { padding: 20px 16px; }
+  .saveBar { padding: 14px 12px; flex-wrap: wrap; }
+  .notice, .error, .success { padding: 16px; }
+  .primaryLink, .primaryButton { padding: 10px 16px; }
+}

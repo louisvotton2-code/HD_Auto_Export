@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh public reference exchange rates in the dedicated FX preview database
+ConditionPathExists=/etc/hd-auto/fx-preview.enabled
+
+[Service]
+Type=oneshot
+User=hd-fx-preview
+Group=hd-fx-preview
+EnvironmentFile=/etc/hd-auto/fx-preview.env
+WorkingDirectory=/opt/hd-auto-fx-preview/apps/api
+ExecStart=/opt/hd-auto-fx-preview/node/bin/node dist/external/fx-cli.js --refresh
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

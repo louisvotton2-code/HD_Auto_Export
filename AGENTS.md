@@ -2,30 +2,39 @@
 
 ## 开始工作
 
-1. 先读 `docs/开发进度.md`，以其确定当前阶段和真实可用能力。
-2. 再读 `README.md`、`docs/模块与维护指南.md`、`docs/技术架构.md`、`docs/开发交接规划.md`、`docs/计算器参考规则研究.md`。
-3. 遵循当前用户的分期要求，不因为长期规划存在就一次实现所有模块。
+1. 读 [接手导航](docs/README.md) 和 [当前进度](docs/开发进度.md)，确认实际阶段与环境。
+2. 加载 [hd-auto-development](.agents/skills/hd-auto-development/SKILL.md)；不支持 Skill 的 Agent 直接读取同一文件。
+3. 按导航选择本次角色文件，只补读任务相关契约与维护说明。旧规划、历史部署、税费研究不是所有角色的必读材料。
+4. 当前用户任务决定范围；不因长期路线图存在就一次实现所有模块。修改前检查工作树，保留既有改动。
+5. 每轮开工运行 `pnpm hooks:check`；新 clone 或未启用时执行 `pnpm hooks:install` 后复查。新 Agent 须从包含本轮规则的共同基线开始；旧分支缺脚本时先协调基线，不跳过保护。
+
+## 测试、审查与推送
+
+- 实现者先自测，再交独立 Reviewer Agent 审查。支持子 Agent 时主动分派只读 review；不支持时交 QA／PM 协调，不能用作者自评冒充独立审查。修复后复查，再保存提交并核对最终 SHA。
+- 推送前按 [测试与审查](docs/协作/测试与审查.md#推送前检查) 执行 `pnpm verify:push --base <基线SHA>`，登记独立报告并确认报告、测试与实际待推送提交一致。改动或新提交后原记录不能直接沿用。
+- 不自行使用 `--no-verify`、关闭／替换 hooks、伪造测试／审查记录或降低远端规则来绕过失败。失败先解决原因；Git 配置／沙箱权限问题按实际权限处理，不把安装失败记为已启用。
+- `main` 必须通过 PR 与 GitHub Actions 的 `verify` 检查，禁止直接推送、强推或删除。用户选择不增加 GitHub 审批账号；独立 Agent 审查在本地完成，不能伪称 GitHub 已验证 Agent 身份。
+- 检查通过不自动授予外部推送、合并或部署权限；沿用当前用户明确授权，并分别记录实际结果。
+
+## 已采纳的工程边界
+
+- 官网位于 `apps/web/`，当前为 Node／standalone 并消费公开 API；`apps/admin/` 与 `apps/api/` 为独立本地应用，能力与联调状态以各角色摘要和本轮日志为准，不把单端检查当跨端验收。
+- `packages/contracts/` 已提供公共 schema 与类型；`packages/calculator-core/` 仍预留，计算核心目前在官网内。产品资料在 `product/`，总进度和开发日志在 `docs/`。
+- 应用独立声明依赖，全仓共用 pnpm 锁文件；禁止应用互相导入内部源码、公共包依赖应用。业务数据由独立 API 管理，前台和后台通过 HTTP 契约调用。
+- 先读职责文件并确定本轮任务 ID；公共入口能定位职责，但不会授权 Agent 自动实施整条路线图。共享文件由本轮集成人协调。
+- 功能交付需要自测、独立代码审查和对应集成验收，详见 [测试与审查](docs/协作/测试与审查.md)。最终业务／视觉确认由用户完成，PM 按版本核对证据。
 
 ## 工作边界
 
-- 页面消费计算模块的公共接口，不在 React 组件中复制税率和公式。
-- 计算核心不得依赖 React、网络、系统当前时间或翻译；日期与汇率显式传入。
-- 未核验公式只能作明确标记的参考预览；缺失规则/费用不得当 0 或宣称完整落地价。
-- 三种语言必须使用同一套语义 key；语言、交易币种、目的国互相独立。
-- 不引入未经授权的外部车源接口、支付、账号、生产部署或后台。
-- 本目录是 HD Auto Export 独立仓库；不要在父目录的其他项目仓库中提交本站文件。
-- Git 推送不等于服务器部署。密钥、真实环境文件、数据库、服务器备份和 `docs/private/` 运维账册不得提交；按 `CONTRIBUTING.md` 和实际部署记录维护。
+- HD Auto 本机交付统一使用一个宿主入口 `127.0.0.1:3363`，同源提供官网、`/admin/` 和对应 API。后端、数据库及其他依赖通过内部网络访问。若隔离测试需要临时端口，验收结束即释放，确认替代可用后关闭属于本站的旧预览进程，保留数据与回退材料。
+
+- 本目录是 HD Auto Export 独立仓库，不在父目录其他仓库中提交本站文件。
+- 业务模块通过公共接口协作；页面不得复制税率和公式。计算核心不得依赖 React、网络、当前系统时间或翻译；日期与汇率显式输入。
+- 未核验规则只作明确标记的参考；缺失费用不得当 0 或声称完整落地价。三语语义 key 一致，语言、交易币种与目的国独立。
+- 当前官网 Node 运行时、后台静态产物与独立 API 须分别验收，不能用历史 `out/` 或旧静态部署模板代替。仅执行本轮分配范围，不把长期计划写成已实现。
+- 不扩大到未经授权的外部车源、支付、账号、真实消息或生产操作。当前不连接旧服务器；Git 推送不等于部署。
+- 凭据、真实环境文件、数据库、备份和 `docs/private/` 不提交；遵守 [CONTRIBUTING.md](.github/CONTRIBUTING.md)。
 
 ## 持续交接
 
-更新功能时同步更新 `docs/开发进度.md` 的阶段、任务状态、验证结果和下一步。改变关键技术方案时记录原因。完成回合前检查文档与代码一致；不要把未执行的检查写成通过。
-
-<!-- BEGIN:nextjs-agent-rules -->
-
-## This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
-
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
-
-<!-- END:nextjs-agent-rules -->
+每轮更新自己的角色进度摘要和一份开发日志，格式见 [接手导航](docs/README.md#每轮如何记录)。产品／项目管理汇总 `docs/开发进度.md`，避免多端重复改写。关键方案变化记录原因并更新对应维护文档；完成前检查文档与代码一致，不把未执行检查写成通过。

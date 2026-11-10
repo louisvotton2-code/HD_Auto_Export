@@ -1,0 +1,354 @@
+[
+  {
+    "oem": "52910K2200",
+    "name": "17-inch Aluminum Wheel",
+    "price": 227,
+    "img": "img/8045f2abe01fcaa8.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "529103V660",
+    "name": "17-inch Aluminum Wheel",
+    "price": 273,
+    "img": "img/e968028667c81c25.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910L1760",
+    "name": "17-inch Alloy Wheel",
+    "price": 302,
+    "img": "img/44436ce457d77af6.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910L1710",
+    "name": "17-inch Alloy Wheel",
+    "price": 283,
+    "img": "img/d4fb6e28b4880e8b.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "529102S400",
+    "name": "Hyundai Tucson ix 17-inch Steel Wheel",
+    "price": 92,
+    "img": "img/a8ee1fd992c564c6.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910G9100",
+    "name": "18-inch Aluminum Wheel (Wheel Cap Sold Separately)",
+    "price": 311,
+    "img": "img/c6dee8d4b9430f03.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910C1450",
+    "name": "Genuine 18-inch Black Polish Aluminum Wheel",
+    "price": 309,
+    "img": "img/2c7fc2a2c683da48.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910C1430",
+    "name": "18-inch Genuine Aluminum Wheel (Gunmetal Polish)",
+    "price": 338,
+    "img": "img/974e1d2c87be8531.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910G9720",
+    "name": "19-inch Dark Sputtering Sport Wheel (Front)",
+    "price": 436,
+    "img": "img/a591d349abe263e4.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910B8410",
+    "name": "19-inch Aluminum Wheel",
+    "price": 374,
+    "img": "img/738fa85a25bf4b25.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910AR100",
+    "name": "19-inch Genuine Aluminum Wheel",
+    "price": 391,
+    "img": "img/d24562a9ae161a34.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910BE400",
+    "name": "19-inch Genuine Alloy Wheel",
+    "price": 273,
+    "img": "img/3d1c6d712e4104e9.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52910S0200",
+    "name": "Kona N 19-inch Ultralight Forged Aluminum Wheel",
+    "price": 690,
+    "img": "img/25f105d54a77984c.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52914G9700",
+    "name": "19-inch Dark Sputtering Sport Wheel (Rear)",
+    "price": 437,
+    "img": "img/118d58ac16dbeb94.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "52906T6200",
+    "name": "Genesis GV80 22-inch Aluminum Wheel",
+    "price": 856,
+    "img": "img/52b7923986dfcc88.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "4328223130",
+    "name": "4th Gear Output Gear",
+    "price": 26,
+    "img": "img/72ac5b6b1c4f600c.jpg",
+    "brand": "Hyundai",
+    "category": "Transmission"
+  },
+  {
+    "oem": "589202D811",
+    "name": "ABS Module",
+    "price": 458,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "589203BB98",
+    "name": "ABS Module",
+    "price": 1737,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "58920C1360",
+    "name": "ABS Hydraulic Unit",
+    "price": 479,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "589203BB95",
+    "name": "ABS Module",
+    "price": 1872,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "589201R200",
+    "name": "ABS Module",
+    "price": 513,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "58920C1251",
+    "name": "ABS Module",
+    "price": 494,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "58920F5600",
+    "name": "ABS Module",
+    "price": 966,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "58920F5500",
+    "name": "ABS Module",
+    "price": 534,
+    "img": "img/74f30c898502657a.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "240002M802",
+    "name": "CVVD Total",
+    "price": 540,
+    "img": "img/a5e58391e09d9955.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "240002M801",
+    "name": "CVVD Total Assembly",
+    "price": 540,
+    "img": "img/852ddb9c5c186f9e.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "455014G130",
+    "name": "D-Ring",
+    "price": 6,
+    "img": "img/e31510df1a0422a4.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "456724J000",
+    "name": "D-Ring",
+    "price": 7,
+    "img": "img/63d03e5cfc4c49d7.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "455613D810",
+    "name": "D-Ring",
+    "price": 6,
+    "img": "img/245fe1b98ae98f47.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "456734J000",
+    "name": "D-Ring",
+    "price": 7,
+    "img": "img/949b7116d0c52f95.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "456634G600",
+    "name": "D-Ring",
+    "price": 6,
+    "img": "img/083a544cd0a0b01b.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "P00BWHEX",
+    "name": "Genesis (DH)",
+    "price": 28,
+    "img": "img/8c3cfcd785f790f5.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "P00BWJSV",
+    "name": "Genesis G80 (DH) Genuine Weatherstrip Rubber Molding (2016.7-2020.3)",
+    "price": 35,
+    "img": "img/d93a6b9d773d25de.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "P00BWHEE",
+    "name": "Genuine Genesis G90 Gasoline Fuel Filler Cap (One-Touch, New Type)",
+    "price": 28,
+    "img": "img/8c3cfcd785f790f5.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "54695T6050",
+    "name": "Left Front Wheel G Sensor",
+    "price": 84,
+    "img": "img/4a74757b2b29312b.jpg",
+    "brand": "Hyundai",
+    "category": "Chassis"
+  },
+  {
+    "oem": "P00BWSPB",
+    "name": "Hyundai Sonata (1991-1992) Genuine 9004 Halogen Headlight Bulb",
+    "price": 13,
+    "img": "img/e793d4d1bcec641f.jpg",
+    "brand": "Hyundai",
+    "category": "Body"
+  },
+  {
+    "oem": "1897702223AS",
+    "name": "KET_070_02F",
+    "price": 11,
+    "img": "img/4f54bbf9215150ae.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1894010221AS",
+    "name": "Connector",
+    "price": 9,
+    "img": "img/84710aa74b231da7.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1898004548AS",
+    "name": "Connector",
+    "price": 10,
+    "img": "img/a898263d884677e8.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1899802221AS",
+    "name": "KET Connector 250DL 02M",
+    "price": 11,
+    "img": "img/66263e72a3f8fe66.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "8898003403AS",
+    "name": "KET_SWP_06F",
+    "price": 11,
+    "img": "img/1013fd2517c764bd.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1879005997AS",
+    "name": "Connector",
+    "price": 23,
+    "img": "img/e661a51203f0d062.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1879006005AS",
+    "name": "Connector",
+    "price": 22,
+    "img": "img/d0cb278fb219b3f7.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  },
+  {
+    "oem": "1891303224AS",
+    "name": "KUM Connector CDR 03F 050",
+    "price": 6,
+    "img": "img/d235613589edcd07.jpg",
+    "brand": "Hyundai",
+    "category": "Engine"
+  }
+]

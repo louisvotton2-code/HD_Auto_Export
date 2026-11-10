@@ -1,0 +1,6 @@
+.panel, .compact { min-width: 0; }
+.current { width: 100%; min-width: 0; background: #fafcfd; }
+.current :global(.ant-descriptions-item-content) { overflow-wrap: anywhere; }
+.current :global(.ant-btn) { margin-top: 12px; max-width: 100%; white-space: normal; height: auto; min-height: 32px; }
+.compact :global(.ant-alert-description) { min-width: 0; }
+@media (max-width: 480px) { .compact :global(.ant-space), .panel :global(.ant-space) { max-width: 100%; }.compact :global(.ant-btn), .panel :global(.ant-btn) { white-space: normal; height: auto; min-height: 32px; } }

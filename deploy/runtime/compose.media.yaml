@@ -1,0 +1,19 @@
+# Enable only with API MEDIA_DELIVERY=nginx implementation.
+services:
+  api:
+    environment:
+      MEDIA_DELIVERY: nginx
+  proxy:
+    environment:
+      APP_UID: ${APP_UID:?set API media owner UID}
+      APP_GID: ${APP_GID:?set API media owner GID}
+    entrypoint: ['sh', '/etc/nginx/nginx-media-entrypoint.sh']
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT:?set absolute DATA_ROOT}/media
+        target: /srv/private-media
+        read_only: true
+        bind: {create_host_path: false}

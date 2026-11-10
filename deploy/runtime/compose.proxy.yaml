@@ -1,0 +1,23 @@
+# Optional: only with the new BE explicit-proxy configuration and a verified free subnet.
+# Pass this AFTER compose.yaml for every lifecycle command for that project.
+services:
+  api:
+    environment:
+      TRUST_PROXY: '${PROXY_IP:?set fixed proxy IPv4}/32,${WEB_IP:?set fixed web IPv4}/32'
+  web:
+    environment:
+      VEHICLE_API_TRUST_PROXY_IP: 'true'
+    networks:
+      default:
+        ipv4_address: ${WEB_IP}
+  proxy:
+    networks:
+      default:
+        ipv4_address: ${PROXY_IP}
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${PROXY_SUBNET:?set a free dedicated IPv4 subnet}
+          ip_range: ${PROXY_DYNAMIC_RANGE:?set dynamic range excluding the fixed proxy IP}
+          gateway: ${PROXY_GATEWAY:?set gateway outside the dynamic range}

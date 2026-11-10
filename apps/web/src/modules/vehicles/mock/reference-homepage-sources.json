@@ -1,0 +1,110 @@
+{
+  "sourcePage": "https://www.kmotors.shop/en",
+  "capturedOn": "2026-11-04",
+  "usage": "local-reference-demo-only",
+  "watermarks": "Preserved. No editing or replacement with unrelated vehicles.",
+  "assets": [
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture09/pic4119/41199850_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-avante-cn7-2023.jpg",
+      "bytes": 35549,
+      "sha256": "a565a689e89d8dd2e7d5d647b4723db480875cfbfaf431890512cd134234f155"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture06/pic4256/42562249_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-palisade-2020.jpg",
+      "bytes": 34165,
+      "sha256": "a95174862c922c7cbb718a1e4cbad78fecb0116c225ce816579d09d043264706"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture06/pic4076/40769262_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-grandeur-hg-2016.jpg",
+      "bytes": 37494,
+      "sha256": "6c6148ed498458b4d012190b95a98ba2a1aae5410c0547f31f34dc542b25014b"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture05/pic4295/42953405_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-grandeur-ig-2018.jpg",
+      "bytes": 30957,
+      "sha256": "84471e45e060e59ccc78d360ef6b269d511b998cec33348a77b79aea747a3783"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture08/pic4278/42786877_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-grandeur-ig-hybrid-2022.jpg",
+      "bytes": 30435,
+      "sha256": "9654af2f8b0967e6d1fecb4c1b1c8197f69a50b760cdb9d556fd109b7b4a8444"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture02/pic4282/42824343_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-kona-2018.jpg",
+      "bytes": 29982,
+      "sha256": "239e721a60ca21737bbf430bb98bf613c992db6ebc993c27ac4914034955e882"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture03/pic4253/42531809_001.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-grandeur-hybrid-gn7-2023.jpg",
+      "bytes": 25696,
+      "sha256": "8d4bd483a3f2d653f533d389c84e6e0080795472bb9d48d80747b7ef45afbaab"
+    },
+    {
+      "sourceUrl": "https://ci.encar.com/carpicture05/pic4255/42559711_027.jpg?impolicy=heightRate&rh=400&cw=640&ch=400&cg=Center&wtmk=https://ci.encar.com/wt_mark/w_mark_04.png",
+      "localPath": "/demo-vehicles/hyundai-tucson-2019.jpg",
+      "bytes": 34562,
+      "sha256": "9be62adcfd64b002733e859889ca024d218a9d3b669e954396b5a40945620bd7"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/kia-sorento/1.webp",
+      "localPath": "/demo-vehicles/popular-models/kia-sorento.webp",
+      "bytes": 38044,
+      "sha256": "43346ba7b4f96b68ea6d46b5361d9645681d5f697017a32599d8c84b7e04c1cc"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/sportage.jpg",
+      "localPath": "/demo-vehicles/popular-models/kia-sportage.jpg",
+      "bytes": 91043,
+      "sha256": "dc6122f5c7231d844d95c95c8b8bb52a489ba4499da2b73f19e6413af25c54fe"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/carnival.jpg",
+      "localPath": "/demo-vehicles/popular-models/kia-carnival.jpg",
+      "bytes": 78005,
+      "sha256": "4a567e4c95fb301e16bdc36e8d022d366705035e6b16a4151acbad7e71fa03ed"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/tucson.jpg",
+      "localPath": "/demo-vehicles/popular-models/hyundai-tucson.jpg",
+      "bytes": 43388,
+      "sha256": "05e3d36f1ac14f82ad7f7e6a4c7ae6f4b410123f37b5ef7858183e9bd58e8c10"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/palisade.jpg",
+      "localPath": "/demo-vehicles/popular-models/hyundai-palisade.jpg",
+      "bytes": 42465,
+      "sha256": "3f1ec453de8e126e4601b4e0c3ce2aec0436d5e3693854ef270f04f331be1d3e"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/santafe.jpg",
+      "localPath": "/demo-vehicles/popular-models/hyundai-santa-fe.jpg",
+      "bytes": 42353,
+      "sha256": "e01c3fd5243663455814a82e955bb851fcbf503536bb0f0bf2b9b30584668bc2"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/genesis-gv80.jpg",
+      "localPath": "/demo-vehicles/popular-models/genesis-gv80.jpg",
+      "bytes": 102497,
+      "sha256": "2d1e48a59c979eef7a1f65dd2d3f9d480e9bed5acd1fb445ea909538f6c68cbe"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/k5.jpg",
+      "localPath": "/demo-vehicles/popular-models/kia-k5.jpg",
+      "bytes": 39271,
+      "sha256": "147648c12794637a153f76195fa00655985eeb7c8017f66004a844d691030ff8"
+    },
+    {
+      "sourceUrl": "https://www.kmotors.shop/models/sonata.jpg",
+      "localPath": "/demo-vehicles/popular-models/hyundai-sonata.jpg",
+      "bytes": 44192,
+      "sha256": "8d72caf002a47fdc2e63b814b3a1d176dea52c19a99503ff64b88789696e76d2"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+.page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; min-width: 0; }
+.page > *, .page :global(.ant-card), .page :global(.ant-card-body) { min-width: 0; }
+.pageHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.pageHeader h2 { margin: 4px 0 10px !important; }
+.eyebrow { font-size: 11px; letter-spacing: .14em; color: #89671a; }
+.titles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
+.titles label { display: grid; gap: 8px; min-width: 0; }
+.thumbnail { width: 68px; height: 48px; overflow: hidden; border-radius: 7px; background: #f3f0e8; display: grid; place-items: center; color: #827b6e; font-size: 11px; flex: none; }
+.thumbnail img { object-fit: cover; }
+.saveBar { position: sticky; bottom: 16px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 22px; border: 1px solid #e5dfd1; border-radius: 12px; background: #fff; box-shadow: 0 8px 30px #30271310; }
+.publicSections { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
+.candidatePagination { display: flex; gap: 15px; justify-content: space-between; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+@media (max-width: 700px) { .page :global(.ant-card-head) { padding-block: 14px; }.page :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 12px; }.page :global(.ant-card-head-title) { white-space: normal; }.page :global(.ant-card-extra) { max-width: 100%; }.page :global(.ant-card-extra .ant-space) { flex-wrap: wrap; } .titles, .publicSections { grid-template-columns: minmax(0,1fr); }.pageHeader { flex-direction: column; }.saveBar { flex-wrap: wrap; padding: 14px; bottom: 0; }.candidatePagination { justify-content: center; } }

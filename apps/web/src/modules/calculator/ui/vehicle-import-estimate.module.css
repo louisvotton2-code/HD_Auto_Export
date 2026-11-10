@@ -1,0 +1,103 @@
+.panel{min-width:0;color:#ddd;font-size:12px;line-height:1.6}
+.intro{color:#999;margin:0 0 16px;font-size:11px}
+.fields{border:0;padding:0;margin:0;display:grid;gap:13px;min-width:0}
+.fields:disabled{opacity:.62}
+.field{min-width:0;display:grid;gap:6px}
+.field label{display:flex;align-items:baseline;flex-wrap:wrap;justify-content:space-between;gap:3px 8px;font-size:11px;color:#bbb}
+.field label span{font-size:9px;color:#888}
+.field input,.field select{font:inherit;min-height:40px;width:100%;min-width:0;box-sizing:border-box;border:1px solid #ffffff17;border-radius:8px;background-color:#ffffff07;color:#eee;padding:9px 10px;transition:border-color .2s,background .2s}
+.field select{color-scheme:dark;white-space:normal}
+.field input:focus-visible,.field select:focus-visible{outline:2px solid #b67749;outline-offset:2px;background-color:#ffffff0c}
+.field input[aria-invalid=true]{border-color:#df7771}
+.priceRow{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:8px}
+.note{font-size:10px;line-height:1.7;color:#999;margin:0;overflow-wrap:anywhere}
+.error{color:#f19b95;font-size:10px}
+.settings{border-top:1px solid #ffffff12;padding-top:12px;min-width:0}
+.settings summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;color:#c59a78;font-size:11px}
+.settings summary::-webkit-details-marker{display:none}
+.settings summary span{transition:transform .2s}
+.settings[open] summary span{transform:rotate(180deg)}
+.settingsFields{display:grid;gap:12px;padding-top:14px;min-width:0}
+.dateNote {
+  color: #f3c98a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #c9874a88;
+  border-radius: 10px;
+  background: #2d2015;
+  color: #ffd8a3;
+  line-height: 1.5;
+}
+.status > svg {
+  flex: none;
+  margin-top: 1px;
+}
+.status strong {
+  font-size: 13px;
+}
+.status ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.status li {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #ffc87919;
+  font-size: 11px;
+}
+.result {
+  min-width: 0;
+  margin-top: 18px;
+  padding: 13px;
+  border: 1px solid #4b8865;
+  border-radius: 13px;
+  background: #172c22;
+}
+.toolbar{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.toolbar h3,.additional h3{font-size:11px;color:#d0e9d9;font-weight:600;margin:0}
+.toolbar button{background:none;border:0;padding:4px 0;color:#a8ddb9;font:inherit;font-size:10px;cursor:pointer}
+.toolbar button:focus-visible,.fullTool:focus-visible,.settings summary:focus-visible{outline:2px solid #b67749;outline-offset:4px}
+.result :global(.fee-line){border-bottom:1px solid #ffffff0c;padding:0;min-width:0}
+.result :global(.fee-detail-toggle){width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start;text-align:left;background:none;border:0;padding:10px 0;color:inherit;font:inherit;cursor:pointer;min-width:0}
+.result :global(.fee-detail-toggle:focus-visible){outline:2px solid #b67749;outline-offset:3px}
+.result :global(.fee-detail-heading){display:grid;gap:3px;color:#d0e2d6;min-width:0;overflow-wrap:anywhere}
+.result :global(.fee-detail-hint){display:flex;align-items:center;gap:4px;font-size:9px;color:#a5c6b1}
+.result :global(.fee-values){display:grid;justify-items:end;gap:2px;min-width:0;text-align:right}
+.result :global(.fee-values strong){font-weight:500;font-size:11px;color:#ddd;overflow-wrap:anywhere}
+.result :global(.fee-values small){font-size:9px;color:#aac8b5}
+.result :global(.fee-usd){font-size:9px;color:#aac8b5}
+.result :global(.fee-method-panel){padding:4px 0 12px;font-size:10px;min-width:0}
+.result :global(.fee-method-panel[hidden]){display:none}
+.result :global(.fee-method-description){color:#c0d5c7;line-height:1.8;margin:0 0 8px;overflow-wrap:anywhere}
+.result :global(.fee-formula){display:grid;gap:4px;color:#bcdfc8}
+.result :global(.fee-formula code){font:inherit;line-height:1.8;white-space:normal;overflow-wrap:anywhere;background:#96d9aa14;padding:7px 8px;border-radius:6px}
+.total{display:grid;gap:5px;margin:16px 0;padding:15px 12px;border:1px solid #619d7873;border-radius:10px;background:#224334}
+.total>span:first-child{font-size:11px;color:#c4ead1}
+.total strong{font-size:22px;line-height:1.4;font-weight:700;color:#c9ffda;overflow-wrap:anywhere}
+.total strong small{font-size:11px;font-weight:400}
+.total>span{font-size:11px;color:#c4ead1}
+.total p{margin:2px 0 0;font-size:10px;color:#b6d7c1}
+.resultDateNote {
+  margin: 0 0 8px;
+  color: #f3c98a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.additional{margin:16px 0}
+.assumptions{padding-left:16px;margin:12px 0;color:#c3dbcb;font-size:10px;line-height:1.8}
+.result>.note{margin-top:10px;color:#b6d1c0}
+.fullTool{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;border-radius:999px;background:#b67749;color:#fff;text-decoration:none;font-size:11px;line-height:1.5;padding:12px 15px;transition:background .2s,box-shadow .2s}
+.fullTool:hover{background:#c78c5b;box-shadow:0 5px 15px #b6774920}
+@media(max-width:420px){.result :global(.fee-detail-toggle){grid-template-columns:minmax(0,1fr)}.result :global(.fee-values){justify-items:start;text-align:left}.total strong{font-size:24px}}
+@media(prefers-reduced-motion:reduce){.panel *{transition:none!important}}

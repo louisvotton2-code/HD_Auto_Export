@@ -1,0 +1,16 @@
+.editor { margin-top: 28px; min-width: 0; }
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.sourceAlert { margin-bottom: 20px; }
+.languages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.language { min-width: 0; background: #fcfdfd; }
+.language :global(.ant-card-head) { min-height: 52px; }
+.language :global(.ant-card-head-wrapper) { gap: 8px; }
+.language :global(.ant-card-head-title) { min-width: 0; }
+.language :global(.ant-form-item) { margin-bottom: 12px; }
+.language :global(.ant-card-extra) { margin-left: 0; }
+.language :global(.ant-tag) { margin-inline-end: 0; }
+.languageCode { font-size: 11px; line-height: 28px; width: 28px; text-align: center; display: inline-block; background: #eef3f6; color: #597083; border-radius: 6px; }
+.provenance { min-height: 28px; margin-bottom: 6px; font-size: 12px; }
+.copyButton { padding-inline: 0 !important; white-space: normal; }
+.review { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e8edf0; }
+@media (max-width: 1050px) { .languages { grid-template-columns: minmax(0, 1fr); }.language :global(.ant-card-head-wrapper) { flex-wrap: wrap; } }
