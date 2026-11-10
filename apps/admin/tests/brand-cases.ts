@@ -1,11 +1,10 @@
 /** Visual fixture checks only: no business data or translation provider is contacted. */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { installApi, vehicle } from './api-fixture';
 import { notes } from './ui-helpers';
 
-const directory = '/private/tmp/hd-ad-brand-evidence';
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 function contrastRatio(foreground: string, background: string) {
   const luminance = (value: string) => {
@@ -21,10 +20,9 @@ async function fits(page: Page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 async function capture(page: Page, name: string) {
-  await mkdir(directory, { recursive: true });
   await fits(page);
   await page.evaluate(() => scrollTo(0, 0));
-  await page.screenshot({ path: `${directory}/${name}.png`, fullPage: true, animations: 'disabled' });
+  await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true, animations: 'disabled' });
 }
 async function focusUncovered(locator: Locator) {
   await locator.focus(); await expect(locator).toBeFocused();
@@ -72,7 +70,7 @@ test('brand login matches the public logo and fits desktop 900px and 320px with 
   await page.setViewportSize({ width: 1440, height: 1000 });
   // The adjacent brand text supplies the name; a repeated image alt must not duplicate it.
   await expect.soft(page.locator('.brand-mark:visible').first()).toHaveAccessibleName(/^HD Auto Export\s*员工工作台$/);
-  await writeFile(`${directory}/palette-and-logo.json`, JSON.stringify({ logoSha256: sha(publicLogo), primary: palette }, null, 2));
+  await writeFile(test.info().outputPath('palette-and-logo.json'), JSON.stringify({ logoSha256: sha(publicLogo), primary: palette }, null, 2));
 });
 
 test('brand employee list and mobile navigation keep the logo and focused links unobscured', async ({ page }) => {
@@ -104,7 +102,7 @@ test('brand employee list and mobile navigation keep the logo and focused links 
   });
   const closeContrast = contrastRatio(closePalette.foreground, closePalette.background);
   expect(closeContrast, 'Navigation close icon contrast against its header').toBeGreaterThanOrEqual(3);
-  await writeFile(`${directory}/mobile-navigation-contrast.json`, JSON.stringify({ ...closePalette, ratio: closeContrast }, null, 2));
+  await writeFile(test.info().outputPath('mobile-navigation-contrast.json'), JSON.stringify({ ...closePalette, ratio: closeContrast }, null, 2));
   await capture(page, 'mobile-navigation-320');
   await close.click();
   await expect(drawer).toHaveCount(0);

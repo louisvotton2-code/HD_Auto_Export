@@ -1,6 +1,5 @@
 /** Browser contract simulations only. No cloud translation or operational data is used. */
 import { expect, test, type Page, type Route } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, translationSuggestions, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
@@ -27,13 +26,11 @@ async function signInAgain(page: Page) {
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }
 async function captureFixtureEvidence(page: Page, name: string) {
-  const directory = process.env.ADMIN_FIXTURE_EVIDENCE_DIR ?? '/private/tmp/hd-ad-i18n-evidence';
-  await mkdir(directory, { recursive: true });
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 844 : 1000 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: `${directory}/fixture-${name}-${width}.png`, fullPage: true, animations: 'disabled' });
+    await page.screenshot({ path: test.info().outputPath(`fixture-${name}-${width}.png`), fullPage: true, animations: 'disabled' });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 }
@@ -301,7 +298,7 @@ test('publication same-task double clicks create one confirmation and one reques
   await openReview(page, record);
   await publishButton(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
   await expect(page.getByRole('dialog', { name: '发布当前已保存的草稿？', exact: true })).toHaveCount(1); expect(calls).toBe(0);
-  if (process.env.ADMIN_FIXTURE_EVIDENCE_DIR) await captureFixtureEvidence(page, 'publish-confirmation');
+  if (process.env.ADMIN_CAPTURE_PUBLISH_CONFIRMATION === '1') await captureFixtureEvidence(page, 'publish-confirmation');
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
   await expect.poll(() => calls).toBe(1); await expect(publishButton(page)).toBeDisabled();
   release();

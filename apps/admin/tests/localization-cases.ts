@@ -1,7 +1,6 @@
 /** I18N02 browser contract simulations. No external translator or shared business data is contacted. */
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
 import { DisplayFieldSchema, type AdminVehicle, type DisplayField } from '@hd/contracts/admin';
 import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { PublicVehicleSchema, type DisplayText, type PublicVehicle } from '@hd/contracts/public';
@@ -11,7 +10,6 @@ import { notes, select, tab } from './ui-helpers';
 const id = '40000000-0000-4000-8000-000000000001';
 const priceId = '40000000-0000-4000-8000-000000000003';
 const path = `/api/v1/admin/vehicles/${id}/localization`;
-const evidenceDirectory = '/private/tmp/hd-ad-i18n02-evidence';
 function record(): AdminVehicle {
   const item = { ...vehicle(), id }; item.draft.media = [];
   item.draft.facts.make = { id: 'toyota', name: '丰田' };
@@ -28,12 +26,11 @@ function field(ref: string, sourceText: string, sourceLanguage = 'zh'): DisplayF
 function requestSnapshot(route: Route) { return { key: route.request().headers()['idempotency-key'], body: route.request().postData() }; }
 async function openLocalization(page: Page) { await page.goto(`/admin/vehicles/${id}`); await tab(page, '公开字段多语'); }
 async function capture(page: Page, name: string) {
-  await mkdir(evidenceDirectory, { recursive: true });
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 844 : 1000 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: `${evidenceDirectory}/fixture-${name}-${width}.png`, fullPage: true, animations: 'disabled' });
+    await page.screenshot({ path: test.info().outputPath(`fixture-${name}-${width}.png`), fullPage: true, animations: 'disabled' });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 }
@@ -286,7 +283,7 @@ test('localization changes alone unlock an explicit new publication after a side
   }, { message: 'Mobile localization guidance keeps readable text width and places its action on the next row' }).toBe(true);
   await action.focus(); await expect(action).toBeFocused();
   await expect.poll(() => action.evaluate(node => { const box = node.getBoundingClientRect(); const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2); return box.top >= 0 && box.bottom <= innerHeight && !!hit && (hit === node || node.contains(hit)); })).toBe(true);
-  await page.screenshot({ path: `${evidenceDirectory}/fixture-localization-prompt-focus-320.png`, fullPage: false, animations: 'disabled' });
+  await page.screenshot({ path: test.info().outputPath('fixture-localization-prompt-focus-320.png'), fullPage: false, animations: 'disabled' });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: /发布已保存的修改$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();

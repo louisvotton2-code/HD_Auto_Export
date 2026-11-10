@@ -2,6 +2,10 @@
 
 测试写入仅由 `run-live.mjs` 启动：后台预览 3319、API 3322、随机 `hd_admin_test_` 数据库及临时媒体目录；退出时清理。禁止把测试指向保留试用环境 3318／3320。契约夹具测试不是真实提供者调用证明。
 
+## 契约夹具证据
+
+截图及品牌检查 JSON 随各用例保存在 Playwright 输出目录（默认 `apps/admin/test-results/`）。可通过 Playwright 的 `--output` 为每轮指定独立目录。设置 `ADMIN_CAPTURE_PUBLISH_CONFIRMATION=1` 可额外记录发布确认弹窗的桌面及手机截图。
+
 ## 翻译模式
 
 - 默认 `ADMIN_LIVE_TRANSLATION_PROVIDER=disabled`，不调用翻译提供者，并从子进程清除阿里凭据及本机服务 API key。

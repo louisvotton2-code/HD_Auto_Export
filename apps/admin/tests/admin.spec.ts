@@ -151,7 +151,7 @@ test('list pagination and status filters preserve their distinct meanings', asyn
   await installApi(page, { items });
   await page.goto('/admin/vehicles');
   await expect(page.getByText('FIXTURE-1', { exact: true })).toBeVisible();
-  await page.screenshot({ path: 'test-results/admin-desktop-list.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('admin-desktop-list.png'), fullPage: true });
   await page.locator('.ant-pagination-next button').click();
   await expect(page.getByText('FIXTURE-13', { exact: true })).toBeVisible();
   await page.locator('.ant-pagination-next button').click();
@@ -235,9 +235,9 @@ test('320px viewport keeps login and vehicle editor within the page', async ({ p
   await page.goto('/admin/vehicles/fixture_vehicle_1');
   await expect((await notes(page))).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: 'test-results/admin-mobile-editor.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('admin-mobile-editor.png'), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.screenshot({ path: 'test-results/admin-desktop-editor.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('admin-desktop-editor.png'), fullPage: true });
   await page.setViewportSize({ width: 320, height: 740 });
   await page.getByRole('button', { name: '退出登录' }).click();
   await expect(page.getByRole('heading', { name: '登录员工工作台' })).toBeVisible();
