@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
 import type { PublicVehicle } from '@hd/contracts/public';
@@ -95,6 +95,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
   const t = favoritesContent[locale];
   const dialog = useRef<HTMLDialogElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const pageOverflow = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [attempt, setAttempt] = useState(0);
@@ -102,17 +103,31 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
   const [retryAfter, setRetryAfter] = useState(0);
   const idsKey = JSON.stringify(ids);
 
-  function close() {
-    dialog.current?.close();
-  }
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.body.style.overflow;
+  const restorePageScroll = useCallback(() => {
+    if (pageOverflow.current === null) return;
+    document.body.style.overflow = pageOverflow.current;
+    pageOverflow.current = null;
+  }, []);
+  useEffect(() => restorePageScroll, [restorePageScroll]);
+
+  function showDrawer() {
+    const drawer = dialog.current;
+    if (!drawer || drawer.open) return;
+    drawer.showModal();
+    pageOverflow.current ??= document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previous;
-    };
-  }, [open]);
+    setOpen(true);
+  }
+  function close() {
+    if (pageOverflow.current === null) return;
+    // The native close event runs after the drawer is hidden.
+    restorePageScroll();
+    dialog.current?.close();
+    setOpen(false);
+    setRows({});
+    trigger.current?.focus();
+  }
+
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -172,10 +187,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
         aria-haspopup="dialog"
         aria-controls="vehicle-favorites"
         aria-expanded={open}
-        onClick={() => {
-          dialog.current?.showModal();
-          setOpen(true);
-        }}
+        onClick={showDrawer}
       >
         <Heart />
         {ids.length > 0 && (
@@ -200,10 +212,12 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
               close();
           }
         }}
-        onClose={() => {
-          setOpen(false);
-          setRows({});
-          trigger.current?.focus();
+        onCancel={(event) => {
+          event.preventDefault();
+          close();
+        }}
+        onClose={(event) => {
+          if (!event.currentTarget.open) close();
         }}
       >
         <div className={styles.head}>

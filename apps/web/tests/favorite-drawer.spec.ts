@@ -55,20 +55,52 @@ test('removed saved IDs do not revive stale titles/prices and closing cancels pe
     { key: storageKey },
   );
   await page.goto('/en/');
+  await page.evaluate(() => { document.body.style.overflow = 'auto'; });
+  const bodyOverflow = () => page.evaluate(() => document.body.style.overflow);
   const trigger = page.locator('header button[aria-controls="vehicle-favorites"]');
   await trigger.click();
   const dialog = page.locator('#vehicle-favorites');
   await expect(dialog).toContainText('This car is no longer available');
   await expect(dialog.locator('[data-favorite-vehicle] a')).toHaveCount(0);
-  await page.keyboard.press('Escape');
-  await page.route('**/api/v1/vehicles/missing_saved_car/**', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    await route.abort().catch(() => {});
-  });
-  await trigger.click();
-  await page.keyboard.press('Escape');
+  await dialog.getByRole('button', { name: 'Close saved cars', exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
+  await expect.poll(bodyOverflow).toBe('auto');
+
+  const savedRead = (url: URL) => url.pathname === '/api/v1/vehicles/missing_saved_car/';
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(savedRead, async (route) => {
+    await held;
+    await route.continue().catch(() => {});
+  });
+  try {
+    const [pending] = await Promise.all([
+      page.waitForRequest((request) => savedRead(new URL(request.url()))),
+      trigger.click(),
+    ]);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('[aria-busy]')).toHaveAttribute('aria-busy', 'true');
+    expect(await bodyOverflow()).toBe('hidden');
+    await dialog.evaluate((drawer) => {
+      const observer = new MutationObserver(() => {
+        if (drawer.hasAttribute('open')) return;
+        drawer.setAttribute('data-overflow-at-close', document.body.style.overflow);
+        observer.disconnect();
+      });
+      observer.observe(drawer, { attributes: true, attributeFilter: ['open'] });
+    });
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(dialog).toHaveAttribute('data-overflow-at-close', 'auto');
+    expect(await bodyOverflow()).toBe('auto');
+    await expect(trigger).toBeFocused();
+    await expect.poll(() => pending.failure()?.errorText).toBe('net::ERR_ABORTED');
+  } finally {
+    release();
+  }
 });
 
 test('rate limiting stops the saved-list queue until an explicit retry', async ({ page }) => {
