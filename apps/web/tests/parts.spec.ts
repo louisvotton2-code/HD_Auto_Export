@@ -1,25 +1,30 @@
 import { expect, test } from '@playwright/test';
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  test(`${locale}: demo results stay fixed while existing part drafts use the requested quantity`, async ({ page }) => {
-    await page.goto(`/${locale}/parts/`);
-    await expect(page.locator('main [data-part]')).toHaveCount(24);
+  test(`${locale}: search reloads the catalog and part drafts use the requested quantity`, async ({ page }) => {
+    await page.goto(`/${locale}/parts/?category=transmission`);
+    await expect(page.locator('main [data-part]')).toHaveCount(12);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
     const records = page.locator('main [data-part]');
     const ids = () => records.evaluateAll((rows) => rows.map((row) => row.getAttribute('data-part')));
     const initial = await ids();
-    const mock = page.locator('main [data-part^="DEMO-"]');
-    await expect(mock).toHaveCount(12);
-    await expect(mock.locator('img, a')).toHaveCount(0);
-    const pagination = page.locator('main nav').filter({ has: page.locator('[aria-current="page"]') });
-    await pagination.getByRole('button').last().click();
-    await expect(pagination.locator('[aria-current="page"]')).toHaveText('2');
-    expect(await ids()).toEqual(initial);
     const search = page.locator('main form').first();
     await search.locator('[name="q"]').fill('52910K2200');
-    await search.locator('[type="submit"]').click();
-    await expect(page).toHaveURL(/q=52910K2200/);
+    const [navigation] = await Promise.all([
+      page.waitForResponse((response) => response.request().resourceType() === 'document'),
+      search.locator('[type="submit"]').click(),
+    ]);
+    expect(navigation.status()).toBe(200);
+    expect(new URL(navigation.url()).searchParams.get('category')).toBe('transmission');
+    expect(new URL(navigation.url()).searchParams.get('q')).toBe('52910K2200');
+    await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
+    await expect(page.locator('main a[aria-current=true][href*="category=transmission"]')).toBeVisible();
+    await expect(records).toHaveCount(12);
     expect(await ids()).toEqual(initial);
+    await expect(page.locator('main')).not.toContainText(/演示|示例|例子|\bdemo\b|\bsample\b|демо|пример/i);
+    for (const input of await page.locator('main input[name="q"]').all()) {
+      await expect(input).not.toHaveAttribute('placeholder', /例如|示例|e\.g\.|например/i);
+    }
     await page.locator('main [data-part="52910k2200"] h3 a').click();
     await expect(page.getByTestId('part-detail')).toHaveAttribute('data-part-detail', '52910k2200');
     await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
@@ -47,8 +52,13 @@ test('Russian 320px without JavaScript retains search, quantity update, images a
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 320, height: 844 } });
   try {
     const page = await context.newPage();
-    await page.goto('/ru/parts/?q=52910K2200');
-    await expect(page.locator('main [data-part]')).toHaveCount(24);
+    await page.goto('/ru/parts/?category=transmission');
+    const search = page.locator('main form').first();
+    await search.locator('[name="q"]').fill('52910K2200');
+    await search.locator('[type="submit"]').click();
+    await expect(page).toHaveURL(/q=52910K2200/);
+    await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
+    await expect(page.locator('main [data-part]')).toHaveCount(12);
     await page.locator('main [data-part="52910k2200"] h3 a').click();
     await page.locator('input[name="quantity"]').fill('2');
     await page.locator('main form [type="submit"]').click();
@@ -64,29 +74,27 @@ test('unknown part identifiers return a real 404 rather than another product', a
   expect((await request.get('/en/parts/not-a-part/')).status()).toBe(404);
 });
 
-test('header parts navigation clears a local filter even when Next reuses the catalog', async ({ page }) => {
+test('the catalog search reloads, header navigation clears it, and Back restores it', async ({ page }) => {
   await page.goto('/en/parts/');
-  const localRequests: string[] = [];
-  page.on('request', (request) => {
-    const url = new URL(request.url()), headers = request.headers();
-    const queryRsc = headers.rsc === '1' && url.pathname === '/en/parts/' && url.searchParams.get('q') === '52910K2200';
-    if (request.resourceType() === 'document' || queryRsc || url.pathname.startsWith('/api/')) localRequests.push(request.url());
-  });
   const search = page.locator('main form').first();
-  await search.locator('[name="q"]').fill('52910K2200'); await search.locator('[type="submit"]').click();
-  await expect(page.locator('main [data-part]')).toHaveCount(24);
+  const catalogSearch = page.locator('main input[name="q"][form="parts-filters"]');
+  await catalogSearch.fill('52910K2200');
+  const [navigation] = await Promise.all([
+    page.waitForResponse((response) => response.request().resourceType() === 'document'),
+    page.locator('main button[form="parts-filters"]').click(),
+  ]);
+  expect(navigation.status()).toBe(200);
   await expect(page).toHaveURL(/q=52910K2200/);
-  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  expect(localRequests).toEqual([]);
+  await expect(page.locator('main [data-part]')).toHaveCount(12);
   await page.locator('header a[href="/en/parts/"]').first().click();
   await expect(page).toHaveURL(/\/en\/parts\/$/);
-  await expect(page.locator('main [data-part]')).toHaveCount(24);
+  await expect(page.locator('main [data-part]')).toHaveCount(12);
   await expect(page.locator('main form').first().locator('[name="q"]')).toHaveValue('');
   await search.locator('[name="q"]').fill('52910K2200'); await search.locator('[type="submit"]').click();
-  await expect(page.locator('main [data-part]')).toHaveCount(24);
+  await expect(page.locator('main [data-part]')).toHaveCount(12);
   await page.locator('main [data-part="52910k2200"] h3 a').click(); await expect(page.getByTestId('part-detail')).toBeVisible();
   await page.goBack(); await expect(page).toHaveURL(/q=52910K2200/);
-  await expect(page.locator('main [data-part]')).toHaveCount(24);
+  await expect(page.locator('main [data-part]')).toHaveCount(12);
   await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
 });
 
@@ -96,6 +104,7 @@ test('part favorites persist separately and synchronize catalog, details and sav
   const before = await rows.allTextContents();
   await page.locator('main select[name="sort"]').selectOption('price-asc');
   await expect(page).toHaveURL(/sort=price-asc/);
+  await expect(page.locator('main select[name="sort"]')).toHaveValue('price-asc');
   expect(await rows.allTextContents()).toEqual(before);
   await page.goto('/en/parts/?q=52910K2200');
   const card = page.locator('[data-part="52910k2200"]');

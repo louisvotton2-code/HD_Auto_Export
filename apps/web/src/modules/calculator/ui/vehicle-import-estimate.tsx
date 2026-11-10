@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
 import { calculateImportEstimate, type CalculationLine, type CountryCode } from '../index';
 import { countries, getCountryByCode } from '../config/countries';
 import { CALCULATOR_POWERTRAINS } from '../application/draft';
@@ -11,6 +12,7 @@ import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
+import { vehicleManufacturePrefill } from '../application/manufacture-estimate';
 import {
   createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput,
   vehicleEstimateMissingLabel, type VehicleEstimateDraft,
@@ -52,6 +54,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const [state, setState] = useState(() => ({
     identity,
     input: createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates),
+    manufactureEdited: false,
   }));
   const [ready, setReady] = useState(false);
   const [manualRates, setManualRates] = useState(false);
@@ -61,10 +64,16 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const input = current ? state.input : createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates);
   const country = getCountryByCode(input.country)!;
   const active = ready && !disabled && current;
-  const result = useMemo(() => calculateImportEstimate(
-    normalizePageInput(vehicleEstimateInput(input), country),
-  ), [input, country]);
-  const normalized = normalizePageInput(vehicleEstimateInput(input), country);
+  const manufactureEstimate = !current || state.manufactureEdited
+    ? undefined
+    : vehicleManufacturePrefill(vehicle, initialDate).estimate;
+  const manufactureNote = country.needsManufactureDate && manufactureEstimate
+    ? t(manufactureEstimate === 'model_year' ? 'modelYearEstimate' : 'manufactureYearEstimate', {
+        year: input.manufactureDate.slice(0, 4),
+      })
+    : undefined;
+  const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
+  const result = useMemo(() => calculateImportEstimate(normalized), [normalized]);
   const formatter = useMemo(() => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, {
     maximumFractionDigits: 2,
   }), [locale]);
@@ -81,6 +90,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   useEffect(() => {
     setState((previous) => previous.identity === identity ? previous : {
       identity, input: createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates),
+      manufactureEdited: false,
     });
     setExpanded(new Set());
     setManualRates(false);
@@ -90,11 +100,15 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
 
   function update<K extends keyof VehicleEstimateDraft>(key: K, value: VehicleEstimateDraft[K]) {
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
-    setState((previous) => ({ ...previous, input: {
-      ...previous.input, [key]: value,
-      ...(key === 'transactionRate' && previous.input.country === 'UZ' && previous.input.currency === 'USD'
-        ? { usdRate: String(value) } : {}),
-    } }));
+    setState((previous) => ({
+      ...previous,
+      manufactureEdited: previous.manufactureEdited || key === 'manufactureDate',
+      input: {
+        ...previous.input, [key]: value,
+        ...(key === 'transactionRate' && previous.input.country === 'UZ' && previous.input.currency === 'USD'
+          ? { usdRate: String(value) } : {}),
+      },
+    }));
   }
   function changeCountry(code: CountryCode) {
     setManualRates(false);
@@ -114,16 +128,19 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ...deriveRates(initialRates, previous.input.country, currency),
     } }));
   }
-  function field(key: Field, label: string, type?: 'month' | 'date', unit?: string) {
+  function field(key: Field, label: string, options: { type?: 'month' | 'date'; unit?: string; note?: string } = {}) {
+    const { type, unit, note } = options;
     const error = result.fieldErrors[key];
     const id = `${prefix}-${key}`;
+    const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
       <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
       <input id={id} name={key} value={input[key] ?? ''} type={type ?? 'text'}
         inputMode={type ? undefined : 'decimal'} autoComplete="off" spellCheck={false}
-        aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined}
+        aria-invalid={Boolean(error)} aria-describedby={describedBy || undefined}
         onChange={(event) => update(key, event.target.value)} />
       {error && <small id={`${id}-error`} className={styles.error}>{te(errors[error] ?? 'invalid_number')}</small>}
+      {note && <small id={`${id}-note`} className={styles.dateNote}>{note}</small>}
     </div>;
   }
   function select(key: 'powertrain' | 'condition' | 'steering' | 'importerType', label: string, children: ReactNode) {
@@ -138,11 +155,28 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const emptyOption = <option value="">{vehicleEstimateMissingLabel(locale)}</option>;
   const seed = active ? createVehicleEstimateFragment({
     version: 1, sourceId: vehicle.id, input, rates: initialRates,
+    ...(manufactureEstimate ? { manufactureEstimate } : {}),
   }) : null;
   const toolHref = `/${locale}/calculator/${country.slug}/${seed ?? ''}`;
   const feeId = (line: CalculationLine, extra = false) => `${prefix}-${country.code}-${extra ? 'extra-' : ''}${line.id}`;
   const allIds = [...result.lines.map((line) => feeId(line)), ...result.additionalCosts.map((line) => feeId(line, true))];
   const allExpanded = allIds.length > 0 && allIds.every((id) => expanded.has(id));
+  const labels: Partial<Record<keyof VehicleEstimateDraft, string>> = {
+    powertrain: t('powertrain'),
+    price: t('price'),
+    displacementCc: t('displacement'),
+    powerHp: t(input.powertrain === 'bev' ? 'electricPower' : 'power'),
+    manufactureDate: t('manufactureDate'),
+    customsDate: t('customsDate'),
+    condition: t('condition'),
+    steering: t('steering'),
+    transactionRate: t('transactionRate'),
+    euroRate: t('euroRate'),
+    usdRate: t(input.currency === 'USD' ? 'transactionRate' : 'usdRate'),
+  };
+  const missingLabels = active && result.status === 'incomplete'
+    ? [...new Set(result.missingFields.map((field) => labels[field as keyof VehicleEstimateDraft]).filter(Boolean))]
+    : [];
   function renderLine(line: CalculationLine, additional = false) {
     const id = feeId(line, additional);
     return <FeeLine key={id} line={line} label={tf(line.id)} amount={format(line.amount)} usd={usd(line.amount)}
@@ -175,7 +209,9 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
           </select>
         </div>
       </div>}
-      {vehicle.price.kind === 'reference' && country.needsPrice && <p className={styles.note}>{copy.referencePrice}</p>}
+      {vehicle.price.kind === 'reference' && country.needsPrice && input.price && (
+        <p className={styles.note}>{copy.referencePrice}</p>
+      )}
       {select('powertrain', t('powertrain'), <>{emptyOption}{CALCULATOR_POWERTRAINS.map((value) =>
         <option key={value} value={value}>{t(value)}</option>)}</>)}
       {input.powertrain !== 'bev' && !(country.code === 'KG' && input.powertrain === 'erev')
@@ -184,7 +220,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         {field('powerHp', t(input.powertrain === 'bev' ? 'electricPower' : 'power'))}
         {vehicle.facts.powerKw !== null && vehicle.facts.powerKw > 0 && <p className={styles.note}>{copy.convertedPower}</p>}
       </>}
-      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), 'month')}
+      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month', note: manufactureNote })}
       {country.code === 'UZ' && select('condition', t('condition'), <>{emptyOption}
         <option value="used">{t('usedVehicle')}</option><option value="new">{t('newVehicle')}</option></>)}
       {country.code === 'UZ' && <p className={styles.note}>{t('conditionHelp')}</p>}
@@ -195,13 +231,13 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       <details className={styles.settings} open>
         <summary>{t('advanced')}<span aria-hidden="true">⌄</span></summary>
         <div className={styles.settingsFields}>
-          {field('customsDate', t('customsDate'), 'date')}
-          {country.needsPrice && field('transactionRate', t('transactionRate'), undefined, `${country.currency}/${input.currency}`)}
-          {country.needsEuroRate && field('euroRate', t('euroRate'), undefined, `${country.currency}/EUR`)}
-          {country.code === 'UZ' && input.currency !== 'USD' && field('usdRate', t('usdRate'), undefined, `${country.currency}/USD`)}
+          {field('customsDate', t('customsDate'), { type: 'date' })}
+          {country.needsPrice && field('transactionRate', t('transactionRate'), { unit: `${country.currency}/${input.currency}` })}
+          {country.needsEuroRate && field('euroRate', t('euroRate'), { unit: `${country.currency}/EUR` })}
+          {country.code === 'UZ' && input.currency !== 'USD' && field('usdRate', t('usdRate'), { unit: `${country.currency}/USD` })}
           {country.needsFreight && <>
-            {field('freight', t('freight'), undefined, input.currency)}
-            {field('insurance', t('insurance'), undefined, input.currency)}
+            {field('freight', t('freight'), { unit: input.currency })}
+            {field('insurance', t('insurance'), { unit: input.currency })}
             <p className={styles.note}>{t('transportEstimateHelp')}</p>
           </>}
           <p className={styles.note} data-testid="inline-fx-status">
@@ -226,6 +262,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         <span data-testid="inline-estimate-usd">{usd(result.total)}</span>
         <p>{t('notLanded')}</p>
       </div>
+      {manufactureNote && <p className={styles.resultDateNote}>{manufactureNote}</p>}
       {result.additionalCosts.length > 0 && <div className={styles.additional}>
         <h3>{t('additionalCostsTitle')}</h3>
         {result.additionalCosts.map((line) => renderLine(line, true))}
@@ -235,11 +272,19 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       </ul>}
       <p className={styles.note}>{t('simpleReferenceNotice')}</p>
       <p className={styles.note}>{t('excludedDescription')}</p>
-    </section> : <p className={styles.status} data-testid="inline-estimate-status">
-      {disabled ? copy.waiting : active && result.status === 'needs_review'
-        ? tr(reasons[result.reason ?? ''] ?? 'country_pending')
-        : active && result.status === 'invalid' ? t('invalidDescription') : t('completeInputs')}
-    </p>}
+    </section> : <div className={styles.status} data-testid="inline-estimate-status" role="status">
+      <Icon name="info" size={19} />
+      <div>
+        <strong>
+          {disabled ? copy.waiting : !active ? copy.loading
+            : result.status === 'needs_review' ? tr(reasons[result.reason ?? ''] ?? 'country_pending')
+            : result.status === 'invalid' ? t('invalidDescription') : t('completeInputs')}
+        </strong>
+        {missingLabels.length > 0 && (
+          <ul>{missingLabels.map((label) => <li key={label}>{label}</li>)}</ul>
+        )}
+      </div>
+    </div>}
     <a className={styles.fullTool} href={toolHref} data-testid="vehicle-full-calculator">{copy.completeTool}<span aria-hidden="true">↗</span></a>
     {active && !seed && <p className={styles.note}>{copy.seedHint}</p>}
   </div>;

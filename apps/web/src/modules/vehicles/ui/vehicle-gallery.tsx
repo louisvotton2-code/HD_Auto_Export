@@ -19,13 +19,14 @@ import { publicMediaUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
 import { VehiclePhotoFallback } from './vehicle-photo';
+import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string };
 const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
 
-/** Only selected originals load; a previously visited image stays briefly for the slide. */
+/** Full-size viewing stays on the active photo and retains one previous photo for the slide. */
 export function VehicleGallery({
   images,
   title,
@@ -54,7 +55,7 @@ export function VehicleGallery({
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const pageOverflow = useRef<string | null>(null);
-  const openButton = useRef<HTMLButtonElement>(null);
+  const mainPhotoLink = useRef<HTMLAnchorElement>(null);
   const emptyPhoto = useRef<HTMLDivElement>(null);
   const selectedImage = useRef<HTMLImageElement>(null);
   const swipe = useRef<{ x: number; y: number } | null>(null);
@@ -113,10 +114,10 @@ export function VehicleGallery({
     setLoadingId(loadedImages.current.has(key) || failedImages.current.has(key) ? null : key);
     setFailedId(failedImages.current.has(key) ? key : null);
   }
-  function openViewer(event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>) {
+  function openViewer(event: MouseEvent<HTMLAnchorElement>) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    if (event.currentTarget.tagName === 'A' && Date.now() - lastSwipeAt.current < 450) return;
+    if (Date.now() - lastSwipeAt.current < 450) return;
     const viewer = dialog.current;
     if (!viewer || viewer.open) return;
     viewer.showModal();
@@ -139,7 +140,7 @@ export function VehicleGallery({
     opener.current = null;
     restorePageScroll();
     setOpened(false);
-    const target = trigger.isConnected ? trigger : openButton.current;
+    const target = trigger.isConnected ? trigger : mainPhotoLink.current;
     target?.focus({ preventScroll: true });
   }
   function keyNavigation(event: KeyboardEvent<HTMLElement>) {
@@ -156,7 +157,9 @@ export function VehicleGallery({
     }
   }
   function pointerStart(event: PointerEvent<HTMLElement>) {
-    if (event.pointerType === 'touch') swipe.current = { x: event.clientX, y: event.clientY };
+    if (event.pointerType !== 'touch') return;
+    lastSwipeAt.current = 0;
+    swipe.current = { x: event.clientX, y: event.clientY };
   }
   function pointerEnd(event: PointerEvent<HTMLElement>) {
     const start = swipe.current;
@@ -223,6 +226,8 @@ export function VehicleGallery({
       >
         <a
           className={styles.imageLink}
+          ref={mainPhotoLink}
+          data-vehicle-photo-opener
           href={publicMediaUrl(selected.url)}
           target="_blank"
           rel="noopener noreferrer"
@@ -288,51 +293,12 @@ export function VehicleGallery({
           </div>
         )}
       </div>
-      <div className={styles.foot}>
-        <nav className={styles.thumbnails} aria-label={t.gallery}>
-          {ordered.map((image, imageIndex) => (
-            <a
-              key={image.id}
-              className={styles.thumbnail}
-              href={publicMediaUrl(image.url)}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={t.showImage(imageIndex + 1)}
-              aria-current={image.id === selected.id ? 'true' : undefined}
-              onClick={
-                enhanced
-                  ? (event) => {
-                      if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
-                        event.preventDefault();
-                        choose(imageIndex);
-                      }
-                    }
-                  : undefined
-              }
-            >
-              {image.url.startsWith('/api/v1/media/') ? (
-                <img
-                  src={publicMediaUrl(image.url, { thumbnail: true })}
-                  alt=""
-                  width={144}
-                  height={108}
-                  loading="lazy"
-                  fetchPriority="low"
-                />
-              ) : (
-                <span className={styles.thumbnailNumber} aria-hidden="true">
-                  {imageIndex + 1}
-                </span>
-              )}
-            </a>
-          ))}
-        </nav>
-        {enhanced && (
-          <button ref={openButton} type="button" className={styles.open} onClick={openViewer}>
-            ⛶ <span>{t.openGallery}</span>
-          </button>
-        )}
-      </div>
+      <VehicleGalleryThumbnails
+        images={ordered}
+        index={index}
+        locale={locale}
+        onSelect={enhanced ? choose : undefined}
+      />
       <span className={styles.srOnly} role="status">
         {t.imagePosition(index + 1, ordered.length)}
       </span>

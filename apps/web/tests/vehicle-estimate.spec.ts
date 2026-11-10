@@ -37,18 +37,26 @@ async function complete(scope: Locator, code: string) {
 }
 
 for (const locale of ['zh', 'en', 'ru']) {
-  test(`${locale}: detail budget reads known vehicle facts, keeps missing dates empty and renders shared methods`, async ({
+  test(`${locale}: detail budget uses known facts, marks the model-year estimate and highlights missing inputs`, async ({
     page,
   }) => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`/${locale}/cars/fixture_car_1/`);
     const budget = page.getByTestId('vehicle-import-estimate');
-    await expect(budget.locator('[name="manufactureDate"]')).toHaveValue('');
+    const manufacture = budget.locator('[name="manufactureDate"]');
+    await expect(manufacture).toHaveValue('2024-01');
+    await expect(manufacture).toHaveAccessibleDescription(/2024/);
     await expect(budget.locator('[name="displacementCc"]')).toHaveValue('1998');
     await expect(budget.locator('[name="powerHp"]')).not.toHaveValue('');
+    await expect(budget.getByTestId('inline-estimate-result')).toHaveCSS('background-color', 'rgb(23, 44, 34)');
+    await budget.locator('[name="powertrain"]').selectOption('');
+    const status = budget.getByTestId('inline-estimate-status');
+    await expect(status.getByRole('listitem')).toHaveCount(1);
+    await expect(status).toHaveCSS('background-color', 'rgb(45, 32, 21)');
     await expect(budget.getByTestId('inline-estimate-result')).toHaveCount(0);
     await complete(budget, 'RU');
+    await expect(manufacture).not.toHaveAttribute('aria-describedby');
     await expect(budget.locator('details[open]')).toHaveCount(1);
     const toggle = budget.locator('.fee-detail-toggle').first();
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
@@ -93,7 +101,7 @@ for (const [code, slug] of Object.entries({
 test('unknown choices stay empty through the explicit seed, storage and reload', async ({
   page,
 }) => {
-  await page.goto('/en/cars/fixture_car_1/');
+  await page.goto('/en/cars/fixture_demo/');
   const budget = page.getByTestId('vehicle-import-estimate');
   await budget.locator('[name="country"]').selectOption('GE');
   await budget.locator('[name="powertrain"]').selectOption('');
@@ -107,6 +115,27 @@ test('unknown choices stay empty through the explicit seed, storage and reload',
     await expect(page.locator('#manufactureDate')).toHaveValue('');
     await expect(page.getByTestId('total')).toHaveCount(0);
   }
+});
+
+test('the full calculator, reload and copied quote preserve the date assumption until the user edits the month', async ({ page, context }) => {
+  await page.goto('/en/cars/fixture_car_1/');
+  const budget = page.getByTestId('vehicle-import-estimate');
+  await expect(budget.getByTestId('inline-estimate-result')).toContainText('January of model year 2024');
+  await budget.getByTestId('vehicle-full-calculator').click();
+  await expect(page).toHaveURL(/\/en\/calculator\/russia\/$/);
+  const month = page.locator('#manufactureDate');
+  for (let visit = 0; visit < 2; visit++) {
+    if (visit) await page.reload();
+    await expect(month).toHaveValue('2024-01');
+    await expect(month).toHaveAccessibleDescription(/January of model year 2024/);
+    await expect(page.getByTestId('calculation-assumptions')).toContainText('January of model year 2024');
+  }
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('button', { name: 'Copy estimate' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('January of model year 2024');
+  await month.fill('2024-02');
+  await expect(month).not.toHaveAttribute('aria-describedby');
+  await expect(page.getByText(/January of model year 2024/)).toHaveCount(0);
 });
 
 test('Russian detail budget fits a 320px screen and works without inventing missing vehicle facts', async ({
@@ -125,6 +154,34 @@ test('Russian detail budget fits a 320px screen and works without inventing miss
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
     true,
   );
+});
+
+test('the import calculator stays usable on both sides of the two-column breakpoints', async ({ page }) => {
+  await page.goto('/en/cars/fixture_car_1/');
+  const calculator = page.getByRole('complementary', { name: 'Import cost calculator' });
+  const contacts = page.locator('[data-vehicle-contacts="fixture_car_1"]');
+  const heading = page.locator('main h1');
+  const destination = calculator.locator('[name="country"]');
+  for (const width of [1023, 1024, 1180, 1279, 1280]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect(calculator).toBeVisible();
+    await expect(destination).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width >= 1024 && width < 1280) {
+      const [form, title, inquiry] = await Promise.all([calculator.boundingBox(), heading.boundingBox(), contacts.boundingBox()]);
+      expect(form!.x).toBeGreaterThan(title!.x);
+      expect(form!.y).toBeGreaterThan(inquiry!.y + inquiry!.height);
+    }
+  }
+  await page.setViewportSize({ width: 1180, height: 1000 });
+  await destination.selectOption('KZ');
+  await expect(calculator.getByTestId('inline-estimate-total')).toContainText('KZT');
+
+  const summary = page.locator('main summary').filter({ hasText: 'Detailed vehicle information' });
+  await summary.click();
+  const location = summary.locator('..').locator('dt').filter({ hasText: /^Location$/ }).locator('..');
+  await expect(location.locator('dd')).toHaveText('China');
+  await expect(location.locator('dd')).toHaveAttribute('lang', 'en');
 });
 
 test('manual inline exchange rates are labelled and explicitly transferred', async ({ page }) => {

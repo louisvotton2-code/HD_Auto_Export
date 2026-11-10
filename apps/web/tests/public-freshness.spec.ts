@@ -391,7 +391,8 @@ test.describe('explicit public queries, stable activation and media regression',
     );
     await gallery.getByRole('link', { name: 'View photo 2', exact: true }).click();
     await expect(gallery).toHaveAttribute('data-selected-image', `${originalId}_2`);
-    const open = gallery.getByRole('button', { name: /Open gallery/ });
+    const open = gallery.getByRole('link', { name: /^Open gallery/ });
+    await expect(gallery.getByRole('button', { name: /^Open gallery/ })).toHaveCount(0);
     await open.click();
     const dialog = gallery.getByRole('dialog', { name: 'Vehicle photos' });
     await expect(dialog).toBeVisible();
@@ -410,7 +411,7 @@ test.describe('explicit public queries, stable activation and media regression',
   test('Escape and the gallery close button restore the original overflow before the dialog disappears', async ({ page }) => {
     await page.goto('/en/cars/fixture_car_2/');
     const gallery = page.locator('[data-vehicle-gallery]');
-    const opener = gallery.getByRole('button', { name: /Open gallery/ });
+    const opener = gallery.getByRole('link', { name: /^Open gallery/ });
     const dialog = gallery.locator('dialog');
     await page.evaluate(() => { document.body.style.overflow = 'auto'; });
 
@@ -514,13 +515,21 @@ test.describe('explicit public queries, stable activation and media regression',
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await expect(gallery).toHaveAttribute('data-selected-image', 'media_fixture_car_2_2');
       await expect(gallery.getByRole('dialog')).not.toBeVisible();
-      await gallery.getByRole('button', { name: /Open gallery/ }).tap();
+      await gallery.getByRole('link', { name: /^Open gallery/ }).tap();
       const dialog = gallery.getByRole('dialog', { name: 'Vehicle photos' });
       await expect(dialog).toBeVisible();
       await dialog.getByRole('button', { name: 'Next photo', exact: true }).tap();
       await expect(gallery).toHaveAttribute('data-selected-image', 'media_fixture_car_2_3');
       await dialog.getByRole('button', { name: 'Close photo viewer', exact: true }).tap();
       await expect(dialog).not.toBeVisible();
+      const rail = gallery.locator('[data-vehicle-thumbnails]');
+      await expect.poll(() => rail.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+      expect(await rail.locator('a').evaluateAll((links) =>
+        new Set(links.map((link) => link.getBoundingClientRect().y)).size,
+      )).toBe(1);
+      await rail.getByRole('link', { name: 'View photo 4', exact: true }).tap();
+      await expect(gallery).toHaveAttribute('data-selected-image', 'media_fixture_car_2_4');
+      expect(await rail.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
         true,
       );

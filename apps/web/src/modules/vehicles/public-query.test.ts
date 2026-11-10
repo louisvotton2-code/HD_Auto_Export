@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCatalogQuery, parseFilterQuery } from './public-query';
+import { parseCatalogQuery, parseFilterQuery, publicUsdCatalogQuery, publicUsdFilterQuery } from './public-query';
 import { publicCatalogHref } from './public-presentation';
 
 describe('complete catalog query roundtrip', () => {
@@ -54,5 +54,18 @@ describe('complete catalog query roundtrip', () => {
     { mileageMax: '10000001' },
   ])('rejects malformed or inconsistent criteria: %j', (input) => {
     expect(parseCatalogQuery(input, 'en')).toBeNull();
+  });
+
+  it.each([
+    ['1000', '1000.00', '999.50', '1000.49'],
+    ['0', '0', '0', '0.49'],
+    ['1000.01', '2000.35', '1000.01', '2000.35'],
+  ])('keeps website bounds in sync with whole dollars and precise bookmarks', (min, max, wireMin, wireMax) => {
+    const page = parseCatalogQuery({ priceMin: min, priceMax: max, priceCurrency: 'USD' }, 'zh')!;
+    const bounds = { priceMin: wireMin, priceMax: wireMax, priceCurrency: 'USD', priceView: 'usd' };
+    expect(publicUsdCatalogQuery(page)).toMatchObject(bounds);
+    expect(publicUsdFilterQuery('zh', page)).toMatchObject(bounds);
+    expect(parseFilterQuery({ priceMin: min, priceMax: max, priceCurrency: 'USD' }, 'zh'))
+      .toMatchObject({ priceMin: min, priceMax: max });
   });
 });

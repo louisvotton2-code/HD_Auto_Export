@@ -4,13 +4,38 @@ import {
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { moneyCents } from '@/shared/lib/public-vehicle-price';
 
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
 
 export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;
+
+/** Website whole-dollar limits match the rounded displayed value. Precise API limits stay exact. */
+function wholeDollarBound(amount: string | undefined, edge: 'min' | 'max') {
+  if (amount === undefined) return undefined;
+  const cents = moneyCents(amount);
+  if (cents % 100n !== 0n) return amount;
+  if (edge === 'min' && cents === 0n) return '0';
+  const bound = edge === 'min' ? cents - 50n : cents + 49n;
+  return `${bound / 100n}.${String(bound % 100n).padStart(2, '0')}`;
+}
+
+function websitePriceBounds(scope: UsdFilterScope) {
+  const { priceMin, priceMax, priceCurrency } = scope;
+  if (priceCurrency !== 'USD') return { priceMin, priceMax, priceCurrency };
+  return {
+    priceMin: wholeDollarBound(priceMin, 'min'),
+    priceMax: wholeDollarBound(priceMax, 'max'),
+    priceCurrency,
+  };
+}
+
 export function publicUsdFilterQuery(locale: Locale, scope: UsdFilterScope = {}) {
-  const { q, priceMin, priceMax, priceCurrency } = scope;
-  return { catalog: 'curated', locale, q, priceMin, priceMax, priceCurrency, ...publicUsdView };
+  return { catalog: 'curated', locale, q: scope.q, ...websitePriceBounds(scope), ...publicUsdView };
+}
+
+export function publicUsdCatalogQuery(query: PublicVehicleQuery) {
+  return { ...query, ...websitePriceBounds(query), ...publicUsdView };
 }
 
 export const catalogFilterKeys = [

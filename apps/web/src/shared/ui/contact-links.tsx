@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
+import { SocialIcon } from './social-icon';
 
 const phones = ['phone', 'phone2'] as const;
 const socialContacts = ['telegram', 'whatsapp', 'facebook', 'instagram', 'tiktok'] as const;
@@ -44,11 +45,13 @@ export function ContactLinks() {
             className="hd-contact-item"
             href={siteConfig.contacts[key].href}
           >
-            <span>
+            <span className="hd-contact-icon" aria-hidden="true">
+              <Icon name="phone" size={17} />
+            </span>
+            <span className="hd-contact-label">
               <strong>{t('phone')}</strong>
               <span dir="ltr">{siteConfig.contacts[key].display}</span>
             </span>
-            <Icon name="diagonal" size={15} />
           </a>
         ))}
         {copyContacts.map((key) => (
@@ -59,7 +62,10 @@ export function ContactLinks() {
             onClick={() => copy(key)}
             aria-label={t('copyAccount', { platform: t(key) })}
           >
-            <span>
+            <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
+              <SocialIcon platform={key} size={18} />
+            </span>
+            <span className="hd-contact-label">
               <strong>{t(key)}</strong>
               <span dir="ltr">{siteConfig.contacts[key].display}</span>
             </span>
@@ -80,11 +86,13 @@ export function ContactLinks() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            <span>
+            <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
+              <SocialIcon platform={key} size={18} />
+            </span>
+            <span className="hd-contact-label">
               <strong>{t(key)}</strong>
               <span dir="ltr">{siteConfig.contacts[key].display}</span>
             </span>
-            <Icon name="diagonal" size={15} />
           </a>
         ))}
       </div>

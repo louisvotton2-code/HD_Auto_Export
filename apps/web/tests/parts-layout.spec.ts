@@ -36,7 +36,7 @@ for (const [width, columns] of [
     if (width >= 1024) expect(geometry.filters.right).toBeLessThanOrEqual(geometry.grid.left);
     else expect(geometry.filters.bottom).toBeLessThanOrEqual(geometry.grid.top);
     const cards = page.locator('main [data-part]');
-    expect(await cards.count()).toBe(24);
+    expect(await cards.count()).toBe(12);
     const actionFits = await cards.evaluateAll((nodes) =>
       nodes.every((node) => {
         const footer = node.querySelector('footer') ?? node.lastElementChild?.lastElementChild;

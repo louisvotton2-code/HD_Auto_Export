@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
 import {
-  formatPublicVehiclePrice,
   publicAvailabilityLabel,
   publicVehicleCover,
   publicVehicleMessages,
@@ -13,13 +12,14 @@ import {
   FavoriteVehicleButton,
   VehiclePhoto,
   VehicleRateAttribution,
+  VehiclePriceValues,
 } from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
-import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
+import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { HeroCanvas } from './hero-canvas';
 import { HomeSections } from './home-sections';
 import { HeroStats } from './hero-stats';
@@ -113,8 +113,7 @@ function VehicleRail({
         {vehicles.map((v) => {
           const links = buildPublicVehicleContactLinks(v, locale);
           const image = publicVehicleCover(v);
-          const name = v.content.title.text;
-          const quote = publicUsdQuote(v);
+          const { text: name, lang } = publicVehicleTitle(v, locale);
           return (
             <div className={styles.vehicleSlot} key={v.id}>
               <article
@@ -141,7 +140,7 @@ function VehicleRail({
                   )}
                 </div>
                 <div className={styles.vehicleBody}>
-                  <h3 lang={v.content.title.contentLocale} title={name}>{name}</h3>
+                  <h3 lang={lang} title={name}>{name}</h3>
                   <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
                   <p className={styles.stockCode}>
                     {vehicleCopy.stockCodeLabel}: {v.stockCode}
@@ -161,10 +160,10 @@ function VehicleRail({
                     <span>{vehicleCopy.powertrains[v.facts.powertrain]}</span>
                   </div>
                   <div className={styles.price}>
-                    {quote && (
-                      <span>{vehicleCopy.priceLabels[quote.kind]}</span>
+                    {v.price.kind !== 'on_request' && (
+                      <span>{vehicleCopy.priceLabels[v.price.kind]}</span>
                     )}
-                    <strong>{formatPublicVehiclePrice(v, locale)}</strong>
+                    <VehiclePriceValues vehicle={v} locale={locale} />
                   </div>
                   <div className={styles.cardContact} data-vehicle-contacts={v.id}>
                     <a
@@ -252,7 +251,7 @@ export function HomePage({
             href: `/${locale}/cars/?${new URLSearchParams({ make: model.makeId, model: model.id }).toString()}`,
             image: {
               ...image,
-              alt: image.alt || representative.content.title.text,
+              alt: image.alt || publicVehicleTitle(representative, locale).text,
             },
           },
         ];

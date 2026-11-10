@@ -3,6 +3,7 @@ import { makePublicVehicleFixture, demoPublicVehicleFixture } from '@hd/contract
 import { publicVehicleMessages } from './public-messages';
 import {
   formatPublicVehiclePrice,
+  formatPublicVehicleUsdApproximation,
   publicAvailabilityLabel,
   publicCatalogHref,
   publicVehicleCover,
@@ -10,25 +11,36 @@ import {
 } from './public-presentation';
 
 describe('public vehicle presentation', () => {
-  it('formats exact USD amounts at the money limit with two locale-aware decimal places', () => {
+  it('keeps the exact original CNY amount and rounds only the converted USD', () => {
     const vehicle = makePublicVehicleFixture();
+    vehicle.price.money = { amount: '99999999999999.99', currency: 'CNY' };
     vehicle.displayPrice = {
       status: 'ready', kind: 'asking',
-      money: { amount: '99999999999999.99', currency: 'USD' }, conversion: null,
+      money: { amount: '23500.50', currency: 'USD' },
+      conversion: { asOf: '2026-11-09T00:00:00Z', source: 'synthetic' },
     };
-    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('99,999,999,999,999.99 USD');
-    expect(formatPublicVehiclePrice(vehicle, 'ru')).toContain(',99 USD');
-    vehicle.displayPrice.money.amount = '23500';
-    expect(formatPublicVehiclePrice(vehicle, 'zh')).toBe('23,500.00 USD');
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 99,999,999,999,999.99');
+    expect(formatPublicVehiclePrice(vehicle, 'ru')).toContain(',99');
+    expect(formatPublicVehicleUsdApproximation(vehicle, 'zh')).toBe('≈ 23,501 USD');
+    vehicle.displayPrice.money.amount = '23500.49';
+    expect(formatPublicVehicleUsdApproximation(vehicle, 'zh')).toBe('≈ 23,500 USD');
   });
 
-  it('shows price on request when conversion is unavailable, even with a known original price', () => {
+  it('retains the original price when conversion is unavailable', () => {
     const vehicle = makePublicVehicleFixture();
-    vehicle.price.money!.currency = 'CNY';
+    vehicle.price.money = { amount: '23500.50', currency: 'CNY' };
     vehicle.displayPrice = {
       status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable',
     };
-    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('Price on request');
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 23,500.5');
+    expect(formatPublicVehicleUsdApproximation(vehicle, 'en')).toBeNull();
+  });
+
+  it('uses whole dollars for a native USD price at the money limit', () => {
+    const vehicle = makePublicVehicleFixture();
+    vehicle.price.money = { amount: '99999999999999.99', currency: 'USD' };
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('100,000,000,000,000 USD');
+    expect(formatPublicVehicleUsdApproximation(vehicle, 'en')).toBeNull();
   });
 
   it.each(['zh', 'en', 'ru'] as const)(

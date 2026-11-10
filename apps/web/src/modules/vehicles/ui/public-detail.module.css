@@ -70,8 +70,7 @@
 .budget,
 .card,
 .priceCard,
-.contactCard,
-.sellerCard {
+.contactCard {
   border: 1px solid #4a4a4a4d;
   border-radius: 24px;
   background: #141414;
@@ -134,11 +133,27 @@
   border: 1px solid #4a4a4a4d;
 }
 .tile > p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 8px;
   color: #8a8a8a;
   font-size: 12px;
   font-weight: 500;
   line-height: 1.5;
+}
+.tileIcon,
+.equipmentIcon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 8px;
+}
+.tileIcon {
+  background: #b677491a;
+  color: #dc9b67;
 }
 .tile > strong,
 .tile > bdi {
@@ -160,7 +175,17 @@
   color: #ffffffcc;
 }
 .mileageTile > strong {
-  font-size: 18px;
+  font-size: 22px;
+}
+.mileageTile .tileIcon {
+  background: #ffffff26;
+  color: #fff;
+}
+.mileageTile small {
+  margin-inline-start: 6px;
+  color: #ffffffcc;
+  font-size: 0.72em;
+  font-weight: 500;
 }
 .mobilePrice {
   display: none;
@@ -240,6 +265,113 @@
   background: #b67749;
   flex-shrink: 0;
 }
+.historyIcon {
+  flex: none;
+  color: #dc9b67;
+}
+.historyPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0 20px 18px;
+}
+.historyPills > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 6px 12px;
+  border: 1px solid #4a4a4a4d;
+  border-radius: 18px;
+  background: #1e1e1e;
+  font-size: 12px;
+}
+.historyPills dt {
+  color: #ababab;
+}
+.historyPills dd {
+  margin: 0;
+  font-weight: 700;
+}
+.equipmentTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: inherit;
+}
+.equipmentCount {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #22c55e14;
+  color: #4ade80;
+  font-size: 12px;
+  font-weight: 600;
+}
+.equipmentGroup {
+  border-top: 1px solid #4a4a4a4d;
+}
+.equipmentGroup > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background-color 0.2s;
+}
+.equipmentGroup > summary::-webkit-details-marker {
+  display: none;
+}
+.equipmentGroup > summary:hover {
+  background-color: #ffffff08;
+}
+.equipmentIcon {
+  background: #22c55e17;
+  color: #4ade80;
+}
+.equipmentChevron {
+  margin-inline-start: auto;
+  color: #a9a3a0;
+  transition: transform 0.2s;
+}
+.equipmentGroup[open] > summary .equipmentChevron {
+  transform: rotate(180deg);
+}
+.equipmentGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 4px 20px 14px;
+}
+.equipmentGrid > div {
+  position: relative;
+  display: grid;
+  align-content: center;
+  min-height: 56px;
+  padding: 8px 8px 8px 42px;
+  border: 1px solid #4a4a4a33;
+  border-radius: 12px;
+  background: #ffffff08;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.equipmentGrid .equipmentIcon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  transform: translateY(-50%);
+}
+.equipmentGrid dd {
+  margin: 2px 0 0;
+  color: #ababab;
+}
 .description {
   padding: 0 20px 20px;
   margin: 0;
@@ -273,7 +405,8 @@
   box-shadow: 0 8px 24px #b6774940;
   margin-bottom: 8px;
 }
-.priceTile p {
+.priceTile strong {
+  display: block;
   color: #fff;
   font-size: 24px;
   font-weight: 700;
@@ -347,26 +480,6 @@
   min-width: 0;
   font-size: 13px;
 }
-.sellerCard {
-  padding: 20px;
-}
-.sellerCard h2 {
-  margin: 0 0 16px;
-  color: #c0c0c0;
-  font-size: 13px;
-  font-weight: 600;
-}
-.sellerCard > p:not(.smallNote) {
-  color: #f5f0eb;
-  font-size: 14px;
-}
-.sellerCard > a {
-  display: inline-block;
-  margin-top: 8px;
-  color: #b67749;
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
 .page a:focus-visible,
 .page summary:focus-visible {
   outline: 2px solid #c88858;
@@ -381,10 +494,14 @@
 @media (max-width: 1279px) and (min-width: 1024px) {
   .grid {
     grid-template-columns: minmax(0, 1fr) 340px;
-    grid-template-areas: 'main side';
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      'main side'
+      'main budget';
   }
-  .budget {
-    display: none;
+  .budget,
+  .side {
+    position: static;
   }
 }
 @media (max-width: 1023px) {
@@ -462,12 +579,14 @@
   .specifications > div {
     gap: 12px;
   }
-  .priceTile p {
+  .priceTile strong {
     font-size: 22px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .information > summary > span {
+  .information > summary > span,
+  .equipmentGroup > summary,
+  .equipmentChevron {
     transition: none;
   }
 }
@@ -478,7 +597,7 @@
   gap: 8px;
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 20px 18px;
 }
 .externalIssues li {
   padding: 5px 10px;
@@ -487,48 +606,64 @@
   color: #dba171;
   font-size: 13px;
 }
-.externalSections {
-  display: grid;
-  gap: 16px;
-  margin-top: 16px;
-}
-.externalSections h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-}
-.externalEntries,
-.externalComparison {
+.externalEntries {
   display: grid;
   gap: 8px;
-  margin: 12px 0 0;
+  margin: 0;
+  padding: 0 20px 14px;
 }
-.externalComparison {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
-}
-.externalEntries > div,
-.externalComparison > div {
+.externalEntries > div {
   min-width: 0;
   padding: 10px;
   border-radius: 8px;
   background: #ffffff09;
   overflow-wrap: anywhere;
 }
-.externalEntries dt,
-.externalComparison dt {
+.externalEntries dt {
   color: #a9a3a0;
   font-size: 12px;
 }
-.externalEntries dd,
-.externalComparison dd {
+.externalEntries dd {
   margin: 4px 0 0;
   font-size: 14px;
   white-space: pre-wrap;
 }
-.externalLink {
-  display: block;
-  width: fit-content;
-  margin-top: 12px;
+.reportCard {
+  scroll-margin-top: 88px;
+}
+.reportCard:focus-visible {
+  outline: 2px solid #c88858;
+  outline-offset: 3px;
+}
+.reportLink {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid #b6774959;
+  border-radius: 10px;
+  background: #b6774917;
   color: #dba171;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.reportLink svg {
+  flex: none;
+}
+.reportLink:hover {
+  background: #b677492d;
+}
+.reportCard > .reportLink {
+  margin: 0 20px 18px;
+}
+.reportDetails > summary {
+  width: fit-content;
+  margin: 0 20px 14px;
+  color: #dba171;
+  font-size: 13px;
+  cursor: pointer;
 }

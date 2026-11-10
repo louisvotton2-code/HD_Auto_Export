@@ -2,23 +2,31 @@ import type { PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
-import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
+import { publicUsdQuote, roundedUsd } from '@/shared/lib/public-vehicle-price';
 import { catalogFilterKeys } from './public-query';
 import { catalogFilterCopy } from './catalog-filter-copy';
 
 /** Keep amounts exact, including values too large for precise Number formatting. */
-export function formatPublicAmount(amount: string, locale: Locale, minimumFractionDigits = 0): string {
+export function formatPublicAmount(amount: string, locale: Locale): string {
   const [whole, fraction = ''] = amount.split('.');
   const formatter = new Intl.NumberFormat(locale);
   const decimal =
     formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
-  const significantFraction = fraction.replace(/0+$/, '').padEnd(minimumFractionDigits, '0');
+  const significantFraction = fraction.replace(/0+$/, '');
   return `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
 }
 export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
+  const { money } = vehicle.price;
+  if (!money) return publicVehicleMessages(locale).priceLabels.on_request;
+  if (money.currency === 'USD') return `${new Intl.NumberFormat(locale).format(roundedUsd(money.amount))} USD`;
+  const amount = formatPublicAmount(money.amount, locale);
+  return money.currency === 'CNY' ? `¥ ${amount}` : `${amount} ${money.currency}`;
+}
+
+export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicle, locale: Locale) {
   const quote = publicUsdQuote(vehicle);
-  if (!quote) return publicVehicleMessages(locale).priceLabels.on_request;
-  return `${formatPublicAmount(quote.money.amount, locale, 2)} ${quote.money.currency}`;
+  if (!quote?.conversion) return null;
+  return `≈ ${new Intl.NumberFormat(locale).format(roundedUsd(quote.money.amount))} USD`;
 }
 
 export function publicAvailabilityLabel(vehicle: PublicVehicle, locale: Locale): string {
@@ -37,13 +45,18 @@ export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia | null {
 export function publicVehicleFacts(
   vehicle: PublicVehicle,
   locale: Locale,
-): { label: string; value: string }[] {
+): { label: string; value: string; lang?: string }[] {
   const t = publicVehicleMessages(locale);
   const f = vehicle.facts;
   const number = new Intl.NumberFormat(locale);
-  const location =
-    f.location &&
-    (f.location.displayName || [f.location.city, f.location.country].filter(Boolean).join(', '));
+  const place = f.location?.displayName || f.location?.city;
+  const country = f.location?.country;
+  const location = place || (country && (
+    new Intl.DisplayNames(locale, { type: 'region', fallback: 'none' }).of(country) ?? country
+  ));
+  const locationLanguage = f.location?.displayName
+    ? vehicle.display?.location.contentLocale
+    : f.location?.city ? vehicle.display?.city.contentLocale : locale;
   return [
     { label: t.yearLabel, value: f.modelYear === null ? t.unknown : String(f.modelYear) },
     { label: t.manufactureLabel, value: f.manufacturedAt?.value ?? t.unknown },
@@ -78,7 +91,7 @@ export function publicVehicleFacts(
       label: t.transmissionLabel,
       value: f.transmission ? t.transmissions[f.transmission] : t.unknown,
     },
-    { label: t.locationLabel, value: location || t.unknown },
+    { label: t.locationLabel, value: location || t.unknown, lang: locationLanguage ?? undefined },
   ];
 }
 

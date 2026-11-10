@@ -56,6 +56,8 @@
     "displacement": "Engine displacement · cc",
     "power": "Engine power · hp",
     "manufactureDate": "Manufacture date",
+    "modelYearEstimate": "This estimate uses January of model year {year}. Confirm the actual production month, as it may affect the fees.",
+    "manufactureYearEstimate": "Only the production year {year} is known. This estimate uses January until the actual month is confirmed.",
     "customsDate": "Expected clearance date",
     "freight": "Freight cost",
     "insurance": "Insurance cost",

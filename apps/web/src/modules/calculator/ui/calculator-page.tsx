@@ -12,6 +12,7 @@ import { calculateImportEstimate, type CalculationInput, type Powertrain } from 
 import { createDefaultInput, convertTransactionPrice } from '../application/defaults';
 import { getClearanceDate } from '../application/current-date';
 import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
+import type { ManufactureEstimate } from '../application/manufacture-estimate';
 import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
   CALCULATOR_DRAFT_STORAGE_KEY,
@@ -92,6 +93,7 @@ export function CalculatorPage({
   const [activeRates, setActiveRates] = useState(initialRates);
   const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
   const [manualRates, setManualRates] = useState(false);
+  const [manufactureEstimate, setManufactureEstimate] = useState<ManufactureEstimate>();
   const [ready, setReady] = useState(false);
   const [advanced, setAdvanced] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -125,6 +127,7 @@ export function CalculatorPage({
     setActiveRates(rates);
     setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
+    setManufactureEstimate(fragment ? fragment.seed.manufactureEstimate : restored.manufactureEstimate);
     if (fragment) {
       // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
       try {
@@ -144,11 +147,11 @@ export function CalculatorPage({
     if (!ready || input.country !== country.code) return;
     pendingSeedRef.current = null;
     try {
-      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates }));
+      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates, manufactureEstimate }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, ready, country.code, activeRates]);
+  }, [input, manualRates, ready, country.code, activeRates, manufactureEstimate]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -188,6 +191,11 @@ export function CalculatorPage({
     return next;
   }, [input, country]);
   const result = useMemo(() => calculateImportEstimate(normalized), [normalized]);
+  const manufactureNote = country.needsManufactureDate && manufactureEstimate
+    ? t(manufactureEstimate === 'model_year' ? 'modelYearEstimate' : 'manufactureYearEstimate', {
+        year: input.manufactureDate.slice(0, 4),
+      })
+    : undefined;
   const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
   const formatter = useMemo(
     () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 }),
@@ -250,6 +258,7 @@ export function CalculatorPage({
         : {}),
     }));
     setCopyState('idle');
+    if (key === 'manufactureDate') setManufactureEstimate(undefined);
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
@@ -273,6 +282,7 @@ export function CalculatorPage({
     setActiveRates(initialRates);
     setInput(defaultInput(country, getClearanceDate(new Date()), initialRates));
     setManualRates(false);
+    setManufactureEstimate(undefined);
     setTouched(new Set());
     setCopyState('idle');
     setAdvanced(true);
@@ -344,6 +354,7 @@ export function CalculatorPage({
           ]
         : []),
       ...result.assumptions.map((key) => ta(key)),
+      ...(manufactureNote ? [manufactureNote] : []),
       t('usdReferenceHint'),
       t('referenceNotice'),
     ].join('\n');
@@ -372,7 +383,7 @@ export function CalculatorPage({
   function field(
     key: InputField,
     label: string,
-    options: { type?: string; unit?: string; children?: ReactNode } = {},
+    options: { type?: string; unit?: string; children?: ReactNode; note?: string } = {},
   ) {
     const code = result.fieldErrors[key];
     const error = code
@@ -380,6 +391,7 @@ export function CalculatorPage({
       : touched.has(key) && result.missingFields.includes(key)
         ? te('required')
         : '';
+    const describedBy = [error && `${key}-error`, options.note && `${key}-note`].filter(Boolean).join(' ');
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
         <label htmlFor={key}>{label}</label>
@@ -393,7 +405,7 @@ export function CalculatorPage({
             onChange={(event) => update(key, event.target.value)}
             onBlur={() => setTouched((old) => new Set(old).add(key))}
             aria-invalid={Boolean(error)}
-            aria-describedby={error ? `${key}-error` : undefined}
+            aria-describedby={describedBy || undefined}
             autoComplete="off"
             spellCheck={false}
           />
@@ -405,6 +417,7 @@ export function CalculatorPage({
             {error}
           </small>
         )}
+        {options.note && <p className="manufacture-assumption" id={`${key}-note`}>{options.note}</p>}
       </div>
     );
   }
@@ -485,7 +498,7 @@ export function CalculatorPage({
                 {country.needsPower &&
                   field('powerHp', t(isElectric ? 'electricPower' : 'power'), { unit: 'hp' })}
                 {country.needsManufactureDate &&
-                  field('manufactureDate', t('manufactureDate'), { type: 'month' })}
+                  field('manufactureDate', t('manufactureDate'), { type: 'month', note: manufactureNote })}
               </div>
               <fieldset className="powertrain-field">
                 <legend>{t('powertrain')}</legend>
@@ -723,9 +736,10 @@ export function CalculatorPage({
                     <small className="usd-reference-hint">{t('usdReferenceHint')}</small>
                     <p>{t('notLanded')}</p>
                   </div>
-                  {result.assumptions.length > 0 && (
+                  {(manufactureNote || result.assumptions.length > 0) && (
                     <div className="calculation-assumptions" data-testid="calculation-assumptions">
                       <ul>
+                        {manufactureNote && <li>{manufactureNote}</li>}
                         {result.assumptions.map((key) => (
                           <li key={key}>{ta(key)}</li>
                         ))}

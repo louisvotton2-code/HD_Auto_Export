@@ -3,9 +3,11 @@ import { CALCULATOR_POWERTRAINS } from './draft';
 import type { VehicleEstimateDraft } from './vehicle-estimate';
 import { EXCHANGE_CURRENCIES, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { parseCustomsDate, parseManufactureMonth } from '../core/dates';
+import { readManufactureEstimate, type ManufactureEstimate } from './manufacture-estimate';
 
 const key = 'hd-estimate';
 const maxLength = 6000;
+const seedKeys = ['version', 'sourceId', 'input', 'rates'] as const;
 const inputKeys = [
   'country', 'importerType', 'powertrain', 'price', 'currency', 'displacementCc', 'powerHp',
   'manufactureDate', 'customsDate', 'freight', 'insurance', 'steering',
@@ -17,6 +19,7 @@ export type VehicleEstimateSeed = {
   sourceId: string;
   input: VehicleEstimateDraft;
   rates: ExchangeRateSnapshot;
+  manufactureEstimate?: ManufactureEstimate;
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -58,7 +61,9 @@ export function readStoredEstimateRates(raw: string | null, country: string): Ex
 
 /** Untrusted fragment data is validated independently of stored calculator drafts. */
 export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | null {
-  if (!record(value) || !exactKeys(value, ['version', 'sourceId', 'input', 'rates'])
+  if (!record(value)) return null;
+  const hasEstimate = Object.hasOwn(value, 'manufactureEstimate');
+  if (!exactKeys(value, hasEstimate ? [...seedKeys, 'manufactureEstimate'] : seedKeys)
     || value.version !== 1 || typeof value.sourceId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value.sourceId)
     || !record(value.input) || !exactKeys(value.input, inputKeys)
@@ -77,6 +82,7 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     if (!decimal(input[field], true)) return null;
   if ((input.manufactureDate !== '' && !parseManufactureMonth(input.manufactureDate as string))
     || !parseCustomsDate(input.customsDate as string)) return null;
+  if (hasEstimate && !readManufactureEstimate(value.manufactureEstimate, input.manufactureDate)) return null;
   if (!parseEstimateRates(value.rates)) return null;
   return value as unknown as VehicleEstimateSeed;
 }

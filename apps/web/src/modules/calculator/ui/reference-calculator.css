@@ -208,6 +208,12 @@
 .calculator-reference.calculator-simple .field-error {
   color: #ff8d8d;
 }
+.calculator-reference.calculator-simple .manufacture-assumption {
+  margin: 6px 0 0;
+  color: #f3c98a;
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 .calculator-reference.calculator-simple .powertrain-field,
 .calculator-reference.calculator-simple .condition-field {

@@ -39,7 +39,7 @@ async function expectVehicleContacts(contacts: Locator, id: string, locale: Loca
       expect(text).not.toMatch(/(?:制造时间|Manufactured|Дата выпуска):/);
     } else {
       expect(text).toContain('2024');
-      expect(text).toContain('23500.00 USD');
+      expect(text).toContain('23500 USD');
       expect(text).not.toContain(publicFixtureLabels[locale].demo);
     }
     drafts.push(text);

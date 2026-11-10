@@ -2,6 +2,7 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import { Amount } from '../core/decimal';
 import type { CalculationInput, CountryCode, Powertrain } from '../index';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
+import { vehicleManufacturePrefill } from './manufacture-estimate';
 
 /** The UI can leave unknown enums empty; the core's required-field checks accept empty text. */
 export type VehicleEstimateDraft = Omit<CalculationInput, 'powertrain' | 'condition' | 'steering'> & {
@@ -19,7 +20,6 @@ export function createVehicleEstimateDraft(
   rates: ExchangeRateSnapshot,
 ): VehicleEstimateDraft {
   const facts = vehicle.facts;
-  const manufacture = facts.manufacturedAt;
   const money = vehicle.price.money;
   let price = '';
   if (money && money.currency in rates.rates) {
@@ -37,9 +37,7 @@ export function createVehicleEstimateDraft(
     powerHp: facts.powerKw !== null && facts.powerKw > 0
       ? new Amount(facts.powerKw).mul('1.3596216173').toFixed(6).replace(/\.?0+$/, '')
       : '',
-    manufactureDate: manufacture && manufacture.precision !== 'year'
-      ? manufacture.value.slice(0, 7)
-      : '',
+    manufactureDate: vehicleManufacturePrefill(vehicle, date).value,
     customsDate: date,
     freight: '',
     insurance: '',

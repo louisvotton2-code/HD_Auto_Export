@@ -3,6 +3,7 @@ import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { calculateImportEstimate, type CountryCode } from '../index';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
 import { createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput } from './vehicle-estimate';
+import { vehicleManufacturePrefill } from './manufacture-estimate';
 
 const date = '2026-11-08';
 const rates = createReferenceSnapshot();
@@ -19,19 +20,31 @@ describe('vehicle facts to import estimate', () => {
     expect(calculateImportEstimate(vehicleEstimateInput(input)).status).toBe('reference');
   });
 
-  it('does not infer a manufacture month from model year, first registration or a year-only date', () => {
+  it('uses a real manufacture month first and marks January assumptions by their source', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.facts.firstRegistration = { precision: 'day', value: '2024-05-15' };
-    for (const manufacturedAt of [null, { precision: 'year' as const, value: '2024' }]) {
-      vehicle.facts.manufacturedAt = manufacturedAt;
+    vehicle.facts.manufacturedAt = null;
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2024-01', estimate: 'model_year' });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-01');
+    vehicle.facts.manufacturedAt = { precision: 'year', value: '2023' };
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2023-01', estimate: 'manufacture_year' });
+    vehicle.facts.manufacturedAt = { precision: 'day', value: '2024-03-28' };
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2024-03' });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03');
+  });
+
+  it('leaves the month empty for missing or future year estimates, even if first registration is known', () => {
+    const vehicle = makePublicVehicleFixture();
+    vehicle.facts.firstRegistration = { precision: 'day', value: '2024-05-15' };
+    vehicle.facts.manufacturedAt = null;
+    for (const year of [null, 2027]) {
+      vehicle.facts.modelYear = year;
       const input = createVehicleEstimateDraft(vehicle, 'RU', date, rates);
       expect(input.manufactureDate).toBe('');
       expect(calculateImportEstimate(vehicleEstimateInput(input))).toMatchObject({
         status: 'incomplete', total: null, missingFields: expect.arrayContaining(['manufactureDate']),
       });
     }
-    vehicle.facts.manufacturedAt = { precision: 'day', value: '2024-03-28' };
-    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03');
   });
 
   it.each(['unknown', 'lpg', 'other'] as const)('keeps unsupported %s and missing numeric facts unselected', (powertrain) => {

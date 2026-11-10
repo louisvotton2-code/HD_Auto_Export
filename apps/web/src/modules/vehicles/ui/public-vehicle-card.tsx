@@ -2,11 +2,10 @@
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import type { PointerTiltHandlers } from '@/shared/ui/use-pointer-tilt';
-import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
+import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { usePublicFreshness } from '../application/use-public-resource';
 import { publicVehicleMessages } from '../public-messages';
 import {
-  formatPublicVehiclePrice,
   publicAvailabilityLabel,
   publicVehicleCover,
 } from '../public-presentation';
@@ -14,6 +13,7 @@ import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehiclePhoto } from './vehicle-photo';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
+import { VehiclePriceValues } from './vehicle-price-values';
 import styles from './public-vehicles.module.css';
 
 export function PublicVehicleCard({
@@ -28,7 +28,7 @@ export function PublicVehicleCard({
   const t = publicVehicleMessages(locale),
     cover = publicVehicleCover(vehicle);
   const trusted = usePublicFreshness() === 'fresh';
-  const quote = publicUsdQuote(vehicle);
+  const title = publicVehicleTitle(vehicle, locale);
   const availability = trusted ? publicAvailabilityLabel(vehicle, locale) : '';
   return (
     <div className={styles.cardSlot}>
@@ -46,21 +46,21 @@ export function PublicVehicleCard({
           tabIndex={-1}
           aria-hidden="true"
         >
-          <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || vehicle.content.title.text} />
+          <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} />
           {vehicle.facts.modelYear !== null && (
             <span className={styles.year}>{vehicle.facts.modelYear}</span>
           )}
         </PublicCatalogLink>
         <FavoriteVehicleButton
           vehicleId={vehicle.id}
-          title={vehicle.content.title.text}
+          title={title.text}
           locale={locale}
           className={styles.favorite}
         />
         <div className={styles.cardBody}>
-          <h2 lang={vehicle.content.title.contentLocale} title={vehicle.content.title.text}>
+          <h2 lang={title.lang} title={title.text}>
             <PublicCatalogLink locale={locale} href={vehicle.detailPath}>
-              {vehicle.content.title.text}
+              {title.text}
             </PublicCatalogLink>
           </h2>
           <p className={styles.make}>{vehicle.facts.make?.name ?? t.unknown}</p>
@@ -82,8 +82,8 @@ export function PublicVehicleCard({
             <span>{t.powertrains[vehicle.facts.powertrain]}</span>
           </div>
           <div className={styles.price}>
-            {quote && <small>{t.priceLabels[quote.kind]}</small>}
-            <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
+            {vehicle.price.kind !== 'on_request' && <small>{t.priceLabels[vehicle.price.kind]}</small>}
+            <VehiclePriceValues vehicle={vehicle} locale={locale} />
           </div>
           <div className={styles.cardActions}>
             <PublicVehicleContacts vehicle={vehicle} locale={locale} />

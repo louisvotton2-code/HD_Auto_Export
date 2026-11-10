@@ -83,7 +83,13 @@ test('combined criteria filter the whole catalog before pagination and survive l
   for (const [key, value] of wanted)
     if (key !== 'page')
       expect(new URL((await next.getAttribute('href'))!, first).searchParams.get(key)).toBe(value);
+  const pageTwo = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/v1/vehicles/' && url.searchParams.get('page') === '2' &&
+      url.searchParams.get('trim') === 'beta_model_trim';
+  });
   await next.click();
+  expect((await pageTwo).status()).toBe(200);
   await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('2');
   await expect(page.locator('main')).toContainText('5 vehicle records');
   await page.goBack();

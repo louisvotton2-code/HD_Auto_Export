@@ -1,6 +1,8 @@
 import type { CSSProperties } from 'react';
 
 const paths = {
+  credit: 'M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2ZM2 10h20',
+  pin: 'M20 10c0 5-8 11-8 11s-8-6-8-11a8 8 0 1 1 16 0ZM15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   phone: 'M21 17v3a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3l2 5-2 2a13 13 0 0 0 7 7l2-2 5 2Z',
   arrow: 'M4 12h16M14 6l6 6-6 6',
   diagonal: 'M6 18 18 6M6 6h12v12',
@@ -16,6 +18,10 @@ const paths = {
   check: 'm5 12 4 4L19 6',
   plus: 'M12 5v14M5 12h14',
   clock: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 7v5l3 2',
+  gauge: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0ZM8 10l4 4',
+  document: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8m-8 4h8',
+  seat: 'M8 21v-3h12v3M6 12l-2-6a2 2 0 0 1 4-1l3 7h6a3 3 0 0 1 3 3v3H8Z',
+  chip: 'M7 7h10v10H7Zm3 3h4v4h-4ZM9 3v4m6-4v4M9 17v4m6-4v4M3 9h4m-4 6h4m10-6h4m-4 6h4',
   spark: 'm12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2L12 3Z',
   menu: 'M4 7h16M4 12h16M4 17h16',
 };

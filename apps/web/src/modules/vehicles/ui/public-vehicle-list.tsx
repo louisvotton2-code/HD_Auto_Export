@@ -15,8 +15,8 @@ import { publicCatalogHref } from '../public-presentation';
 import {
   parseCatalogPageQuery,
   publicQueryString,
+  publicUsdCatalogQuery,
   publicUsdFilterQuery,
-  publicUsdView,
 } from '../public-query';
 import { localizedListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
@@ -51,7 +51,7 @@ export function PublicVehicleList({
     return parseCatalogPageQuery(input, locale);
   }, [search, locale]);
   const selected = query ?? initialQuery;
-  const url = `/api/v1/vehicles/?${publicQueryString({ ...selected, ...publicUsdView })}`;
+  const url = `/api/v1/vehicles/?${publicQueryString(publicUsdCatalogQuery(selected))}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const resource = usePublicResource(url, result, localizedListSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/`,

@@ -5,7 +5,7 @@ import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
 import type { PublicVehicle } from '@hd/contracts/public';
 import { NavigationLink } from '@/shared/ui/navigation-link';
-import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
+import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import {
   readFavoriteVehicle,
   type FavoriteVehicleResult,
@@ -14,12 +14,12 @@ import { useVehicleFavorites } from '../application/use-vehicle-favorites';
 import { favoritesContent } from '../favorites-content';
 import { publicVehicleMessages } from '../public-messages';
 import {
-  formatPublicVehiclePrice,
   publicVehicleCover,
   publicAvailabilityLabel,
 } from '../public-presentation';
 import { PublicCatalogLink } from './public-catalog-link';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
+import { VehiclePriceValues } from './vehicle-price-values';
 import styles from './vehicle-favorites.module.css';
 
 type Row = FavoriteVehicleResult | { kind: 'loading' };
@@ -50,7 +50,7 @@ function SavedCar({
 }) {
   const cover = publicVehicleCover(vehicle);
   const copy = publicVehicleMessages(locale);
-  const quote = publicUsdQuote(vehicle);
+  const title = publicVehicleTitle(vehicle, locale);
   const status =
     vehicle.availability === 'sold' || vehicle.availability === 'reserved'
       ? publicAvailabilityLabel(vehicle, locale)
@@ -68,8 +68,8 @@ function SavedCar({
         <VehiclePhoto image={cover} locale={locale} alt="" compact />
       </PublicCatalogLink>
       <div className={styles.info}>
-        <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close} lang={vehicle.content.title.contentLocale}>
-          {vehicle.content.title.text}
+        <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close} lang={title.lang}>
+          {title.text}
         </PublicCatalogLink>
         <small>
           {vehicle.stockCode}
@@ -80,8 +80,10 @@ function SavedCar({
             {status}
           </span>
         )}
-        {quote && <span className={styles.priceKind}>{copy.priceLabels[quote.kind]}</span>}
-        <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
+        {vehicle.price.kind !== 'on_request' && (
+          <span className={styles.priceKind}>{copy.priceLabels[vehicle.price.kind]}</span>
+        )}
+        <VehiclePriceValues vehicle={vehicle} locale={locale} />
       </div>
     </>
   );
@@ -246,7 +248,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
                     <button
                       type="button"
                       className={styles.remove}
-                      aria-label={`${t.remove} — ${row?.kind === 'vehicle' ? row.vehicle.content.title.text : id}`}
+                      aria-label={`${t.remove} — ${row?.kind === 'vehicle' ? publicVehicleTitle(row.vehicle, locale).text : id}`}
                       onClick={() => remove(id)}
                     >
                       ×

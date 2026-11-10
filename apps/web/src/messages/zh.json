@@ -56,6 +56,8 @@
     "displacement": "发动机排量 · cc",
     "power": "发动机功率 · hp",
     "manufactureDate": "制造日期",
+    "modelYearEstimate": "按 {year} 年款暂用 1 月估算。请核对实际制造月份，月份可能影响税费。",
+    "manufactureYearEstimate": "仅有 {year} 年的制造年份，暂用 1 月估算。请核对实际制造月份。",
     "customsDate": "预计清关日期",
     "freight": "运费",
     "insurance": "保险费",

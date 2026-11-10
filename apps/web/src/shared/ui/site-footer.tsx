@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { ContactLinks } from './contact-links';
+import { FooterPayment } from './footer-payment';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
@@ -40,7 +41,7 @@ export async function SiteFooter() {
               {t('Common.fromChina')}
             </p>
             <address className={`hd-contact-address ${styles.address}`}>
-              <Icon name="diagonal" size={15} />
+              <Icon name="pin" size={15} />
               <span>
                 <strong>{t('Contacts.addressLabel')}</strong>
                 {t('Contacts.addressValue')}
@@ -65,16 +66,11 @@ export async function SiteFooter() {
           >
             <h2 id="contact-title">{t('Contacts.title')}</h2>
             <ContactLinks />
-            <div className={styles.footerPayment}>
-              <h3>{t('Contacts.payment')}</h3>
-              <ul aria-label={t('Contacts.payment')}>
-                <li>PayPal</li>
-                <li>Visa</li>
-                <li>Mastercard</li>
-                <li>{t('Contacts.bankTransfer')}</li>
-              </ul>
-              <p>{t('Contacts.confirmPayment')}</p>
-            </div>
+            <FooterPayment
+              title={t('Contacts.payment')}
+              bankTransfer={t('Contacts.bankTransfer')}
+              note={t('Contacts.confirmPayment')}
+            />
           </section>
         </div>
         <div className={`hd-footer-bottom ${styles.footerBottom}`}>

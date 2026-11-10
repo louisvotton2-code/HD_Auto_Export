@@ -37,9 +37,20 @@ describe('explicit vehicle calculator fragment handoff', () => {
     expect(readVehicleEstimateFragment('#hd-estimate=' + 'x'.repeat(6000), 'RU')).toBeNull();
   });
 
+  it('keeps the validated January estimate marker without changing older fragments', () => {
+    const value = seed();
+    expect(parseVehicleEstimateSeed(value)).toEqual(value);
+    value.manufactureEstimate = 'model_year';
+    expect(parseVehicleEstimateSeed(value)).toBeNull();
+    value.input.manufactureDate = '2024-01';
+    const fragment = createVehicleEstimateFragment(value)!;
+    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual(value);
+  });
+
   it.each([
     (value: VehicleEstimateSeed) => Object.assign(value, { admin: true }),
     (value: VehicleEstimateSeed) => Object.assign(value, { version: 2 }),
+    (value: VehicleEstimateSeed) => Object.assign(value, { manufactureEstimate: 'trusted' }),
     (value: VehicleEstimateSeed) => Object.assign(value, { sourceId: '../api/admin' }),
     (value: VehicleEstimateSeed) => Object.assign(value.input, { unknown: 'field' }),
     (value: VehicleEstimateSeed) => Object.assign(value.input, { country: { toString: 'x' } }),

@@ -2,7 +2,7 @@ import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
-import { publicUsdFilterQuery, publicUsdView, type UsdFilterScope } from '../public-query';
+import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, type UsdFilterScope } from '../public-query';
 import {
   legacyListSchema,
   legacyVehicleSchema,
@@ -146,7 +146,7 @@ export function getPublicFilters(locale: Locale, scope?: UsdFilterScope) {
 }
 export function getPublicCatalog(query: PublicVehicleQuery) {
   return readPublicJson(
-    `/api/v1/vehicles?${queryString({ ...query, ...publicUsdView })}`,
+    `/api/v1/vehicles?${queryString(publicUsdCatalogQuery(query))}`,
     localizedListSchema(query.locale, 'usd'),
   );
 }

@@ -10,6 +10,7 @@ import { publicVehicleMessages } from '@/modules/vehicles';
 import { countries } from '@/modules/calculator/config/countries';
 import { getPublicVehicleById, PublicApiError } from '@/modules/vehicles/server';
 import { localizedAlternates, siteConfig } from '@/shared/config/site';
+import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { ScopedMessagesProvider } from '@/i18n/scoped-messages-provider';
 import { getVehicleCalculatorMessages } from '@/i18n/client-messages';
 import { getClearanceDate } from '@/modules/calculator/application/current-date';
@@ -51,7 +52,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     vehicle.source.kind === 'manual' &&
     vehicle.availability === 'available';
   return {
-    title: vehicle.content.title.text,
+    title: publicVehicleTitle(vehicle, locale).text,
     description: vehicle.content.description?.text.slice(0, 300),
     robots: { index, follow: index },
     alternates: { canonical: vehicle.detailPath, languages: localizedAlternates(path) },

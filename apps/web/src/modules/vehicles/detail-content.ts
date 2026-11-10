@@ -9,11 +9,12 @@ type DetailContent = {
   basicInformation: string;
   inquiry: string;
   mileage: string;
+  history: string;
+  transfers: string;
   publicDescription: string;
   consultTitle: string;
   consultBody: string;
   includes: string;
-  sellerTitle: string;
   share: string;
   copied: string;
   copyFailed: string;
@@ -39,11 +40,12 @@ export const detailContent = {
     basicInformation: '详细车辆信息',
     inquiry: '咨询编号',
     mileage: '里程',
+    history: '车辆历史',
+    transfers: '过户次数',
     publicDescription: '车辆介绍',
     consultTitle: '咨询这辆车',
     consultBody: '通过聊天了解车况、运输方案与报价。',
     includes: '价格包含项目',
-    sellerTitle: 'HD Auto Export 出口咨询',
     share: '分享',
     copied: '已复制详情链接',
     copyFailed: '请使用浏览器复制本页地址',
@@ -68,11 +70,12 @@ export const detailContent = {
     basicInformation: 'Detailed vehicle information',
     inquiry: 'Inquiry reference',
     mileage: 'Mileage',
+    history: 'Vehicle history',
+    transfers: 'Ownership transfers',
     publicDescription: 'Vehicle description',
     consultTitle: 'Ask about this vehicle',
     consultBody: 'Discuss vehicle details, shipping options and pricing in chat.',
     includes: 'Price inclusions',
-    sellerTitle: 'HD Auto Export consultation',
     share: 'Share',
     copied: 'Detail link copied',
     copyFailed: 'Use your browser to copy this page address',
@@ -97,11 +100,12 @@ export const detailContent = {
     basicInformation: 'Подробная информация',
     inquiry: 'Номер для обращения',
     mileage: 'Пробег',
+    history: 'История автомобиля',
+    transfers: 'Количество переоформлений',
     publicDescription: 'Описание автомобиля',
     consultTitle: 'Узнать об автомобиле',
     consultBody: 'Обсудите автомобиль, доставку и стоимость в чате.',
     includes: 'Что включено в цену',
-    sellerTitle: 'Консультация HD Auto Export',
     share: 'Поделиться',
     copied: 'Ссылка на автомобиль скопирована',
     copyFailed: 'Скопируйте адрес страницы средствами браузера',

@@ -3,13 +3,12 @@
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
-import { siteConfig } from '@/shared/config/site';
-import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
+import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
+import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
-  formatPublicVehiclePrice,
   publicAvailabilityLabel,
   publicVehicleFacts,
 } from '../public-presentation';
@@ -17,6 +16,9 @@ import { ExternalVehicleInformation } from './external-vehicle-information';
 import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
+import { VehiclePriceValues } from './vehicle-price-values';
+import { VehicleHistory } from './vehicle-history';
+import { VehicleInspectionReport, VehicleReportLink } from './vehicle-inspection-report';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -37,23 +39,23 @@ export function PublicVehicleDetail({
   budget?: ReactNode;
 }) {
   const t = publicVehicleMessages(locale);
-  const quote = publicUsdQuote(vehicle);
   const copy = detailContent[locale];
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
   const availability = fresh ? publicAvailabilityLabel(vehicle, locale) : '';
   const make = vehicle.facts.make?.name;
-  const title = vehicle.content.title.text;
+  const { text: title, lang } = publicVehicleTitle(vehicle, locale);
   const titleRemainder =
     make && title.toLowerCase().startsWith(`${make.toLowerCase()} `)
       ? title.slice(make.length + 1)
       : null;
-  const mileage =
-    vehicle.facts.mileageKm === null
-      ? t.unknown
-      : `${vehicle.facts.mileageKm.toLocaleString(locale)} ${t.km}`;
+  const mileage = vehicle.facts.mileageKm?.toLocaleString(locale);
   const knownDate = vehicle.facts.manufacturedAt?.value;
   const contactId = `vehicle-contact-${vehicle.id}`;
+  const inspection = vehicle.external?.detail?.inspection;
+  const reportId = inspection && (inspection.reportUrl || inspection.entries.length > 0)
+    ? `vehicle-report-${vehicle.id}`
+    : undefined;
 
   return (
     <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id}>
@@ -63,7 +65,7 @@ export function PublicVehicleDetail({
         </PublicCatalogLink>
         <div className={styles.grid}>
           <div className={styles.mainColumn}>
-            <h1 className={styles.title} lang={vehicle.content.title.contentLocale}>
+            <h1 className={styles.title} lang={lang}>
               {titleRemainder ? (
                 <>
                   {make} <span>{titleRemainder}</span>
@@ -73,7 +75,7 @@ export function PublicVehicleDetail({
               )}
             </h1>
             <p className={styles.subtitle}>
-              {mileage} ·{' '}
+              {mileage === undefined ? t.unknown : `${mileage} ${t.km}`} ·{' '}
               {vehicle.facts.transmission ? t.transmissions[vehicle.facts.transmission] : t.unknown}
             </p>
             <div className={styles.chips}>
@@ -97,19 +99,19 @@ export function PublicVehicleDetail({
             <VehicleGallery images={vehicle.images} title={title} locale={locale} />
             <div className={styles.tiles}>
               <div className={styles.tile}>
-                <p>{copy.inquiry}</p>
+                <p><span className={styles.tileIcon}><Icon name="document" size={16} /></span>{copy.inquiry}</p>
                 <bdi>{vehicle.stockCode}</bdi>
               </div>
               <div className={`${styles.tile} ${styles.mileageTile}`}>
-                <p>{copy.mileage}</p>
-                <strong>{mileage}</strong>
+                <p><span className={styles.tileIcon}><Icon name="gauge" size={16} /></span>{copy.mileage}</p>
+                <strong>{mileage ?? t.unknown}{mileage !== undefined && <small>{t.km}</small>}</strong>
               </div>
             </div>
 
             <div className={styles.mobilePrice}>
               <div>
-                {quote && <span>{t.priceLabels[quote.kind]}</span>}
-                <strong>{formatPublicVehiclePrice(vehicle, locale)}</strong>
+                {vehicle.price.kind !== 'on_request' && <span>{t.priceLabels[vehicle.price.kind]}</span>}
+                <VehiclePriceValues vehicle={vehicle} locale={locale} />
               </div>
               <a href={`#${contactId}`}>{sold ? t.similar : copy.consultTitle} →</a>
             </div>
@@ -129,13 +131,17 @@ export function PublicVehicleDetail({
                   {publicVehicleFacts(vehicle, locale).map((fact) => (
                     <div key={fact.label}>
                       <dt>{fact.label}</dt>
-                      <dd>{fact.value}</dd>
+                      <dd lang={fact.lang} dir="auto">{fact.value}</dd>
                     </div>
                   ))}
                 </dl>
               </details>
             </section>
 
+            <VehicleHistory vehicle={vehicle} locale={locale} />
+            {inspection && reportId && (
+              <VehicleInspectionReport id={reportId} inspection={inspection} locale={locale} />
+            )}
             {vehicle.content.description && (
               <section className={styles.card}>
                 <h2 className={styles.cardHeading}>
@@ -177,9 +183,11 @@ export function PublicVehicleDetail({
 
           <aside className={styles.side}>
             <section className={styles.priceCard}>
-              {quote && <p className={styles.priceLabel}>{t.priceLabels[quote.kind]}</p>}
+              {vehicle.price.kind !== 'on_request' && (
+                <p className={styles.priceLabel}>{t.priceLabels[vehicle.price.kind]}</p>
+              )}
               <div className={`${styles.priceTile} ${sold ? styles.soldPrice : ''}`}>
-                <p>{formatPublicVehiclePrice(vehicle, locale)}</p>
+                <VehiclePriceValues vehicle={vehicle} locale={locale} />
               </div>
               <p className={styles.priceNote}>{t.priceNote}</p>
               <VehicleRateAttribution
@@ -212,12 +220,7 @@ export function PublicVehicleDetail({
                 <p className={styles.smallNote}>{t.contactNote}</p>
               </div>
             </section>
-            <section className={styles.sellerCard}>
-              <h2>{copy.sellerTitle}</h2>
-              <p>{siteConfig.name}</p>
-              <a href={siteConfig.contacts.phone.href}>{siteConfig.contacts.phone.display}</a>
-              <p className={styles.smallNote}>{copy.consultBody}</p>
-            </section>
+            {reportId && <VehicleReportLink reportId={reportId} locale={locale} />}
           </aside>
         </div>
       </div>

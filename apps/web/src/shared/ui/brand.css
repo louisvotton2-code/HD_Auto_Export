@@ -195,7 +195,7 @@
   background: var(--brand-gold-soft);
 }
 
-.hd-contact-item > span:first-child {
+.hd-contact-item > .hd-contact-label {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -208,7 +208,7 @@
   font-weight: 500;
 }
 
-.hd-contact-item > span:first-child > span {
+.hd-contact-item > .hd-contact-label > span {
   color: #8f8c82;
   font-size: 10px;
   white-space: nowrap;
@@ -325,7 +325,7 @@
     gap: 5px;
   }
 
-  .hd-contact-item > span:first-child > span {
+  .hd-contact-item > .hd-contact-label > span {
     font-size: 9px;
   }
 
