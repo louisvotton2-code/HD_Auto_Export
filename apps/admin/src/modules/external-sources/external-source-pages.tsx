@@ -45,7 +45,10 @@ export function ExternalSourcesPage() {
   const refresh = () => { status.reload(); batches.reload(); };
   return <section className={styles.stack}>
     <header className={styles.heading}>
-      <div><Title level={2}>外部车源管理</Title><Paragraph type="secondary">跟踪导入批次，核对来源记录和公开展示。</Paragraph></div>
+      <div>
+        <Title level={2}>外部车源管理</Title>
+        <Paragraph type="secondary">按批次查看当前后台的外部挂牌、来源记录和公开展示。<Link to="/vehicles">返回车辆管理</Link></Paragraph>
+      </div>
       <Button onClick={refresh}>重新读取</Button>
     </header>
     <Card title="同步与试译状态">

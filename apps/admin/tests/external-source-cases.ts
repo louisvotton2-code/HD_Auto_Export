@@ -24,8 +24,10 @@ async function setup(page: Page, role: 'admin' | 'editor' = 'editor') {
 test('external batches expose source conflict and usage details to editors at mobile width', async ({ page }) => {
   await setup(page);
   await page.setViewportSize({ width: 320, height: 850 });
-  await page.goto(ui);
+  await page.goto('/admin/vehicles');
+  await page.getByRole('link', { name: '查看外部导入批次', exact: true }).click();
   await expect(page.getByRole('heading', { name: '外部车源管理' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '返回车辆管理', exact: true })).toHaveAttribute('href', '/admin/vehicles');
   await expect(page.getByText('手动导入', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '导入批次' })).toHaveCount(0);
   await page.getByRole('link', { name: '查看批次' }).click();

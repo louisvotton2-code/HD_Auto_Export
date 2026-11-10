@@ -80,7 +80,20 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
     setLifecycleTarget(null); setRefresh(value => value + 1); dictionary.reload();
   }
   return <section>
-    <div className="page-heading"><div><div className="page-eyebrow">VEHICLE OPERATIONS</div><h1>{deleted ? '车辆回收站' : '车辆管理'}</h1><p>{deleted ? '保留已删除车辆的资料与历史，恢复后重新核验并发布。' : '整理车源、核对内容，把每辆车的状态看清楚。'}</p></div><Space wrap><Button icon={<ReloadOutlined />} loading={loading} disabled={bulkBusy} onClick={() => { setRefresh(value => value + 1); dictionary.reload(); }}>刷新列表</Button><Link to={deleted ? '/vehicles' : '/recycle-bin'}><Button>{deleted ? '返回车辆管理' : '查看回收站'}</Button></Link>{canWrite && !deleted && <Link to="/vehicles/new"><Button type="primary" icon={<PlusOutlined />}>新建车辆</Button></Link>}</Space></div>
+    <div className="page-heading">
+      <div>
+        <div className="page-eyebrow">VEHICLE OPERATIONS</div>
+        <h1>{deleted ? '车辆回收站' : '车辆管理'}</h1>
+        <p>{deleted ? '保留已删除车辆的资料与历史，恢复后重新核验并发布。' : <>
+          此处管理员工录入的车辆。<Link to="/external-sources">查看外部导入批次</Link>
+        </>}</p>
+      </div>
+      <Space wrap>
+        <Button icon={<ReloadOutlined />} loading={loading} disabled={bulkBusy} onClick={() => { setRefresh(value => value + 1); dictionary.reload(); }}>刷新列表</Button>
+        <Link to={deleted ? '/vehicles' : '/recycle-bin'}><Button>{deleted ? '返回车辆管理' : '查看回收站'}</Button></Link>
+        {canWrite && !deleted && <Link to="/vehicles/new"><Button type="primary" icon={<PlusOutlined />}>新建车辆</Button></Link>}
+      </Space>
+    </div>
     {notice && <Alert showIcon type="success" title={notice} closable onClose={() => setNotice('')} style={{ marginBottom: 20 }} />}
     {deleted && <Alert showIcon type="info" title="恢复不会自动公开" description="删除会撤销公开访问并移除首页引用，图片和发布历史仍保留。恢复后为未发布草稿、库存待核验，不会自动加回首页。" style={{ marginBottom: 20 }} />}
     <div className="stats-row">
