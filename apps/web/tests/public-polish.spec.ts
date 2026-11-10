@@ -111,6 +111,9 @@ test('a newer same-URL history navigation replaces an older in-flight check', as
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Isolated fixture required.');
   await setPublicFixtureState(request, { futurePublished: true });
   await page.goto('/en/cars/fixture_future/');
+  await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+  const detailUrl = page.url();
+  const resource = page.locator('[data-resource-url]');
   let count = 0,
     release = () => {};
   const held = new Promise<void>((resolve) => {
@@ -125,18 +128,19 @@ test('a newer same-URL history navigation replaces an older in-flight check', as
     },
   );
   try {
-    await page.evaluate(() => {
-      history.pushState(null, '', '#first');
-      history.back();
-    });
+    await page.evaluate(() => history.pushState(null, '', '#first'));
+    await expect(page).toHaveURL(detailUrl + '#first');
+    await page.evaluate(() => history.back());
+    await expect(page).toHaveURL(detailUrl);
     await expect.poll(() => count).toBe(1);
+    await expect(resource).toHaveAttribute('data-freshness', 'checking');
     await setPublicFixtureState(request, { futureAvailability: 'sold' });
-    await page.evaluate(() => {
-      history.pushState(null, '', '#second');
-      history.back();
-    });
+    await page.evaluate(() => history.pushState(null, '', '#second'));
+    await expect(page).toHaveURL(detailUrl + '#second');
+    await page.evaluate(() => history.back());
+    await expect(page).toHaveURL(detailUrl);
     await expect.poll(() => count).toBe(2);
-    await expect(page.locator('[data-resource-url]')).toHaveAttribute('data-freshness', 'fresh');
+    await expect(resource).toHaveAttribute('data-freshness', 'fresh');
     await expect(page.locator('[data-availability="sold"]')).toBeVisible();
   } finally {
     release();

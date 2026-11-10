@@ -101,11 +101,16 @@ test('the catalog search reloads, header navigation clears it, and Back restores
 test('part favorites persist separately and synchronize catalog, details and saved selection', async ({ page }) => {
   await page.goto('/en/parts/');
   const rows = page.locator('main [data-part]');
-  const before = await rows.allTextContents();
+  const summaries = rows.getByRole('heading', { level: 3 }).locator('..');
+  const savedFilter = page.getByTestId('saved-parts-filter');
+  await expect(savedFilter).toBeEnabled();
+  await expect(summaries).toHaveCount(12);
+  const before = await summaries.allInnerTexts();
   await page.locator('main select[name="sort"]').selectOption('price-asc');
   await expect(page).toHaveURL(/sort=price-asc/);
   await expect(page.locator('main select[name="sort"]')).toHaveValue('price-asc');
-  expect(await rows.allTextContents()).toEqual(before);
+  await expect(savedFilter).toBeEnabled();
+  await expect(summaries).toHaveText(before, { useInnerText: true });
   await page.goto('/en/parts/?q=52910K2200');
   const card = page.locator('[data-part="52910k2200"]');
   await card.hover(); await card.getByRole('button', { name: 'Save part', exact: true }).click();
@@ -113,12 +118,12 @@ test('part favorites persist separately and synchronize catalog, details and sav
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('hd-auto:part-favorites:v1')!));
   expect(stored).toEqual({ version: 1, ids: ['52910k2200'] });
   await page.reload();
-  await page.getByTestId('saved-parts-filter').click();
+  await savedFilter.click();
   await expect(page.locator('main [data-part]')).toHaveCount(1);
   await page.locator('main h3 a').click();
   const detailSave = page.locator('main > div > div > aside').getByRole('button', { name: 'Unsave part', exact: true });
   await expect(detailSave).toHaveAttribute('aria-pressed', 'true'); await detailSave.click();
-  await page.goto('/en/parts/'); await page.getByTestId('saved-parts-filter').click();
+  await page.goto('/en/parts/'); await savedFilter.click();
   await expect(page.locator('main [data-part]')).toHaveCount(0);
 });
 

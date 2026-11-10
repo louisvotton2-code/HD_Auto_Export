@@ -10,7 +10,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
-  type PointerEvent,
+  type TouchEvent,
 } from 'react';
 import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -25,6 +25,7 @@ import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string };
 const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
+const tapTravel = 10;
 
 /** Full-size viewing stays on the active photo and retains one previous photo for the slide. */
 export function VehicleGallery({
@@ -58,8 +59,13 @@ export function VehicleGallery({
   const mainPhotoLink = useRef<HTMLAnchorElement>(null);
   const emptyPhoto = useRef<HTMLDivElement>(null);
   const selectedImage = useRef<HTMLImageElement>(null);
-  const swipe = useRef<{ x: number; y: number } | null>(null);
-  const lastSwipeAt = useRef(0);
+  const touch = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    startedAt: number;
+    photoLink: HTMLAnchorElement | null;
+  } | null>(null);
   const loadedImages = useRef(new Set<string>());
   const failedImages = useRef(new Set<string>());
   const captionId = useId();
@@ -114,17 +120,19 @@ export function VehicleGallery({
     setLoadingId(loadedImages.current.has(key) || failedImages.current.has(key) ? null : key);
     setFailedId(failedImages.current.has(key) ? key : null);
   }
-  function openViewer(event: MouseEvent<HTMLAnchorElement>) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    if (Date.now() - lastSwipeAt.current < 450) return;
+  function showViewer(trigger: HTMLAnchorElement) {
     const viewer = dialog.current;
     if (!viewer || viewer.open) return;
     viewer.showModal();
-    opener.current = event.currentTarget;
+    opener.current = trigger;
     pageOverflow.current ??= document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     setOpened(true);
+  }
+  function openViewer(event: MouseEvent<HTMLAnchorElement>) {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    showViewer(event.currentTarget);
   }
   function closeViewer() {
     const viewer = dialog.current;
@@ -156,21 +164,53 @@ export function VehicleGallery({
       choose(index + 1);
     }
   }
-  function pointerStart(event: PointerEvent<HTMLElement>) {
-    if (event.pointerType !== 'touch') return;
-    lastSwipeAt.current = 0;
-    swipe.current = { x: event.clientX, y: event.clientY };
-  }
-  function pointerEnd(event: PointerEvent<HTMLElement>) {
-    const start = swipe.current;
-    swipe.current = null;
-    if (!start) return;
-    const x = event.clientX - start.x,
-      y = event.clientY - start.y;
-    if (Math.abs(x) >= 45 && Math.abs(x) > Math.abs(y) * 1.3) {
-      lastSwipeAt.current = Date.now();
-      choose(index + (x < 0 ? 1 : -1));
+  function startTouch(event: TouchEvent<HTMLElement>) {
+    const finger = event.touches[0];
+    if (event.touches.length !== 1 || !finger) {
+      touch.current = null;
+      return;
     }
+    const link = mainPhotoLink.current;
+    touch.current = {
+      id: finger.identifier,
+      x: finger.clientX,
+      y: finger.clientY,
+      startedAt: event.timeStamp,
+      photoLink: link?.contains(event.target as Node) ? link : null,
+    };
+  }
+  function moveTouch(event: TouchEvent<HTMLElement>) {
+    const start = touch.current;
+    const finger = event.touches[0];
+    if (!start?.photoLink || !finger) return;
+    if (Math.hypot(finger.clientX - start.x, finger.clientY - start.y) > tapTravel)
+      start.photoLink = null;
+  }
+  function cancelTouch() {
+    touch.current = null;
+  }
+  function endTouch(event: TouchEvent<HTMLElement>) {
+    const start = touch.current;
+    cancelTouch();
+    const finger = event.changedTouches[0];
+    if (!start || finger?.identifier !== start.id || event.touches.length) return;
+    const x = finger.clientX - start.x;
+    const y = finger.clientY - start.y;
+    if (Math.abs(x) >= 45 && Math.abs(x) > Math.abs(y) * 1.3) {
+      event.preventDefault();
+      choose(index + (x < 0 ? 1 : -1));
+      return;
+    }
+    if (
+      !start.photoLink ||
+      !event.cancelable ||
+      Math.hypot(x, y) > tapTravel ||
+      event.timeStamp - start.startedAt > 500 ||
+      event.metaKey || event.ctrlKey || event.shiftKey || event.altKey
+    ) return;
+    // Chromium can omit the compatibility click on the first tap after a swipe.
+    event.preventDefault();
+    showViewer(start.photoLink);
   }
   function loaded(image: PublicMedia) {
     const key = imageResourceKey(image);
@@ -218,11 +258,11 @@ export function VehicleGallery({
         className={styles.viewport}
         data-loading={loadingId === selectedKey}
         aria-busy={loadingId === selectedKey}
-        onPointerDown={pointerStart}
-        onPointerUp={pointerEnd}
-        onPointerCancel={() => {
-          swipe.current = null;
-        }}
+        onTouchStart={enhanced ? startTouch : undefined}
+        onTouchMove={enhanced ? moveTouch : undefined}
+        onTouchEnd={enhanced ? endTouch : undefined}
+        onTouchCancel={cancelTouch}
+        onPointerCancel={cancelTouch}
       >
         <a
           className={styles.imageLink}
@@ -233,6 +273,7 @@ export function VehicleGallery({
           rel="noopener noreferrer"
           onClick={enhanced ? openViewer : undefined}
           aria-label={`${t.openGallery} — ${t.imagePosition(index + 1, ordered.length)}`}
+          aria-haspopup={enhanced ? 'dialog' : undefined}
         >
           {[...(previous ? [previous] : []), selected].map((image) => (
             <img
@@ -319,11 +360,10 @@ export function VehicleGallery({
       >
         <div
           className={styles.viewer}
-          onPointerDown={pointerStart}
-          onPointerUp={pointerEnd}
-          onPointerCancel={() => {
-            swipe.current = null;
-          }}
+          onTouchStart={startTouch}
+          onTouchEnd={endTouch}
+          onTouchCancel={cancelTouch}
+          onPointerCancel={cancelTouch}
         >
           <div className={styles.viewerHead}>
             <span id={captionId}>{t.imagePosition(index + 1, ordered.length)}</span>

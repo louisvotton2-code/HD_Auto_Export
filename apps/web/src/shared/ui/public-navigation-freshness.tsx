@@ -16,9 +16,11 @@ export function PublicNavigationFreshness() {
       timer = setTimeout(finishPublicNavigation, 0);
     };
     addEventListener('popstate', navigate);
+    document.documentElement.setAttribute('data-public-history-ready', '');
     return () => {
       clearTimeout(timer);
       removeEventListener('popstate', navigate);
+      document.documentElement.removeAttribute('data-public-history-ready');
     };
   }, []);
   return null;

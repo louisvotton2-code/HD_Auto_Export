@@ -499,23 +499,25 @@ test.describe('explicit public queries, stable activation and media regression',
     try {
       await page.goto('/en/cars/fixture_car_2/');
       const gallery = page.locator('[data-vehicle-gallery]');
-      const viewport = gallery.locator('[data-loading]');
-      await viewport.scrollIntoViewIfNeeded();
-      const box = (await viewport.boundingBox())!;
+      const opener = gallery.getByRole('link', { name: /^Open gallery/ });
+      await expect(opener).toHaveAttribute('aria-haspopup', 'dialog');
+      await opener.scrollIntoViewIfNeeded();
+      const box = (await opener.boundingBox())!;
       const cdp = await context.newCDPSession(page);
       const y = box.y + box.height / 2;
+      // Keep both points inside the photo, away from the overlay arrows.
       await cdp.send('Input.dispatchTouchEvent', {
         type: 'touchStart',
-        touchPoints: [{ x: box.x + box.width * 0.85, y }],
+        touchPoints: [{ x: box.x + box.width * 0.72, y }],
       });
       await cdp.send('Input.dispatchTouchEvent', {
         type: 'touchMove',
-        touchPoints: [{ x: box.x + box.width * 0.2, y }],
+        touchPoints: [{ x: box.x + box.width * 0.28, y }],
       });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await expect(gallery).toHaveAttribute('data-selected-image', 'media_fixture_car_2_2');
       await expect(gallery.getByRole('dialog')).not.toBeVisible();
-      await gallery.getByRole('link', { name: /^Open gallery/ }).tap();
+      await opener.tap();
       const dialog = gallery.getByRole('dialog', { name: 'Vehicle photos' });
       await expect(dialog).toBeVisible();
       await dialog.getByRole('button', { name: 'Next photo', exact: true }).tap();
