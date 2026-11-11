@@ -43,7 +43,7 @@ describe('static parts repository and local selection', () => {
       invalid: false,
       query: { q: '52910K2200', category: 'transmission', min: '20' },
     });
-    expect(parsePartsQuery({ page: '999' }).page).toBe(100);
+    expect(parsePartsQuery({ page: '99999' }).page).toBe(2029);
     for (const page of ['0', '-1', '1.5', '1e2', ['2', '3']]) {
       expect(parsePartsQuery({ page, min: '20' })).toMatchObject({
         page: 1, invalid: false, query: { min: '20' },

@@ -1,0 +1,15 @@
+export const catalogModels = [
+  ['Genesis', 'Genesis GV80 JX1 (2020–…)'],
+  ['Genesis', 'Genesis The All New G80 RG3 (2020–…)'],
+  ['Hyundai', 'Hyundai Sonata DN8 (2019–2023)'],
+  ['Hyundai', 'Hyundai The New Grandeur IG (2019–2022)'],
+  ['Genesis', 'Genesis GV70 JK1 (2020–…)'],
+  ['Hyundai', 'Hyundai The New Santa Fe TM (2020–…)'],
+  ['Hyundai', 'Hyundai All New Avante CN7 (2020–2023)'],
+  ['Hyundai', 'Hyundai The All New Tucson NX4 (2020–…)'],
+  ['Hyundai', 'Hyundai Staria US4 (2021–…)'],
+  ['Genesis', 'Genesis G90 (2018–2021)'],
+  ['Genesis', 'Genesis G70 (2017–2020)'],
+  ['Genesis', 'Genesis G80 DH (2016–2020)'],
+  ['Hyundai', 'Hyundai Veracruz (2006–2015)'],
+] as const;

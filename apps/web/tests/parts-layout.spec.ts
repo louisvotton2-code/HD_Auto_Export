@@ -17,7 +17,7 @@ for (const [width, columns] of [
     await page.goto('/ru/parts/?page=50');
     const pagination = page.getByRole('navigation', { name: 'Страницы каталога запчастей' });
     await expect(pagination.locator('[aria-current="page"]')).toHaveText('50');
-    await expect(pagination.getByRole('button', { name: 'Страница 100', exact: true })).toBeVisible();
+    await expect(pagination.getByRole('button', { name: 'Страница 2029', exact: true })).toBeVisible();
     const geometry = await page
       .locator('main [data-part]')
       .first()
@@ -39,7 +39,7 @@ for (const [width, columns] of [
     if (width >= 1024) expect(geometry.filters.right).toBeLessThanOrEqual(geometry.grid.left);
     else expect(geometry.filters.bottom).toBeLessThanOrEqual(geometry.grid.top);
     const cards = page.locator('main [data-part]');
-    expect(await cards.count()).toBe(12);
+    expect(await cards.count()).toBe(44);
     const actionFits = await cards.evaluateAll((nodes) =>
       nodes.every((node) => {
         const footer = node.querySelector('footer') ?? node.lastElementChild?.lastElementChild;
@@ -57,7 +57,7 @@ for (const [width, columns] of [
 
 test('native select leaves room for its arrow and opens aligned beneath the field', async ({ page }) => {
   await page.goto('/en/parts/');
-  const select = page.locator('select[name="brand"]');
+  const select = page.locator('select[name="sort"]');
   await select.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
   const trigger = await select.evaluate((node) => {
     const style = getComputedStyle(node);
