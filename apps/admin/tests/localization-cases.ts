@@ -337,7 +337,7 @@ test('localization public verification requests localized metadata and never fal
   await page.route('**/api/v1/vehicles?*', route => { queries.push(new URL(route.request().url()).searchParams); return reply(route, {
     data: { items, page: 1, pageSize: 24, hasMore: false }, meta: { requestId: 'i18n02-synthetic-public', catalog: 'curated', total: 2, totalKind: 'exact', accessibleTotal: 2, dataAsOf: '2026-11-08T00:00:00Z', freshness: 'fresh' },
   }); });
-  await page.goto('/admin/public-catalog?locale=en');
+  await page.goto('/admin/public-catalog/verification?locale=en');
   const first = page.getByRole('row').filter({ hasText: 'I18N02-0' }); const legacy = page.getByRole('row').filter({ hasText: 'I18N02-1' });
   await expect(first).toContainText('English synthetic make English synthetic model');
   await expect(first).toContainText('English source platform');

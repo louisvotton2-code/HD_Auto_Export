@@ -16,6 +16,7 @@ const Env = z.object({
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
   TRUST_PROXY: z.string().max(2048).default('false'),
   EXTERNAL_CATALOG_MODE: z.enum(['disabled', 'synthetic', 'synthetic-scale']).default('disabled'),
+  CHINACARAPI_ACCOUNT_KEY_FILE: z.string().min(1).max(1024).optional(),
   EXTERNAL_PUBLIC_CACHE: z.enum(['off', 'memory', 'redis']).default('off'),
   EXTERNAL_CACHE_NAMESPACE: z.string().regex(/^hd-ext-scale-[a-z0-9-]{1,48}$/).optional(),
   EXTERNAL_CACHE_TTL_MS: z.coerce.number().int().min(250).max(30_000).default(5000),
@@ -107,6 +108,12 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       (e.HOST === '127.0.0.1' ? e.EXTERNAL_REDIS_HOST !== '127.0.0.1' : e.EXTERNAL_REDIS_HOST !== 'redis-scale'))) {
     throw new Error('Redis capacity mode requires the isolated endpoint, namespace, user and an absolute password file');
   }
+  const providerAccountKey = e.CHINACARAPI_ACCOUNT_KEY_FILE
+    ? readLocalSecret(e.CHINACARAPI_ACCOUNT_KEY_FILE, 512)
+    : undefined;
+  if (providerAccountKey !== undefined && !/^[\x21-\x7e]+$/.test(providerAccountKey)) {
+    throw new Error('Invalid ChinaCarAPI account key');
+  }
   return {
     environment: e.NODE_ENV, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
@@ -117,6 +124,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
       redis: e.EXTERNAL_PUBLIC_CACHE === 'redis' ? { host: e.EXTERNAL_REDIS_HOST!, port: e.EXTERNAL_REDIS_PORT,
         username: e.EXTERNAL_REDIS_USER!, passwordFile: e.EXTERNAL_REDIS_PASSWORD_FILE! } : undefined,
     },
+    providerAccountKey,
     translation: {provider:e.TRANSLATION_PROVIDER,accessKeyId:e.ALI_MT_ACCESS_KEY_ID,accessKeySecret:e.ALI_MT_ACCESS_KEY_SECRET,
       libreUrl:e.LIBRETRANSLATE_URL,libreApiKey:e.LIBRETRANSLATE_API_KEY,libreEngineVersion:e.LIBRETRANSLATE_ENGINE_VERSION,
       securityToken:e.ALI_MT_SECURITY_TOKEN,region:e.ALI_MT_REGION,configVersion:e.ALI_MT_CONFIG_VERSION,maxCharactersPerHour:e.TRANSLATION_MAX_CHARACTERS_PER_HOUR},

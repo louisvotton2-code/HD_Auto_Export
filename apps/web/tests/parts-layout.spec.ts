@@ -14,7 +14,10 @@ for (const [width, columns] of [
     page,
   }) => {
     await page.setViewportSize({ width, height: 950 });
-    await page.goto('/ru/parts/');
+    await page.goto('/ru/parts/?page=50');
+    const pagination = page.getByRole('navigation', { name: 'Страницы каталога запчастей' });
+    await expect(pagination.locator('[aria-current="page"]')).toHaveText('50');
+    await expect(pagination.getByRole('button', { name: 'Страница 100', exact: true })).toBeVisible();
     const geometry = await page
       .locator('main [data-part]')
       .first()

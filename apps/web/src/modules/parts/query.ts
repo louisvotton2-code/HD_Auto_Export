@@ -3,13 +3,30 @@ import type { Part, PartCategory, PartsQuery } from './types';
 
 export const partCategories: readonly PartCategory[] = ['chassis', 'transmission', 'components', 'body'];
 export const defaultPartsQuery: PartsQuery = { q: '', brand: '', category: '', min: '', max: '', sort: 'default' };
+export const catalogPageSize = 12;
+export const catalogRecordCount = 1_200;
+export const catalogPageCount = Math.ceil(catalogRecordCount / catalogPageSize);
+
 const money = (value: string) => !value || /^(?:0|[1-9]\d{0,7})(?:\.\d{1,2})?$/.test(value);
-export function parsePartsQuery(raw: Record<string, string | string[] | undefined>): { query: PartsQuery; invalid: boolean } {
+export function parsePartsQuery(raw: Record<string, string | string[] | undefined>): { query: PartsQuery; page: number; invalid: boolean } {
   const one = (key: string) => typeof raw[key] === 'string' ? raw[key].trim() : '';
   const q = one('q').slice(0, 100), brand = one('brand'), category = one('category'), sort = one('sort');
   const min = one('min'), max = one('max');
-  const invalid = Object.values(raw).some(Array.isArray) || !money(min) || !money(max) || Boolean(min && max && Number(min) > Number(max));
-  return { invalid, query: { q, brand, category: partCategories.includes(category as PartCategory) ? category as PartCategory : '', min: invalid ? '' : min, max: invalid ? '' : max, sort: ['price-asc', 'price-desc', 'name'].includes(sort) ? sort as PartsQuery['sort'] : 'default' } };
+  const invalid = Object.entries(raw).some(([key, value]) => key !== 'page' && Array.isArray(value))
+    || !money(min) || !money(max) || Boolean(min && max && Number(min) > Number(max));
+  const rawPage = one('page');
+  const page = /^\d+$/.test(rawPage) ? Math.min(catalogPageCount, Math.max(1, Number(rawPage))) : 1;
+  return {
+    invalid,
+    page,
+    query: {
+      q, brand,
+      category: partCategories.includes(category as PartCategory) ? category as PartCategory : '',
+      min: invalid ? '' : min,
+      max: invalid ? '' : max,
+      sort: ['price-asc', 'price-desc', 'name'].includes(sort) ? sort as PartsQuery['sort'] : 'default',
+    },
+  };
 }
 export function filterParts(parts: readonly Part[], query: PartsQuery, locale: Locale): Part[] {
   const needle = query.q.toLocaleLowerCase();

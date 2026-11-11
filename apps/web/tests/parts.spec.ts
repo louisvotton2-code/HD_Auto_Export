@@ -1,10 +1,21 @@
 import { expect, test } from '@playwright/test';
 
+const paginationNames = {
+  zh: '配件目录分页',
+  en: 'Parts catalog pagination',
+  ru: 'Страницы каталога запчастей',
+};
+
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  test(`${locale}: search reloads the catalog and part drafts use the requested quantity`, async ({ page }) => {
+  test(`${locale}: search and pagination reload the catalog and part drafts use the requested quantity`, async ({ page }) => {
     await page.goto(`/${locale}/parts/?category=transmission`);
     await expect(page.locator('main [data-part]')).toHaveCount(12);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+    await expect(page.getByText(new Intl.NumberFormat(locale).format(1_200), { exact: true })).toBeVisible();
+    const pagination = page.getByRole('navigation', { name: paginationNames[locale] });
+    const currentPage = pagination.locator('[aria-current="page"]');
+    await expect(currentPage).toHaveText('1');
+    await expect(pagination.locator('button[value="100"]')).toBeEnabled();
     const records = page.locator('main [data-part]');
     const ids = () => records.evaluateAll((rows) => rows.map((row) => row.getAttribute('data-part')));
     const initial = await ids();
@@ -21,6 +32,25 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await expect(page.locator('main a[aria-current=true][href*="category=transmission"]')).toBeVisible();
     await expect(records).toHaveCount(12);
     expect(await ids()).toEqual(initial);
+    const [pageResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().resourceType() === 'document'),
+      pagination.getByText('2', { exact: true }).click(),
+    ]);
+    expect(pageResponse.status()).toBe(200);
+    expect(pageResponse.request().method()).toBe('GET');
+    const pageParams = new URL(pageResponse.url()).searchParams;
+    expect(pageParams.get('page')).toBe('2');
+    expect(pageParams.get('category')).toBe('transmission');
+    expect(pageParams.get('q')).toBe('52910K2200');
+    await expect(currentPage).toHaveText('2');
+    expect(await ids()).toEqual(initial);
+    await page.goBack();
+    await expect(currentPage).toHaveText('1');
+    await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
+    await page.goForward();
+    await expect(currentPage).toHaveText('2');
+    await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
+    await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
     await expect(page.locator('main')).not.toContainText(/演示|示例|例子|\bdemo\b|\bsample\b|демо|пример/i);
     for (const input of await page.locator('main input[name="q"]').all()) {
       await expect(input).not.toHaveAttribute('placeholder', /例如|示例|e\.g\.|например/i);
@@ -53,10 +83,23 @@ test('Russian 320px without JavaScript retains search, quantity update, images a
   try {
     const page = await context.newPage();
     await page.goto('/ru/parts/?category=transmission');
+    const pagination = page.getByRole('navigation', { name: paginationNames.ru });
+    const catalogSearch = page.locator('main input[name="q"][form="parts-filters"]');
+    await catalogSearch.fill('52910K2200');
+    await pagination.getByRole('button', { name: 'Страница 100', exact: true }).click();
+    await expect(pagination.locator('[aria-current="page"]')).toHaveText('100');
+    const pagedUrl = new URL(page.url());
+    expect(pagedUrl.searchParams.get('page')).toBe('100');
+    expect(pagedUrl.searchParams.get('q')).toBe('52910K2200');
+    await expect(catalogSearch).toHaveValue('52910K2200');
+    await expect(pagination.getByRole('button', { name: 'Следующая страница', exact: true })).toBeDisabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const search = page.locator('main form').first();
     await search.locator('[name="q"]').fill('52910K2200');
     await search.locator('[type="submit"]').click();
     await expect(page).toHaveURL(/q=52910K2200/);
+    await expect(pagination.locator('[aria-current="page"]')).toHaveText('1');
+    expect(new URL(page.url()).searchParams.has('page')).toBe(false);
     await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
     await expect(page.locator('main [data-part]')).toHaveCount(12);
     await page.locator('main [data-part="52910k2200"] h3 a').click();
@@ -81,7 +124,7 @@ test('the catalog search reloads, header navigation clears it, and Back restores
   await catalogSearch.fill('52910K2200');
   const [navigation] = await Promise.all([
     page.waitForResponse((response) => response.request().resourceType() === 'document'),
-    page.locator('main button[form="parts-filters"]').click(),
+    catalogSearch.locator('..').getByRole('button').click(),
   ]);
   expect(navigation.status()).toBe(200);
   await expect(page).toHaveURL(/q=52910K2200/);
@@ -111,7 +154,7 @@ test('part favorites persist separately and synchronize catalog, details and sav
   await expect(page.locator('main select[name="sort"]')).toHaveValue('price-asc');
   await expect(savedFilter).toBeEnabled();
   await expect(summaries).toHaveText(before, { useInnerText: true });
-  await page.goto('/en/parts/?q=52910K2200');
+  await page.goto('/en/parts/?q=52910K2200&page=2');
   const card = page.locator('[data-part="52910k2200"]');
   await card.hover(); await card.getByRole('button', { name: 'Save part', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Unsave part', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -120,6 +163,8 @@ test('part favorites persist separately and synchronize catalog, details and sav
   await page.reload();
   await savedFilter.click();
   await expect(page.locator('main [data-part]')).toHaveCount(1);
+  await expect(page.getByText('Showing 1 part record', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: paginationNames.en })).toHaveCount(0);
   await page.locator('main h3 a').click();
   const detailSave = page.locator('main > div > div > aside').getByRole('button', { name: 'Unsave part', exact: true });
   await expect(detailSave).toHaveAttribute('aria-pressed', 'true'); await detailSave.click();

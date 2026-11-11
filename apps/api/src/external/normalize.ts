@@ -118,6 +118,22 @@ export function sourceHashes(source: ExternalUpsertCandidate | null, copy?: Copy
   return result;
 }
 
+export type TextSourceIdentities = Record<string, [string | null, string | null]>;
+export function textSourceIdentity(source: ExternalUpsertCandidate): TextSourceIdentities[string] {
+  return [source.facts.make?.id ?? null, source.facts.model?.id ?? null];
+}
+
+export function eligibleTextOverride(
+  source: ExternalUpsertCandidate, overrides: ExternalOverrides, identities: TextSourceIdentities,
+  field: ExternalTrialField, locale: Locale, currentHash: string | null,
+) {
+  const entry = overrides.text.find(item => item.field === field && item.locale === locale);
+  if (!entry || currentHash === null) return undefined;
+  const previous = identities[entry.sourceHash];
+  const current = textSourceIdentity(source);
+  return entry.sourceHash === currentHash || (previous?.[0] === current[0] && previous?.[1] === current[1]) ? entry : undefined;
+}
+
 export function glossaryModel(source: ExternalUpsertCandidate, locale: Locale, original: Tagged) {
   if (source.facts.make?.id !== 'toyota' || source.facts.model?.id !== 'synthetic-r1' || original.contentLocale !== 'zh' || original.text !== '示例 R1') return null;
   return { zh: '示例 R1', en: 'Example R1', ru: 'Пример R1' }[locale];
@@ -176,12 +192,11 @@ export function displayText(locale: Locale, value: Tagged | null, provenance: No
 export const publicText = (locale: Locale, value: Tagged, kind: PublicText['kind'] = 'original'): PublicText =>
   ({ ...value, requestedLocale: locale, kind, reviewed: false });
 
-function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy, overrides: ExternalOverrides, platform: Tagged, locale: Locale): Localized {
-  const hashes = sourceHashes(source, copy);
+function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy, overrides: ExternalOverrides, platform: Tagged, locale: Locale, identities: TextSourceIdentities, hashes: ReturnType<typeof sourceHashes>): Localized {
   const choose = (field: ExternalTrialField) => {
     const item = copy[field];
     if (!item) return null;
-    const staff = overrides.text.find(entry => entry.field === field && entry.locale === locale && entry.sourceHash === hashes[field]);
+    const staff = eligibleTextOverride(source, overrides, identities, field, locale, hashes[field]);
     if (staff) return publicText(locale, { text: staff.text, contentLocale: locale }, 'human');
     if (item.original.contentLocale.split('-')[0] === locale) return publicText(locale, item.original);
     const translated = item.translations[locale];
@@ -206,13 +221,14 @@ function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy
   };
 }
 
-export function buildProjection(source: ExternalUpsertCandidate, overrides: ExternalOverrides, platform: string, profile: ExternalSourceProfile = syntheticProfile) {
+export function buildProjection(source: ExternalUpsertCandidate, overrides: ExternalOverrides, platform: string, profile: ExternalSourceProfile = syntheticProfile, identities: TextSourceIdentities = {}) {
   const issues = new Map<IssueField, ExternalIssue['code']>();
   const facts = effectiveFacts(source, overrides, issues);
   const copy = sourceCopy(source, facts);
   for (const field of copyFields) if (field !== 'model' && !copy[field]) {
     issues.set(field, source.disputes.length && source.copy[field] ? 'conflict' : source.copy[field] ? 'invalid' : 'missing');
   }
+  const hashes = sourceHashes(source, copy);
   const priceCny = referenceCny(source, issues);
   const images = source.images.flatMap(image => {
     const url = publicLink(image.url, 'media', profile);
@@ -241,9 +257,9 @@ export function buildProjection(source: ExternalUpsertCandidate, overrides: Exte
     specifications, inspection, relatedListingUrls,
   };
   return {
-    facts, priceCny, images, details, sourceHashes: sourceHashes(source, copy),
+    facts, priceCny, images, details, sourceHashes: hashes,
     localized: Object.fromEntries(locales.map(locale => [locale, localizedCopy(source, facts, copy, overrides,
-      { text: platform, contentLocale: getPlatform(profile, source.platformId)?.contentLocale ?? 'und' }, locale)])) as Record<Locale, Localized>,
+      { text: platform, contentLocale: getPlatform(profile, source.platformId)?.contentLocale ?? 'und' }, locale, identities, hashes)])) as Record<Locale, Localized>,
     issues: [...issues].map(([field, code]) => ({ field, code })),
   };
 }

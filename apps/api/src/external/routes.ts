@@ -6,6 +6,8 @@ import type { Database } from '../db/index.js';
 import { notFound } from '../errors.js';
 import type { Actor } from '../vehicles/service.js';
 import { reportMediaFailure } from './catalog.js';
+import { listExternalListings } from './listings.js';
+import { createProviderProbe } from './provider-probe.js';
 import { ExternalStore } from './store.js';
 import { createTrial, getTrial } from './trial.js';
 
@@ -17,6 +19,8 @@ const recordParams = batchId.extend({ row: z.string().regex(/^[1-9]\d{0,2}$/).re
 const idem = z.object({ 'idempotency-key': admin.IdempotencyKeySchema });
 export const externalMediaFailurePath = '/api/v1/external-media/:id/failure';
 export const externalBatchPath = batch;
+export const externalOverridesPath = `${prefix}/listings/:id/overrides`;
+export const externalBulkVisibilityPath = `${prefix}/listings/bulk-visibility`;
 export const externalTrialPath = `${batch}/:id/translation-trial`;
 const errors = Object.fromEntries([400, 401, 403, 404, 409, 413, 422, 429, 500, 503].map(code => [code, publicApi.ApiErrorSchema]));
 const schema = (operationId: string, response: z.ZodType, options: Record<string, unknown> = {}, status = 200) => ({
@@ -28,10 +32,19 @@ const key = (request: FastifyRequest) => request.headers['idempotency-key'] as s
 const page = (request: FastifyRequest) => request.query as admin.ExternalAdminPageQuery;
 const row = (request: FastifyRequest) => Number((request.params as { row: string }).row);
 
-export function registerExternalRoutes(app: FastifyInstance, db: Database, actor: (request: FastifyRequest) => Actor) {
+export function registerExternalRoutes(app: FastifyInstance, db: Database, actor: (request: FastifyRequest) => Actor, providerAccountKey?: string) {
   const store = new ExternalStore(db);
+  const checkAccount = createProviderProbe(providerAccountKey);
   app.get(`${prefix}/status`, { schema: schema('getExternalStatus', admin.ExternalStatusResponseSchema) },
     async request => result(await store.status(), request));
+  app.get(`${prefix}/provider-status`, { schema: schema('getExternalProviderStatus', admin.ExternalProviderStatusResponseSchema) },
+    async request => {
+      const local = await store.providerStatus();
+      return result({ ...local, account: await checkAccount() }, request);
+    });
+  app.get(`${prefix}/listings`, { schema: schema('listExternalListings', admin.ExternalListingListResponseSchema,
+    { querystring: admin.ExternalListingListQuerySchema }) },
+  async request => result(await listExternalListings(db, request.query as admin.ExternalListingListQuery), request));
   app.get(batch, { schema: schema('listExternalBatches', admin.ExternalBatchListResponseSchema, { querystring: admin.ExternalAdminPageQuerySchema }) },
     async request => result(await store.listBatches(page(request)), request));
   app.post(batch, { bodyLimit: 8 * 1024 * 1024, config: { rateLimit: { max: 6, timeWindow: 60_000 } },
@@ -54,10 +67,10 @@ export function registerExternalRoutes(app: FastifyInstance, db: Database, actor
   app.get(`${prefix}/listings/:id`, { schema: schema('getExternalListing', admin.ExternalListingResponseSchema,
     { params: listingId, querystring: admin.ExternalListingQuerySchema }) },
   async request => result(await store.getListing(pathId(request), (request.query as z.infer<typeof admin.ExternalListingQuerySchema>).locale), request));
-  app.put(`${prefix}/listings/:id/overrides`, { schema: schema('saveExternalListingOverrides', admin.ExternalOverrideResponseSchema,
+  app.put(externalOverridesPath, { schema: schema('saveExternalListingOverrides', admin.ExternalOverrideResponseSchema,
     { params: listingId, body: admin.SaveExternalOverridesSchema, headers: idem }) },
   async request => result(await store.saveOverrides(pathId(request), request.body as admin.SaveExternalOverrides, key(request), actor(request)), request));
-  app.post(`${prefix}/listings/bulk-visibility`, { schema: schema('bulkExternalListingVisibility', admin.ExternalBulkVisibilityResponseSchema,
+  app.post(externalBulkVisibilityPath, { schema: schema('bulkExternalListingVisibility', admin.ExternalBulkVisibilityResponseSchema,
     { body: admin.ExternalBulkVisibilityRequestSchema, headers: idem }) },
   async request => result(await store.bulkVisibility(request.body as admin.ExternalBulkVisibilityRequest, key(request), actor(request)), request));
   app.post(externalMediaFailurePath, { bodyLimit: 1000, config: { rateLimit: { max: 15, timeWindow: 60_000 } }, schema: {

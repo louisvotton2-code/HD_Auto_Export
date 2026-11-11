@@ -18,6 +18,8 @@ export default async function PartsPage({ params, searchParams }: Props) {
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
-  const parsed = parsePartsQuery(await searchParams);
-  return <PartsCatalog locale={locale} parts={await listParts()} initialQuery={parsed.query} invalid={parsed.invalid} />;
+  const { query, page, invalid } = parsePartsQuery(await searchParams);
+  return (
+    <PartsCatalog locale={locale} parts={await listParts()} initialQuery={query} page={page} invalid={invalid} />
+  );
 }

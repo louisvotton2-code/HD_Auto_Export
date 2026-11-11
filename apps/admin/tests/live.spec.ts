@@ -85,7 +85,7 @@ test('real external catalog supports admin import, trial and override', async ({
   expect(process.env.EXTERNAL_CATALOG_MODE).toBe('synthetic');
   expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
   await login(page);
-  await page.getByRole('link', { name: '外部车源管理' }).click();
+  await page.goto('/admin/external-sources/batches');
   await page.getByRole('button', { name: '导入批次' }).click();
   const input = makeExternalImportFixture(100);
   await page.getByLabel('规范化批次 JSON').setInputFiles({

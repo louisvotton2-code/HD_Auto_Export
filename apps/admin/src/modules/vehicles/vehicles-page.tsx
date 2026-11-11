@@ -85,7 +85,7 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
         <div className="page-eyebrow">VEHICLE OPERATIONS</div>
         <h1>{deleted ? '车辆回收站' : '车辆管理'}</h1>
         <p>{deleted ? '保留已删除车辆的资料与历史，恢复后重新核验并发布。' : <>
-          此处管理员工录入的车辆。<Link to="/external-sources">查看外部导入批次</Link>
+          此处管理员工录入的车辆。<Link to="/public-catalog">查看三方车源</Link>
         </>}</p>
       </div>
       <Space wrap>

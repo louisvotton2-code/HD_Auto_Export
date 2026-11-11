@@ -138,6 +138,29 @@ export const ExternalListingSchema = z.strictObject({
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);
+export const ExternalListingListQuerySchema = ExternalAdminPageQuerySchema.extend({
+  q: z.string().trim().max(2048).regex(/^[^\u0000]*$/).optional(),
+  platformId: IdSchema.optional(),
+  state: ExternalListingSchema.shape.state.optional(),
+  locale: LocaleSchema.default('zh'),
+});
+export type ExternalListingListQuery = z.infer<typeof ExternalListingListQuerySchema>;
+export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
+  id: ExternalListingIdSchema,
+  version: ListingVersionSchema,
+  listingUrl: candidateUrl.nullable(),
+  title: shortText(500).nullable(),
+  state: ExternalListingSchema.shape.state,
+  fetchedAt: TimestampSchema,
+  sourceUpdatedAt: TimestampSchema.nullable(),
+  publishedAt: TimestampSchema.nullable(),
+  hasOverrides: z.boolean(),
+});
+export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
+export const ExternalListingListResponseSchema = responseSchema(z.strictObject({
+  ...pageFields, items: z.array(ExternalListingSummarySchema).max(100),
+}));
+
 export const ExternalOverrideResponseSchema = responseSchema(ExternalListingSchema.pick({ id: true, version: true, state: true }));
 export const ExternalBulkVisibilityRequestSchema = z.strictObject({
   hidden: z.boolean(),
@@ -177,3 +200,25 @@ export const ExternalStatusResponseSchema = responseSchema(z.strictObject({
   sync: z.literal('manual_import_only'), translation: z.literal('dry_run'),
   lastBatch: ExternalBatchSchema.nullable(), batchCharacterLimit: z.literal(EXTERNAL_TRIAL_CHARACTER_LIMIT), accountFreeRemaining: z.null(),
 }));
+
+export const ExternalProviderAccountSchema = z.strictObject({
+  state: z.enum(['not_configured', 'ok', 'unauthorized', 'forbidden', 'rate_limited', 'unavailable', 'invalid_response']),
+  checkedAt: TimestampSchema.nullable(),
+  plan: z.string().min(1).max(80).nullable(),
+  expiresAt: TimestampSchema.nullable(),
+  sources: z.array(IdSchema).max(20),
+  dailyLimit: CountSchema.nullable(),
+  remainingToday: CountSchema.nullable(),
+});
+export type ExternalProviderAccount = z.infer<typeof ExternalProviderAccountSchema>;
+export const ExternalProviderStatusSchema = z.strictObject({
+  provider: z.literal('chinacarapi'),
+  worker: z.literal('not_configured'),
+  lastBatch: ExternalBatchSchema.nullable(),
+  lastImportAt: TimestampSchema.nullable(),
+  lastFetchedAt: TimestampSchema.nullable(),
+  lastSupplierUpdatedAt: TimestampSchema.nullable(),
+  account: ExternalProviderAccountSchema,
+});
+export type ExternalProviderStatus = z.infer<typeof ExternalProviderStatusSchema>;
+export const ExternalProviderStatusResponseSchema = responseSchema(ExternalProviderStatusSchema);

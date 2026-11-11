@@ -1,25 +1,59 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { partsContent } from '../content/parts-content';
-import { partCategories, partsHref } from '../query';
+import { catalogPageCount, catalogPageSize, catalogRecordCount, partCategories, partsHref } from '../query';
 import type { Part, PartsQuery } from '../types';
 import { PartCard } from './part-card';
 import { usePartFavorites } from '../use-part-favorites';
 import styles from './parts.module.css';
 
-const catalogSize = 12;
+function PartsPagination({ locale, page }: { locale: Locale; page: number }) {
+  const t = partsContent[locale];
+  const firstNearby = Math.max(1, Math.min(page - 1, catalogPageCount - 2));
+  const nearby = Array.from({ length: Math.min(3, catalogPageCount) }, (_, index) => firstNearby + index);
+  const pages = [...new Set([1, ...nearby, catalogPageCount])];
+  const submitPage = {
+    type: 'submit',
+    form: 'parts-filters',
+    formAction: `${partsHref(locale)}#parts-catalog`,
+    name: 'page',
+    className: styles.pageButton,
+  } as const;
+  return (
+    <nav className={styles.pagination} aria-label={t.pagination}>
+      <button {...submitPage} value={page - 1} aria-label={t.previousPage} disabled={page === 1}>←</button>
+      {pages.map((number, index) => (
+        <Fragment key={number}>
+          {index > 0 && number - pages[index - 1]! > 1 && <span aria-hidden="true">…</span>}
+          {number === page
+            ? <span className={styles.pageButton} aria-current="page">{number}</span>
+            : <button {...submitPage} value={number} aria-label={t.pageLabel(number)}>{number}</button>}
+        </Fragment>
+      ))}
+      <button {...submitPage} value={page + 1} aria-label={t.nextPage} disabled={page === catalogPageCount}>→</button>
+    </nav>
+  );
+}
 
-export function PartsCatalog({ parts, locale, initialQuery: query, invalid = false }: { parts: readonly Part[]; locale: Locale; initialQuery: PartsQuery; invalid?: boolean }) {
+export function PartsCatalog({
+  parts, locale, initialQuery: query, page, invalid = false,
+}: {
+  parts: readonly Part[];
+  locale: Locale;
+  initialQuery: PartsQuery;
+  page: number;
+  invalid?: boolean;
+}) {
   const t = partsContent[locale];
   const [savedOnly, setSavedOnly] = useState(false);
   const [ready, setReady] = useState(false);
   const knownIds = useMemo(() => parts.map((part) => part.slug), [parts]);
   const { ids } = usePartFavorites(knownIds);
   const savedParts = parts.filter((part) => ids.includes(part.slug));
-  const catalogParts = parts.slice(0, catalogSize);
+  const catalogParts = parts.slice(0, catalogPageSize);
   const visible = savedOnly ? savedParts : catalogParts;
   const brands = [...new Set(parts.map((part) => part.brand))];
   const key = JSON.stringify(query);
@@ -33,7 +67,11 @@ export function PartsCatalog({ parts, locale, initialQuery: query, invalid = fal
         <span aria-hidden="true">⌕</span><input name="q" type="search" maxLength={100} defaultValue={query.q} placeholder={t.searchHint} aria-label={t.search} />
         <button className={styles.primary} type="submit">{t.search}</button>
       </form>
-      <div className={styles.stats}>{[catalogParts.length, partCategories.length, 'USD'].map((value, i) => <div key={t.stats[i]}><strong>{value}</strong><span>{t.stats[i]}</span></div>)}</div>
+      <div className={styles.stats}>
+        {[catalogRecordCount.toLocaleString(locale), partCategories.length, 'USD'].map((value, index) => (
+          <div key={t.stats[index]}><strong>{value}</strong><span>{t.stats[index]}</span></div>
+        ))}
+      </div>
     </div></section>
     <div className={styles.wrap}>
       <section className={styles.quick}><p className={styles.kicker}>{t.quickBrowse}</p><div>{partCategories.map((category) => <a key={category} href={`${partsHref(locale, { ...query, category })}#parts-catalog`} aria-current={query.category === category ? 'true' : undefined}>{t.categories[category]}</a>)}</div></section>
@@ -56,6 +94,7 @@ export function PartsCatalog({ parts, locale, initialQuery: query, invalid = fal
             {visible.length || !savedOnly ? <div className={styles.grid}>
               {visible.map((part) => <PartCard key={part.slug} part={part} locale={locale} />)}
             </div> : <div className={styles.empty}><p>{t.favoritesEmpty}</p><a href={partsHref(locale)}>{t.allParts}</a></div>}
+            {!savedOnly && <PartsPagination locale={locale} page={page} />}
           </div>
         </div>
       </section>

@@ -9,12 +9,12 @@ import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { idempotent, type Actor } from '../vehicles/service.js';
 import { getExternalPublic, listingUuid, publicListingId } from './catalog.js';
-import { buildProjection, canonicalJson, emptyOverrides, isDatabaseJson, isPublicText, jsonHash, sha256, sourceHashes, type ExternalProjection } from './normalize.js';
-import { getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
+import { buildProjection, canonicalJson, emptyOverrides, isDatabaseJson, isPublicText, jsonHash, sha256, sourceHashes, textSourceIdentity, type ExternalProjection, type TextSourceIdentities } from './normalize.js';
+import { chinaCarSampleProfile, getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
 
 type ListingRow = {
   id: string; provider: string; platform_id: string; external_id: string; source_revision: string; source_hash: string;
-  source_data: ExternalUpsertCandidate | null; overrides: ExternalOverrides | null;
+  source_data: ExternalUpsertCandidate | null; overrides: ExternalOverrides | null; text_source_identities: TextSourceIdentities | null;
   upstream_state: 'active' | 'withdrawn'; version: number; fetched_at: Date; source_updated_at: Date | null; published_at: Date | null;
 };
 type BatchRow = { id: string; provider: string; imported_at: Date; counts: ExternalBatch['counts']; request_hash: string };
@@ -26,7 +26,7 @@ type RecordRow = {
 type OverrideResult = Pick<ExternalListing, 'id' | 'version' | 'state'>;
 type BulkItem = (OverrideResult & { status: 'applied' | 'unchanged' }) |
   { id: string; status: 'failed'; reason: 'NOT_FOUND' | 'VERSION_CONFLICT' | 'EXTERNAL_RESTRICTION' };
-const selectListing = 'SELECT l.*,o.data AS overrides FROM external_listings l LEFT JOIN external_listing_overrides o ON o.listing_id=l.id';
+const selectListing = 'SELECT l.*,o.data AS overrides,o.text_source_identities FROM external_listings l LEFT JOIN external_listing_overrides o ON o.listing_id=l.id';
 const batchColumns = 'id,provider,imported_at,counts';
 const recordColumns = 'row_number,listing_id,operation,status,reason,issues';
 const sameKeyConflict = () => new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'The key was already used for different input.');
@@ -35,7 +35,7 @@ const upstreamState = (row: ListingRow): ExternalListing['state'] =>
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 function projectListing(row: ListingRow, overrides: ExternalOverrides) {
   const profile = getProfile(row.provider);
-  return row.source_data && buildProjection(row.source_data, overrides, getPlatform(profile, row.platform_id)!.name, profile);
+  return row.source_data && buildProjection(row.source_data, overrides, getPlatform(profile, row.platform_id)!.name, profile, row.text_source_identities ?? {});
 }
 
 function batchView(row: BatchRow): ExternalBatch {
@@ -116,7 +116,8 @@ async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, ca
       published_at=coalesce(external_listings.published_at,excluded.published_at),version=external_listings.version+1 RETURNING *`,
     [id, ...identity, candidate.revision, hash, source && JSON.stringify(source), active ? 'active' : 'withdrawn', fetchedAt, candidate.sourceUpdatedAt])).rows[0]!;
   row.overrides = existing?.overrides ?? null;
-  const projection = active && source ? buildProjection(source, row.overrides ?? emptyOverrides(), platform.name, profile) : null;
+  row.text_source_identities = existing?.text_source_identities ?? null;
+  const projection = active && source ? buildProjection(source, row.overrides ?? emptyOverrides(), platform.name, profile, row.text_source_identities ?? {}) : null;
   if (projection) await syncImages(tx, id, projection.images, fetchedAt);
   const publicChanged = await saveProjection(tx, row, projection);
   return { listing_id: id, status: 'applied', reason: null, issues: projection?.issues ?? [], publicChanged };
@@ -140,12 +141,22 @@ async function writeOverrides(tx: PoolClient, row: ListingRow, overrides: Extern
   }
   const version = row.version + 1;
   const data = JSON.stringify(overrides);
-  await tx.query(`INSERT INTO external_listing_overrides(listing_id,data) VALUES($1,$2)
-    ON CONFLICT(listing_id) DO UPDATE SET data=excluded.data`, [row.id, data]);
+  const hashes = projectListing(row, overrides)?.sourceHashes;
+  const bindings: TextSourceIdentities = {};
+  for (const {field, sourceHash} of overrides.text) {
+    const identity = row.source_data && hashes?.[field] === sourceHash
+      ? textSourceIdentity(row.source_data)
+      : row.text_source_identities?.[sourceHash];
+    if (identity) bindings[sourceHash] = identity;
+  }
+  await tx.query(`INSERT INTO external_listing_overrides(listing_id,data,text_source_identities) VALUES($1,$2,$3)
+    ON CONFLICT(listing_id) DO UPDATE SET data=excluded.data,text_source_identities=excluded.text_source_identities`,
+    [row.id, data, JSON.stringify(bindings)]);
   await tx.query('UPDATE external_listings SET version=$2 WHERE id=$1', [row.id, version]);
   await tx.query('INSERT INTO external_override_events(id,listing_id,actor_id,request_id,version,data) VALUES($1,$2,$3,$4,$5,$6)',
     [randomUUID(), row.id, actor.id, actor.requestId, version, data]);
   row.overrides = overrides;
+  row.text_source_identities = bindings;
   const projection = row.upstream_state === 'active' ? projectListing(row, overrides) : null;
   const publicChanged = await saveProjection(tx, row, projection);
   return { result: { id: publicListingId(row.id), state: upstreamState(row), version }, changed: true, publicChanged };
@@ -272,6 +283,32 @@ export class ExternalStore {
       if (catalogChanged) await advanceRevision(tx);
       return { items };
     }));
+  }
+
+  async providerStatus() {
+    const provider = chinaCarSampleProfile.id;
+    return this.db.transaction(async tx => {
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const latestBatch = (await tx.query<BatchRow>(
+        `SELECT ${batchColumns} FROM external_import_batches WHERE provider=$1 ORDER BY imported_at DESC,id LIMIT 1`, [provider],
+      )).rows[0];
+      const { rows: [times] } = await tx.query<{
+        imported_at: Date | null; fetched_at: Date | null; source_updated_at: Date | null;
+      }>(`SELECT
+        (SELECT imported_at FROM external_import_batches WHERE provider=$1 AND (counts->>'applied')::bigint>0
+          ORDER BY imported_at DESC,id LIMIT 1) AS imported_at,
+        (SELECT fetched_at FROM external_listings WHERE provider=$1 ORDER BY fetched_at DESC LIMIT 1) AS fetched_at,
+        (SELECT source_updated_at FROM external_listings WHERE provider=$1
+          ORDER BY source_updated_at DESC NULLS LAST LIMIT 1) AS source_updated_at`, [provider]);
+      return {
+        provider: 'chinacarapi' as const,
+        worker: 'not_configured' as const,
+        lastBatch: latestBatch ? batchView(latestBatch) : null,
+        lastImportAt: iso(times!.imported_at),
+        lastFetchedAt: iso(times!.fetched_at),
+        lastSupplierUpdatedAt: iso(times!.source_updated_at),
+      };
+    });
   }
 
   async status() {

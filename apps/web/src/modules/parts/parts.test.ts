@@ -36,6 +36,20 @@ describe('static parts repository and local selection', () => {
     for (const raw of ['', '0', '-1', '1.5', '1000', '1e2']) expect(parsePartQuantity(raw)).toBeNull();
     expect(parsePartQuantity('999')).toBe(999);
   });
+  it('restores a valid catalog page independently of the price range', () => {
+    expect(parsePartsQuery({}).page).toBe(1);
+    expect(parsePartsQuery({ page: '51', q: '52910K2200', category: 'transmission', min: '20' })).toMatchObject({
+      page: 51,
+      invalid: false,
+      query: { q: '52910K2200', category: 'transmission', min: '20' },
+    });
+    expect(parsePartsQuery({ page: '999' }).page).toBe(100);
+    for (const page of ['0', '-1', '1.5', '1e2', ['2', '3']]) {
+      expect(parsePartsQuery({ page, min: '20' })).toMatchObject({
+        page: 1, invalid: false, query: { min: '20' },
+      });
+    }
+  });
   it.each(['zh', 'en', 'ru'] as const)('encodes a %s draft with the correct part, quantity, original USD reference and own contact accounts', async (locale) => {
     const part = (await getPart('52910K2200'))!;
     const result = buildPartContactLinks(part, locale, 3, { origin: 'https://cars.example.com' });

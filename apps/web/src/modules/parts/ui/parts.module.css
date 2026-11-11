@@ -52,6 +52,37 @@
 .sort { display:flex; align-items:center; gap:8px; }
 .sort select { margin:0; width:auto; max-width:230px; font-size:12px; }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 24px;
+  font-size: 13px;
+}
+.pageButton {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: inherit;
+  background: var(--surface);
+}
+button.pageButton {
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+button.pageButton:hover:not(:disabled) { color: #e1aa7d; border-color: var(--copper); }
+button.pageButton:disabled { opacity: .45; cursor: default; }
+.pageButton[aria-current="page"] { color: #fff; background: #9d5e34; border-color: var(--copper); }
+@media (max-width: 480px) {
+  .pagination { gap: 4px; }
+  .pageButton { min-width: 32px; padding-inline: 4px; }
+}
 .card { min-width:0; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--surface); display:flex; flex-direction:column; transition:border-color .25s,box-shadow .25s; }
 .card:hover { border-color:var(--copper); box-shadow:0 15px 35px #0005; }
 .cardImage { aspect-ratio:1; position:relative; background:#e8e6e3; }

@@ -16,7 +16,7 @@ import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
-import { externalBatchPath, externalMediaFailurePath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
+import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
 import { createPublicCatalogCache, type PublicCacheRoute } from './external/public-cache.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -96,6 +96,14 @@ export async function buildApp(config:Config=readConfig(), options:{
       const member=await requireStaff(request,auth,db);
       staff.set(request,member);
       requireTrustedOrigin(request,config);
+      if(external && !member.permissions.includes('vehicles:read')) {
+        throw new ApiError(403,'FORBIDDEN','Vehicle read permission is required.');
+      }
+      const changesExternalListing = request.method==='PUT' && route===externalOverridesPath ||
+        request.method==='POST' && route===externalBulkVisibilityPath;
+      if(changesExternalListing && !member.permissions.includes('vehicles:write')) {
+        throw new ApiError(403,'FORBIDDEN','Vehicle write permission is required.');
+      }
       if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath].includes(route))) {
         throw new ApiError(403,'FORBIDDEN','Administrator role is required for this external catalog operation.');
       }
@@ -162,10 +170,11 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
-          LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false WHERE state.id=1`);
+          LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
+          LEFT JOIN external_listing_overrides o ON false WHERE state.id=1`);
         if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
       }
       return {status:'ready' as const};
@@ -216,7 +225,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
 
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
-  registerExternalRoutes(app,db,actor);
+  registerExternalRoutes(app,db,actor,config.providerAccountKey);
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
   app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>response(await inventory.listAdmin(request.query as z.infer<typeof adm.AdminVehicleQuerySchema>),request));
   app.get('/api/v1/admin/vehicle-filters',{schema:adminSchema('adminVehicleFilters',{querystring:adm.AdminVehicleFiltersQuerySchema,response:{200:adm.AdminVehicleFiltersResponseSchema,...errorResponses}})},async request=>response(await inventory.adminFilters(request.query as adm.AdminVehicleFiltersQuery),request));
