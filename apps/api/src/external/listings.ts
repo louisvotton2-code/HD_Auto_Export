@@ -17,9 +17,14 @@ type ListingRow = {
   source_updated_at: Date | null;
   published_at: Date | null;
   has_overrides: boolean;
+  catalog_facts: ExternalUpsertCandidate['facts'] | null;
 };
 
 const from = 'FROM external_listings l LEFT JOIN external_listing_overrides o ON o.listing_id=l.id';
+// Classify the stored source facts and staff values consistently in every visibility state.
+const facts = "(((l.source_data->'facts') - ARRAY(SELECT jsonb_array_elements_text(l.source_data->'disputes'))) "
+  + "|| COALESCE(o.data->'facts','{}'::jsonb))";
+const powertrain = `COALESCE(${facts}->>'powertrain','unknown')`;
 const hidden = "(o.data->'hidden' = 'true'::jsonb)";
 const state = "CASE WHEN l.upstream_state='withdrawn' THEN 'withdrawn' WHEN " + hidden + " THEN 'hidden' ELSE 'published' END";
 const hasOverrides = "(" + hidden + " IS TRUE"
@@ -56,6 +61,12 @@ function searchWhere(query: ExternalListingListQuery, values: unknown[]): string
   else if (query.state) {
     conditions.push("l.upstream_state='active'", hidden + (query.state === 'hidden' ? ' IS TRUE' : ' IS NOT TRUE'));
   }
+  if (query.make) conditions.push(`${facts}->'make'->>'id'=${param(query.make)}`);
+  if (query.model) conditions.push(`${facts}->'model'->>'id'=${param(query.model)}`);
+  if (query.powertrain) conditions.push(`${facts} IS NOT NULL AND ${powertrain}=${param(query.powertrain)}`);
+  if (query.yearMin !== undefined) conditions.push(`(${facts}->>'modelYear')::int>=${param(query.yearMin)}`);
+  if (query.yearMax !== undefined) conditions.push(`(${facts}->>'modelYear')::int<=${param(query.yearMax)}`);
+  if (query.mileageMax !== undefined) conditions.push(`(${facts}->>'mileageKm')::int<=${param(query.mileageMax)}`);
   if (query.q) {
     const id = searchListingId(query.q);
     if (id) conditions.push('l.id=' + param(id) + '::uuid');
@@ -85,7 +96,7 @@ export async function listExternalListings(db: Database, query: ExternalListingL
     const offset = (page - 1) * pageSize;
     if (offset >= total) return { page, pageSize, total, items: [] };
     const result = await tx.query<ListingRow>("SELECT l.id,l.version,l.provider,l.platform_id,l.external_id,l.source_data,o.data AS overrides,o.text_source_identities,"
-      + state + " AS state,l.fetched_at,l.source_updated_at,l.published_at," + hasOverrides + " AS has_overrides "
+      + facts + " AS catalog_facts," + state + " AS state,l.fetched_at,l.source_updated_at,l.published_at," + hasOverrides + " AS has_overrides "
       + from + " " + where + " ORDER BY l.fetched_at DESC,l.id LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2),
       [...values, pageSize, offset]);
     const items = result.rows.map((row): ExternalListingSummary => ({
@@ -101,7 +112,43 @@ export async function listExternalListings(db: Database, query: ExternalListingL
       sourceUpdatedAt: row.source_updated_at?.toISOString() ?? null,
       publishedAt: row.published_at?.toISOString() ?? null,
       hasOverrides: row.has_overrides,
+      facts: row.catalog_facts ? {
+        make: row.catalog_facts.make ?? null,
+        model: row.catalog_facts.make ? row.catalog_facts.model ?? null : null,
+        modelYear: row.catalog_facts.modelYear ?? null,
+        mileageKm: row.catalog_facts.mileageKm ?? null,
+        powertrain: row.catalog_facts.powertrain ?? 'unknown',
+      } : null,
     }));
     return { page, pageSize, total, items };
   });
+}
+
+export async function getExternalListingOverview(db: Database, make?: string) {
+  const { rows } = await db.pool.query<{ kind: 'state' | 'platform' | 'make' | 'model' | 'year'; id: string; name: string | null; count: number }>(`
+    SELECT facet.kind,facet.id,min(facet.name COLLATE "C") AS name,count(*)::int AS count
+    ${from}
+    CROSS JOIN LATERAL (VALUES
+      ('state',${state},NULL::text),
+      ('platform',l.platform_id,NULL::text),
+      ('make',${facts}->'make'->>'id',${facts}->'make'->>'name'),
+      ('year',${facts}->>'modelYear',NULL::text),
+      ('model',CASE WHEN ${facts}->'make'->>'id'=$1 THEN ${facts}->'model'->>'id' END,${facts}->'model'->>'name')
+    ) AS facet(kind,id,name)
+    WHERE facet.id IS NOT NULL
+    GROUP BY facet.kind,facet.id
+    ORDER BY name NULLS LAST,facet.id
+  `, [make ?? null]);
+  const counts = new Map(rows.filter(row => row.kind === 'state').map(row => [row.id, row.count]));
+  const published = counts.get('published') ?? 0;
+  const hidden = counts.get('hidden') ?? 0;
+  const withdrawn = counts.get('withdrawn') ?? 0;
+  const options = (kind: 'make' | 'model') => rows.filter(row => row.kind === kind)
+    .map(({ id, name }) => ({ id, name: name ?? id }));
+  return {
+    total: published + hidden + withdrawn, published, hidden, withdrawn,
+    platforms: rows.filter(row => row.kind === 'platform').map(row => row.id),
+    makes: options('make'), models: options('model'),
+    years: rows.filter(row => row.kind === 'year').map(row => Number(row.id)).sort((a, b) => b - a),
+  };
 }

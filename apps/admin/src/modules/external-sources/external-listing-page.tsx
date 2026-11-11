@@ -3,6 +3,7 @@ import { Link, useLocation, useOutletContext, useParams, useSearchParams } from 
 import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from 'antd';
 import { ExternalListingResponseSchema, LocaleSchema, type ExternalListing, type Locale, type StaffMe } from '@hd/contracts/admin';
 import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels, platformName } from './external-labels';
+import { formatExternalFact, type FactField } from './fact-override-input';
 import { ListingOverrideEditor } from './listing-override-editor';
 import { ResourceContent } from './resource-content';
 import { SourceRecordDetails } from './source-record-details';
@@ -11,6 +12,7 @@ import styles from './external-sources.module.css';
 
 const fields = ['title', 'model', 'description'] as const;
 const locales = ['zh', 'en', 'ru'] as const;
+const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'firstRegistration'];
 
 function ListingContent({ listing, locale, changeLocale, reload }: {
   listing: ExternalListing; locale: Locale; changeLocale: (locale: Locale) => void; reload: () => void;
@@ -19,13 +21,14 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
   const [editing, setEditing] = useState(false);
   const vehicle = listing.vehicle;
   const source = listing.source;
+  const facts = vehicle?.facts ?? { ...source?.facts, ...listing.overrides.facts };
   const publicCopy = {
     title: vehicle?.content.title,
     model: vehicle?.display?.model,
     description: vehicle?.content.description,
   };
   return <>
-    <Card title="当前挂牌">
+    <Card title={publicCopy.title?.text ?? source?.copy.title?.original.text ?? '当前挂牌'}>
       <Space wrap>
         <Tag>{listingLabels[listing.state]}</Tag>
         <span className={styles.reason}>站内车源 ID {listing.id}</span>
@@ -35,7 +38,14 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         {listing.state !== 'withdrawn' && staff.permissions.includes('vehicles:write') &&
           <Button type="primary" onClick={() => setEditing(true)}>人工修订</Button>}
       </Space>
-      <Typography.Paragraph type="secondary" className={styles.sourceText}>公开展示优先采用人工修订，并遵循来源冲突与撤回规则。</Typography.Paragraph>
+      <Descriptions title={vehicle ? '公开车辆参数' : '入库车辆参数'} className={styles.listingFacts} column={{ xs: 1, sm: 2, xl: 3 }} size="small"
+        items={summaryFields.map(field => ({
+          key: field, label: fieldLabels[field],
+          children: !vehicle && source?.disputes.includes(field) && !Object.hasOwn(listing.overrides.facts, field)
+            ? '来源有冲突，待核对'
+            : field === 'model' && publicCopy.model?.text ? publicCopy.model.text : formatExternalFact(field, facts[field]),
+        }))} />
+      <Typography.Text type="secondary">公开展示优先采用符合来源规则的人工修订。</Typography.Text>
     </Card>
     <SourceRecordDetails
       source={platformName(listing.identity.platformId)}
@@ -80,7 +90,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         { key: 'price', label: '参考价', children: vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价' },
       ]} /> : <Alert type="info" title="此挂牌暂无公开展示快照。" />}
     </Card>
-    {editing && <ListingOverrideEditor listing={listing} onClose={() => setEditing(false)}
+    {editing && <ListingOverrideEditor listing={listing} initialLocale={locale} onClose={() => setEditing(false)}
       onRefresh={() => { setEditing(false); reload(); }} />}
   </>;
 }

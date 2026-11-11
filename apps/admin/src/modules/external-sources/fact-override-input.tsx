@@ -1,21 +1,45 @@
 import { Input, InputNumber, Select, Space } from 'antd';
+import { powertrainLabels } from '../vehicles/draft-form';
 import { ExternalFactsSchema } from '@hd/contracts/admin';
 
 export type FactField = keyof typeof ExternalFactsSchema.shape;
 const namedFields: readonly FactField[] = ['make', 'model', 'trim', 'generation'];
 const numericFields: readonly FactField[] = ['modelYear', 'mileageKm', 'engineCc', 'powerKw'];
 const optionLabels: Record<string, string> = {
-  unknown: '未知', registered: '已登记', never_registered: '未登记',
-  gasoline: '汽油', diesel: '柴油', electric: '纯电', hybrid: '混合动力', plug_in_hybrid: '插电混动',
+  registered: '已登记', never_registered: '未登记',
+  ...powertrainLabels,
+  hatchback: '两厢车', suv: 'SUV', sedan: '轿车', wagon: '旅行车', coupe: '轿跑',
+  convertible: '敞篷车', van: '厢式车', pickup: '皮卡',
   manual: '手动', automatic: '自动', cvt: '无级变速', dct: '双离合',
   fwd: '前驱', rwd: '后驱', awd: '全轮驱动', four_wd: '四驱',
 };
+
+const numericUnits: Partial<Record<FactField, string>> = {
+  modelYear: ' 款', mileageKm: ' 公里', engineCc: ' cc', powerKw: ' kW',
+};
+
+export function formatExternalFact(field: FactField, value: unknown): string {
+  if (typeof value === 'number') {
+    const amount = field === 'modelYear' ? String(value) : value.toLocaleString('zh-CN');
+    return amount + (numericUnits[field] ?? '');
+  }
+  if (typeof value === 'string') return optionLabels[value] ?? value;
+  if (value && typeof value === 'object') {
+    if ('name' in value && typeof value.name === 'string') return value.name;
+    if ('value' in value && typeof value.value === 'string') return value.value;
+    if ('country' in value) {
+      const location = value as { country: string; city?: string | null; displayName?: string | null };
+      return location.displayName || [location.country, location.city].filter(Boolean).join(' · ');
+    }
+  }
+  return '未提供';
+}
 
 export function FactOverrideInput({ field, value, onChange }: {
   field: FactField; value: unknown; onChange: (value: unknown) => void;
 }) {
   if (numericFields.includes(field)) {
-    return <InputNumber aria-label="修订值" value={typeof value === 'number' ? value : null} onChange={onChange} />;
+    return <InputNumber aria-label="修订值" suffix={numericUnits[field]?.trim()} value={typeof value === 'number' ? value : null} onChange={onChange} />;
   }
   const fields: Record<string, unknown> = {
     ...(field === 'location' ? { city: null, displayName: null } : {}),

@@ -407,7 +407,7 @@ test('the durable ledger fails closed, shares a monthly allowance, and counts di
 });
 
 test('normal staff can search and page all external listing states without exposing raw import data', async () => {
-  for (const endpoint of ['listings', 'provider-status']) {
+  for (const endpoint of ['listings', 'listings/overview', 'provider-status']) {
     assert.equal((await call({ url: `${base}/${endpoint}` })).statusCode, 401);
   }
   const candidates = [9101, 9102, 9103, 9104].map(index => {
@@ -419,7 +419,9 @@ test('normal staff can search and page all external listing states without expos
       en: { text: `Supplier Title ${index}`, contentLocale: 'en' }, ru: { text: `Заголовок поставщика ${index}`, contentLocale: 'ru' },
     } };
     candidate.facts.model = { id: `ops-model-${index}`, name: `Vendor Model ${index}` };
+    if (index === 9102) candidate.facts.make = { id: 'source-toyota', name: '丰田' };
     candidate.copy.model = { original: { text: `Vendor Model ${index}`, contentLocale: 'en' }, translations: {} };
+    if (index === 9103) candidate.disputes = ['modelYear', 'powertrain'];
     return candidate;
   });
   const imported = await importBatch({ provider: 'synthetic-feed', records: candidates.map(candidate => ({ candidate, raw: 'PRIVATE_SEARCH_ONLY_9101' })) });
@@ -480,10 +482,35 @@ test('normal staff can search and page all external listing states without expos
   assert.equal(combined.total, 1);
   assert.equal(combined.items[0]?.id, ids[3]);
   assert.equal((await adminListings({ q: 'ops-list-', platformId: 'synthetic-market-alt', state: 'hidden' })).total, 0);
+  const attributes = { make: 'source-toyota', model: 'ops-model-9102', powertrain: 'hev', yearMin: '2024', yearMax: '2024', mileageMax: '10102' };
+  const classified = await adminListings({ ...attributes, state: 'hidden' });
+  assert.equal(classified.total, 1);
+  assert.equal(classified.items[0]?.id, ids[1]);
+  assert.equal(classified.items[0]?.facts?.model?.name, 'Vendor Model 9102');
+  assert.equal(classified.items[0]?.facts?.mileageKm, 10102);
+  const archived = await getListing(ids[1]!);
+  assert.equal((await revise(archived.id, { version: archived.version, overrides: { ...archived.overrides, hidden: false } })).statusCode, 200);
+  const visible = await adminListings({ ...attributes, state: 'published' });
+  assert.deepEqual(visible.items[0]?.facts, classified.items[0]?.facts);
+  const current = await getListing(ids[1]!);
+  assert.equal((await revise(current.id, { version: current.version, overrides: { ...current.overrides, hidden: true } })).statusCode, 200);
+  assert.equal((await adminListings({ ...attributes, mileageMax: '10101' })).total, 0);
+  const conflicted = await adminListings({ q: 'ops-list-9103', state: 'withdrawn' });
+  assert.equal(conflicted.items[0]?.facts?.modelYear, null);
+  assert.equal(conflicted.items[0]?.facts?.powertrain, 'unknown');
+  assert.equal((await adminListings({ q: 'ops-list-9103', state: 'withdrawn', yearMin: '2024' })).total, 0);
+  const overviewResponse = await call({ url: `${base}/listings/overview?make=source-toyota`, headers: { cookie: editorCookie } });
+  assert.equal(overviewResponse.statusCode, 200, overviewResponse.body);
+  const overview = admin.ExternalListingOverviewResponseSchema.parse(overviewResponse.json()).data;
+  assert.equal(overview.total, (await adminListings()).total);
+  assert.equal(overview.published + overview.hidden + overview.withdrawn, overview.total);
+  assert.ok(overview.platforms.includes('synthetic-market-alt'));
+  assert.ok(overview.models.some(model => model.id === 'ops-model-9102'));
+  assert.ok(overview.years.includes(2024));
   assert.equal((await adminListings({ q: 'PRIVATE_SEARCH_ONLY_9101' })).total, 0);
   assert.equal(JSON.stringify(defaults).includes('PRIVATE_SEARCH_ONLY_9101'), false);
   const invalidQueries: Record<string, string>[] = [{ page: '0' }, { pageSize: '101' }, { q: 'a'.repeat(2049) }, { q: '\u0000' },
-    { state: 'active' }, { locale: 'de' }, { platformId: 'invalid/platform' }];
+    { state: 'active' }, { locale: 'de' }, { platformId: 'invalid/platform' }, { model: 'ops-model-9102' }, { yearMax: '0' }, { mileageMax: '-1' }];
   for (const invalid of invalidQueries) {
     const result = await call({ url: `${base}/listings?${new URLSearchParams(invalid)}`, headers: { cookie: editorCookie } });
     assert.equal(result.statusCode, 400, JSON.stringify(invalid));

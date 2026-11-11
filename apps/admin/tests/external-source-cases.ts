@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { makeExternalAdminFixture, makeExternalCandidateFixture, makeExternalImportFixture } from '@hd/contracts/fixtures';
 import { ExternalBulkVisibilityRequestSchema, ExternalTrialRequestSchema, SaveExternalOverridesSchema, type ExternalProviderStatus } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, staff } from './api-fixture';
+import { select } from './ui-helpers';
 
 const fixture = makeExternalAdminFixture();
 const { batch, records, listing, trial } = fixture;
@@ -24,6 +25,11 @@ async function setup(page: Page, role: 'admin' | 'editor' = 'editor') {
   await installApi(page);
   await page.route('**/api/v1/admin/me', route => reply(route, envelope({ ...staff, role })));
   await page.route(`**${root}/provider-status`, route => reply(route, envelope(providerStatus)));
+  await page.route(`**${root}/listings/overview*`, route => reply(route, envelope({
+    total: 200, published: 170, hidden: 20, withdrawn: 10, platforms: ['dongchedi', 'che168'],
+    makes: [{ id: 'toyota', name: '丰田' }], models: new URL(route.request().url()).searchParams.has('make')
+      ? [{ id: 'synthetic-r1', name: '示例 R1' }] : [], years: [2025, 2024],
+  })));
   await page.route(`**${root}/listings?*`, route => reply(route, envelope({ items: [], page: 1, pageSize: 25, total: 0 })));
   await page.route(`**${root}/status`, route => reply(route, envelope({
     catalogRevision: '1', sync: 'manual_import_only', translation: 'dry_run', lastBatch: batch, batchCharacterLimit: 100_000, accountFreeRemaining: null,
@@ -63,6 +69,8 @@ test('external provider status keeps account probe, local import and supplier ti
   await expect(page.getByText('未配置', { exact: true })).toHaveCount(2);
   await expect(page.getByText('尚未记录', { exact: true })).toHaveCount(2);
   await expect(page.getByText('Fixture Starter', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('本机尚未配置账户探测', { exact: true })).toBeVisible();
+  await expect(page.getByText('套餐到期', { exact: true })).toHaveCount(0);
   expect(reads).toBe(2);
 });
 
@@ -114,7 +122,8 @@ test('external catalog sends identifier URL and title searches to the server and
   await expect(page.getByRole('heading', { name: '外部挂牌详情' })).toBeVisible();
   const navigation = page.getByRole('navigation', { name: '后台导航' });
   await expect(navigation.getByRole('menuitem', { name: /三方车源管理/ })).toHaveClass(/ant-menu-item-selected/);
-  await expect(page.getByText(manualTitle, { exact: true })).toBeVisible();
+  const comparisonCard = page.locator('.ant-card').filter({ has: page.getByText('原文与译文', { exact: true }) });
+  await expect(comparisonCard.getByText(manualTitle, { exact: true })).toBeVisible();
   const projectionCard = page.locator('.ant-card').filter({ has: page.getByText('公开展示核对', { exact: true }) });
   await expect(projectionCard).toContainText(manualTitle);
   await expect(page.getByText('原文有更新，当前仍使用人工修订，请核对', { exact: true })).toBeVisible();
@@ -135,6 +144,43 @@ test('external catalog sends identifier URL and title searches to the server and
   await page.setViewportSize({ width: 320, height: 850 });
   await expect(page.getByRole('table')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+});
+
+test('external overview counts all listings and composes attribute filters on the server', async ({ page }) => {
+  await setup(page);
+  const searches: URLSearchParams[] = [];
+  await page.route(`**${root}/listings?*`, route => {
+    const params = new URL(route.request().url()).searchParams;
+    searches.push(params);
+    return reply(route, envelope({ items: [], page: 1, pageSize: 25, total: 0 }));
+  });
+  await page.goto('/admin/public-catalog');
+  const overview = page.getByRole('region', { name: '车源概览' });
+  for (const value of ['200', '170', '20', '10', '待核验']) await expect(overview.getByText(value, { exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '车型', exact: true })).toBeDisabled();
+  await select(page, '品牌', '丰田');
+  await select(page, '车型', '示例 R1');
+  await select(page, '来源平台', '懂车帝');
+  await select(page, '挂牌状态', '已展示');
+  await select(page, '动力类型', '油电混动');
+  await select(page, '年款', '2024 款');
+  await select(page, '里程上限', '30,000 公里以内');
+  const search = page.getByRole('searchbox', { name: '搜索三方车源' });
+  await search.fill('R1');
+  await search.press('Enter');
+  await expect.poll(() => Object.fromEntries(searches.at(-1) ?? [])).toEqual({
+    page: '1', pageSize: '25', q: 'R1', make: 'toyota', model: 'synthetic-r1',
+    platformId: 'dongchedi', state: 'published', powertrain: 'hev', yearMin: '2024', yearMax: '2024', mileageMax: '30000',
+  });
+  await expect(overview.getByText('200', { exact: true })).toBeVisible();
+  await search.fill('未提交文字');
+  await page.getByRole('button', { name: '清空筛选' }).click();
+  await expect(search).toHaveValue('');
+  await select(page, '品牌', '丰田');
+  await search.fill('未提交的品牌关键词');
+  await page.getByRole('button', { name: '清空筛选' }).click();
+  await expect(search).toHaveValue('');
+  await expect.poll(() => Object.fromEntries(searches.at(-1) ?? [])).toEqual({ page: '1', pageSize: '25' });
 });
 
 test('external detail confirms a stale manual value only in the matching public language and field', async ({ page }) => {
@@ -193,7 +239,10 @@ test('external batches expose source conflict and usage details to editors at mo
   await page.setViewportSize({ width: 320, height: 850 });
   await page.goto('/admin/vehicles');
   await page.getByRole('link', { name: '查看三方车源', exact: true }).click();
-  await page.getByRole('main').getByRole('link', { name: '三方 API 状态', exact: true }).click();
+  await page.getByRole('button', { name: '打开导航', exact: true }).click();
+  const navigation = page.getByRole('dialog').getByRole('navigation', { name: '后台导航' });
+  await expect(navigation.getByRole('link').last()).toHaveText('三方 API 状态');
+  await navigation.getByRole('link', { name: '三方 API 状态', exact: true }).click();
   await page.getByRole('link', { name: '历史导入批次', exact: true }).click();
   await expect(page.getByRole('heading', { name: '历史导入批次' })).toBeVisible();
   await expect(page.getByRole('link', { name: '返回车辆管理', exact: true })).toHaveAttribute('href', '/admin/vehicles');
@@ -299,6 +348,7 @@ test('external bulk visibility submits displayed versions and reports partial fa
 
 test('external model fact change must be saved separately from a new model translation', async ({ page }) => {
   await setup(page);
+  await page.setViewportSize({ width: 320, height: 850 });
   await page.route(`**${root}/listings/${listing.id}/overrides`, route => {
     const payload = SaveExternalOverridesSchema.parse(route.request().postDataJSON());
     expect(payload.overrides.facts.model?.name).toBe('另一个车型名称');
@@ -320,6 +370,7 @@ test('external model fact change must be saved separately from a new model trans
   }
   await chooseModel('译文修订字段');
   await dialog.getByRole('textbox', { name: '人工译文' }).fill('待保存车型译文');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await chooseModel('事实字段');
   await dialog.getByLabel('名称', { exact: true }).fill('另一个车型名称');
   await expect(dialog.getByRole('button', { name: '保存修订' })).toBeDisabled();

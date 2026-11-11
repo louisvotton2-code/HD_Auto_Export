@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
+import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
   ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
@@ -142,9 +142,32 @@ export const ExternalListingListQuerySchema = ExternalAdminPageQuerySchema.exten
   q: z.string().trim().max(2048).regex(/^[^\u0000]*$/).optional(),
   platformId: IdSchema.optional(),
   state: ExternalListingSchema.shape.state.optional(),
+  make: IdSchema.optional(),
+  model: IdSchema.optional(),
+  powertrain: PowertrainSchema.optional(),
+  yearMin: VehicleFactsSchema.shape.modelYear.unwrap().optional(),
+  yearMax: VehicleFactsSchema.shape.modelYear.unwrap().optional(),
+  mileageMax: VehicleFactsSchema.shape.mileageKm.unwrap().optional(),
   locale: LocaleSchema.default('zh'),
-});
+}).refine(query => !query.model || !!query.make, { path: ['model'], message: 'Select a make before a model' })
+  .refine(query => query.yearMin === undefined || query.yearMax === undefined || query.yearMin <= query.yearMax,
+    { path: ['yearMax'], message: 'Maximum year must not precede minimum year' });
 export type ExternalListingListQuery = z.infer<typeof ExternalListingListQuerySchema>;
+export const ExternalListingOverviewQuerySchema = z.strictObject({ make: IdSchema.optional() });
+export const ExternalListingOverviewResponseSchema = responseSchema(z.strictObject({
+  total: CountSchema,
+  published: CountSchema,
+  hidden: CountSchema,
+  withdrawn: CountSchema,
+  platforms: z.array(IdSchema),
+  makes: z.array(NamedValueSchema),
+  models: z.array(NamedValueSchema),
+  years: z.array(VehicleFactsSchema.shape.modelYear.unwrap()),
+}));
+
+export const ExternalListingListFactsSchema = ExternalFactsSchema.pick({
+  make: true, model: true, modelYear: true, mileageKm: true, powertrain: true,
+});
 export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
   id: ExternalListingIdSchema,
   version: ListingVersionSchema,
@@ -155,6 +178,7 @@ export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
   sourceUpdatedAt: TimestampSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   hasOverrides: z.boolean(),
+  facts: ExternalListingListFactsSchema.nullable().optional(),
 });
 export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
 export const ExternalListingListResponseSchema = responseSchema(z.strictObject({

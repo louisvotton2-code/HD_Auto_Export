@@ -6,7 +6,7 @@ import type { Database } from '../db/index.js';
 import { notFound } from '../errors.js';
 import type { Actor } from '../vehicles/service.js';
 import { reportMediaFailure } from './catalog.js';
-import { listExternalListings } from './listings.js';
+import { getExternalListingOverview, listExternalListings } from './listings.js';
 import { createProviderProbe } from './provider-probe.js';
 import { ExternalStore } from './store.js';
 import { createTrial, getTrial } from './trial.js';
@@ -45,6 +45,9 @@ export function registerExternalRoutes(app: FastifyInstance, db: Database, actor
   app.get(`${prefix}/listings`, { schema: schema('listExternalListings', admin.ExternalListingListResponseSchema,
     { querystring: admin.ExternalListingListQuerySchema }) },
   async request => result(await listExternalListings(db, request.query as admin.ExternalListingListQuery), request));
+  app.get(`${prefix}/listings/overview`, { schema: schema('getExternalListingOverview', admin.ExternalListingOverviewResponseSchema,
+    { querystring: admin.ExternalListingOverviewQuerySchema }) },
+  async request => result(await getExternalListingOverview(db, (request.query as { make?: string }).make), request));
   app.get(batch, { schema: schema('listExternalBatches', admin.ExternalBatchListResponseSchema, { querystring: admin.ExternalAdminPageQuerySchema }) },
     async request => result(await store.listBatches(page(request)), request));
   app.post(batch, { bodyLimit: 8 * 1024 * 1024, config: { rateLimit: { max: 6, timeWindow: 60_000 } },

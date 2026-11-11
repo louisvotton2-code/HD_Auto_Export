@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Avatar, Breadcrumb, Button, Card, Drawer, Form, Grid, Input, Layout, Menu, Modal, Result, Space, Spin, Tag, Typography } from 'antd';
-import { CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
 import { StaffLoginSchema, StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request, signIn, signOut } from '../../shared/api/client';
 import { Link, Outlet, useLocation } from 'react-router-dom';
@@ -87,10 +87,12 @@ export function Workspace() {
   const pageName = current === '/external-sources' ? '三方 API 状态' : current === '/home-sections' ? '首页展示配置' : current === '/public-catalog' ? '三方车源管理' : current === '/recycle-bin' ? '车辆回收站' : '车辆工作台';
   const menuItems = [
     { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">车辆管理</Link> },
-    ...(staff.permissions.includes('vehicles:read') ? [{ key: '/external-sources', icon: <CarOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> }] : []),
     { key: '/recycle-bin', icon: <DeleteOutlined />, label: <Link to="/recycle-bin">车辆回收站</Link> },
     ...(staff.permissions.includes('home:write') ? [{ key: '/home-sections', icon: <HomeOutlined />, label: <Link to="/home-sections">首页展示配置</Link> }] : []),
-    ...(staff.permissions.includes('vehicles:read') ? [{ key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">三方车源管理</Link> }] : []),
+    ...(staff.permissions.includes('vehicles:read') ? [
+      { key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">三方车源管理</Link> },
+      { key: '/external-sources', className: 'supplier-nav-item', icon: <ApiOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> },
+    ] : []),
   ];
   const navigation = <div className="sidebar-inner"><Link className="brand-mark" to="/vehicles"><BrandIdentity /></Link><div className="nav-caption">运营空间</div><nav aria-label="后台导航"><Menu theme="dark" selectedKeys={[current]} items={menuItems} /></nav><div className="nav-bottom"><SafetyCertificateOutlined /><div>内部协作空间<small>车源 · 内容 · 展示</small></div></div></div>;
   return <>

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
 import { ExternalProviderStatusResponseSchema, type ExternalProviderAccount } from '@hd/contracts/admin';
 import { formatTime } from '../vehicles/draft-form';
 import { externalRoot, platformName } from './external-labels';
@@ -35,16 +35,20 @@ export function ExternalStatusPage() {
     <ResourceContent {...resource} retry={resource.reload}>
       {status && account && <>
         <Card title="ChinaCarAPI">
+          {account.state === 'not_configured' && <Alert showIcon type="info" title="本机尚未配置账户探测"
+            description="配置 ChinaCarAPI 账户凭据后，这里可显示套餐、到期时间、覆盖平台及供应商提供的额度。" />}
           <Descriptions column={{ xs: 1, md: 2 }} items={[
             { key: 'connection', label: '账户连接', children: <Tag color={account.state === 'ok' ? 'success' : undefined}>{accountLabels[account.state]}</Tag> },
             { key: 'checked', label: '探测时间', children: formatTime(account.checkedAt) },
-            { key: 'plan', label: '套餐', children: account.plan ?? '未知' },
-            { key: 'expiry', label: '套餐到期', children: account.expiresAt ? formatTime(account.expiresAt) : '未知' },
+            ...(account.state === 'ok' ? [
+            { key: 'plan', label: '套餐', children: account.plan ?? '供应商未返回' },
+            { key: 'expiry', label: '套餐到期', children: account.expiresAt ? formatTime(account.expiresAt) : '供应商未返回' },
             { key: 'platforms', label: '覆盖平台', children: account.sources.length
               ? <Space wrap>{account.sources.map((source, index) => <Tag key={`${source}:${index}`}>{platformName(source)}</Tag>)}</Space>
-              : '未知' },
-            { key: 'limit', label: '每日请求限额', children: account.dailyLimit ?? '未知' },
-            { key: 'remaining', label: '今日剩余请求', children: account.remainingToday ?? '未知' },
+              : '供应商未返回' },
+            { key: 'limit', label: '每日请求限额', children: account.dailyLimit ?? '供应商未返回' },
+            { key: 'remaining', label: '今日剩余请求', children: account.remainingToday ?? '供应商未返回' },
+            ] : []),
           ]} />
         </Card>
         <Card title="本地数据">
