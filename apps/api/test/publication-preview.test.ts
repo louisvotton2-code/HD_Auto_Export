@@ -118,16 +118,17 @@ test('publication preview gates use current persisted data and an actor-specific
     async function approveDisplay(id: string) {
       const value = await localization(id);
       for (const field of value.data.fields) for (const locale of ['zh', 'en', 'ru'] as const) {
-        field.translations[locale] = { text: `${field.sourceText} (${locale})`, kind: 'human', reviewStatus: 'approved',
+        assert.equal(field.sourceLanguage, 'zh');
+        field.translations[locale] = { text: locale === 'zh' ? field.sourceText : `${field.sourceText} (${locale})`, kind: locale === 'zh' ? 'original' : 'human', reviewStatus: 'approved',
           sourceVersion: field.sourceVersion, humanEditVersion: field.translations[locale]?.humanEditVersion ?? 0, engineVersion: null };
       }
       return saveLocalization(value);
     }
-    async function approveContent(vehicle: AdminVehicle) {
+    async function approveContent(vehicle: AdminVehicle): Promise<AdminVehicle> {
       const response = await call({ url: endpoint(vehicle.id), headers: headers() });
       assert.equal(response.statusCode, 200, response.body);
       const before = AdminVehicleResponseSchema.parse(response.json()).data;
-      assert.deepEqual(before, vehicle);
+      assert.deepEqual(before, { ...vehicle, report: { hasReport: false, url: null } } as AdminVehicle);
       const edited = structuredClone(before);
       for (const field of Object.values(edited.draft.content)) for (const locale of ['zh', 'en', 'ru'] as const) {
         assert.equal(field.translations[locale]!.reviewStatus, 'pending');
@@ -139,7 +140,7 @@ test('publication preview gates use current persisted data and an actor-specific
       const readback = await call({ url: endpoint(vehicle.id), headers: headers() });
       assert.equal(readback.statusCode, 200, readback.body);
       const current = AdminVehicleResponseSchema.parse(readback.json()).data;
-      assert.deepEqual(current, saved);
+      assert.deepEqual(current, { ...saved, report: { hasReport: false, url: null } } as AdminVehicle);
       for (const name of ['title', 'description'] as const) {
         const previous = before.draft.content[name], reviewed = current.draft.content[name];
         assert.equal(reviewed.sourceLanguage, previous.sourceLanguage); assert.equal(reviewed.sourceText, previous.sourceText);
@@ -172,6 +173,7 @@ test('publication preview gates use current persisted data and an actor-specific
         value.source.listingUrl = `https://example.invalid/listings/${value.source.externalId}`;
       }
       if (kind !== 'demo') {
+        value.configuration = { version: 1, items: [{ name: '基础配置', value: '标准' }] };
         value.facts.trim = { id: 'test_trim', name: 'Synthetic configuration' };
         value.facts.mileageKm = 0;
         value.internal = { purchaseCost: { amount: '12345.67', currency: 'USD' }, notes: 'PRIVATE_PREVIEW_NOTE', supplierContact: 'PRIVATE_PREVIEW_CONTACT', vin: 'LTEST123456789012' };
@@ -189,19 +191,20 @@ test('publication preview gates use current persisted data and an actor-specific
           payload: { version: vehicle.version, availability: 'available', checkedAt: new Date().toISOString() } });
         assert.equal(response.statusCode, 200, response.body); vehicle = AdminVehicleResponseSchema.parse(response.json()).data;
       }
+      vehicle = await approveDisplay(vehicle.id);
       if (kind === 'external') {
         const pending = await readiness(vehicle.id);
-        assert.equal(pending.requiredFieldsReady, true); assert.equal(pending.localizationReady, false);
+        assert.equal(pending.requiredFieldsReady, true); assert.equal(pending.localizationReady, true);
         const rejected = await rejectedPublish(vehicle);
+        assert.ok(rejected.json().error.fields.some((issue: { path: string }) => issue.path === 'publicationPreview'));
         for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
           assert.equal(vehicle.draft.content[field].translations[locale]!.reviewStatus, 'pending');
           const issuePath = `draft.content.${field}.translations.${locale}`;
-          assert.ok(pending.issues.some(issue => issue.path === issuePath));
-          assert.ok(rejected.json().error.fields.some((issue: { path: string }) => issue.path === issuePath));
+          assert.ok(!pending.issues.some(issue => issue.path === issuePath));
+          assert.ok(!rejected.json().error.fields.some((issue: { path: string }) => issue.path === issuePath));
         }
-        vehicle = await approveContent(vehicle);
       }
-      return approveDisplay(vehicle.id);
+      return vehicle;
     }
     async function publicDetail(id: string, locale: Locale = 'zh') {
       const response = await call({ url: `/api/v1/vehicles/${id}?locale=${locale}&view=localized&priceView=usd` });
@@ -214,11 +217,18 @@ test('publication preview gates use current persisted data and an actor-specific
       // Comparing two raw responses would otherwise miss a shared projection regression.
       assert.equal(new Set(values.map(value => value.vehicle.facts.model?.name)).size, 3);
       for (const value of values) {
-        assert.notEqual(value.vehicle.facts.model?.name, vehicle.draft.facts.model?.name);
-        assert.notEqual(value.vehicle.images[0]!.alt, vehicle.draft.media[0]!.alt);
-        if (vehicle.draft.price.includes.length) assert.notDeepEqual(value.vehicle.price.includes, vehicle.draft.price.includes);
+        if (value.locale === 'zh') {
+          assert.equal(value.vehicle.facts.model?.name, vehicle.draft.facts.model?.name);
+          assert.equal(value.vehicle.images[0]!.alt, vehicle.draft.media[0]!.alt);
+          assert.deepEqual(value.vehicle.price.includes, vehicle.draft.price.includes);
+        } else {
+          assert.notEqual(value.vehicle.facts.model?.name, vehicle.draft.facts.model?.name);
+          assert.notEqual(value.vehicle.images[0]!.alt, vehicle.draft.media[0]!.alt);
+          if (vehicle.draft.price.includes.length) assert.notDeepEqual(value.vehicle.price.includes, vehicle.draft.price.includes);
+        }
         if (vehicle.draft.source.kind === 'external' && value.vehicle.source.kind === 'external') {
-          assert.notEqual(value.vehicle.source.platform.name, vehicle.draft.source.platform.name);
+          if (value.locale === 'zh') assert.equal(value.vehicle.source.platform.name, vehicle.draft.source.platform.name);
+          else assert.notEqual(value.vehicle.source.platform.name, vehicle.draft.source.platform.name);
         }
       }
       return values;
@@ -340,6 +350,59 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [vehicle.id])).rows[0].n, 1);
     });
 
+    await t.test('configuration uses the confirmed three-language snapshot while numeric values remain original and lists stay compact', async () => {
+      let vehicle = await ready();
+      vehicle.draft.configuration = { version: 1, items: [
+        { name: '基础配置', value: '标准' }, { name: '续航里程', value: '450 km' }, { name: '座位数', value: '5' },
+      ] };
+      vehicle = await save(vehicle); vehicle = await approveDisplay(vehicle.id);
+      const views = await allPreviews(vehicle);
+      vehicle = await published(vehicle);
+      const oldConfigurations = new Map<Locale, NonNullable<Awaited<ReturnType<typeof publicDetail>>['configuration']>>();
+      for (const view of views) {
+        const detail = await publicDetail(vehicle.id, view.locale);
+        assert.ok(view.vehicle.configuration); assert.ok(detail.configuration);
+        assert.deepEqual(detail.configuration, view.vehicle.configuration);
+        oldConfigurations.set(view.locale, detail.configuration);
+        for (const [index, text] of [[1, '450 km'], [2, '5']] as const) {
+          assert.deepEqual(detail.configuration.items[index]!.value, { text, requestedLocale: view.locale,
+            contentLocale: 'und', status: 'ready', provenance: 'original', reviewed: false });
+        }
+        const list = await call({ url: `/api/v1/vehicles?locale=${view.locale}&view=localized&q=${vehicle.stockCode}` });
+        assert.equal(list.statusCode, 200, list.body); assert.equal(list.json().data.items.length, 1);
+        assert.equal(Object.hasOwn(list.json().data.items[0], 'configuration'), false);
+      }
+      const home = await app.inventory.getHome();
+      home.sections[0]!.vehicleIds = [vehicle.id];
+      for (const section of home.sections.slice(1)) section.vehicleIds = [];
+      await app.inventory.saveHome(home, { id: editor.id, requestId: randomUUID() });
+      for (const locale of ['zh', 'en', 'ru'] as const) {
+        const response = await call({ url: `/api/v1/home/vehicles?locale=${locale}&view=localized` });
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(response.json().data.sections[0].vehicles[0].id, vehicle.id);
+        for (const section of response.json().data.sections) for (const item of section.vehicles) assert.equal(Object.hasOwn(item, 'configuration'), false);
+      }
+      const oldProof = await confirmed(vehicle), oldContent = structuredClone(vehicle.draft.content);
+      vehicle.draft.configuration!.items[0]!.value = '升级版'; vehicle = await save(vehicle);
+      assert.deepEqual(vehicle.draft.content, oldContent);
+      const state = await readiness(vehicle.id);
+      assert.equal(state.previewConfirmed, false); assert.equal(state.localizationReady, false);
+      assert.ok(state.publicContentRevision > oldProof.publicContentRevision);
+      assert.ok(state.issues.some(issue => issue.path.startsWith('localization.configuration.') && issue.path.endsWith('.value.en')));
+      assert.equal((await confirm(vehicle.id, oldProof)).statusCode, 409);
+      await rejectedPublish(vehicle);
+      for (const locale of ['zh', 'en', 'ru'] as const) assert.deepEqual((await publicDetail(vehicle.id, locale)).configuration, oldConfigurations.get(locale));
+      vehicle = await approveDisplay(vehicle.id);
+      const nextViews = await allPreviews(vehicle); vehicle = await published(vehicle);
+      for (const view of nextViews) {
+        const detail = await publicDetail(vehicle.id, view.locale);
+        assert.deepEqual(detail.configuration, view.vehicle.configuration);
+        assert.notDeepEqual(detail.configuration, oldConfigurations.get(view.locale));
+        assert.equal(detail.configuration!.items[0]!.value.text, view.locale === 'zh' ? '升级版' : `升级版 (${view.locale})`);
+        assert.equal(detail.configuration!.items[1]!.value.text, '450 km'); assert.equal(detail.configuration!.items[2]!.value.text, '5');
+      }
+    });
+
     await t.test('archiving revokes confirmation and historical publish replay cannot put a vehicle back online', async () => {
       const original = await ready(); const oldPreview = await confirmed(original), oldKey = randomUUID();
       const first = await publish(original, oldKey); assert.equal(first.statusCode, 200, first.body);
@@ -356,7 +419,7 @@ test('publication preview gates use current persisted data and an actor-specific
 
       const replay = await publish(original, oldKey);
       assert.equal(replay.statusCode, 200, replay.body); assert.deepEqual(replay.json().data, receipt);
-      assert.deepEqual(await get(archived.id), archived);
+      assert.deepEqual(await get(archived.id), { ...archived, report: { hasReport: false, url: null } } as AdminVehicle);
       assert.equal((await call({ url: `/api/v1/vehicles/${archived.id}?locale=zh` })).statusCode, 404);
       assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [archived.id])).rows[0].n, 1);
 
@@ -404,8 +467,13 @@ test('publication preview gates use current persisted data and an actor-specific
       const display = await localization(vehicle.id), model = display.data.fields.find(field => field.ref === 'model')!;
       model.translations.ru!.reviewStatus = 'pending'; vehicle = await saveLocalization(display);
       let state = await readiness(vehicle.id);
-      assert.equal(state.localizationReady, false); assert.equal(state.previewConfirmed, false);
+      assert.equal(state.localizationReady, true); assert.equal(state.previewConfirmed, false);
       assert.ok(state.publicContentRevision > old.publicContentRevision);
+      assert.ok(!state.issues.some(issue => issue.path === 'localization.model.ru'));
+      assert.ok((await rejectedPublish(vehicle)).json().error.fields.some((issue: { path: string }) => issue.path === 'publicationPreview'));
+      const staleDisplay = await localization(vehicle.id);
+      staleDisplay.data.fields.find(field => field.ref === 'model')!.translations.ru!.reviewStatus = 'stale'; vehicle = await saveLocalization(staleDisplay);
+      state = await readiness(vehicle.id); assert.equal(state.localizationReady, false);
       assert.ok(state.issues.some(issue => issue.path === 'localization.model.ru'));
       await rejectedPublish(vehicle); vehicle = await approveDisplay(vehicle.id); old = await confirmed(vehicle);
       const second = await upload(vehicle);
@@ -437,17 +505,20 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.equal((await confirm(vehicle.id, view)).statusCode, 422); await rejectedPublish(vehicle);
     });
 
-    await t.test('staff-created external copies cannot bypass purchase cost, description, or three-language approval', async () => {
-      let vehicle = await ready('external');
+    await t.test('staff-created external copies require cost, description, current three-language text and confirmation', async () => {
+      let vehicle = await approveContent(await ready('external'));
       assert.equal(vehicle.availability, 'unknown'); assert.equal(vehicle.availabilityCheckedAt, null);
       const old = await confirmed(vehicle);
       vehicle.draft.internal.purchaseCost = { amount: null, currency: 'CNY' }; vehicle = await save(vehicle);
       assert.equal((await readiness(vehicle.id)).requiredFieldsReady, false); await rejectedPublish(vehicle);
       vehicle.draft.internal.purchaseCost = { amount: '9000', currency: 'CNY' };
       vehicle.draft.content.description.translations.en!.reviewStatus = 'pending'; vehicle = await save(vehicle);
-      const pending = await readiness(vehicle.id); assert.equal(pending.localizationReady, false); assert.equal(pending.previewConfirmed, false);
-      assert.ok(pending.issues.some(issue => issue.path === 'draft.content.description.translations.en'));
+      const pending = await readiness(vehicle.id); assert.equal(pending.localizationReady, true); assert.equal(pending.previewConfirmed, false);
+      assert.ok(!pending.issues.some(issue => issue.path === 'draft.content.description.translations.en'));
       await rejectedPublish(vehicle);
+      vehicle.draft.content.description.translations.en!.reviewStatus = 'stale'; vehicle = await save(vehicle);
+      assert.equal((await readiness(vehicle.id)).localizationReady, false);
+      assert.ok((await rejectedPublish(vehicle)).json().error.fields.some((issue: { path: string }) => issue.path === 'draft.content.description.translations.en'));
       vehicle.draft.content.description.sourceText = null;
       vehicle.draft.content.description.translations = { zh: null, en: null, ru: null }; vehicle = await save(vehicle);
       assert.ok((await readiness(vehicle.id)).issues.some(issue => issue.path === 'draft.content.description.sourceText'));
@@ -456,6 +527,8 @@ test('publication preview gates use current persisted data and an actor-specific
       const views = await allPreviews(complete);
       const publishedCopy = await published(complete); const result = await publicDetail(publishedCopy.id);
       assert.equal(result.source.kind, 'external'); assert.equal(result.price.kind, 'reference'); assert.equal(result.availability, 'unknown');
+      assert.equal((await publicDetail(publishedCopy.id, 'en')).content.description!.reviewed, false);
+      assert.equal((await publicDetail(publishedCopy.id, 'en')).content.description!.kind, 'machine');
       await assertPublishedMatchesPreview(views);
     });
 
@@ -479,7 +552,7 @@ test('publication preview gates use current persisted data and an actor-specific
       await app.db.pool.query("UPDATE publication_preview_confirmations SET expires_at=clock_timestamp()+interval '1 second' WHERE vehicle_id=$1 AND actor_id=$2", [vehicle.id, editor.id]);
       const actor = { id: editor.id, requestId: randomUUID() }, key = randomUUID();
       await rejectedStaleProof(inventory.publish(vehicle.id, vehicle.version, actor, key));
-      assert.equal(entered, true); assert.equal(activeAtPreparation, true); assert.deepEqual(await get(vehicle.id), vehicle);
+      assert.equal(entered, true); assert.equal(activeAtPreparation, true); assert.deepEqual(await get(vehicle.id), { ...vehicle, report: { hasReport: false, url: null } } as AdminVehicle);
       assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [vehicle.id])).rows[0].n, 0);
       assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM idempotency_keys WHERE actor_id=$1 AND key=$2', [editor.id, key])).rows[0].n, 0);
       assert.equal((await readiness(vehicle.id)).previewConfirmed, false);
@@ -514,7 +587,7 @@ test('publication preview gates use current persisted data and an actor-specific
       } });
       try {
         await rejectedStaleProof(inventory.publish(vehicle.id, vehicle.version, { id: editor.id, requestId: randomUUID() }, randomUUID()));
-        assert.equal(entered, true); assert.equal(activeAtPreparation, true); assert.deepEqual(await get(vehicle.id), vehicle);
+        assert.equal(entered, true); assert.equal(activeAtPreparation, true); assert.deepEqual(await get(vehicle.id), { ...vehicle, report: { hasReport: false, url: null } } as AdminVehicle);
         assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [vehicle.id])).rows[0].n, 1);
         const current = await publicDetail(vehicle.id); assert.equal(current.displayPrice?.status, 'unavailable');
         const { displayPrice: _previousConversion, ...before } = live;
@@ -550,7 +623,7 @@ test('publication preview gates use current persisted data and an actor-specific
         });
         release();
         await rejectedStaleProof(pending);
-        assert.deepEqual(await get(vehicle.id), vehicle);
+        assert.deepEqual(await get(vehicle.id), { ...vehicle, report: { hasReport: false, url: null } } as AdminVehicle);
         assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [vehicle.id])).rows[0].n, 1);
         const current = await publicDetail(vehicle.id); assert.equal(current.displayPrice?.status, 'ready');
         const { displayPrice: _unavailableConversion, ...before } = live;

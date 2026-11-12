@@ -1,3 +1,4 @@
+import { getExternalReport } from './reports.js';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import {
@@ -246,7 +247,7 @@ export class ExternalStore {
       return { id, version: row.version, state: upstreamState(row),
         identity: { provider: row.provider, platformId: row.platform_id, externalId: row.external_id },
         sourceRevision: Number(row.source_revision), sourceUpdatedAt: iso(row.source_updated_at), fetchedAt: row.fetched_at.toISOString(),
-        source: row.source_data, overrides, sourceHashes: hashes, vehicle: await getExternalPublic(tx, row.id, locale) };
+        source: row.source_data, overrides, sourceHashes: hashes, report: await getExternalReport(tx, row.id), vehicle: await getExternalPublic(tx, row.id, locale) };
     });
   }
 

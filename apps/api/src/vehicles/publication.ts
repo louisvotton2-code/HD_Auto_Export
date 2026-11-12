@@ -10,7 +10,10 @@ import { ApiError, conflict } from '../errors.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { locales } from './content.js';
 import { projectUsdPrice } from './usd-price.js';
-import type { StoredLocalization } from './localization.js';
+import { resolveDisplay, type StoredLocalization } from './localization.js';
+import { projectConfiguration } from './configuration.js';
+import { validateTranslationTokens } from './translation-plans.js';
+import { getStaffReport } from '../external/reports.js';
 
 export type PublicationRow = { id: string; stock_number: string; version: number; public_content_revision: number;
   availability: Availability; availability_checked_at: Date | null; data: VehicleDraftInput };
@@ -47,6 +50,7 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
     missing(`draft.${issue.path.join('.')}`, 'The draft contains invalid fields for its source type.');
   for (const field of ['make', 'model'] as const) if (!draft.facts[field]) missing(`draft.facts.${field}`, `${field} is required.`);
   if (staffInventory) {
+    if (!draft.configuration?.items.length) missing('draft.configuration', 'Valid nonempty configuration is required.');
     if (!draft.facts.trim) missing('draft.facts.trim', 'Configuration is required.');
     if (draft.facts.modelYear === null) missing('draft.facts.modelYear', 'Model year is required.');
     if (draft.facts.powertrain === 'unknown') missing('draft.facts.powertrain', 'A known powertrain is required.');
@@ -68,16 +72,22 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
   for (const language of locales) for (const name of ['title', 'description'] as const) {
     const field = draft.content[name], translated = field.translations[language];
     if (!staffInventory && name === 'description' && field.sourceText === null && locales.every(l => !field.translations[l])) continue;
+    if (staffInventory && field.sourceLanguage!=='zh') missing(`draft.content.${name}.sourceLanguage`, 'Confirm the current Chinese source language.', 'localization');
+    if (language==='zh' && field.sourceLanguage==='zh' && translated?.text!==field.sourceText)
+      missing(`draft.content.${name}.translations.zh`, 'Save the bundle to derive Chinese from its authoritative source.', 'localization');
     if (!translated?.text.trim() || translated.sourceVersion !== field.sourceVersion ||
-      (staffInventory ? translated.reviewStatus !== 'approved' : translated.reviewStatus === 'stale'))
-      missing(`draft.content.${name}.translations.${language}`, 'A reviewed translation of the current source is required.', 'localization');
+      translated.reviewStatus === 'stale')
+      missing(`draft.content.${name}.translations.${language}`, 'A complete translation of the current source is required.', 'localization');
     if (translated?.kind === 'original' && (language !== field.sourceLanguage.split('-')[0] || translated.text !== field.sourceText))
       missing(`draft.content.${name}.translations.${language}.kind`, 'Original text must match its source and language.', 'localization');
   }
   for (const field of localization.data.fields) for (const language of locales) {
     const value = field.translations[language];
-    if (!value || value.sourceVersion !== field.sourceVersion || (staffInventory ? value.reviewStatus !== 'approved' : value.reviewStatus === 'stale'))
-      missing(`localization.${field.ref}.${language}`, 'A reviewed display translation of the current source is required.', 'localization');
+    if (staffInventory && field.sourceLanguage!=='zh') missing(`localization.${field.ref}.sourceLanguage`, 'Confirm the current Chinese source language.', 'localization');
+    if (!value || value.sourceVersion !== field.sourceVersion || value.reviewStatus === 'stale')
+      missing(`localization.${field.ref}.${language}`, 'A complete display translation of the current source is required.', 'localization');
+    if (value && field.ref.startsWith('configuration.') && language!=='zh' && !validateTranslationTokens(field.sourceText,value.text))
+      missing(`localization.${field.ref}.${language}`, 'Configuration translation changes a source fact token.', 'localization');
   }
   if (draft.media.filter(m => m.isCover).length !== 1) missing('draft.media', 'One ready cover is required.');
   const { rows: media } = await tx.query<MediaRow>('SELECT * FROM media_assets WHERE vehicle_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR SHARE',
@@ -117,6 +127,7 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
   const placeholder = { zh: '待翻译', en: 'Awaiting translation', ru: 'Ожидает перевода' }[locale];
   const named = (value: { id: string; name: string } | null, text: PublicationPreviewText) =>
     value ? { id: value.id, name: text.text ?? placeholder } : null;
+  const report=await getStaffReport(tx,draft.source);
   const vehicle = { id: row.id, stockCode: `HD-${String(row.stock_number).padStart(6, '0')}`,
     source: draft.source.kind === 'external' ? { kind: 'external',
       platform: { id: draft.source.platform.id, name: display.platform.text ?? placeholder }, listingUrl: draft.source.listingUrl } : { kind: draft.source.kind },
@@ -125,13 +136,15 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
       drivetrain: localization.data.facts.drivetrain,
       location: draft.facts.location ? { country: draft.facts.location.country, city: display.city.text, displayName: display.location.text } : null },
     content: { title: previewText(draft.content.title, locale), description: previewText(draft.content.description, locale) }, display, price,
+    configuration: projectConfiguration(draft.configuration,locale,ref=>resolveDisplay(byRef.get(ref),locale,draft.source.kind==='manual')),
+    report: {hasReport:report.hasReport},
     images: [...draft.media].sort((a, b) => a.sortOrder - b.sortOrder).map(image => {
       const stored = media.find(m => m.id === image.id.toLowerCase());
       return { ...image, alt: get(`media.${image.id.toLowerCase()}.alt`).text ?? '',
         url: ready.has(image.id) ? `/api/v1/admin/media/${image.id}/preview` : null,
         width: stored?.width ?? null, height: stored?.height ?? null, status: ready.has(image.id) ? 'ready' : 'missing' };
     }), availability: row.availability, availabilityCheckedAt: row.availability_checked_at?.toISOString() ?? null };
-  const publicData = { source: draft.source, facts: draft.facts, price: draft.price, content: draft.content, media: draft.media };
+  const publicData = { source: draft.source, facts: draft.facts, price: draft.price, content: draft.content, media: draft.media, configuration:draft.configuration??null };
   const fingerprint = createHash('sha256').update(canonicalJson({ publicContentRevision: row.public_content_revision,
     locale, vehicle, publicData, localization: localization.data,
     media: media.map(m => ({ id: m.id, version: m.version, state: m.state, rights: m.rights })),

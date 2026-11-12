@@ -9,6 +9,9 @@ export interface TranslationProvider {
   readonly engineVersion:string;
   translate(text:string,target:'en'|'ru',signal:AbortSignal):Promise<string>;
 }
+export class TranslationResultValidationError extends Error {
+  constructor() { super('Translation output did not preserve the public field constraints.'); }
+}
 const ALI_MT_ENDPOINTS={
   'cn-hangzhou':'https://mt.cn-hangzhou.aliyuncs.com/',
   'ap-southeast-1':'https://mt.ap-southeast-1.aliyuncs.com/',
@@ -108,10 +111,33 @@ export function splitTranslationText(text:string):string[] {
 
 export class VehicleTranslator {
   private active=0;
+  private providerActive=0;
   private windowStart=Date.now();private usedCharacters=0;
   private cache=new Map<string,{text:string;expiresAt:number}>();
   private inFlight=new Map<string,Promise<string>>();
-  constructor(private provider:TranslationProvider|null,private maxCharactersPerHour=50_000) {}
+  constructor(private provider:TranslationProvider|null,private maxCharactersPerHour=50_000,
+    private providerName:Config['translation']['provider']=provider instanceof AliyunGeneralProvider?'aliyun':'libretranslate') {}
+  metadata() {
+    return {provider:this.provider?this.providerName:'disabled' as const,engineVersion:this.provider?.engineVersion??null,
+      hourlyCharacterLimit:this.maxCharactersPerHour};
+  }
+  /** Aggregate plans share the existing global two-session ceiling and per-attempt budget/cache. */
+  async withPlanSession<T>(work:(translate:(text:string,target:'en'|'ru',validate?:(text:string)=>boolean)=>Promise<string>,signal:AbortSignal)=>Promise<T>):Promise<T> {
+    if(!this.provider)throw new ApiError(503,'TRANSLATION_DISABLED','Machine translation is disabled or not configured.');
+    if(this.active>=2)throw new ApiError(503,'TRANSLATION_BUSY','Translation capacity is busy. Try again shortly.',undefined,true);
+    this.active++;
+    const signal=AbortSignal.timeout(120_000);
+    try {
+      return await work((text,target,validate)=>{
+        if(!text || text.length>5000)throw new ApiError(422,'TRANSLATION_INPUT_TOO_LONG','A translation segment exceeds 5000 characters.');
+        // A provider ignoring AbortSignal must not retain a plan session indefinitely.
+        return waitWithSignal(this.text({sourceLanguage:'zh',sourceText:text,sourceVersion:1,translations:{zh:null,en:null,ru:null}},target,signal,validate),signal);
+      },signal);
+    } finally {this.active--;}
+  }
+  invalidatePlanSegment(text:string,target:'en'|'ru') {
+    this.cache.delete(this.textCacheKey({sourceLanguage:'zh',sourceText:text,sourceVersion:1,translations:{zh:null,en:null,ru:null}},target));
+  }
   async generateDisplay(fields:DisplayField[]):Promise<DisplayField[]> {
     if(!fields.length||fields.length>10||fields.some(field=>!/^zh(?:-|$)/i.test(field.sourceLanguage)))
       throw new ApiError(422,'TRANSLATION_SOURCE_UNSUPPORTED','Save explicitly Chinese public display fields before generating suggestions.');
@@ -133,22 +159,32 @@ export class VehicleTranslator {
     } catch(error) {if(error instanceof ApiError)throw error;throw upstream();}
     finally {this.active--;}
   }
-  private async text(field:TranslatableField,target:'en'|'ru',signal:AbortSignal):Promise<string> {
+  private textCacheKey(field:TranslatableField,target:'en'|'ru') {
+    return createHash('sha256').update(JSON.stringify([this.provider!.engineVersion,sourceHash(field),target])).digest('hex');
+  }
+  private async text(field:TranslatableField,target:'en'|'ru',signal:AbortSignal,validate?:(text:string)=>boolean):Promise<string> {
     signal.throwIfAborted();
-    const key=createHash('sha256').update(JSON.stringify([this.provider!.engineVersion,sourceHash(field),target])).digest('hex');
-    const cached=this.cache.get(key);if(cached && cached.expiresAt>Date.now())return cached.text;
-    const ongoing=this.inFlight.get(key);if(ongoing)return waitWithSignal(ongoing,signal);
+    const key=this.textCacheKey(field,target);
+    const checked=(text:string)=>{if(validate&&!validate(text)){this.cache.delete(key);throw new TranslationResultValidationError();}return text;};
+    const cached=this.cache.get(key);if(cached && cached.expiresAt>Date.now())return checked(cached.text);
+    const ongoing=this.inFlight.get(key);if(ongoing)return checked(await waitWithSignal(ongoing,signal));
     const work=(async()=>{
       const source=field.sourceText!;
       signal.throwIfAborted();
+      if(this.providerActive>=2)throw new ApiError(503,'TRANSLATION_BUSY','Translation provider capacity is busy.',undefined,true);
       if(Date.now()-this.windowStart>=3_600_000){this.windowStart=Date.now();this.usedCharacters=0;}
       if(this.usedCharacters+source.length>this.maxCharactersPerHour)throw new ApiError(429,'TRANSLATION_QUOTA_EXCEEDED','The local hourly translation character budget is exhausted.');
       this.usedCharacters+=source.length; // Failed calls may still be billed; reserve before sending.
       const chunks:string[]=[];
       for(const part of splitTranslationText(source)) {
-        signal.throwIfAborted();chunks.push(await this.provider!.translate(part,target,signal));signal.throwIfAborted();
+        signal.throwIfAborted();
+        if(this.providerActive>=2)throw new ApiError(503,'TRANSLATION_BUSY','Translation provider capacity is busy.',undefined,true);
+        this.providerActive++;
+        try {chunks.push(await this.provider!.translate(part,target,signal));} finally {this.providerActive--;}
+        signal.throwIfAborted();
       }
       const text=chunks.join('');if(text.length>10_000)throw upstream();
+      checked(text);
       signal.throwIfAborted();
       if(this.cache.size>=128)this.cache.delete(this.cache.keys().next().value!);
       this.cache.set(key,{text,expiresAt:Date.now()+24*3_600_000});return text;
@@ -186,5 +222,5 @@ export class VehicleTranslator {
 export function createVehicleTranslator(config:Config['translation']):VehicleTranslator {
   const provider=config.provider==='libretranslate' && config.libreUrl && config.libreEngineVersion?new LibreTranslateProvider(config):
     config.provider==='aliyun' && config.accessKeyId && config.accessKeySecret?new AliyunGeneralProvider(config):null;
-  return new VehicleTranslator(provider,config.maxCharactersPerHour);
+  return new VehicleTranslator(provider,config.maxCharactersPerHour,config.provider);
 }

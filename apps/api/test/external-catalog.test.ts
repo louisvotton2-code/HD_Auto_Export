@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, mock, test } from 'node:test';
@@ -20,13 +20,19 @@ import { finishTrialAttempt, markTrialAttemptDispatched, reserveTrialAttempt } f
 import { createStaff } from '../src/staff-cli.js';
 
 const maintenanceUrl = new URL(process.env.API_TEST_DATABASE_URL ?? 'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
-if (maintenanceUrl.hostname !== '127.0.0.1' || maintenanceUrl.pathname !== '/postgres' || maintenanceUrl.search || maintenanceUrl.hash) {
+if (!['postgres:', 'postgresql:'].includes(maintenanceUrl.protocol) || maintenanceUrl.hostname !== '127.0.0.1' || maintenanceUrl.pathname !== '/postgres' || maintenanceUrl.search || maintenanceUrl.hash) {
   throw new Error('External catalog tests require a local 127.0.0.1 PostgreSQL maintenance database without URL options.');
+}
+async function localTransport(url: URL) {
+  const socket = process.env.API_TEST_DATABASE_SOCKET;
+  if (socket === undefined) return url.toString();
+  if (!path.isAbsolute(socket) || !(await stat(path.join(socket, `.s.PGSQL.${url.port || '5432'}`))).isSocket()) throw new Error('Expected a local PostgreSQL socket directory.');
+  const transport = new URL(url); transport.searchParams.set('host', socket); return transport.toString();
 }
 const name = `hd_ext_test_${randomBytes(8).toString('hex')}`;
 const databaseUrl = new URL(maintenanceUrl);
 databaseUrl.pathname = `/${name}`;
-const maintenance = createDatabase(maintenanceUrl.toString(), 2);
+const maintenance = createDatabase(await localTransport(maintenanceUrl), 2);
 const origin = 'http://127.0.0.1:3318';
 const password = 'Isolated-external-catalog-password!';
 const base = '/api/v1/admin/external';
@@ -98,9 +104,10 @@ async function readRecords(id: string, page = 1) {
 before(async () => {
   temp = await mkdtemp(path.join(tmpdir(), 'hd-external-catalog-'));
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);
-  runtime = await buildApp(readConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl.toString(), EXTERNAL_CATALOG_MODE: 'synthetic',
+  const config = readConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl.toString(), EXTERNAL_CATALOG_MODE: 'synthetic',
     AUTH_SECRET: randomBytes(32).toString('hex'), AUTH_BASE_URL: origin, TRUSTED_ORIGINS: origin, MEDIA_ROOT: path.join(temp, 'media'),
-    TRANSLATION_PROVIDER: 'disabled' }));
+    TRANSLATION_PROVIDER: 'disabled' });
+  runtime = await buildApp({ ...config, databaseUrl: await localTransport(databaseUrl) });
   assert.equal((await call({ url: '/health/ready' })).statusCode, 503);
   await migrateDatabase(runtime.db);
   await migrateDatabase(runtime.db);
@@ -118,6 +125,7 @@ before(async () => {
   const actor = { id: adminId, requestId: 'isolated-external-staff-fixture' };
   const draft = makeVehicleDraftFixture();
   draft.media = [];
+  draft.configuration = { version: 1, items: [{ name: '基础配置', value: '标准' }] };
   draft.facts = { ...draft.facts, make: { id: 'toyota', name: 'Toyota' }, model: { id: 'synthetic-r1', name: 'Example R1' }, trim: { id: 'test-trim', name: 'Test trim' }, powertrain: 'hev' };
   draft.price = { kind: 'asking', money: { amount: '128000.50', currency: 'CNY' }, includes: [] };
   let vehicle = await runtime.inventory.create(draft, actor, randomUUID());
@@ -131,8 +139,8 @@ before(async () => {
   vehicle = await runtime.inventory.availability(vehicle.id, { version: vehicle.version, availability: 'available', checkedAt: new Date().toISOString() }, actor);
   const localization = await runtime.inventory.getLocalization(vehicle.id);
   for (const field of localization.data.fields) for (const locale of ['zh', 'en', 'ru'] as const) {
-    field.translations[locale] = { text: field.sourceText, kind: 'human', reviewStatus: 'approved',
-      sourceVersion: field.sourceVersion, humanEditVersion: 0, engineVersion: null };
+    field.translations[locale] = { text: field.sourceText, kind: locale === 'zh' ? 'original' : 'human', reviewStatus: 'approved',
+      sourceVersion: field.sourceVersion, humanEditVersion: field.translations[locale]?.humanEditVersion ?? 0, engineVersion: null };
   }
   await runtime.inventory.saveLocalization(vehicle.id, { vehicleVersion: vehicle.version, revision: localization.revision, data: localization.data }, actor);
   vehicle = await runtime.inventory.getAdmin(vehicle.id);
@@ -397,7 +405,7 @@ test('the durable ledger fails closed, shares a monthly allowance, and counts di
   const nextAttempt = randomUUID();
   assert.equal(await reserveTrialAttempt(runtime.db, trial.id, work.call_key, attempt), false);
   await runtime.db.pool.query("UPDATE external_translation_months SET verified_allowance=$2,verified_until=now()+interval '10 minutes' WHERE month=$1", [month, work.characters]);
-  const other = createDatabase(databaseUrl.toString(), 2);
+  const other = createDatabase(await localTransport(databaseUrl), 2);
   try {
     const claims = await Promise.all([reserveTrialAttempt(runtime.db, trial.id, work.call_key, attempt), reserveTrialAttempt(other, cachedTrial.id, work.call_key, nextAttempt)]);
     assert.deepEqual([...claims].sort(), [false, true]);

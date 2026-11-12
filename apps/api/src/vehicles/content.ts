@@ -8,6 +8,7 @@ export const sourceHash = (field: TranslatableField) => createHash('sha256').upd
 /** Source and human revisions are checked on save; callers cannot write an old result over a newer draft. */
 export function normalizeContent(incoming: VehicleDraftInput, previous?: VehicleDraftInput): VehicleDraftInput {
   const result = structuredClone(incoming);
+  result.configuration = incoming.configuration === undefined ? previous?.configuration ?? null : incoming.configuration;
   for (const key of ['title','description'] as const) {
     const field = result.content[key]; const old = previous?.content[key];
     if (old && field.sourceVersion !== old.sourceVersion) throw conflict();
@@ -30,6 +31,13 @@ export function normalizeContent(incoming: VehicleDraftInput, previous?: Vehicle
       if (translation.kind === 'original' && (locale !== field.sourceLanguage.split('-')[0] || translation.text !== field.sourceText)) {
         if (translation.reviewStatus !== 'stale') translation.reviewStatus = 'pending';
       }
+    }
+    // Chinese is the authoritative source, not an independently editable translation.
+    // Preserve legacy language declarations until an explicit source-language confirmation.
+    if (field.sourceLanguage === 'zh' && field.sourceText !== null &&
+      (changed || !field.translations.zh || field.translations.zh.text !== field.sourceText || field.translations.zh.sourceVersion !== field.sourceVersion)) {
+      field.translations.zh = { text: field.sourceText, kind: 'original', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
+        humanEditVersion: (old?.translations.zh?.humanEditVersion ?? 0) + (old ? 1 : 0), engineVersion: null };
     }
   }
   return result;

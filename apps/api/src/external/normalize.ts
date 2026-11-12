@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
   ExternalFactFieldSchema, MoneySchema, brandLabel, findBrand,
-  type DisplayText, type ExternalIssue, type Locale, type PublicText, type VehicleDisplay,
+  type DisplayText, type ExternalInspection, type ExternalIssue, type Locale, type PublicText, type VehicleDisplay,
 } from '@hd/contracts/public';
 import { ExternalCopySchema, type ExternalOverrides, type ExternalTrialField, type ExternalUpsertCandidate } from '@hd/contracts/admin';
 import { ApiError } from '../errors.js';
 import { getPlatform, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
+import { safeInspectionContent } from './inspection.js';
 
 export const locales = ['zh', 'en', 'ru'] as const;
 export const copyFields = ['title', 'model', 'description'] as const;
@@ -82,7 +83,8 @@ type Localized = { title: PublicText; description: PublicText | null; display: V
 type Details = {
   original: Record<ExternalTrialField, Tagged | null>;
   specifications: ExternalUpsertCandidate['specifications'];
-  inspection: ExternalUpsertCandidate['inspection'];
+  inspection: ExternalInspection | null;
+  history?: ExternalUpsertCandidate['history'];
   relatedListingUrls: string[];
 };
 
@@ -247,14 +249,18 @@ export function buildProjection(source: ExternalUpsertCandidate, overrides: Exte
     issues.set('specifications', source.disputes.length ? 'conflict' : 'invalid');
   }
   const reportUrl = publicLink(source.inspection?.reportUrl ?? null, 'report', profile);
-  const entries = source.inspection && !source.disputes.length ? safeEntries(source.inspection.entries) : [];
-  if (source.inspection && (entries.length !== source.inspection.entries.length || source.inspection.reportUrl && !reportUrl)) {
+  const inspectionContent = source.inspection && !source.disputes.length ? safeInspectionContent(source.inspection, isPublicText) : null;
+  const { reportUrl: _candidateUrl, hasReport: _sourceReportPresence, ...sourceInspectionContent } = source.inspection ?? { reportUrl: null };
+  if (source.inspection && (jsonHash(inspectionContent) !== jsonHash(sourceInspectionContent) || source.inspection.reportUrl && !reportUrl)) {
     issues.set('inspection', source.disputes.length ? 'conflict' : 'invalid');
   }
-  const inspection = !source.disputes.length && (reportUrl || entries.length) ? { reportUrl, entries } : null;
+  // Public inspection never carries original links. Report presence is projected separately for contact-sales UI.
+  const inspection: ExternalInspection | null = inspectionContent ? { ...inspectionContent, reportUrl: null,
+    reportAccess: { status: 'unknown', url: null, checkedAt: null, expiresAt: null } } : null;
   const details: Details = {
     original: { title: copy.title?.original ?? null, model: copy.model?.original ?? null, description: copy.description?.original ?? null },
     specifications, inspection, relatedListingUrls,
+    ...(source.history !== undefined ? { history: source.disputes.length ? null : source.history } : {}),
   };
   return {
     facts, priceCny, images, details, sourceHashes: hashes,

@@ -60,11 +60,15 @@ pnpm --filter @hd/api start
 
 迁移位于 `migrations/`，SQL 是数据库结构的维护入口；Better Auth 的 Drizzle 映射在 `src/db/schema.ts`。通过 Drizzle migrator 和 advisory lock 显式应用已审 SQL，不在应用启动或构建时改库。不要对已有环境使用 schema push，也不要修改已发布迁移；下一变更追加 SQL 与 journal。生产应分别配置迁移身份和最小权限运行身份，本地 Compose 不代表生产权限验证。
 
-BE-ADUX10 增加迁移 0014：员工车辆公开草稿版本与按员工保存的十分钟预览确认。先备份并显式应用迁移，再切换 API；新版就绪检查要求该列／表存在。草稿 asking 金额和采购成本可空，发布时仍须完整业务资料、三语审核及当前预览确认。GET `publish-readiness`／`publication-preview` 与 POST `publication-preview/confirm` 的精确 schema、iframe 协议及 source 区别见[车辆接口第17节](../../docs/开发/车辆接口.md#17-be-adux10-发布检查与私有预览)。API 与 AD／FE 必须配套升级；旧成功发布回执可重放，新发布请求不能绕过确认。旧公开快照不会被迁移改写。
+BE-ADUX10 增加迁移 0014：员工车辆公开草稿版本与按员工保存的十分钟预览确认。先备份并显式应用迁移，再切换 API；新版就绪检查要求该列／表存在。草稿 asking 金额和采购成本可空，发布时仍须完整业务资料、三语就绪及当前预览确认。BE-UX11 已用当前三语完整／非 stale 替代旧逐字段 approved 门槛，真实 machine/pending 不变。GET `publish-readiness`／`publication-preview` 与 POST `publication-preview/confirm` 的精确 schema、iframe 协议及 source 区别见[车辆接口第17节](../../docs/开发/车辆接口.md#17-be-adux10-发布检查与私有预览)。API 与 AD／FE 必须配套升级；旧成功发布回执可重放，新发布请求不能绕过确认。旧公开快照不会被迁移改写。
+
+BE-UX11 追加迁移 0015（员工确认的翻译计划／分段结果）与 0016（离线检测补充／内部报告证据）。迁移必须显式执行；ready 检查对应表，不能只换 API 后仍接旧 schema。配置 JSON 原样输入先严格校验，再存规范对象；统一工作区同时保存正文和展示译文。先创建无外呼的计划，再明确费用与范围后执行，生成建议不会自动修改草稿；断线后只读 GET 恢复，不自动重试可能已收费的请求。旧 suggestion 新请求返回 422，历史成功 key 仍只读重放。公开报告只提供存在事实，安全原链接仅后台可用。完整契约和可导入样例见[第18节](../../docs/开发/车辆接口.md#18-be-ux11-配置多语工作区与真实历史)。前后台配套升级与真实翻译启用另行记录。
 
 本轮隔离集成测试 `integration.test.ts`、`publication-preview.test.ts`、`publication-preview-revision.test.ts` 支持可选 `API_TEST_DATABASE_SOCKET`，但仍先验证本机 `API_TEST_DATABASE_URL` 和随机测试库；此变量仅测试读取，不改变生产配置校验。迁移维护 SQL 须保持车辆父行先于草稿、侧表、媒体与确认的锁顺序，或者停写执行。运行环境与新接口是否已切换以本轮日志为准。
 
 回退须考虑新草稿数据：旧 API 不识别新保存的 asking 空金额，不能只回退二进制并继续连接已产生此类写入的库。切换前保存库／媒体快照；切换后如已有编辑，先评估兼容数据或前滚修复，不能无条件恢复旧快照丢弃新写入。公开快照的严格金额形状保持原样。
+
+本机交付入口统一为 `127.0.0.1:3363`；本文件中的原生应用端口仅用于隔离开发／测试，验收后释放，不另设长期宿主入口。数据库与 API 通过内部网络访问；现有 Unix socket 测试入口可复用隔离随机库，不为测试增加数据库宿主端口。
 
 ### 外部目录隔离验证
 

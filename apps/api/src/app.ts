@@ -12,6 +12,7 @@ import { classifyCapacityFailure, createDatabase, type PublicFailureDiagnostic }
 import { LoginAccountLimiter } from './login-account-limiter.js';
 import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './auth.js';
 import { InventoryService, type Actor } from './vehicles/service.js';
+import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError, notFound } from './errors.js';
@@ -33,7 +34,8 @@ function rateLimitKey(request:FastifyRequest) {
   const upload=request.method==='PUT'&&route==='/api/v1/admin/media/:id/content' ||
     request.method==='POST'&&['/api/v1/admin/media/uploads','/api/v1/admin/media/:id/complete'].includes(route);
   const translate=request.method==='POST'&&['/api/v1/admin/vehicles/:id/translation-suggestions',
-    '/api/v1/admin/vehicles/:id/localization/translation-suggestions'].includes(route);
+    '/api/v1/admin/vehicles/:id/localization/translation-suggestions','/api/v1/admin/vehicles/:id/translation-plans',
+    '/api/v1/admin/vehicles/:id/translation-plans/:planId/generate'].includes(route);
   // Matched route families, never a caller-supplied ID/query/header, select the budget.
   const bucket=route===externalMediaFailurePath?'external-media-report':
     request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
@@ -70,6 +72,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const mediaStore=new LocalMediaStore(config.mediaRoot);
   const inventory=new InventoryService(db,config.externalCatalog,mediaStore);
   const translator=options.translator??createVehicleTranslator(config.translation);
+  const translationPlans=new TranslationPlanService(db,translator,(id,who)=>inventory.translationPlanInput(id,who));
   const media=new MediaService(db,mediaStore);
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.body','res.headers.set-cookie']} : false,
     genReqId:()=>randomUUID(),requestIdHeader:false,bodyLimit:100_000,requestTimeout:30_000,trustProxy:config.trustProxy,
@@ -169,7 +172,9 @@ export async function buildApp(config:Config=readConfig(), options:{
       const ready=await db.pool.query(`SELECT h.id,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
-        LEFT JOIN publication_preview_confirmations pc ON false WHERE h.id=1`);
+        LEFT JOIN publication_preview_confirmations pc ON false
+        LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
+        LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
         const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
@@ -227,17 +232,27 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
 
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
+  const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
+  app.get('/api/v1/admin/vehicles/:id/translation-bundle',{schema:adminSchema('getVehicleTranslationBundle',{params:IdParams,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.getTranslationBundle((request.params as {id:string}).id,actor(request)),request));
+  app.put('/api/v1/admin/vehicles/:id/translation-bundle',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicleTranslationBundle',{params:IdParams,body:adm.SaveVehicleTranslationBundleSchema,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.saveTranslationBundle((request.params as {id:string}).id,request.body as adm.SaveVehicleTranslationBundle,actor(request)),request));
+  app.post('/api/v1/admin/vehicles/:id/translation-plans',{schema:adminSchema('createVehicleTranslationPlan',{params:IdParams,body:adm.CreateTranslationPlanRequestSchema,response:{200:adm.TranslationPlanResponseSchema,...errorResponses}})},async request=>response(await translationPlans.create((request.params as {id:string}).id,request.body as adm.CreateTranslationPlanRequest,actor(request)),request));
+  app.post('/api/v1/admin/vehicles/:id/translation-plans/:planId/generate',{schema:adminSchema('generateConfirmedVehicleTranslationPlan',{params:PlanParams,body:adm.GenerateTranslationPlanRequestSchema,headers:idemHeader,response:{200:adm.TranslationPlanResultResponseSchema,...errorResponses}})},async request=>{
+    const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.generate(id,planId,request.body as adm.GenerateTranslationPlanRequest,actor(request),request.headers['idempotency-key'] as string),request);
+  });
+  app.get('/api/v1/admin/vehicles/:id/translation-plans/:planId',{schema:adminSchema('getVehicleTranslationPlanStatus',{params:PlanParams,response:{200:adm.TranslationPlanStatusResponseSchema,...errorResponses}})},async request=>{
+    const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.status(id,planId,actor(request)),request);
+  });
   registerExternalRoutes(app,db,actor,config.providerAccountKey);
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
   app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>response(await inventory.listAdmin(request.query as z.infer<typeof adm.AdminVehicleQuerySchema>),request));
   app.get('/api/v1/admin/vehicle-filters',{schema:adminSchema('adminVehicleFilters',{querystring:adm.AdminVehicleFiltersQuerySchema,response:{200:adm.AdminVehicleFiltersResponseSchema,...errorResponses}})},async request=>response(await inventory.adminFilters(request.query as adm.AdminVehicleFiltersQuery),request));
   app.post('/api/v1/admin/vehicles/bulk',{schema:adminSchema('bulkVehicleMutation',{body:adm.BulkVehicleMutationRequestSchema,headers:idemHeader,response:{200:adm.BulkVehicleMutationResponseSchema,...errorResponses}})},async request=>response(await inventory.bulk(request.body as adm.BulkVehicleMutationRequest,actor(request),request.headers['idempotency-key'] as string),request));
   app.post('/api/v1/admin/vehicles',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('createVehicle',{body:adm.CreateVehicleRequestSchema,headers:idemHeader,response:{201:adm.AdminVehicleResponseSchema,...errorResponses}})},async(request,reply)=>{
-    const body=request.body as adm.CreateVehicleRequest;return reply.code(201).send(response(await inventory.create(body.draft,actor(request),request.headers['idempotency-key'] as string),request));
+    const body=request.body as adm.CreateVehicleRequest;return reply.code(201).send(response(await inventory.create(adm.parseVehicleDraftWrite(body.draft),actor(request),request.headers['idempotency-key'] as string),request));
   });
   app.get('/api/v1/admin/vehicles/:id',{schema:adminSchema('adminGetVehicle',{params:IdParams,querystring:adm.AdminVehicleDetailQuerySchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.getAdmin((request.params as {id:string}).id,(request.query as adm.AdminVehicleDetailQuery).includeDeleted==='true'),request));
   app.patch('/api/v1/admin/vehicles/:id',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicle',{params:IdParams,body:adm.SaveVehicleRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>{
-    const body=request.body as adm.SaveVehicleRequest;return response(await inventory.save((request.params as {id:string}).id,body.version,body.draft,actor(request)),request);
+    const body=request.body as adm.SaveVehicleRequest;return response(await inventory.save((request.params as {id:string}).id,body.version,adm.parseVehicleDraftWrite(body.draft),actor(request)),request);
   });
   app.get('/api/v1/admin/vehicles/:id/publish-readiness',{schema:adminSchema('vehiclePublishReadiness',{params:IdParams,querystring:adm.PublicationPreviewQuerySchema,response:{200:adm.PublishReadinessResponseSchema,...errorResponses}})},async request=>response(await inventory.publishReadiness((request.params as {id:string}).id,(request.query as adm.PublicationPreviewQuery).locale,actor(request)),request));
   app.get('/api/v1/admin/vehicles/:id/publication-preview',{schema:adminSchema('vehiclePublicationPreview',{params:IdParams,querystring:adm.PublicationPreviewQuerySchema,response:{200:adm.PublicationPreviewResponseSchema,...errorResponses}})},async request=>response(await inventory.publicationPreview((request.params as {id:string}).id,(request.query as adm.PublicationPreviewQuery).locale,actor(request)),request));

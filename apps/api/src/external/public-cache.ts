@@ -123,6 +123,12 @@ export class PublicCatalogCache {
         if (!Number.isFinite(expiry)) return 0;
         deadline = Math.min(deadline, expiry);
       }
+      const report = object.reportAccess as Record<string, unknown> | undefined;
+      if (report && typeof report === 'object' && (report.status === 'available' || report.status === 'unavailable')) {
+        const expiry = typeof report.expiresAt === 'string' ? Date.parse(report.expiresAt) : NaN;
+        if (!Number.isFinite(expiry)) return 0;
+        deadline = Math.min(deadline, expiry);
+      }
       for (const child of Object.values(object)) stack.push(child);
     }
     return deadline;
@@ -173,7 +179,8 @@ export class PublicCatalogCache {
     const work = async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const revision = await this.revision(usd);
-        const keyParts = [1, revision.epoch, revision.revision, route, input];
+        // Version 3 drops every cached report URL; public reports now only invite contact with sales.
+        const keyParts = [3, revision.epoch, revision.revision, route, input];
         if (usd) keyParts.push(revision.fx?.version ?? 'unavailable');
         const key = createHash('sha256').update(canonicalJson(keyParts)).digest('hex');
         const cached = await this.lookup(key);
