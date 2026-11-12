@@ -2,10 +2,15 @@ import { z } from 'zod';
 import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
-  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalHistorySchema, ExternalInspectionContentSchema,
+  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalHistorySchema, ExternalHttpsUrlSchema, ExternalInspectionContentSchema,
   ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
 } from './external-public.js';
 import { PublicVehicleSchema } from './public.js';
+
+/** Authenticated detail only. Server source profiles additionally restrict the exact URL host. */
+export const AdminReportSchema = z.strictObject({ hasReport: z.boolean(), url: ExternalHttpsUrlSchema.nullable() })
+  .refine(value => value.url === null || value.hasReport, 'A report link implies report presence.');
+export type AdminReport = z.infer<typeof AdminReportSchema>;
 
 export const EXTERNAL_TRIAL_SIZE = 100;
 export const EXTERNAL_TRIAL_CHARACTER_LIMIT = 100_000;
@@ -66,7 +71,7 @@ export const ExternalUpsertCandidateSchema = CandidateIdentitySchema.extend({
   specifications: z.array(ExternalDetailEntrySchema).max(500),
   history: ExternalHistorySchema.nullable().optional(),
   // A source may submit content and a candidate URL, never server verification evidence.
-  inspection: ExternalInspectionContentSchema.safeExtend({ reportUrl: candidateUrl.nullable() }).nullable(),
+  inspection: ExternalInspectionContentSchema.safeExtend({ reportUrl: candidateUrl.nullable(), hasReport: z.boolean().optional() }).nullable(),
 });
 export const ExternalCandidateSchema = z.discriminatedUnion('operation', [
   ExternalUpsertCandidateSchema,
@@ -138,6 +143,7 @@ export const ExternalListingSchema = z.strictObject({
   overrides: ExternalOverridesSchema,
   sourceHashes: z.strictObject({ title: SourceHashSchema.nullable(), model: SourceHashSchema.nullable(), description: SourceHashSchema.nullable() }),
   vehicle: PublicVehicleSchema.nullable(),
+  report: AdminReportSchema.optional(),
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);

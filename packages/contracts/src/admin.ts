@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AdminReportSchema } from './external-admin.js';
 import { VehicleConfigurationSchema, parseVehicleConfigurationJson } from './configuration.js';
 import { LocalizationDataSchema, VehicleLocalizationSchema } from './localization.js';
 import { TranslationPlanRefSchema } from './translation-plan.js';
@@ -111,6 +112,7 @@ export const AdminVehicleSchema = z.strictObject({
   publicationState: PublicationStateSchema, availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   draft: VehicleDraftInputSchema,
+  report: AdminReportSchema.optional(),
   publishedRevisionId: IdSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   deletedAt: TimestampSchema.nullable().default(null),

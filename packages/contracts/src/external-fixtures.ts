@@ -43,12 +43,10 @@ export function makeExternalCandidateFixture(index = 1): ExternalUpsertCandidate
 
 /** Structured synthetic inspection; declared evidence times are fixed, not a claim about a live report. */
 export function makeExternalInspectionFixture(status: ExternalReportAccess['status'] = 'unknown'): ExternalInspection {
-  const reportUrl = 'https://reports.example.invalid/synthetic-0001';
-  const reportAccess = status === 'unknown' ? { status, url: null, checkedAt: null, expiresAt: null }
-    : { status, url: status === 'available' ? reportUrl : null,
-      checkedAt: externalFixtureTime, expiresAt: '2026-11-09T01:00:00Z' };
+  // Even a verified internal observation never changes the public contact-sales projection.
+  void status;
   return ExternalInspectionSchema.parse({
-    reportUrl: status === 'available' ? reportUrl : null, reportAccess, entries: [],
+    reportUrl: null, reportAccess: { status: 'unknown', url: null, checkedAt: null, expiresAt: null }, entries: [],
     checks: [{ category: tag('Body inspection', 'en'), defects: 1, groups: [
       { name: tag('Exterior panels', 'en'), defects: 1, items: [
         { part: tag('Left front door', 'en'), result: tag('Surface scratch observed', 'en'), ok: false },
@@ -69,7 +67,7 @@ export function makeExternalStructuredCandidateFixture(index = 1): ExternalUpser
   const candidate = makeExternalCandidateFixture(index);
   const { reportAccess: _evidence, ...inspection } = makeExternalInspectionFixture();
   return ExternalUpsertCandidateSchema.parse({ ...candidate, history: { ownershipTransfers: 0 },
-    inspection: { ...inspection, reportUrl: 'https://reports.example.invalid/synthetic-0001' } });
+    inspection: { ...inspection, hasReport: true, reportUrl: 'https://reports.example.invalid/synthetic-0001' } });
 }
 
 export function makeExternalImportFixture(count = 200): ExternalImportBatchRequest {
@@ -120,6 +118,7 @@ export function makeImportedPublicVehicleFixture(locale: Locale, state: 'supplie
       trim: missing, generation: missing, city: missing, location: missing, platform: ready(platform.name, 'en', 'original'),
       priceIncludes: [], mediaAlt: images.map(image => ({ mediaId: image.id, value: missing })) },
     content: { title: selectedTitle, description }, images,
+    ...(detail ? { report: { hasReport: !!source.inspection?.reportUrl || source.inspection?.hasReport === true } } : {}),
     price: state === 'missing' ? { kind: 'on_request', money: null, includes: [] } : { kind: 'reference', money: { amount: '128000.50', currency: 'CNY' }, includes: [] },
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: null, fetchedAt: externalFixtureTime, publishedAt: externalFixtureTime,
     external: {
@@ -127,7 +126,7 @@ export function makeImportedPublicVehicleFixture(locale: Locale, state: 'supplie
         : state === 'missing' ? [{ field: 'price', code: 'invalid' }, { field: 'images', code: 'missing' }] : [],
       ...(detail ? { detail: {
         original: { title: state === 'conflict' ? null : title, model: modelName ? original(modelName.name) : null, description },
-        specifications: source.specifications, inspection: source.inspection, relatedListingUrls: source.relatedListingUrls,
+        specifications: source.specifications, inspection: source.inspection ? { entries: source.inspection.entries, reportUrl: null } : null, relatedListingUrls: source.relatedListingUrls,
       } } : {}),
     },
   });
@@ -150,7 +149,7 @@ export function makeExternalAdminFixture(locale: Locale = 'zh') {
   const listing = ExternalListingSchema.parse({
     id: vehicle.id, version: 3, state: 'published', identity: { provider: externalFixtureProvider, platformId: platform.id, externalId: candidate.externalId },
     sourceRevision: candidate.revision, sourceUpdatedAt: null, fetchedAt: candidate.fetchedAt, source: candidate,
-    overrides: { hidden: false, facts: {}, text: [] }, sourceHashes: { title: 'a'.repeat(64), model: 'b'.repeat(64), description: 'c'.repeat(64) }, vehicle,
+    overrides: { hidden: false, facts: {}, text: [] }, report: { hasReport: true, url: candidate.inspection?.reportUrl ?? null }, sourceHashes: { title: 'a'.repeat(64), model: 'b'.repeat(64), description: 'c'.repeat(64) }, vehicle,
   });
   const records = [
     { row: 1, listingId: vehicle.id, operation: 'upsert', status: 'applied', reason: null, issues: [] },

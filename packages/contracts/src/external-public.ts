@@ -81,7 +81,7 @@ export const ExternalInspectionContentSchema = z.strictObject({
   if (leaves > EXTERNAL_INSPECTION_MAX_LEAVES) ctx.addIssue({ code: 'custom', message: 'Inspection content exceeds the total leaf limit.' });
 });
 
-/** The API binds evidence to vehicle/source/content and evaluates expiry; schemas never read the clock. */
+/** Internal evidence model only; public inspection DTOs never expose these verified URLs. */
 export const ExternalReportAccessSchema = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('unknown'), url: z.null(), checkedAt: z.null(), expiresAt: z.null() }),
   z.strictObject({ status: z.literal('available'), url: ExternalHttpsUrlSchema, checkedAt: ExternalTimestampSchema, expiresAt: ExternalTimestampSchema }),
@@ -90,15 +90,14 @@ export const ExternalReportAccessSchema = z.discriminatedUnion('status', [
 ]).refine(value => value.status === 'unknown' || Date.parse(value.expiresAt) > Date.parse(value.checkedAt),
   'Report evidence must expire after it was checked.');
 export type ExternalReportAccess = z.infer<typeof ExternalReportAccessSchema>;
+/** A presence flag invites contact with sales; false is absence of evidence, not evidence of absence. */
+export const PublicReportSchema = z.strictObject({ hasReport: z.boolean() });
+export type PublicReport = z.infer<typeof PublicReportSchema>;
+export const PublicReportAccessSchema = z.strictObject({ status: z.literal('unknown'), url: z.null(), checkedAt: z.null(), expiresAt: z.null() });
 export const ExternalInspectionSchema = ExternalInspectionContentSchema.safeExtend({
-  // Legacy responses may only have reportUrl. New projections must set it to the
-  // available reportAccess.url, and null for every other access status.
-  reportUrl: ExternalHttpsUrlSchema.nullable(),
-  reportAccess: ExternalReportAccessSchema.optional(),
-}).superRefine((value, ctx) => {
-  if (value.reportAccess && value.reportUrl !== (value.reportAccess.status === 'available' ? value.reportAccess.url : null)) {
-    ctx.addIssue({ code: 'custom', path: ['reportUrl'], message: 'Report URL must match the declared report access.' });
-  }
+  // Retain the legacy slot as null. Original URLs belong only to authenticated admin details.
+  reportUrl: z.null(),
+  reportAccess: PublicReportAccessSchema.optional(),
 });
 export type ExternalInspection = z.infer<typeof ExternalInspectionSchema>;
 export const ExternalPublicDetailSchema = z.strictObject({

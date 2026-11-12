@@ -4,6 +4,7 @@ import {
   AvailabilitySchema, IdSchema, LanguageTagSchema, LocaleSchema, MoneySchema,
   TimestampSchema, VehicleFactsSchema, VersionSchema, responseSchema,
 } from './common.js';
+import { PublicReportSchema } from './external-public.js';
 import { DrivetrainSchema } from './localization.js';
 import { PublicUsdPriceSchema, SourceSchema } from './public.js';
 
@@ -39,6 +40,7 @@ export const PublicationPreviewVehicleSchema = z.strictObject({
   facts: VehicleFactsSchema.extend({ generation: VehicleFactsSchema.shape.model, drivetrain: DrivetrainSchema.nullable() }),
   content: z.strictObject({ title: PublicationPreviewTextSchema, description: PublicationPreviewTextSchema }),
   configuration: ConfigurationDisplaySchema.nullable().optional(),
+  report: PublicReportSchema.optional(),
   display: z.strictObject({
     make: PublicationPreviewTextSchema, model: PublicationPreviewTextSchema, trim: PublicationPreviewTextSchema,
     generation: PublicationPreviewTextSchema, city: PublicationPreviewTextSchema, location: PublicationPreviewTextSchema,

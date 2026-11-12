@@ -7,7 +7,7 @@ import {
   VehicleFactsSchema, CurrencySchema, MoneySchema, NamedValueSchema, responseSchema,
 } from './common.js';
 import {DrivetrainSchema,VehicleDisplaySchema} from './localization.js';
-import { ExternalHttpsUrlSchema, ExternalListingIdSchema, ExternalMediaIdSchema, ExternalPublicSummarySchema, PublicTextSchema, RemoteMediaMetadataSchema } from './external-public.js';
+import { ExternalHttpsUrlSchema, ExternalListingIdSchema, ExternalMediaIdSchema, ExternalPublicSummarySchema, PublicReportSchema, PublicTextSchema, RemoteMediaMetadataSchema } from './external-public.js';
 
 export * from './common.js';
 export {DrivetrainSchema,VehicleExtraFactsSchema,DisplayTextSchema,VehicleDisplaySchema} from './localization.js';
@@ -69,6 +69,7 @@ export const PublicVehicleSchema = z.strictObject({
   external: ExternalPublicSummarySchema.optional(),
   // Detail-only. Lists omit the potentially large configuration payload.
   configuration: ConfigurationDisplaySchema.nullable().optional(),
+  report: PublicReportSchema.optional(),
   availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   sourceUpdatedAt: TimestampSchema.nullable(),

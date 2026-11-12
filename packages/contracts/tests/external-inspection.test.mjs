@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ExternalUpsertCandidateSchema } from '../dist/external-admin.js';
+import { AdminReportSchema, ExternalUpsertCandidateSchema } from '../dist/external-admin.js';
 import {
   EXTERNAL_INSPECTION_MAX_LEAVES, ExternalHistorySchema, ExternalInspectionContentSchema,
-  ExternalInspectionSchema, ExternalReportAccessSchema,
+  ExternalInspectionSchema, ExternalReportAccessSchema, PublicReportSchema,
 } from '../dist/external-public.js';
 import { PublicVehicleSchema } from '../dist/public.js';
 import {
@@ -23,7 +23,7 @@ test('legacy external candidates and public details need no history, structured 
   assert.equal(candidate.inspection.checks, undefined);
   assert.equal(vehicle.external.detail.history, undefined);
   assert.equal(vehicle.external.detail.inspection.reportAccess, undefined);
-  assert.equal(vehicle.external.detail.inspection.reportUrl, reportUrl);
+  assert.equal(vehicle.external.detail.inspection.reportUrl, null);
   vehicle.external.detail.history = null;
   assert.equal(PublicVehicleSchema.parse(vehicle).external.detail.history, null);
 });
@@ -123,7 +123,7 @@ test('candidates may carry source history and inspection content but cannot asse
   assert.equal(ExternalUpsertCandidateSchema.safeParse({ ...candidate, inspection: { ...candidate.inspection, reportAccess: verified } }).success, false);
 });
 
-test('modern three-language fixtures obey the new report URL rule without altering legacy acceptance', () => {
+test('public reports always contact sales and never carry original URLs, regardless of internal evidence', () => {
   const unknown = makeExternalInspectionFixture('unknown');
   assert.equal(ExternalInspectionSchema.safeParse({ ...unknown, reportUrl }).success, false);
   const available = makeExternalInspectionFixture('available');
@@ -132,9 +132,32 @@ test('modern three-language fixtures obey the new report URL rule without alteri
     const vehicle = PublicVehicleSchema.parse(makeExternalStructuredPublicVehicleFixture(locale, status));
     const detail = vehicle.external.detail;
     assert.deepEqual(detail.history, { ownershipTransfers: 0 });
-    assert.equal(detail.inspection.reportAccess.status, status);
-    assert.equal(detail.inspection.reportUrl, status === 'available' ? detail.inspection.reportAccess.url : null);
+    assert.equal(detail.inspection.reportAccess.status, 'unknown');
+    assert.deepEqual(vehicle.report, { hasReport: true });
+    assert.equal(detail.inspection.reportUrl, null);
     assert.equal(detail.inspection.checks[0].groups[0].items[0].ok, false);
     assert.equal(JSON.stringify(detail).includes('photos'), false);
   }
+});
+
+
+test('report presence is separate from safe admin links and source candidates cannot assert public access', () => {
+  for (const hasReport of [true, false]) assert.deepEqual(PublicReportSchema.parse({ hasReport }), { hasReport });
+  assert.equal(PublicReportSchema.safeParse({ hasReport: true, url: reportUrl }).success, false);
+  assert.deepEqual(AdminReportSchema.parse({ hasReport: true, url: null }), { hasReport: true, url: null });
+  assert.deepEqual(AdminReportSchema.parse({ hasReport: true, url: reportUrl }), { hasReport: true, url: reportUrl });
+  for (const url of ['http://reports.example.invalid/report', 'javascript:alert(1)', 'https://user:secret@reports.example.invalid/report'])
+    assert.equal(AdminReportSchema.safeParse({ hasReport: true, url }).success, false);
+  assert.equal(AdminReportSchema.safeParse({ hasReport: false, url: reportUrl }).success, false);
+  const candidate = makeExternalStructuredCandidateFixture();
+  assert.equal(candidate.inspection.hasReport, true);
+  candidate.inspection.reportUrl = null;
+  assert.equal(ExternalUpsertCandidateSchema.parse(candidate).inspection.hasReport, true);
+  const publicVehicle = makeExternalStructuredPublicVehicleFixture();
+  publicVehicle.external.detail.inspection.reportUrl = reportUrl;
+  delete publicVehicle.external.detail.inspection.reportAccess;
+  assert.equal(PublicVehicleSchema.safeParse(publicVehicle).success, false);
+  publicVehicle.external.detail.inspection.reportUrl = null;
+  publicVehicle.external.detail.inspection.reportAccess = { status: 'available', url: reportUrl, checkedAt, expiresAt };
+  assert.equal(PublicVehicleSchema.safeParse(publicVehicle).success, false);
 });
