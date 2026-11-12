@@ -112,6 +112,10 @@ manual 和员工维护的 external 副本发布前需要品牌、车型、中文
 
 员工副本的绑定由 BE 按 platform、externalId 和原始 listingUrl 精确匹配，界面不从公开字段或候选数据猜 URL。来源身份有未保存修改时隐藏旧报告入口。历史 mutation 回执可能省略 report，成功后只 GET 详情并合并报告元数据；核对车辆、版本及来源绑定，不用迟到的详情覆盖新输入，也不继承旧来源链接。完整含参数地址不写入公共日志。相关组件为 `src/shared/ui/source-report-link.tsx`，没有报告探测请求。
 
+## 发布前清理（AD-REL-03）
+
+旧 `MachineTranslationActions` 与 `VehicleLocalizationEditor` 已无调用，随本轮清理移除。现行工作区继续复用 `TranslationEditor`、`DisplayTranslationsEditor` 和三个纯模型模块，保留正文／展示译文、来源版本与人工修改保护。现有发布、多语回退、费用和限流回归均保留；后台和员工预览请求继续使用 `no-store`。
+
 ## 历史流程说明
 
 AD-I18N-01／02 曾使用独立建议及 localization 保存、1–10 字段勾选和逐字段人审；AD-UX-10 曾采用五个录入分组。上述交付事实和当时验证保留在[AD-I18N-02 日志](../../docs/日志/2026-11-08/后台-AD-I18N-02-展示字段多语言.md)及[AD-UX-10 日志](../../docs/日志/2026-11-12/后台-AD-UX-10-直接修订排序与发布预览.md)，当前操作以本页 UX11 统一工作区和发布预览流程为准。存量翻译覆盖、历史生产部署及本轮功能验证分别登记，不自动翻译、审核或重新发布旧资料。

@@ -3,7 +3,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import { TranslationPlanResultSchema, TranslationPlanStatusSchema, type AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, localization, reply, translationBundle, translationResult, vehicle } from './api-fixture';
 import { bundleSave, confirmPlan, generateSuggestions, noReviewControls, openWorkspace, planButton, recoverResult, requestPlan, saveBundle } from './translation-test-helpers';
-import { notes, tab } from './ui-helpers';
+import { tab } from './ui-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 const bundlePath = `/api/v1/admin/vehicles/${id}/translation-bundle`;

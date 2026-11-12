@@ -9,7 +9,7 @@ import { tab } from './ui-helpers';
 
 // These helpers exercise the real API through the isolated runner. They never install API routes,
 // fabricate preview receipts, call a translation provider, or write directly to the database.
-export type LiveRead = (path: string) => Promise<APIResponse>;
+type LiveRead = (path: string) => Promise<APIResponse>;
 export const liveConfiguration = VehicleConfigurationSchema.parse({
   version: 1, items: [{ name: '座位数', value: '5' }, { name: '内饰说明', value: '合成织物座椅' }],
 });

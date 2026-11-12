@@ -7,7 +7,7 @@ import { VehicleLocalizationSchema, type AdminVehicle, type DisplayField, type S
 import { PublicationPreviewFrameMessageSchema, ConfirmPublicationPreviewRequestSchema, LocaleSchema, PublicationPreviewSchema, PublicationPreviewResponseSchema, PublishReadinessSchema, PublishReadinessResponseSchema, type ConfirmPublicationPreviewRequest, type Locale, type PublicationPreview, type PublishReadiness } from '@hd/contracts/admin';
 import { CreateTranslationPlanRequestSchema, GenerateTranslationPlanRequestSchema, SaveVehicleTranslationBundleSchema, VehicleTranslationBundleResponseSchema, TranslationPlanResponseSchema, TranslationPlanResultResponseSchema, TranslationPlanStatusSchema, TranslationPlanStatusResponseSchema, parseVehicleDraftWrite, type SaveVehicleTranslationBundle, type TranslationPlan, type TranslationPlanStatus } from '@hd/contracts/admin';
 import { syntheticHash, translationBundle, translationPlan, translationResult } from './translation-fixture';
-export { translationBundle, translationPlan, translationResult } from './translation-fixture';
+export { translationBundle, translationResult } from './translation-fixture';
 
 export const staff: StaffMe = {
   id: 'fixture_staff', name: '测试编辑员', role: 'editor',
