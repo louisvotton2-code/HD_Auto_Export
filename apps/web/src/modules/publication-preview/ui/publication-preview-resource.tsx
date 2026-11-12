@@ -1,12 +1,12 @@
 'use client';
 
-import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   PublicationPreviewFrameMessageSchema,
   type PublicationPreview,
   type PublicationPreviewFrameMessage,
 } from '@hd/contracts/admin';
-import { PublicationPreviewDetail } from '@/modules/vehicles';
+import { PublicationPreviewDetail, type VehicleGalleryImageStatus } from '@/modules/vehicles';
 import { previewContent } from '../content';
 import { PreviewReadError, readPublicationPreview, type PreviewErrorCode } from '../read-preview';
 import type { PreviewFrameScope } from '../scope';
@@ -24,13 +24,13 @@ function postFrame(message: PublicationPreviewFrameMessage) {
   if (parsed.success) window.parent.postMessage(parsed.data, window.location.origin);
 }
 
-function PreviewStatus({ scope, code, retry }: { scope: PreviewFrameScope; code?: PreviewErrorCode; retry?: () => void }) {
+function PreviewStatus({ scope, code }: { scope: PreviewFrameScope; code?: PreviewErrorCode }) {
   const t = previewContent[scope.locale];
   return (
     <main className={styles.status} lang={scope.locale} data-testid="publication-preview-status" data-preview-error={code}>
       <h1>{t.title}</h1>
       <p role={code ? 'alert' : 'status'}>{code ? t.errors[code] : t.loading}</p>
-      {retry && <button type="button" onClick={retry}>{t.retry}</button>}
+      {code && <p>{t.reloadInAdmin}</p>}
     </main>
   );
 }
@@ -44,29 +44,78 @@ class PreviewBoundary extends Component<{
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-function RenderedPreview({ preview, scope, onFailure }: {
-  preview: PublicationPreview; scope: PreviewFrameScope; onFailure: () => void;
+function RenderedPreview({ preview, scope }: {
+  preview: PublicationPreview; scope: PreviewFrameScope;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const t = previewContent[scope.locale];
+  const cover = preview.vehicle.images.find((image) => image.isCover && image.status === 'ready' && image.url);
+  const gate = useRef({ active: true, failed: false, coverDecoded: false, currentId: null as string | null, currentKey: null as string | null, currentDecoded: false, sequence: 0 });
+  const readyFrame = useRef(0);
+  const [mediaFailed, setMediaFailed] = useState(false);
+  const failMedia = useCallback(() => {
+    if (!gate.current.active || gate.current.failed) return;
+    gate.current.failed = true;
+    cancelAnimationFrame(readyFrame.current);
+    setMediaFailed(true);
+    postFrame({ schemaVersion: 1, type: frameType, ...scope, event: 'error', error: { code: 'render_error' } });
+  }, [scope]);
+  const onImageStatus = useCallback(({ imageId, requestKey, status }: VehicleGalleryImageStatus) => {
+    const current = gate.current;
+    if (!current.active || current.failed) return;
+    if (status !== 'loading' && (imageId !== current.currentId || requestKey !== current.currentKey)) return;
+    if (status === 'loading' && requestKey === current.currentKey) return;
+    if (status === 'ready' && current.currentDecoded) return;
+    cancelAnimationFrame(readyFrame.current);
+    if (!cover || imageId === null || requestKey === null) { failMedia(); return; }
+    if (status === 'loading') {
+      const firstImage = current.currentId === null;
+      current.currentId = imageId;
+      current.currentKey = requestKey;
+      current.currentDecoded = false;
+      current.sequence += 1;
+      // The request boundary already announced initial loading; a new selection revokes its receipt once.
+      if (!firstImage) postFrame({ schemaVersion: 1, type: frameType, ...scope, event: 'loading' });
+      return;
+    }
+    // Late completion from a previous selection cannot change this frame's eligibility.
+    if (status === 'error') { failMedia(); return; }
+    current.currentDecoded = true;
+    if (imageId === cover.id) current.coverDecoded = true;
+    if (!current.coverDecoded) return;
+    const sequence = current.sequence;
+    readyFrame.current = requestAnimationFrame(() => {
+      if (!current.active || current.failed || !current.currentDecoded || current.sequence !== sequence) return;
+      const node = container.current;
+      const image = [...(node?.querySelectorAll<HTMLImageElement>('[data-gallery-active-image]') ?? [])]
+        .find((item) => item.dataset.galleryActiveImage === current.currentId);
+      if (!node?.isConnected || !node.querySelector('[data-testid="publication-preview-body"]') || node.dataset.previewFingerprint !== preview.fingerprint
+        || !image?.complete || image.naturalWidth <= 0 || node.querySelector('[data-gallery-image-error]')) {
+        failMedia();
+        return;
+      }
+      postFrame({ schemaVersion: 1, type: frameType, ...scope, event: 'ready', preview: {
+        vehicleId: preview.vehicle.id, vehicleVersion: preview.vehicleVersion,
+        publicContentRevision: preview.publicContentRevision, fingerprint: preview.fingerprint,
+        locale: preview.locale,
+      } });
+    });
+  }, [cover, failMedia, preview, scope]);
+
+  useLayoutEffect(() => {
+    gate.current.active = true;
+    return () => {
+      gate.current.active = false;
+      cancelAnimationFrame(readyFrame.current);
+    };
+  }, []);
   useEffect(() => {
     const node = container.current;
     let heightFrame = 0;
     let previousHeight = 0;
     let active = true;
     const base = { schemaVersion: 1, type: frameType, ...scope } as const;
-    const readyFrame = requestAnimationFrame(() => {
-      if (!active) return;
-      if (!node?.isConnected || !node.querySelector('[data-testid="publication-preview-body"]') || node.dataset.previewFingerprint !== preview.fingerprint) {
-        onFailure();
-        return;
-      }
-      postFrame({ ...base, event: 'ready', preview: {
-        vehicleId: preview.vehicle.id, vehicleVersion: preview.vehicleVersion,
-        publicContentRevision: preview.publicContentRevision, fingerprint: preview.fingerprint,
-        locale: preview.locale,
-      } });
-    });
+    if (!cover) failMedia();
     function measure() {
       cancelAnimationFrame(heightFrame);
       heightFrame = requestAnimationFrame(() => {
@@ -83,7 +132,8 @@ function RenderedPreview({ preview, scope, onFailure }: {
     measure();
     function stop() {
       active = false;
-      cancelAnimationFrame(readyFrame);
+      gate.current.active = false;
+      cancelAnimationFrame(readyFrame.current);
       cancelAnimationFrame(heightFrame);
       observer.disconnect();
     }
@@ -92,15 +142,16 @@ function RenderedPreview({ preview, scope, onFailure }: {
       stop();
       window.removeEventListener('pagehide', stop);
     };
-  }, [preview, scope, onFailure]);
+  }, [cover, failMedia, scope]);
 
   return (
     <div ref={container} data-preview-fingerprint={preview.fingerprint}>
       <div className={styles.context} lang={scope.locale}>
         <strong>{t.version} {preview.vehicleVersion} · {t.revision} {preview.publicContentRevision}</strong>
         <span>{t.note}</span>
+        {mediaFailed && <p role="alert" data-testid="publication-preview-media-error">{t.errors.render_error} {t.reloadInAdmin}</p>}
       </div>
-      <PublicationPreviewDetail preview={preview} />
+      <PublicationPreviewDetail preview={preview} onActiveImageStatus={onImageStatus} />
     </div>
   );
 }
@@ -108,8 +159,6 @@ function RenderedPreview({ preview, scope, onFailure }: {
 export function PublicationPreviewResource({ scope }: { scope: PreviewFrameScope }) {
   const scopeKey = `${scope.vehicleId}:${scope.locale}:${scope.loadId}`;
   const [state, setState] = useState<PreviewState>({ phase: 'loading', key: scopeKey });
-  const [attempt, setAttempt] = useState(0);
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
   const failRender = useCallback(() => {
     setState({ phase: 'error', key: scopeKey, code: 'render_error' });
     postFrame({ schemaVersion: 1, type: frameType, ...scope, event: 'error', error: { code: 'render_error' } });
@@ -152,13 +201,13 @@ export function PublicationPreviewResource({ scope }: { scope: PreviewFrameScope
       window.removeEventListener('pagehide', pageHidden);
       postFrame({ ...base, event: 'disposed' });
     };
-  }, [scope, scopeKey, attempt]);
+  }, [scope, scopeKey]);
 
   if (state.key !== scopeKey) return <PreviewStatus scope={scope} />;
-  if (state.phase !== 'ready') return <PreviewStatus scope={scope} code={state.phase === 'error' ? state.code : undefined} retry={state.phase === 'error' ? retry : undefined} />;
+  if (state.phase !== 'ready') return <PreviewStatus scope={scope} code={state.phase === 'error' ? state.code : undefined} />;
   return (
-    <PreviewBoundary key={`${scope.loadId}:${attempt}`} onFailure={failRender} fallback={<PreviewStatus scope={scope} code="render_error" retry={retry} />}>
-      <RenderedPreview preview={state.preview} scope={scope} onFailure={failRender} />
+    <PreviewBoundary key={scope.loadId} onFailure={failRender} fallback={<PreviewStatus scope={scope} code="render_error" />}>
+      <RenderedPreview preview={state.preview} scope={scope} />
     </PreviewBoundary>
   );
 }

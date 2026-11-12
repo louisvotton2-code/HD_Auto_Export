@@ -1,7 +1,6 @@
 .status { box-sizing:border-box; max-width:720px; margin:auto; padding:48px 24px; color:#eee7e0; }
 .status h1 { margin:0 0 18px; font-size:24px; line-height:1.35; }
 .status p { color:#b8ada2; font-size:14px; line-height:1.7; }
-.status button { padding:11px 18px; border:1px solid #98633d; border-radius:9px; background:#a2673d; color:white; font:inherit; cursor:pointer; }
-.status button:focus-visible { outline:2px solid #e6af81; outline-offset:4px; }
 .context { box-sizing:border-box; display:flex; flex-wrap:wrap; gap:8px 18px; padding:14px max(16px,calc((100vw - 1232px)/2)); border-bottom:1px solid #b6774944; background:#201913; color:#d8c4b2; font-size:12px; line-height:1.6; }
 .context span { color:#b1a090; }
+.context p { flex-basis:100%; margin:4px 0 0; color:#efb2ab; }

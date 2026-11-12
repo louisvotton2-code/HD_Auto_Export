@@ -199,6 +199,7 @@ const resetState = () => ({
   previewVersion: 4,
   previewDelayMs: 0,
   previewSlowLocale: '',
+  previewImageCount: 1,
 });
 
 // Deliberately synthetic employee sessions, draft content and image bytes. These endpoints
@@ -207,6 +208,8 @@ const previewVehicleIds = [
   '00000000-0000-4000-8000-000000000001',
   '00000000-0000-4000-8000-000000000003',
 ];
+const previewMediaIds = Array.from({ length: 12 }, (_, index) =>
+  `00000000-0000-4000-8000-${(index === 0 ? 2 : index + 3).toString(16).padStart(12, '0')}`);
 const previewModes = [
   'ready', 'incomplete', 'stale', 'machine', 'unauthenticated', 'forbidden', 'not_found',
   'conflict', 'unavailable', 'malformed', 'wrong_id', 'wrong_locale', 'private_field',
@@ -222,6 +225,14 @@ function previewResponse(state, id, requestedLocale) {
   preview.vehicleVersion = state.previewVersion;
   preview.publicContentRevision = state.previewVersion - 1;
   preview.fingerprint = state.previewVersion.toString(16).padStart(64, '0');
+  // Synthetic private gallery only; ordinary public fixtures and the real API are unchanged.
+  if (preview.vehicle.images.length && state.previewImageCount > 1) {
+    const cover = preview.vehicle.images[0];
+    preview.vehicle.images = previewMediaIds.slice(0, state.previewImageCount).map((mediaId, index) => ({
+      ...cover, id: mediaId, url: `/api/v1/admin/media/${mediaId}/preview`,
+      sortOrder: index, isCover: index === 0,
+    }));
+  }
   if (state.previewPrice === 'on_request') {
     preview.vehicle.price = { kind: 'on_request', money: null, includes: [], status: 'on_request',
       displayPrice: { status: 'on_request', money: null, conversion: null } };
@@ -460,6 +471,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewVersion: (v) => Number.isInteger(v) && v >= 2 && v <= 100,
           previewDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
+          previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
         };
         if (
           !patch ||
@@ -493,7 +505,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           return send(res, 401, error('UNAUTHENTICATED'));
         if (state.previewMode === 'forbidden') return send(res, 403, error('FORBIDDEN'));
         if (previewMedia) {
-          if (previewMedia[1] !== '00000000-0000-4000-8000-000000000002') return send(res, 404, error('NOT_FOUND'));
+          if (!previewMediaIds.includes(previewMedia[1])) return send(res, 404, error('NOT_FOUND'));
           const png = imageBytes(previewMedia[1], false);
           res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length, 'cache-control': 'no-store' });
           return res.end(png);

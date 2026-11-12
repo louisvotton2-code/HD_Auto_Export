@@ -2,7 +2,7 @@ import type { Locale } from '@/i18n/routing';
 
 export const previewContent = {
   zh: {
-    title: '车辆发布预览', loading: '正在读取员工预览…', retry: '重新读取预览',
+    title: '车辆发布预览', loading: '正在读取员工预览…', reloadInAdmin: '请在后台点击“重新载入预览”，打开新的预览实例。',
     version: '草稿版本', revision: '公开内容版本',
     note: '请在后台核对三语内容并明确确认当前版本。',
     errors: {
@@ -17,7 +17,7 @@ export const previewContent = {
     },
   },
   en: {
-    title: 'Vehicle publication preview', loading: 'Loading staff preview…', retry: 'Reload preview',
+    title: 'Vehicle publication preview', loading: 'Loading staff preview…', reloadInAdmin: 'Use “Reload preview” in the admin to open a new preview instance.',
     version: 'Draft version', revision: 'Public content revision',
     note: 'Review the language content and explicitly confirm this version in the admin.',
     errors: {
@@ -32,7 +32,7 @@ export const previewContent = {
     },
   },
   ru: {
-    title: 'Предпросмотр публикации', loading: 'Загружается предпросмотр…', retry: 'Загрузить заново',
+    title: 'Предпросмотр публикации', loading: 'Загружается предпросмотр…', reloadInAdmin: 'Нажмите «Перезагрузить предпросмотр» в панели управления, чтобы открыть новый экземпляр.',
     version: 'Версия черновика', revision: 'Версия публичного содержимого',
     note: 'Проверьте языковые версии и подтвердите эту версию в панели управления.',
     errors: {
@@ -46,4 +46,4 @@ export const previewContent = {
       invalid_request: 'Недействительная ссылка. Откройте новый предпросмотр из панели управления.',
     },
   },
-} satisfies Record<Locale, { title: string; loading: string; retry: string; version: string; revision: string; note: string; errors: Record<string, string> }>;
+} satisfies Record<Locale, { title: string; loading: string; reloadInAdmin: string; version: string; revision: string; note: string; errors: Record<string, string> }>;

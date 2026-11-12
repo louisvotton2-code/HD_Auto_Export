@@ -12,6 +12,7 @@ export { PublicVehicleCard } from './ui/public-vehicle-card';
 export { PublicVehicleList } from './ui/public-vehicle-list';
 export { PublicVehicleDetail } from './ui/public-vehicle-detail';
 export { PublicationPreviewDetail } from './ui/publication-preview-detail';
+export type { VehicleGalleryImageStatus } from './ui/vehicle-gallery-image';
 export { PublicDetailResource } from './ui/public-detail-resource';
 export { PublicFreshnessBoundary, usePublicFreshness, usePublicResource } from './application/use-public-resource';
 export { PublicResourceStatus } from './ui/public-resource-status';

@@ -17,6 +17,10 @@
   height: 100%;
   cursor: zoom-in;
 }
+.imageLink[aria-disabled='true'],
+.thumbnail[aria-disabled='true'] {
+  cursor: not-allowed;
+}
 .image {
   position: absolute;
   inset: 0;
@@ -81,8 +85,12 @@
   transition: background 0.2s;
   z-index: 2;
 }
-.arrow:hover {
+.arrow:hover:not(:disabled) {
   background: #b67749;
+}
+.arrow:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .previous {
   left: 12px;

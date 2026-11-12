@@ -10,6 +10,7 @@ import { publicationPreviewImages, publicationPreviewPrice } from '../publicatio
 import { publicVehicleMessages } from '../public-messages';
 import { publicVehicleFacts } from '../public-presentation';
 import { VehicleGallery } from './vehicle-gallery';
+import type { VehicleGalleryImageStatus } from './vehicle-gallery-image';
 import { VehicleHistory } from './vehicle-history';
 import { VehiclePriceAmounts } from './vehicle-price-values';
 import detailStyles from './public-detail.module.css';
@@ -27,7 +28,10 @@ function PreviewTextState({ field, locale }: { field: PublicationPreviewText; lo
 }
 
 /** Render only the authenticated projection supplied by the preview resource boundary. */
-export function PublicationPreviewDetail({ preview }: { preview: PublicationPreview }) {
+export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
+  preview: PublicationPreview;
+  onActiveImageStatus?: (status: VehicleGalleryImageStatus) => void;
+}) {
   const { vehicle, locale } = preview;
   const copy = publicationPreviewCopy[locale];
   const detail = detailContent[locale];
@@ -81,7 +85,8 @@ export function PublicationPreviewDetail({ preview }: { preview: PublicationPrev
               </p>
             </header>
 
-            <VehicleGallery key={galleryKey} images={images} title={title.text ?? copy.missingTitle} locale={locale} />
+            <VehicleGallery key={galleryKey} images={images} title={title.text ?? copy.missingTitle} locale={locale}
+              onActiveImageStatus={onActiveImageStatus} />
             {!images.length && <p className={styles.imageNote} data-preview-image-state="empty">{copy.noImages}</p>}
             {missingImageCount > 0 && <p className={styles.imageNote} data-preview-image-state="missing">{copy.missingImages(missingImageCount)}</p>}
 

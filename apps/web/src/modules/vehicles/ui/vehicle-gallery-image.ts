@@ -6,3 +6,9 @@ export type VehicleGalleryImage = Pick<PublicMedia, 'id' | 'url' | 'alt' | 'sort
   height?: number | null;
   remote?: PublicMedia['remote'];
 };
+
+export type VehicleGalleryImageStatus = {
+  imageId: string | null;
+  requestKey: string | null;
+  status: 'loading' | 'ready' | 'error';
+};
