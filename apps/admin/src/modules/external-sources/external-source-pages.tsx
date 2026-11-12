@@ -15,7 +15,7 @@ import { ResourceContent } from './resource-content';
 import { useExternalResource } from './use-external-resource';
 import styles from './external-sources.module.css';
 
-const { Title, Paragraph } = Typography;
+const { Title } = Typography;
 const listingPath = (id: string) => `/external-sources/listings/${encodeURIComponent(id)}`;
 const batchPath = (id: string) => `/external-sources/batches/${encodeURIComponent(id)}`;
 const copyFields = ['title', 'model', 'description'] as const;
@@ -37,7 +37,7 @@ function BatchCounts({ counts }: Pick<ExternalBatch, 'counts'>) {
   </Space>;
 }
 
-export function ExternalSourcesPage() {
+export function ExternalBatchHistoryPage() {
   const staff = useOutletContext<StaffMe>();
   const [page, setPage] = useState(1);
   const status = useExternalResource(`${externalRoot}/status`, ExternalStatusResponseSchema);
@@ -46,8 +46,8 @@ export function ExternalSourcesPage() {
   return <section className={styles.stack}>
     <header className={styles.heading}>
       <div>
-        <Title level={2}>外部车源管理</Title>
-        <Paragraph type="secondary">按批次查看当前后台的外部挂牌、来源记录和公开展示。<Link to="/vehicles">返回车辆管理</Link></Paragraph>
+        <Title level={2}>历史导入批次</Title>
+        <Space wrap><Link to="/external-sources">三方 API 状态</Link><Link to="/vehicles">返回车辆管理</Link></Space>
       </div>
       <Button onClick={refresh}>重新读取</Button>
     </header>
@@ -86,7 +86,7 @@ function BatchPage({ id }: { id: string }) {
   const batch = useExternalResource(path, ExternalBatchResponseSchema);
   const records = useExternalResource(`${path}/records?page=${page}&pageSize=${pageSize}`, ExternalBatchRecordsResponseSchema);
   return <section className={styles.stack}>
-    <Link to="/external-sources">返回批次列表</Link>
+    <Link to="/external-sources/batches">返回批次列表</Link>
     <Title level={2}>导入批次详情</Title>
     <ResourceContent {...batch} retry={batch.reload}>{batch.data && <>
       <Card title={batch.data.data.provider}>

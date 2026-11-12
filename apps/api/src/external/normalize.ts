@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
   ExternalFactFieldSchema, MoneySchema, brandLabel, findBrand,
-  type DisplayText, type ExternalIssue, type Locale, type PublicText, type VehicleDisplay,
+  type DisplayText, type ExternalInspection, type ExternalIssue, type Locale, type PublicText, type VehicleDisplay,
 } from '@hd/contracts/public';
 import { ExternalCopySchema, type ExternalOverrides, type ExternalTrialField, type ExternalUpsertCandidate } from '@hd/contracts/admin';
 import { ApiError } from '../errors.js';
 import { getPlatform, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
+import { safeInspectionContent } from './inspection.js';
 
 export const locales = ['zh', 'en', 'ru'] as const;
 export const copyFields = ['title', 'model', 'description'] as const;
@@ -82,7 +83,8 @@ type Localized = { title: PublicText; description: PublicText | null; display: V
 type Details = {
   original: Record<ExternalTrialField, Tagged | null>;
   specifications: ExternalUpsertCandidate['specifications'];
-  inspection: ExternalUpsertCandidate['inspection'];
+  inspection: ExternalInspection | null;
+  history?: ExternalUpsertCandidate['history'];
   relatedListingUrls: string[];
 };
 
@@ -116,6 +118,22 @@ export function sourceHashes(source: ExternalUpsertCandidate | null, copy?: Copy
   const identity = [source.platformId, source.externalId, source.facts.make?.id, source.facts.model?.id];
   for (const field of copyFields) if (content[field]) result[field] = jsonHash([identity, field, content[field].original]);
   return result;
+}
+
+export type TextSourceIdentities = Record<string, [string | null, string | null]>;
+export function textSourceIdentity(source: ExternalUpsertCandidate): TextSourceIdentities[string] {
+  return [source.facts.make?.id ?? null, source.facts.model?.id ?? null];
+}
+
+export function eligibleTextOverride(
+  source: ExternalUpsertCandidate, overrides: ExternalOverrides, identities: TextSourceIdentities,
+  field: ExternalTrialField, locale: Locale, currentHash: string | null,
+) {
+  const entry = overrides.text.find(item => item.field === field && item.locale === locale);
+  if (!entry || currentHash === null) return undefined;
+  const previous = identities[entry.sourceHash];
+  const current = textSourceIdentity(source);
+  return entry.sourceHash === currentHash || (previous?.[0] === current[0] && previous?.[1] === current[1]) ? entry : undefined;
 }
 
 export function glossaryModel(source: ExternalUpsertCandidate, locale: Locale, original: Tagged) {
@@ -176,12 +194,11 @@ export function displayText(locale: Locale, value: Tagged | null, provenance: No
 export const publicText = (locale: Locale, value: Tagged, kind: PublicText['kind'] = 'original'): PublicText =>
   ({ ...value, requestedLocale: locale, kind, reviewed: false });
 
-function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy, overrides: ExternalOverrides, platform: Tagged, locale: Locale): Localized {
-  const hashes = sourceHashes(source, copy);
+function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy, overrides: ExternalOverrides, platform: Tagged, locale: Locale, identities: TextSourceIdentities, hashes: ReturnType<typeof sourceHashes>): Localized {
   const choose = (field: ExternalTrialField) => {
     const item = copy[field];
     if (!item) return null;
-    const staff = overrides.text.find(entry => entry.field === field && entry.locale === locale && entry.sourceHash === hashes[field]);
+    const staff = eligibleTextOverride(source, overrides, identities, field, locale, hashes[field]);
     if (staff) return publicText(locale, { text: staff.text, contentLocale: locale }, 'human');
     if (item.original.contentLocale.split('-')[0] === locale) return publicText(locale, item.original);
     const translated = item.translations[locale];
@@ -206,13 +223,14 @@ function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy
   };
 }
 
-export function buildProjection(source: ExternalUpsertCandidate, overrides: ExternalOverrides, platform: string, profile: ExternalSourceProfile = syntheticProfile) {
+export function buildProjection(source: ExternalUpsertCandidate, overrides: ExternalOverrides, platform: string, profile: ExternalSourceProfile = syntheticProfile, identities: TextSourceIdentities = {}) {
   const issues = new Map<IssueField, ExternalIssue['code']>();
   const facts = effectiveFacts(source, overrides, issues);
   const copy = sourceCopy(source, facts);
   for (const field of copyFields) if (field !== 'model' && !copy[field]) {
     issues.set(field, source.disputes.length && source.copy[field] ? 'conflict' : source.copy[field] ? 'invalid' : 'missing');
   }
+  const hashes = sourceHashes(source, copy);
   const priceCny = referenceCny(source, issues);
   const images = source.images.flatMap(image => {
     const url = publicLink(image.url, 'media', profile);
@@ -231,19 +249,23 @@ export function buildProjection(source: ExternalUpsertCandidate, overrides: Exte
     issues.set('specifications', source.disputes.length ? 'conflict' : 'invalid');
   }
   const reportUrl = publicLink(source.inspection?.reportUrl ?? null, 'report', profile);
-  const entries = source.inspection && !source.disputes.length ? safeEntries(source.inspection.entries) : [];
-  if (source.inspection && (entries.length !== source.inspection.entries.length || source.inspection.reportUrl && !reportUrl)) {
+  const inspectionContent = source.inspection && !source.disputes.length ? safeInspectionContent(source.inspection, isPublicText) : null;
+  const { reportUrl: _candidateUrl, hasReport: _sourceReportPresence, ...sourceInspectionContent } = source.inspection ?? { reportUrl: null };
+  if (source.inspection && (jsonHash(inspectionContent) !== jsonHash(sourceInspectionContent) || source.inspection.reportUrl && !reportUrl)) {
     issues.set('inspection', source.disputes.length ? 'conflict' : 'invalid');
   }
-  const inspection = !source.disputes.length && (reportUrl || entries.length) ? { reportUrl, entries } : null;
+  // Public inspection never carries original links. Report presence is projected separately for contact-sales UI.
+  const inspection: ExternalInspection | null = inspectionContent ? { ...inspectionContent, reportUrl: null,
+    reportAccess: { status: 'unknown', url: null, checkedAt: null, expiresAt: null } } : null;
   const details: Details = {
     original: { title: copy.title?.original ?? null, model: copy.model?.original ?? null, description: copy.description?.original ?? null },
     specifications, inspection, relatedListingUrls,
+    ...(source.history !== undefined ? { history: source.disputes.length ? null : source.history } : {}),
   };
   return {
-    facts, priceCny, images, details, sourceHashes: sourceHashes(source, copy),
+    facts, priceCny, images, details, sourceHashes: hashes,
     localized: Object.fromEntries(locales.map(locale => [locale, localizedCopy(source, facts, copy, overrides,
-      { text: platform, contentLocale: getPlatform(profile, source.platformId)?.contentLocale ?? 'und' }, locale)])) as Record<Locale, Localized>,
+      { text: platform, contentLocale: getPlatform(profile, source.platformId)?.contentLocale ?? 'und' }, locale, identities, hashes)])) as Record<Locale, Localized>,
     issues: [...issues].map(([field, code]) => ({ field, code })),
   };
 }

@@ -5,7 +5,7 @@ import { siteConfig } from '@/shared/config/site';
 export function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const segment = path.split('/')[1];
-  const reserved = ['api', '_next', 'brand', 'fonts', 'demo-vehicles'];
+  const reserved = ['api', '_next', 'brand', 'fonts', 'demo-vehicles', 'staff'];
   if (
     !segment ||
     ['zh', 'en', 'ru'].includes(segment) ||

@@ -33,7 +33,7 @@ for (const locale of ['zh', 'en', 'ru']) {
     expect(list.meta.total).toBeGreaterThan(cards);
     await expect(page.getByTestId('hero-stat-clients')).toContainText('660+');
     await expect(page.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText(
-      '3',
+      '23',
     );
     if (locale === 'zh') await expect(catalog).toContainText('目录中的汽车');
   });
@@ -97,7 +97,7 @@ test('refresh animates the first two counters while reduced motion and SSR retai
     );
     await expect(
       page.getByTestId('hero-stat-years').locator('[data-counter-value]'),
-    ).toHaveAttribute('data-counter-value', '3');
+    ).toHaveAttribute('data-counter-value', '23');
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.reload();
@@ -124,7 +124,7 @@ test('refresh animates the first two counters while reduced motion and SSR retai
   const plain = await noScript.newPage();
   await plain.goto('/zh/');
   await expect(plain.getByTestId('hero-stat-clients')).toContainText('660+');
-  await expect(plain.getByTestId('hero-stat-years')).toContainText('3');
+  await expect(plain.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText('23');
   await noScript.close();
 });
 

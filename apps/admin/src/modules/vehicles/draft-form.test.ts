@@ -21,6 +21,26 @@ describe('草稿表单与统一契约', () => {
     expect(result.internal.notes).toBe('新备注');
     expect(draft.internal.notes).not.toBe('新备注');
   });
+  it('详细配置的数值字符串、单位与顺序在保存和备注修改中原样保留', () => {
+    const draft = makeVehicleDraftFixture();
+    draft.configuration = { version: 1, items: [{ name: '编号', value: '00001234567890123456789' }, { name: '续航', value: '700 km' }] };
+    const result = formToDraft(draft, { ...draftToForm(draft), notes: '只改内部备注' });
+    expect(result.configuration).toEqual(draft.configuration);
+    const changed = formToDraft(result, { ...draftToForm(result), configuration: '{"items":[{"value":"1989","name":"排量(cc)"}],"version":1}' });
+    expect(changed.configuration).toEqual({ version: 1, items: [{ name: '排量(cc)', value: '1989' }] });
+    expect(formToDraft(changed, draftToForm(changed))).toEqual(changed);
+  });
+  it('配置明确清空与旧字段省略区分，非空非法格式不能静默清空', () => {
+    const legacy = makeVehicleDraftFixture();
+    delete legacy.configuration;
+    const preserved = formToDraft(legacy, { ...draftToForm(legacy), notes: '旧记录修改' });
+    expect(Object.hasOwn(preserved, 'configuration')).toBe(false);
+    const draft = { ...legacy, configuration: { version: 1 as const, items: [{ name: '挡位数', value: '8' }] } };
+    expect(formToDraft(draft, { ...draftToForm(draft), configuration: '   ' }).configuration).toBeNull();
+    expect(() => formToDraft(draft, { ...draftToForm(draft), configuration: '{"version":1,"items":[{"name":"挡位数","value":8}]}' })).toThrow();
+    expect(draft.configuration.items[0].value).toBe('8');
+    expect(fieldForPath('draft.configuration.items.0.value')).toBe('configuration');
+  });
   it('原文修改交由服务端递增版本，客户端保留旧审核记录', () => {
     const draft = makeVehicleDraftFixture();
     const result = formToDraft(draft, { ...draftToForm(draft), title: '新的原文' });
@@ -45,6 +65,21 @@ describe('草稿表单与统一契约', () => {
     expect(result.price.money?.amount).toBe('99999999999999.99');
     expect(result.facts.mileageKm).toBe(0);
     expect(result.facts.engineCc).toBeNull();
+  });
+  it('缺少金额的报价草稿保留报价意图及两项已选币种', () => {
+    const base = emptyDraft();
+    const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', currency: 'CNY', purchaseAmount: '', purchaseCurrency: 'EUR' });
+    expect(result.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'CNY' }, includes: [] });
+    expect(result.internal.purchaseCost).toEqual({ amount: null, currency: 'EUR' });
+    expect(formToDraft(result, draftToForm(result))).toEqual(result);
+    expect(() => formToDraft(base, { ...draftToForm(base), priceKind: 'reference', amount: '' })).toThrow();
+  });
+  it('清空已有金额不改成待询价或零，采购币种可单独保留', () => {
+    const base = makeVehicleDraftFixture();
+    const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', purchaseAmount: '', purchaseCurrency: 'CNY' });
+    expect(result.price.kind).toBe('asking');
+    expect(result.price.money?.amount).toBeNull();
+    expect(result.internal.purchaseCost).toEqual({ amount: null, currency: 'CNY' });
   });
   it('切到待询价时清空金额但保留价格包含项目', () => {
     const draft = makeVehicleDraftFixture();

@@ -4,9 +4,11 @@ import type { PartCategory } from '../types';
 type PartsCopy = {
   title: string; titleAccent: string; subtitle: string; kicker: string; metaDescription: string;
   search: string; searchHint: string; catalog: string; catalogBody: string; filters: string;
-  brand: string; category: string; all: string; price: string; min: string; max: string;
+  brand: string; category: string; all: string; price: string; min: string; max: string; partsByCategory: string;
   apply: string; reset: string; sort: string; defaultSort: string; ascending: string; descending: string; byName: string;
   count: (value: number) => string; empty: string; invalidPrice: string; details: string;
+  shownRange: (count: number) => string; referenceCount: (formattedCount: string) => string;
+  pagination: string; previousPage: string; nextPage: string; pageLabel: (page: number) => string;
   oem: string; referencePrice: string; priceOnRequest: string; priceNote: string; unknown: string;
   home: string; back: string; specifications: string; fitment: string; fitmentBody: string;
   quantity: string; updateQuantity: string; quantityHelp: string; invalidQuantity: string;
@@ -16,21 +18,24 @@ type PartsCopy = {
   related: string; relatedBody: string; save: string; unsave: string;
   favorites: string; allParts: string; favoritesEmpty: string;
   stats: [string, string, string]; quickBrowse: string;
-  serviceTitle: string; serviceBody: string; services: [string, string, string];
-  enquiryTitle: string; enquiryBody: string;
+  serviceTitle: string; serviceBody: string;
+  services: [title: string, body: string][];
+  enquiryTitle: string; enquiryBody: string; enquiryAction: string; contactLabel: string; phoneLabel: string;
   categories: Record<PartCategory, string>;
 };
 
 export const partsContent = {
   zh: {
-    title: '为你的汽车', titleAccent: '找到合适配件', kicker: 'HD AUTO EXPORT · 汽车配件',
-    subtitle: '按配件号、名称和类别浏览。与我们沟通适配车型、采购数量和运输需求。',
+    title: '按 OEM 编号查找', titleAccent: '现代汽车配件', kicker: 'HD AUTO EXPORT · 汽车配件',
+    subtitle: '浏览配件号和参考价格，与我们沟通适配车型、采购数量和运输需求。',
     metaDescription: '浏览 HD Auto Export 的汽车配件资料、配件号和参考价格，联系我们确认适配及运输。',
     search: '搜索配件', searchHint: '输入配件号或名称', catalog: '汽车配件目录',
-    catalogBody: '按配件号选择，逐项确认规格与适配。', filters: '筛选配件', brand: '品牌目录', category: '配件类别', all: '全部',
+    catalogBody: '按配件号选择，逐项确认规格与适配。', filters: '筛选配件', brand: '品牌', category: '配件类别', all: '全部', partsByCategory: '按类别浏览配件',
     price: '参考价格 · USD', min: '最低参考价', max: '最高参考价', apply: '应用筛选', reset: '清除筛选',
     sort: '排序', defaultSort: '默认顺序', ascending: '参考价从低到高', descending: '参考价从高到低', byName: '配件名称',
-    count: (n) => `共 ${n} 条配件资料`, empty: '没有符合条件的配件。请调整筛选，或联系我们按配件号咨询。',
+    count: (n) => `显示 ${n} 条配件资料`, empty: '没有符合条件的配件。请调整筛选，或联系我们按配件号咨询。',
+    shownRange: (n) => `显示第 1–${n} 条配件资料`, referenceCount: (n) => `目录规模参考 ${n}`,
+    pagination: '配件目录分页', previousPage: '上一页', nextPage: '下一页', pageLabel: (n) => `第 ${n} 页`,
     invalidPrice: '请输入有效的价格区间，最低价不能高于最高价。', details: '查看详情', oem: '配件号',
     referencePrice: 'USD参考价', priceOnRequest: '价格请咨询', priceNote: '参考价不含运费及进口费用。最终规格、数量与报价请通过咨询确认。', unknown: '—',
     home: '首页', back: '返回配件目录', specifications: '配件信息', fitment: '确认车辆适配',
@@ -42,21 +47,29 @@ export const partsContent = {
     previousImage: '上一张图片', nextImage: '下一张图片', image: (n) => `查看第${n}张图片`,
     related: '更多相关配件', relatedBody: '同一类别的配件资料，具体适配请按配件号确认。', save: '收藏配件', unsave: '取消收藏配件',
     favorites: '已收藏', allParts: '全部配件', favoritesEmpty: '暂无收藏配件。',
-    stats: ['配件资料', '配件类别', '参考价币种'], quickBrowse: '按类别快速浏览',
+    stats: ['配件类别', '目录规模参考', '可浏览配件资料'], quickBrowse: '热门车型',
     serviceTitle: '从选型到交付，沟通每个细节', serviceBody: '告诉我们配件号与使用车型，一起确认采购和运输方案。',
-    services: ['核对配件号与适配', '确认数量与报价', '沟通包装与运输'],
-    enquiryTitle: '没有找到需要的配件？', enquiryBody: '把配件号、车辆信息或图片发给我们，沟通你需要的型号与数量。',
+    services: [
+      ['核对配件号', '用 OEM 编号核对名称、图片和参考价。'],
+      ['确认车型适配', '提供车型和年款，便于核对配件规格。'],
+      ['确认数量与报价', '按所需数量沟通配件报价。'],
+      ['沟通包装与运输', '提供目的地，确认包装和运输安排。'],
+    ],
+    enquiryTitle: '咨询配件报价', enquiryBody: '通过 Telegram 或 WhatsApp 提供配件号、车辆信息和所需数量。',
+    enquiryAction: '咨询配件', contactLabel: '联系方式', phoneLabel: '电话',
     categories: { chassis: '底盘与车轮', transmission: '传动系统', components: '机电与通用部件', body: '车身与灯具' },
   },
   en: {
-    title: 'Find the right', titleAccent: 'parts for your car', kicker: 'HD AUTO EXPORT · AUTO PARTS',
-    subtitle: 'Browse by part number, name and category. Discuss vehicle fitment, quantities and delivery with us.',
+    title: 'Find parts by OEM number for', titleAccent: 'Hyundai', kicker: 'HD AUTO EXPORT · AUTO PARTS',
+    subtitle: 'Browse part numbers and reference prices. Discuss vehicle fitment, quantities and delivery with us.',
     metaDescription: 'View part numbers and reference prices in the HD Auto Export catalog. Contact us about fitment, quantities and delivery.',
     search: 'Search parts', searchHint: 'Part number or name', catalog: 'Auto parts catalog',
-    catalogBody: 'Start with the part number, then confirm specifications and fitment.', filters: 'Filters', brand: 'Brand catalog', category: 'Category', all: 'All',
+    catalogBody: 'Start with the part number, then confirm specifications and fitment.', filters: 'Filters', brand: 'Brand', category: 'Category', all: 'All', partsByCategory: 'Parts by category',
     price: 'Reference price · USD', min: 'Minimum reference price', max: 'Maximum reference price', apply: 'Apply filters', reset: 'Clear filters',
     sort: 'Sort', defaultSort: 'Default order', ascending: 'Reference price: low to high', descending: 'Reference price: high to low', byName: 'Part name',
-    count: (n) => `${n} part records`, empty: 'No parts match these filters. Try another selection or contact us with the part number.',
+    count: (n) => `Showing ${n} ${n === 1 ? 'part record' : 'part records'}`, empty: 'No parts match these filters. Try another selection or contact us with the part number.',
+    shownRange: (n) => `Showing part records 1–${n}`, referenceCount: (n) => `Reference catalog size ${n}`,
+    pagination: 'Parts catalog pagination', previousPage: 'Previous page', nextPage: 'Next page', pageLabel: (n) => `Page ${n}`,
     invalidPrice: 'Enter a valid price range. The minimum cannot exceed the maximum.', details: 'View details', oem: 'Part number',
     referencePrice: 'USD reference price', priceOnRequest: 'Price on request', priceNote: 'Reference prices exclude shipping and import charges. Confirm specifications, quantities and the final quotation in chat.', unknown: '—',
     home: 'Home', back: 'Back to parts', specifications: 'Part information', fitment: 'Confirm vehicle fitment',
@@ -68,21 +81,29 @@ export const partsContent = {
     previousImage: 'Previous image', nextImage: 'Next image', image: (n) => `View image ${n}`,
     related: 'Related parts', relatedBody: 'Other records in this category. Confirm exact fitment by part number.', save: 'Save part', unsave: 'Unsave part',
     favorites: 'Saved parts', allParts: 'All parts', favoritesEmpty: 'No saved parts yet.',
-    stats: ['Listed parts', 'Categories', 'Reference currency'], quickBrowse: 'Browse by category',
+    stats: ['Categories', 'Reference catalog size', 'Part records to browse'], quickBrowse: 'Popular models',
     serviceTitle: 'Discuss every detail, from selection to delivery', serviceBody: 'Share the part number and vehicle information to plan sourcing and delivery.',
-    services: ['Confirm part numbers and fitment', 'Agree quantities and pricing', 'Discuss packing and delivery'],
-    enquiryTitle: 'Looking for another part?', enquiryBody: 'Send the part number, vehicle information or a photo to discuss the item and quantity you need.',
+    services: [
+      ['Check the part number', 'Use the OEM number to check the name, image and reference price.'],
+      ['Confirm vehicle fitment', 'Share the model and year to check the specifications.'],
+      ['Confirm quantities and pricing', 'Include the quantity you need when asking for a quote.'],
+      ['Discuss packing and delivery', 'Share the destination to discuss packaging and shipping.'],
+    ],
+    enquiryTitle: 'Get a parts quote', enquiryBody: 'Share the part number, vehicle details and quantity on Telegram or WhatsApp.',
+    enquiryAction: 'Ask about a part', contactLabel: 'Contacts', phoneLabel: 'Phone',
     categories: { chassis: 'Chassis & wheels', transmission: 'Transmission', components: 'Assemblies & components', body: 'Body & lighting' },
   },
   ru: {
-    title: 'Подберите нужные', titleAccent: 'запчасти для авто', kicker: 'HD AUTO EXPORT · ЗАПЧАСТИ',
-    subtitle: 'Ищите по номеру, названию и категории. Обсудите совместимость, количество и доставку.',
+    title: 'Найдите запчасти по номеру OEM для', titleAccent: 'Hyundai', kicker: 'HD AUTO EXPORT · ЗАПЧАСТИ',
+    subtitle: 'Посмотрите номера деталей и ориентировочные цены. Уточните совместимость, количество и доставку.',
     metaDescription: 'Каталог запчастей HD Auto Export с номерами и ориентировочными ценами. Свяжитесь с нами, чтобы уточнить совместимость и доставку.',
     search: 'Найти запчасти', searchHint: 'Номер или название', catalog: 'Каталог запчастей',
-    catalogBody: 'Начните с номера детали, затем уточните характеристики и совместимость.', filters: 'Фильтры', brand: 'Каталог марки', category: 'Категория', all: 'Все',
+    catalogBody: 'Начните с номера детали, затем уточните характеристики и совместимость.', filters: 'Фильтры', brand: 'Марка', category: 'Категория', all: 'Все', partsByCategory: 'Запчасти по категориям',
     price: 'Ориентировочная цена · USD', min: 'Минимальная цена', max: 'Максимальная цена', apply: 'Применить фильтры', reset: 'Сбросить фильтры',
     sort: 'Сортировка', defaultSort: 'По умолчанию', ascending: 'Цена по возрастанию', descending: 'Цена по убыванию', byName: 'Название детали',
-    count: (n) => `Записей о деталях: ${n}`, empty: 'По этим условиям ничего не найдено. Измените фильтры или сообщите номер детали.',
+    count: (n) => `Показано позиций — ${n}`, empty: 'По этим условиям ничего не найдено. Измените фильтры или сообщите номер детали.',
+    shownRange: (n) => `Показаны позиции 1–${n}`, referenceCount: (n) => `Справочный объём каталога ${n}`,
+    pagination: 'Страницы каталога запчастей', previousPage: 'Предыдущая страница', nextPage: 'Следующая страница', pageLabel: (n) => `Страница ${n}`,
     invalidPrice: 'Укажите корректный диапазон цен: минимум не должен превышать максимум.', details: 'Подробнее', oem: 'Номер детали',
     referencePrice: 'Ориентировочная цена в USD', priceOnRequest: 'Цена по запросу', priceNote: 'Цена справочная, без доставки и импортных платежей. Характеристики, количество и итоговое предложение уточните в чате.', unknown: '—',
     home: 'Главная', back: 'Вернуться к запчастям', specifications: 'Информация о детали', fitment: 'Уточнить совместимость',
@@ -94,10 +115,16 @@ export const partsContent = {
     previousImage: 'Предыдущее изображение', nextImage: 'Следующее изображение', image: (n) => `Посмотреть изображение ${n}`,
     related: 'Другие детали', relatedBody: 'Другие записи этой категории. Совместимость уточняется по номеру детали.', save: 'Сохранить деталь', unsave: 'Убрать деталь',
     favorites: 'Сохранённые', allParts: 'Все запчасти', favoritesEmpty: 'Сохранённых деталей пока нет.',
-    stats: ['Деталей в каталоге', 'Категорий', 'Валюта справочной цены'], quickBrowse: 'Выбрать категорию',
+    stats: ['Категорий', 'Справочный объём каталога', 'Записей для просмотра'], quickBrowse: 'Популярные модели',
     serviceTitle: 'От подбора до доставки — обсудим детали', serviceBody: 'Сообщите номер детали и сведения об автомобиле для согласования заказа и доставки.',
-    services: ['Номера деталей и совместимость', 'Количество и стоимость', 'Упаковка и доставка'],
-    enquiryTitle: 'Нужна другая запчасть?', enquiryBody: 'Пришлите номер, сведения об автомобиле или фото, чтобы обсудить нужную деталь и количество.',
+    services: [
+      ['Проверка номера детали', 'По номеру OEM можно сверить название, фото и ориентировочную цену.'],
+      ['Проверка совместимости', 'Укажите модель и год выпуска, чтобы сверить характеристики.'],
+      ['Количество и цена', 'Укажите нужное количество при запросе цены.'],
+      ['Упаковка и доставка', 'Сообщите место назначения, чтобы обсудить упаковку и доставку.'],
+    ],
+    enquiryTitle: 'Запрос цены на запчасти', enquiryBody: 'Укажите номер детали, данные автомобиля и количество в Telegram или WhatsApp.',
+    enquiryAction: 'Уточнить по детали', contactLabel: 'Контакты', phoneLabel: 'Телефон',
     categories: { chassis: 'Шасси и колёса', transmission: 'Трансмиссия', components: 'Узлы и компоненты', body: 'Кузов и свет' },
   },
 } satisfies Record<Locale, PartsCopy>;

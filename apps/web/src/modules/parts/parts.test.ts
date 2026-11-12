@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getPart, listParts } from './repository';
-import { defaultPartsQuery, filterParts, parsePartQuantity, parsePartsQuery } from './query';
+import { defaultPartsQuery, filterParts, partsHref, parsePartQuantity, parsePartsQuery } from './query';
 import { buildPartContactLinks } from './contact';
 
 describe('static parts repository and local selection', () => {
@@ -26,6 +26,35 @@ describe('static parts repository and local selection', () => {
     expect(rows.map((part) => part.referencePriceUsd)).toEqual(rows.map((part) => part.referencePriceUsd).sort((a, b) => a! - b!));
     expect(parts.map((part) => part.slug)).toEqual(order);
   });
+  it('restores repeated or comma-separated multi-selects and preserves them in links', () => {
+    const { query, invalid } = parsePartsQuery({
+      brand: ['Hyundai', 'Kia,Hyundai'], category: ['chassis', 'transmission'], page: '4',
+    });
+    expect(invalid).toBe(false);
+    expect(query.brand).toBe('Hyundai,Kia');
+    expect(query.category).toBe('chassis,transmission');
+    const href = new URL(partsHref('ru', query), 'https://cars.example.com');
+    expect(parsePartsQuery(Object.fromEntries(href.searchParams)).query).toEqual(query);
+  });
+  it('combines multiple categories with OR and keeps the reference counts separate from records', async () => {
+    const parts = await listParts();
+    const { query } = parsePartsQuery({ brand: ['Hyundai', 'Kia'], category: ['chassis', 'transmission'] });
+    expect(filterParts(parts, query, 'en')).toHaveLength(17);
+    expect(filterParts(parts, { ...query, brand: 'Kia,Genesis' }, 'en')).toHaveLength(0);
+    expect(filterParts(parts, { ...defaultPartsQuery, category: 'interior' }, 'en')).toHaveLength(0);
+    expect(filterParts(parts, { ...defaultPartsQuery, category: 'hardware' }, 'en')).toHaveLength(0);
+  });
+  it('keeps the old components URL and applies subcategories only to recorded names', async () => {
+    const parts = await listParts();
+    const legacy = parsePartsQuery({ category: 'components' });
+    expect(legacy.query.category).toBe('engine');
+    expect(filterParts(parts, legacy.query, 'en')).toHaveLength(26);
+    const wheels = filterParts(parts, { ...defaultPartsQuery, subcategory: 'hub-bearings' }, 'en');
+    expect(wheels).toHaveLength(16);
+    expect(wheels.every((part) => part.name.en.toLowerCase().includes('wheel'))).toBe(true);
+    expect(filterParts(parts, { ...defaultPartsQuery, subcategory: 'oil-filters' }, 'en')).toHaveLength(0);
+    expect(parsePartsQuery({ subcategory: '../untrusted' }).query.subcategory).toBe('');
+  });
   it('flags bad numeric ranges instead of interpreting them as a zero price or an empty catalog', () => {
     for (const raw of [{ min: 'abc' }, { min: '20', max: '10' }, { min: '1e3' }]) {
       const parsed = parsePartsQuery(raw);
@@ -35,6 +64,20 @@ describe('static parts repository and local selection', () => {
     }
     for (const raw of ['', '0', '-1', '1.5', '1000', '1e2']) expect(parsePartQuantity(raw)).toBeNull();
     expect(parsePartQuantity('999')).toBe(999);
+  });
+  it('restores a valid catalog page independently of the price range', () => {
+    expect(parsePartsQuery({}).page).toBe(1);
+    expect(parsePartsQuery({ page: '51', q: '52910K2200', category: 'transmission', min: '20' })).toMatchObject({
+      page: 51,
+      invalid: false,
+      query: { q: '52910K2200', category: 'transmission', min: '20' },
+    });
+    expect(parsePartsQuery({ page: '99999' }).page).toBe(2029);
+    for (const page of ['0', '-1', '1.5', '1e2', ['2', '3']]) {
+      expect(parsePartsQuery({ page, min: '20' })).toMatchObject({
+        page: 1, invalid: false, query: { min: '20' },
+      });
+    }
   });
   it.each(['zh', 'en', 'ru'] as const)('encodes a %s draft with the correct part, quantity, original USD reference and own contact accounts', async (locale) => {
     const part = (await getPart('52910K2200'))!;

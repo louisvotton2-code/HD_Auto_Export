@@ -5,24 +5,38 @@ import type { Locale } from '@/i18n/routing';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { publicVehicleMessages } from '../public-messages';
+import { externalDetailCopy } from '../external-detail-copy';
+import { buildVehicleInspectionContactLinks } from '../inspection-contact';
 import styles from './vehicles.module.css';
 
 export function PublicVehicleContacts({
   vehicle,
   locale,
   variant = 'card',
+  purpose = 'vehicle',
 }: {
   vehicle: PublicVehicle;
   locale: Locale;
   variant?: 'card' | 'detail';
+  purpose?: 'vehicle' | 'inspection';
 }) {
   const t = publicVehicleMessages(locale);
   const trusted = usePublicFreshness() === 'fresh';
-  const links = buildPublicVehicleContactLinks(vehicle, locale);
+  const inspection = purpose === 'inspection';
+  const links = inspection
+    ? buildVehicleInspectionContactLinks(vehicle, locale)
+    : buildPublicVehicleContactLinks(vehicle, locale);
+  const telegramLabel = inspection
+    ? `${externalDetailCopy[locale].requestReport} — Telegram`
+    : vehicle.availability === 'sold' ? `${t.similar} — Telegram` : t.contactTelegram;
+  const whatsappLabel = inspection
+    ? `${externalDetailCopy[locale].requestReport} — WhatsApp`
+    : vehicle.availability === 'sold' ? `${t.similar} — WhatsApp` : t.contactWhatsapp;
   return (
     <div
       className={`${styles.contactActions} ${variant === 'detail' ? styles.detailContacts : styles.cardContacts}`}
-      data-vehicle-contacts={vehicle.id}
+      data-vehicle-contacts={inspection ? undefined : vehicle.id}
+      data-vehicle-report-contacts={inspection ? vehicle.id : undefined}
     >
       <a
         className={`${styles.contactAction} ${styles.telegram}`}
@@ -31,7 +45,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${vehicle.availability === 'sold' ? `${t.similar} — Telegram` : t.contactTelegram} — ${vehicle.stockCode}`}
+        aria-label={`${telegramLabel} — ${vehicle.stockCode}`}
       >
         <SocialIcon platform="telegram" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>Telegram</span>
@@ -43,7 +57,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${vehicle.availability === 'sold' ? `${t.similar} — WhatsApp` : t.contactWhatsapp} — ${vehicle.stockCode}`}
+        aria-label={`${whatsappLabel} — ${vehicle.stockCode}`}
       >
         <SocialIcon platform="whatsapp" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>WhatsApp</span>

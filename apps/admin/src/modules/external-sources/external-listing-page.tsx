@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Link, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from 'antd';
 import { ExternalListingResponseSchema, LocaleSchema, type ExternalListing, type Locale, type StaffMe } from '@hd/contracts/admin';
-import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels } from './external-labels';
+import { SourceReportLink } from '../../shared/ui/source-report-link';
+import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels, platformName } from './external-labels';
+import { formatExternalFact, type FactField } from './fact-override-input';
 import { ListingOverrideEditor } from './listing-override-editor';
 import { ResourceContent } from './resource-content';
 import { SourceRecordDetails } from './source-record-details';
@@ -11,6 +13,7 @@ import styles from './external-sources.module.css';
 
 const fields = ['title', 'model', 'description'] as const;
 const locales = ['zh', 'en', 'ru'] as const;
+const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'firstRegistration'];
 
 function ListingContent({ listing, locale, changeLocale, reload }: {
   listing: ExternalListing; locale: Locale; changeLocale: (locale: Locale) => void; reload: () => void;
@@ -19,19 +22,35 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
   const [editing, setEditing] = useState(false);
   const vehicle = listing.vehicle;
   const source = listing.source;
+  const facts = vehicle?.facts ?? { ...source?.facts, ...listing.overrides.facts };
+  const publicCopy = {
+    title: vehicle?.content.title,
+    model: vehicle?.display?.model,
+    description: vehicle?.content.description,
+  };
   return <>
-    <Card title="当前挂牌">
+    <Card title={publicCopy.title?.text ?? source?.copy.title?.original.text ?? '当前挂牌'}>
       <Space wrap>
         <Tag>{listingLabels[listing.state]}</Tag>
+        <span className={styles.reason}>站内车源 ID {listing.id}</span>
         <span>来源版本 {listing.sourceRevision}</span>
         <span>管理版本 {listing.version}</span>
+        <SourceReportLink url={listing.report?.url} />
         <Button onClick={reload} disabled={editing}>重新读取</Button>
         {listing.state !== 'withdrawn' && staff.permissions.includes('vehicles:write') &&
           <Button type="primary" onClick={() => setEditing(true)}>人工修订</Button>}
       </Space>
+      <Descriptions title={vehicle ? '公开车辆参数' : '入库车辆参数'} className={styles.listingFacts} column={{ xs: 1, sm: 2, xl: 3 }} size="small"
+        items={summaryFields.map(field => ({
+          key: field, label: fieldLabels[field],
+          children: !vehicle && source?.disputes.includes(field) && !Object.hasOwn(listing.overrides.facts, field)
+            ? '来源有冲突，待核对'
+            : field === 'model' && publicCopy.model?.text ? publicCopy.model.text : formatExternalFact(field, facts[field]),
+        }))} />
+      <Typography.Text type="secondary">公开展示优先采用符合来源规则的人工修订。</Typography.Text>
     </Card>
     <SourceRecordDetails
-      source={listing.identity.platformId}
+      source={platformName(listing.identity.platformId)}
       identity={listing.identity.externalId}
       listingUrl={source?.listingUrl ?? null}
       comparisons={fields.map(field => ({
@@ -39,12 +58,19 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         translations: locales.map(language => {
           const manual = listing.overrides.text.find(item => item.field === field && item.locale === language);
           const supplier = source?.copy[field]?.translations[language];
-          return {
-            language: languageLabels[language],
-            text: manual?.text ?? supplier?.text ?? null,
-            status: manual ? (manual.sourceHash === listing.sourceHashes[field] ? '人工修订' : '原文变化，人工译文待核对')
-              : supplier ? '供应商译文' : undefined,
-          };
+          const sourceHash = listing.sourceHashes[field];
+          let status = supplier ? '供应商译文' : undefined;
+          if (manual) {
+            status = '人工修订';
+            if (manual.sourceHash !== sourceHash) {
+              const published = publicCopy[field];
+              const matchesManual = language === locale && published?.requestedLocale === locale
+                && published.contentLocale === locale && published.text === manual.text
+                && ('kind' in published ? published.kind === 'human' : published.provenance === 'human');
+              status = matchesManual ? '原文有更新，当前仍使用人工修订，请核对' : '原文有更新，人工修订待核对';
+            }
+          }
+          return { language: languageLabels[language], text: manual?.text ?? supplier?.text ?? null, status };
         }),
       }))}
       conflicts={[
@@ -66,23 +92,28 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         { key: 'price', label: '参考价', children: vehicle.price.money ? `${vehicle.price.money.amount} ${vehicle.price.money.currency}` : '待询价' },
       ]} /> : <Alert type="info" title="此挂牌暂无公开展示快照。" />}
     </Card>
-    {editing && <ListingOverrideEditor listing={listing} onClose={() => setEditing(false)}
+    {editing && <ListingOverrideEditor listing={listing} initialLocale={locale} onClose={() => setEditing(false)}
       onRefresh={() => { setEditing(false); reload(); }} />}
   </>;
 }
 
 export function ExternalListingPage() {
+  const location = useLocation();
+  const catalogSearch: unknown = location.state?.catalogSearch;
   const { listingId = '' } = useParams();
   const [params, setParams] = useSearchParams();
   const locale = LocaleSchema.catch('zh').parse(params.get('locale'));
   const resource = useExternalResource(`${externalRoot}/listings/${encodeURIComponent(listingId)}?locale=${locale}`, ExternalListingResponseSchema);
   return <section className={styles.stack}>
-    <Link to="/external-sources">返回批次列表</Link>
+    <Space wrap>
+      <Link to={{ pathname: '/public-catalog', search: typeof catalogSearch === 'string' ? catalogSearch : '' }}>返回三方车源管理</Link>
+      <Link to="/external-sources/batches">历史导入批次</Link>
+    </Space>
     <Typography.Title level={2}>外部挂牌详情</Typography.Title>
     <ResourceContent {...resource} retry={resource.reload}>{resource.data && (
       resource.data.data.id === listingId
         ? <ListingContent key={`${listingId}:${resource.data.data.version}`} listing={resource.data.data}
-          locale={locale} changeLocale={next => setParams({ locale: next }, { replace: true })} reload={resource.reload} />
+          locale={locale} changeLocale={next => setParams({ locale: next }, { replace: true, state: location.state })} reload={resource.reload} />
         : <Alert type="error" title="服务返回的挂牌编号与当前页面不一致。" />
     )}</ResourceContent>
   </section>;

@@ -10,6 +10,7 @@ import { PublicResourceStatus } from './public-resource-status';
 import { localizedVehicleSchema } from '../localized-projection';
 import { publicQueryString, publicUsdView } from '../public-query';
 import { PublicCatalogLink } from './public-catalog-link';
+import type { VehicleDestination } from './vehicle-gallery';
 
 export function PublicDetailResource({
   locale,
@@ -22,7 +23,7 @@ export function PublicDetailResource({
   locale: Locale;
   vehicle: PublicVehicle | null;
   id: string;
-  destinations: { slug: string; label: string }[];
+  destinations: VehicleDestination[];
   initialRetryAfter?: number;
   renderBudget?: (vehicle: PublicVehicle, current: boolean) => ReactNode;
 }) {

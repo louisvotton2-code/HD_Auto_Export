@@ -38,3 +38,5 @@
   .localizationPrompt :global(.ant-alert-actions) { grid-column: 2; grid-row: 2; margin-inline-start: 0; justify-self: start; }
 }
 @media (max-width: 380px) { .saveBar { flex-wrap: wrap; }.saveBar > button { width: 100%; }.saveHint { max-width: none; } }
+
+.publishIncomplete:disabled { color: #a61d24; background: #fff1f0; border-color: #ffa39e; }

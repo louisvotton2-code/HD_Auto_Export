@@ -53,7 +53,7 @@ export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: Publi
           </ul>
         </section>
       )}
-      <VehicleEquipment specifications={specifications} title={copy.specifications} locale={locale} />
+      {!vehicle.configuration && <VehicleEquipment specifications={specifications} title={copy.specifications} locale={locale} />}
     </>
   );
 }

@@ -1,5 +1,6 @@
 import {readFile, readdir, lstat, chown} from 'node:fs/promises';
 import path from 'node:path';
+import {deploymentDatabaseIdentity} from './database-name.mjs';
 import {spawn} from 'node:child_process';
 const scale=process.env.EXTERNAL_CATALOG_MODE==='synthetic-scale';
 if(scale) {
@@ -8,8 +9,9 @@ if(scale) {
   process.env.DATABASE_URL_FILE='/run/secrets/scale_database_url';
   process.env.AUTH_SECRET_FILE='/run/secrets/auth_secret';
 } else {
+  const {database,user}=deploymentDatabaseIdentity(process.env.HD_DATABASE_NAME);
   const password=(await readFile('/run/secrets/app_db_password','utf8')).trim();
-  process.env.DATABASE_URL=`postgresql://hd_app:${encodeURIComponent(password)}@postgres:5432/hd_auto`;
+  process.env.DATABASE_URL=`postgresql://${user}:${encodeURIComponent(password)}@postgres:5432/${database}`;
   process.env.AUTH_SECRET=(await readFile('/run/secrets/auth_secret','utf8')).trim();
 }
 // Docker Desktop may expose host bind mounts as root; fix ownership while root,

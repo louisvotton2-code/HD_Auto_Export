@@ -6,6 +6,9 @@ import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
 import type { Database } from '../db/index.js';
 import { displayText, publicText, type ExternalProjection } from './normalize.js';
+import type { ReportSourceRow } from './report-evidence.js';
+import { projectSourceReport } from './reports.js';
+import { applyInspectionEnrichment } from './inspection-enrichment.js';
 
 export const publicListingId = (id: string) => `ext-${id}`;
 export const listingUuid = (id: string) => id.slice(4);
@@ -17,6 +20,9 @@ type CatalogRow = {
   facts: ExternalProjection['facts']; price_cny: string | null; issues: ExternalIssue[];
   localized: ExternalProjection['localized'][Locale]; details?: ExternalProjection['details'];
   fetched_at: Date; source_updated_at: Date | null; published_at: Date;
+  provider?: string; external_id?: string; source_revision?: string; source_hash?: string;
+  source_data?: ReportSourceRow['source_data']; upstream_state?: string;
+  inspection_binding?: unknown; inspection_content?: unknown;
 };
 type ImageRow = {
   id: string; listing_id: string; url: string; alt: ExternalProjection['images'][number]['alt'];
@@ -44,7 +50,16 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   const { title, description } = row.localized;
   const display = { ...row.localized.display, mediaAlt: available.map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
   const id = publicListingId(row.listing_id);
-  const detail = row.details;
+  const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id,
+    external_id: row.external_id!, source_revision: row.source_revision!, source_hash: row.source_hash!, source_data: row.source_data ?? null,
+    upstream_state: row.upstream_state! };
+  const enriched = row.details ? applyInspectionEnrichment(source, row.details, row.inspection_binding
+    ? { binding: row.inspection_binding, content: row.inspection_content } : null) : undefined;
+  // Strip legacy persisted links and verification metadata on every public read, including old projections.
+  const detail = enriched ? { ...enriched, inspection: enriched.inspection
+    ? { ...enriched.inspection, reportUrl: null, reportAccess: { status: 'unknown' as const, url: null, checkedAt: null, expiresAt: null } } : null } : undefined;
+  const report = detail ? projectSourceReport(source, row.inspection_binding
+    ? { binding: row.inspection_binding, content: row.inspection_content } : null) : null;
   const original = (field: keyof ExternalProjection['details']['original']) => {
     const value = detail?.original[field];
     return value ? publicText(locale, value) : null;
@@ -56,6 +71,7 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     facts: localizedFacts(row.facts, display), display,
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
     content: { title, description }, images,
+    ...(report ? { report: { hasReport: report.hasReport } } : {}),
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: iso(row.source_updated_at),
     fetchedAt: row.fetched_at.toISOString(), publishedAt: row.published_at.toISOString(),
     external: {
@@ -143,7 +159,9 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
 }
 
 export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null) {
-  const result = await tx.query<CatalogRow>(`SELECT ${columns},c.details ${from} ${visible} AND c.listing_id=$2`, [locale, id]);
+  const result = await tx.query<CatalogRow>(`SELECT ${columns},c.details,l.provider,l.external_id,l.source_revision::text,l.source_hash,l.source_data,l.upstream_state,
+    i.binding AS inspection_binding,i.content AS inspection_content
+    ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id ${visible} AND c.listing_id=$2`, [locale, id]);
   return (await materialize(tx, result.rows, locale, time,priceView,quote))[0] ?? null;
 }
 // A transactionally maintained read model carries only visibility and filter scalars.

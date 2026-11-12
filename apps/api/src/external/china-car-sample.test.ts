@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { ExternalUpsertCandidateSchema } from '@hd/contracts/admin';
-import { adaptChinaCarSample } from './china-car-sample.js';
+import { adaptChinaCarSample, loadChinaCarSample } from './china-car-sample.js';
 import { buildProjection, emptyOverrides } from './normalize.js';
 import { chinaCarSampleProfile, knownPhotoExpiry, publicLink } from './profiles.js';
 
@@ -57,4 +61,36 @@ test('sample adaptation preserves dates, CNY and exact same-version language pai
   const refreshed = adaptChinaCarSample({ ...source, image: olderPhoto }, fetchedAt)!;
   assert.equal(refreshed.images[0]?.sourceMediaId, parsed.images[0]?.sourceMediaId);
   assert.equal(refreshed.images[0]?.url, signed);
+});
+
+
+test('verified offline capture context grants presence without rewriting an omitted raw source field', async () => {
+  const folder = await mkdtemp(path.join(tmpdir(), 'hd-report-capture-fixture-'));
+  try {
+    for (const relative of ['handoff', 'package/raw', 'package/pilot_100']) await mkdir(path.join(folder, relative), { recursive: true });
+    const rows = Array.from({ length: 200 }, (_, i) => ({ source: 'dongchedi', id: `S-CAPTURE-${i + 1}`, status: 'active',
+      updatedAt: fetchedAt, lifecycle: { detailFetchedAt: fetchedAt }, url: `https://www.dongchedi.com/synthetic/capture-${i + 1}`, title: 'Synthetic capture' }));
+    const jsonl = (values: unknown[]) => values.map(value => JSON.stringify(value)).join('\n') + '\n';
+    const pilot = jsonl(rows.slice(0, 100)), control = jsonl(rows.slice(100)), envelopes = jsonl(rows.slice(0, 100).map(row => ({
+      source: row.source, id: row.id, raw_payload: row, observed_info: { api_language: 'en', api_response_received_at_utc: fetchedAt },
+    })));
+    const digest = (raw: string) => createHash('sha256').update(raw).digest('hex');
+    const capture = { id: rows[0]!.id, checks: [{ category: 'Body', defects: 0, groups: [{ name: 'Exterior', defects: 0,
+      items: [{ part: 'Door', result: null, ok: false }] }] }] };
+    const files: Record<string, string> = {
+      'handoff/summary.json': JSON.stringify({ pilot_raw_sha256: digest(pilot), control_sha256: digest(control), pilot_envelope_sha256: digest(envelopes) }),
+      'package/pilot_100/vehicles_100_raw.jsonl': pilot, 'handoff/control-100-raw.jsonl': control,
+      'package/pilot_100/vehicles_100_envelopes.jsonl': envelopes,
+      'handoff/pilot-identities.json': JSON.stringify(rows.slice(0, 100).map(row => ({ source: row.source, id: row.id, listingUrl: row.url }))),
+      'handoff/control-identities.json': JSON.stringify(rows.slice(100).map(row => ({ source: row.source, id: row.id, listingUrl: row.url }))),
+      'handoff/language-matches.json': '[]', 'handoff/disputes.json': '[]',
+      'package/raw/40_inspection_dongchedi_S-CAPTURE-1_en.json': JSON.stringify({ status: 200, truncated: false, data: capture }),
+    };
+    await Promise.all(Object.entries(files).map(([relative, value]) => writeFile(path.join(folder, relative), value)));
+    const loaded = await loadChinaCarSample(folder), first = loaded.pilot.records[0]!;
+    assert.equal(ExternalUpsertCandidateSchema.parse(first.candidate).inspection!.hasReport, true);
+    const archived = JSON.parse(first.raw);
+    assert.deepEqual(archived.inspection, capture); assert.equal(Object.hasOwn(archived.inspection, 'source'), false);
+    assert.equal(ExternalUpsertCandidateSchema.parse(loaded.pilot.records[1]!.candidate).inspection, null);
+  } finally { await rm(folder, { recursive: true, force: true }); }
 });

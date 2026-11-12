@@ -1,5 +1,13 @@
 import { z } from 'zod';
+import { AdminReportSchema } from './external-admin.js';
+import { VehicleConfigurationSchema, parseVehicleConfigurationJson } from './configuration.js';
+import { LocalizationDataSchema, VehicleLocalizationSchema } from './localization.js';
+import { TranslationPlanRefSchema } from './translation-plan.js';
+export * from './configuration.js';
+export * from './translation-plan.js';
 export * from './external-admin.js';
+export * from './publication.js';
+export * from './publication-frame.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, MoneySchema, NamedValueSchema, PowertrainSchema, PublicationStateSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema, VehicleFactsSchema,
@@ -53,19 +61,32 @@ export const VehicleDraftSourceSchema = z.discriminatedUnion('kind', [
   ExternalVehicleSourceSchema,
 ]);
 export type VehicleDraftSource = z.infer<typeof VehicleDraftSourceSchema>;
-export const VehicleDraftInputSchema = z.strictObject({
+/** A selected draft currency can survive while its amount is still unknown. */
+export const DraftMoneySchema = MoneySchema.extend({ amount: MoneySchema.shape.amount.nullable() });
+export type DraftMoney = z.infer<typeof DraftMoneySchema>;
+/** Only employee asking-price drafts may be incomplete; published prices stay strict. */
+export const DraftPriceSchema = z.discriminatedUnion('kind', [
+  PublicPriceSchema.options[0].extend({ money: DraftMoneySchema.nullable() }),
+  PublicPriceSchema.options[1],
+  PublicPriceSchema.options[2],
+]);
+export type DraftPrice = z.infer<typeof DraftPriceSchema>;
+const VehicleDraftBaseSchema = z.strictObject({
   source: VehicleDraftSourceSchema,
   facts: VehicleFactsSchema,
-  price: PublicPriceSchema,
+  price: DraftPriceSchema,
   content: z.strictObject({ title: TranslatableFieldSchema, description: TranslatableFieldSchema }),
   media: z.array(DraftMediaSchema).max(30),
+  // Omission on an old client's save preserves the existing value; null explicitly clears it.
+  configuration: VehicleConfigurationSchema.nullable().optional(),
   internal: z.strictObject({
-    purchaseCost: MoneySchema.nullable(),
+    purchaseCost: DraftMoneySchema.nullable(),
     notes: z.string().min(1).max(10_000).nullable(),
     supplierContact: z.string().min(1).max(1000).nullable(),
     vin: z.string().min(1).max(17).nullable(),
   }),
-}).superRefine((value, ctx) => {
+});
+function validateVehicleDraft(value: z.infer<typeof VehicleDraftBaseSchema>, ctx: z.RefinementCtx) {
   const ids = value.media.map((media) => media.id);
   const positions = value.media.map((media) => media.sortOrder);
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', path: ['media'], message: 'Duplicate media IDs' });
@@ -82,7 +103,8 @@ export const VehicleDraftInputSchema = z.strictObject({
   if (value.source.kind === 'external' && value.price.kind === 'asking') {
     ctx.addIssue({ code: 'custom', path: ['price'], message: 'External vehicles must use reference or on-request pricing' });
   }
-});
+}
+export const VehicleDraftInputSchema = VehicleDraftBaseSchema.superRefine(validateVehicleDraft);
 export type VehicleDraftInput = z.infer<typeof VehicleDraftInputSchema>;
 
 export const AdminVehicleSchema = z.strictObject({
@@ -90,6 +112,7 @@ export const AdminVehicleSchema = z.strictObject({
   publicationState: PublicationStateSchema, availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   draft: VehicleDraftInputSchema,
+  report: AdminReportSchema.optional(),
   publishedRevisionId: IdSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   deletedAt: TimestampSchema.nullable().default(null),
@@ -116,8 +139,44 @@ export const AdminVehicleQuerySchema = z.strictObject({
 export type AdminVehicleQuery = z.infer<typeof AdminVehicleQuerySchema>;
 export const AdminVehicleDetailQuerySchema = z.strictObject({ includeDeleted: z.enum(['false', 'true']).default('false') });
 export type AdminVehicleDetailQuery = z.infer<typeof AdminVehicleDetailQuerySchema>;
-export const CreateVehicleRequestSchema = z.strictObject({ draft: VehicleDraftInputSchema });
-export const SaveVehicleRequestSchema = z.strictObject({ version: VersionSchema, draft: VehicleDraftInputSchema });
+const ConfigurationWriteSchema = z.union([VehicleConfigurationSchema, z.string().max(65_536).superRefine((raw, ctx) => {
+  if (!raw.trim()) return;
+  try { parseVehicleConfigurationJson(raw); }
+  catch (error) {
+    if (error instanceof z.ZodError) for (const issue of error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+    else ctx.addIssue({ code: 'custom', message: 'Invalid configuration JSON.' });
+  }
+})]).nullable().optional();
+/** Transport input preserves raw JSON; the service calls parseVehicleDraftWrite before storing it. */
+export const VehicleDraftWriteSchema = VehicleDraftBaseSchema.extend({ configuration: ConfigurationWriteSchema }).superRefine((value, ctx) =>
+  validateVehicleDraft({ ...value, configuration: typeof value.configuration === 'string' ? undefined : value.configuration }, ctx));
+export type VehicleDraftWriteInput = z.input<typeof VehicleDraftWriteSchema>;
+export function parseVehicleDraftWrite(input: unknown): VehicleDraftInput {
+  const draft = VehicleDraftWriteSchema.parse(input);
+  if (typeof draft.configuration !== 'string') return VehicleDraftInputSchema.parse(draft);
+  return VehicleDraftInputSchema.parse({ ...draft, configuration: draft.configuration.trim() ? parseVehicleConfigurationJson(draft.configuration) : null });
+}
+export const CreateVehicleRequestSchema = z.strictObject({ draft: VehicleDraftWriteSchema });
+export const SaveVehicleRequestSchema = z.strictObject({ version: VersionSchema, draft: VehicleDraftWriteSchema });
+export type CreateVehicleRequestInput = z.input<typeof CreateVehicleRequestSchema>;
+export type SaveVehicleRequestInput = z.input<typeof SaveVehicleRequestSchema>;
+/** One versioned workspace: content and display translations save in one transaction. */
+export const VehicleTranslationBundleSchema = z.strictObject({
+  vehicle: AdminVehicleSchema, localization: VehicleLocalizationSchema,
+  sourceLanguageConfirmationRequired: z.array(TranslationPlanRefSchema).max(472),
+}).superRefine((bundle, ctx) => {
+  if (bundle.vehicle.id !== bundle.localization.vehicleId || bundle.vehicle.version !== bundle.localization.vehicleVersion)
+    ctx.addIssue({ code: 'custom', message: 'A translation bundle must describe one vehicle version.' });
+});
+export type VehicleTranslationBundle = z.infer<typeof VehicleTranslationBundleSchema>;
+export const VehicleTranslationBundleResponseSchema = responseSchema(VehicleTranslationBundleSchema);
+export const SaveVehicleTranslationBundleSchema = z.strictObject({
+  version: VersionSchema, localizationRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  content: z.strictObject({ title: TranslatableFieldSchema, description: TranslatableFieldSchema }),
+  localization: LocalizationDataSchema,
+  sourceLanguageConfirmations: z.array(TranslationPlanRefSchema).max(472).refine(refs => new Set(refs).size === refs.length).default([]),
+});
+export type SaveVehicleTranslationBundle = z.infer<typeof SaveVehicleTranslationBundleSchema>;
 export const VersionRequestSchema = z.strictObject({ version: VersionSchema });
 export const PublishVehicleRequestSchema = VersionRequestSchema;
 export const ArchiveVehicleRequestSchema = VersionRequestSchema;

@@ -286,6 +286,8 @@
   border-radius: 18px;
   background: #1e1e1e;
   font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 .historyPills dt {
   color: #ababab;
@@ -293,6 +295,8 @@
 .historyPills dd {
   margin: 0;
   font-weight: 700;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .equipmentTitle {
   display: flex;
@@ -469,16 +473,39 @@
   font-size: 13px;
   line-height: 1.6;
 }
-.contactInner [data-vehicle-contacts] {
+.contactInner :is([data-vehicle-contacts], [data-vehicle-report-contacts]) {
   margin-top: 20px;
   gap: 8px;
 }
-.contactInner [data-vehicle-contacts] a {
+.contactInner :is([data-vehicle-contacts], [data-vehicle-report-contacts]) a {
   flex: 1;
   justify-content: center;
   padding-inline: 10px;
   min-width: 0;
   font-size: 13px;
+}
+.reportRequest {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #b6774933;
+}
+.reportRequest h3 {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: #dba171;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.reportRequest h3 svg {
+  flex: none;
+  margin-top: 2px;
+}
+.reportRequest [data-vehicle-report-contacts] {
+  margin-top: 12px;
 }
 .page a:focus-visible,
 .page summary:focus-visible {

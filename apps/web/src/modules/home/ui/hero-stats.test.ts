@@ -12,9 +12,9 @@ function renderedNumber(html: string, metric: string): string {
 
 describe('hero statistics server content', () => {
   for (const [locale, catalogLabel, years] of [
-    ['zh', '目录中的汽车', '3年'],
-    ['en', 'Cars in catalog', '3 years'],
-    ['ru', 'Автомобили в каталоге', '3 года'],
+    ['zh', '目录中的汽车', '23年'],
+    ['en', 'Cars in catalog', '23 years'],
+    ['ru', 'Автомобили в каталоге', '23 года'],
   ] as const) {
     it(`${locale}: renders API count and confirmed company figures before browser effects`, () => {
       const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogCount: 42 }));

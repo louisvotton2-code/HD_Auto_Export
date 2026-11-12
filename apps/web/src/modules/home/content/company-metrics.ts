@@ -1,6 +1,6 @@
-/** User-confirmed on 2026-11-08. Catalog inventory is supplied separately by the public API. */
+/** Company figures confirmed by the user; operating history updated on 2026-11-12. */
 export const companyMetrics = {
   happyClients: 660,
   happyClientsSuffix: '+',
-  yearsOnMarket: 3,
+  yearsOnMarket: 23,
 } as const;

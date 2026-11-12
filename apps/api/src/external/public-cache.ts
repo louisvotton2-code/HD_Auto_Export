@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { ACTIVE_FX_SQL } from './fx.js';
@@ -32,27 +33,40 @@ export type PublicCacheRoute = 'list' | 'filters' | 'detail' | 'home';
 export type PublicCatalogCacheOptions = {
   namespace: string; redis?: RedisPublicCacheOptions; ttlMs?: number; maxConcurrentLoads?: number; maxConcurrentRevisionReads?: number;
   maxEntries?: number; maxBytes?: number; maxValueBytes?: number; requestTimeoutMs?: number;
+  maxQueuedLoads?: number;
+  enabled?: boolean; externalCatalog?: boolean;
+  deployment?: {environment:string;releaseId:string};
 };
 export type PublicCacheMetrics = {
   localHits: number; redisHits: number; misses: number; originLoads: number; rejectedLoads: number;
   redisErrors: number; invalidEntries: number; oversizedValues: number; versionRetries: number; timeouts: number;
-  activeLoads: number; activeRevisionReads: number; entries: number; bytes: number;
+  activeLoads: number; activeRevisionReads: number; queuedLoads: number; entries: number; bytes: number;
 };
 type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
+type Flight = {promise:Promise<Envelope>;controller:AbortController;waiters:number};
 type Dependencies = { readRevision: (usd: boolean) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
 const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch && a.revision === b.revision &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
 const bounded = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => key === 'requestId' ? undefined : item);
+async function waitFor<T>(promise:Promise<T>,signal:AbortSignal):Promise<T> {
+  if(signal.aborted)throw unavailable();
+  let abort!:()=>void;
+  try {return await Promise.race([promise,new Promise<never>((_,reject)=>{
+    abort=()=>reject(unavailable());signal.addEventListener('abort',abort,{once:true});
+  })]);}finally{signal.removeEventListener('abort',abort);}
+}
 
 /** No request IDs or shared mutable DTOs cross request boundaries. Public routes alone may use this cache. */
 export class PublicCatalogCache {
   private readonly memory = new Map<string, MemoryEntry>();
-  private readonly flights = new Map<string, Promise<unknown>>();
+  private readonly flights = new Map<string, Flight>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly maxLoads: number;
+  private readonly maxQueuedLoads: number;
+  private readonly queue: Array<{resolve:()=>void;reject:(error:unknown)=>void;timer:ReturnType<typeof setTimeout>}> = [];
   private readonly maxRevisionReads: number;
   private readonly maxEntries: number;
   private readonly maxBytes: number;
@@ -61,12 +75,13 @@ export class PublicCatalogCache {
   private closed = false;
   private values: PublicCacheMetrics = { localHits: 0, redisHits: 0, misses: 0, originLoads: 0, rejectedLoads: 0,
     redisErrors: 0, invalidEntries: 0, oversizedValues: 0, versionRetries: 0, timeouts: 0,
-    activeLoads: 0, activeRevisionReads: 0, entries: 0, bytes: 0 };
+    activeLoads: 0, activeRevisionReads: 0, queuedLoads: 0, entries: 0, bytes: 0 };
 
   constructor(private readonly options: PublicCatalogCacheOptions, private readonly dependencies: Dependencies) {
     this.now = dependencies.now ?? Date.now;
     this.ttlMs = options.ttlMs ?? 15_000;
     this.maxLoads = options.maxConcurrentLoads ?? 4;
+    this.maxQueuedLoads = options.maxQueuedLoads ?? 0;
     this.maxRevisionReads = options.maxConcurrentRevisionReads ?? 32;
     this.maxEntries = options.maxEntries ?? 64;
     this.maxBytes = options.maxBytes ?? 16 * 1_048_576;
@@ -74,10 +89,26 @@ export class PublicCatalogCache {
     this.timeoutMs = options.requestTimeoutMs ?? 3000;
     if (!/^(?:hd:[A-Za-z0-9:_-]{1,80}|hd-ext-scale-[a-z0-9-]{1,48})$/.test(options.namespace) || !bounded(this.ttlMs, 1, 30_000) || !bounded(this.maxLoads, 1, 20) ||
         !bounded(this.maxEntries, 1, 64) || !bounded(this.maxBytes, 1, 16 * 1_048_576) || !bounded(this.maxValueBytes, 256, 1_048_576) ||
-        !bounded(this.timeoutMs, 10, 15_000) || !bounded(this.maxRevisionReads, 1, 128)) throw new Error('Invalid public cache configuration.');
+        !bounded(this.timeoutMs, 10, 15_000) || !bounded(this.maxRevisionReads, 1, 128) || !bounded(this.maxQueuedLoads,0,32)) throw new Error('Invalid public cache configuration.');
   }
 
   metrics(): PublicCacheMetrics { return { ...this.values, entries: this.memory.size }; }
+  private stamp(revision: PublicCatalogRevision, usd: boolean, expiresAt = Infinity): PublicCatalogCacheStamp {
+    const checkedAt = this.now();
+    const validUntil = Math.min(expiresAt, checkedAt + PUBLIC_CATALOG_CACHE_MAX_TTL_MS, revision.fx?.expiresAt ?? Infinity);
+    if (validUntil <= checkedAt) throw unavailable();
+    // Includes deployment read policy: toggling external visibility cannot reuse a broader DTO.
+    const version = createHash('sha256').update(canonicalJson([4, revision.epoch, revision.revision,
+      this.options.deployment ?? {environment:'test',releaseId:'unreleased'},
+      !!this.options.externalCatalog, usd, usd ? revision.fx ?? null : null])).digest('hex');
+    return { version, priceView: usd ? 'usd' : 'original',
+      fx: usd && revision.fx ? { version: revision.fx.version, expiresAt: new Date(revision.fx.expiresAt).toISOString() } : null,
+      checkedAt: new Date(checkedAt).toISOString(), validUntil: new Date(validUntil).toISOString() };
+  }
+  /** A live, bounded DB read; deliberately never enters L1, Redis or the single-flight map. */
+  async currentVersion(usd = false,signal?:AbortSignal) {
+    return this.withDeadline(async () => this.stamp(await this.revision(usd), usd),signal);
+  }
   private async revision(usd: boolean) {
     // A slow/unavailable database cannot grow an unbounded pool wait queue through cache lookups.
     if (this.closed || this.values.activeRevisionReads >= this.maxRevisionReads) { this.values.rejectedLoads++; throw unavailable(); }
@@ -123,11 +154,18 @@ export class PublicCatalogCache {
         if (!Number.isFinite(expiry)) return 0;
         deadline = Math.min(deadline, expiry);
       }
+      const report = object.reportAccess as Record<string, unknown> | undefined;
+      if (report && typeof report === 'object' && (report.status === 'available' || report.status === 'unavailable')) {
+        const expiry = typeof report.expiresAt === 'string' ? Date.parse(report.expiresAt) : NaN;
+        if (!Number.isFinite(expiry)) return 0;
+        deadline = Math.min(deadline, expiry);
+      }
       for (const child of Object.values(object)) stack.push(child);
     }
     return deadline;
   }
   private async lookup(key: string): Promise<Envelope | null> {
+    if (this.options.enabled === false) return null;
     const local = this.memory.get(key);
     if (local) {
       const envelope = this.parse(local.encoded, key);
@@ -145,17 +183,20 @@ export class PublicCatalogCache {
       this.remember(key, encoded, envelope.expiresAt); this.values.redisHits++; return envelope;
     } catch { this.values.redisErrors++; return null; }
   }
-  private async load<T>(key: string, revision: PublicCatalogRevision, load: () => Promise<T>, usd: boolean): Promise<T> {
-    if (this.closed || this.values.activeLoads >= this.maxLoads) { this.values.rejectedLoads++; throw unavailable(); }
-    this.values.activeLoads++; this.values.originLoads++;
+  private async load<T>(key: string, revision: PublicCatalogRevision, load: () => Promise<T>, usd: boolean, deadline: number, signal:AbortSignal): Promise<Envelope> {
+    await this.acquireLoad(deadline,signal);
     try {
+      if(signal.aborted || performance.now()>=deadline)throw unavailable();
+      this.values.originLoads++;
       const value = JSON.parse(json(await load())) as T;
       if (!sameRevision(revision, await this.revision(usd))) { this.values.versionRetries++; throw changedRevision; }
-      const expiresAt = Math.min(this.deadline(value), revision.fx?.expiresAt ?? Infinity);
+      const expiresAt = Math.min(this.deadline(value), this.now() + PUBLIC_CATALOG_CACHE_MAX_TTL_MS, revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
       if (expiresAt <= this.now()) throw unavailable();
-      const encoded = JSON.stringify({ format: 1, key, expiresAt, value } satisfies Envelope);
-      if (Buffer.byteLength(encoded) > this.maxValueBytes) { this.values.oversizedValues++; return value; }
+      const envelope = { format: 1 as const, key, expiresAt, value };
+      if (this.options.enabled === false) return envelope;
+      const encoded = JSON.stringify(envelope);
+      if (Buffer.byteLength(encoded) > this.maxValueBytes) { this.values.oversizedValues++; return envelope; }
       this.remember(key, encoded, expiresAt);
       if (this.dependencies.store) {
         const ttl = Math.floor(expiresAt - this.now());
@@ -163,41 +204,81 @@ export class PublicCatalogCache {
         catch { this.values.redisErrors++; }
       }
       if (expiresAt <= this.now()) throw unavailable();
-      return value;
-    } finally { this.values.activeLoads--; }
+      return envelope;
+    } finally { this.releaseLoad(); }
   }
-  async get<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false): Promise<T> {
+  private async acquireLoad(deadline:number,signal:AbortSignal) {
+    if(this.closed || signal.aborted || performance.now()>=deadline)throw unavailable();
+    if(this.values.activeLoads<this.maxLoads){this.values.activeLoads++;return;}
+    if(this.queue.length>=this.maxQueuedLoads){this.values.rejectedLoads++;throw unavailable();}
+    let abort!:()=>void;
+    try {await new Promise<void>((resolve,reject)=>{
+      abort=()=>{
+        const index=this.queue.indexOf(waiting);
+        if(index>=0){clearTimeout(waiting.timer);this.queue.splice(index,1);this.values.queuedLoads--;reject(unavailable());}
+      };
+      const waiting={resolve,reject,timer:setTimeout(abort,Math.max(1,deadline-performance.now()))};
+      this.queue.push(waiting);this.values.queuedLoads++;
+      signal.addEventListener('abort',abort,{once:true});
+    });}finally{signal.removeEventListener('abort',abort);}
+  }
+  private releaseLoad() {
+    this.values.activeLoads--;
+    const waiting=this.queue.shift();
+    if(waiting){clearTimeout(waiting.timer);this.values.queuedLoads--;this.values.activeLoads++;waiting.resolve();}
+  }
+  async get<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal): Promise<T> {
+    return (await this.getVersioned(route, normalizedInput, load, usd, signal)).value;
+  }
+  async getVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal): Promise<{value:T;stamp:PublicCatalogCacheStamp}> {
+    const deadline=performance.now()+this.timeoutMs;
     if (!['list', 'filters', 'detail', 'home'].includes(route) || this.closed) throw unavailable();
     const input = canonicalJson(normalizedInput);
     if (Buffer.byteLength(input) > 16_384) throw unavailable();
-    const work = async () => {
+    const work = async (requestSignal:AbortSignal) => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const revision = await this.revision(usd);
-        const keyParts = [1, revision.epoch, revision.revision, route, input];
-        if (usd) keyParts.push(revision.fx?.version ?? 'unavailable');
+        if(requestSignal.aborted)throw unavailable();
+        const keyParts = [this.stamp(revision, usd).version, route, input];
         const key = createHash('sha256').update(canonicalJson(keyParts)).digest('hex');
         const cached = await this.lookup(key);
-        if (cached) return cached.value as T;
+        if(requestSignal.aborted)throw unavailable();
+        if (cached) return { value: cached.value as T, stamp: this.stamp(revision, usd, cached.expiresAt) };
         this.values.misses++;
-        let promise = this.flights.get(key);
-        if (!promise) {
-          promise = this.load(key, revision, load, usd);
-          this.flights.set(key, promise);
-          void promise.finally(() => { if (this.flights.get(key) === promise) this.flights.delete(key); }).catch(() => {});
+        let flight = this.flights.get(key);
+        if (!flight) {
+          const controller=new AbortController();
+          flight={promise:this.load(key, revision, load, usd, deadline,controller.signal),controller,waiters:0};
+          this.flights.set(key, flight);
+          const own=flight;
+          void own.promise.finally(() => { if (this.flights.get(key) === own) this.flights.delete(key); }).catch(() => {});
         }
-        try { return JSON.parse(json(await promise)) as T; }
+        flight.waiters++;
+        try {
+          const envelope = await waitFor(flight.promise,requestSignal);
+          return { value: JSON.parse(json(envelope.value)) as T, stamp: this.stamp(revision, usd, envelope.expiresAt) };
+        }
         catch (error) { if (error !== changedRevision) throw error; }
+        finally {if(--flight.waiters===0)flight.controller.abort();}
       }
       throw unavailable();
     };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // The underlying load keeps its concurrency slot until it really settles, even after a caller times out.
-    try { return await Promise.race([work(), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { this.values.timeouts++; reject(unavailable()); }, this.timeoutMs);
-    })]); }
-    finally { clearTimeout(timer); }
+    return this.withDeadline(work,signal);
   }
-  async close() { this.closed = true; this.memory.clear(); this.values.bytes = 0; await this.dependencies.store?.close(); }
+  private async withDeadline<T>(work: (signal:AbortSignal) => Promise<T>, external?:AbortSignal): Promise<T> {
+    const controller=new AbortController(),abort=()=>controller.abort();
+    if(external?.aborted)throw unavailable();
+    external?.addEventListener('abort',abort,{once:true});
+    const timer=setTimeout(()=>{this.values.timeouts++;controller.abort();},this.timeoutMs);
+    // The underlying load keeps its concurrency slot until it really settles, even after a caller times out.
+    try { return await waitFor(work(controller.signal),controller.signal); }
+    finally { clearTimeout(timer);external?.removeEventListener('abort',abort); }
+  }
+  async close() {
+    this.closed = true;
+    for(const waiting of this.queue.splice(0)){clearTimeout(waiting.timer);waiting.reject(unavailable());}
+    this.values.queuedLoads=0;this.memory.clear();this.values.bytes=0;await this.dependencies.store?.close();
+  }
 }
 const changedRevision = Symbol('public catalog changed during load');
 

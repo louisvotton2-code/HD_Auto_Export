@@ -1,4 +1,4 @@
-import type { AdminVehicle } from '@hd/contracts/admin';
+import type { AdminVehicle, PublicationIssue } from '@hd/contracts/admin';
 
 export type PublishIntent = {
   key: string;
@@ -17,18 +17,34 @@ export function publicationIssueLabel(path: string): string {
   const locale = { zh: '中文', en: '英文', ru: '俄文' };
   if (normalized.startsWith('localization.')) {
     const language = normalized.split('.').at(-1);const name = language && language in locale ? locale[language as keyof typeof locale] : '对应语言';
-    return `公开字段多语：请填写并审核${name}的当前来源版本`;
+    return `公开字段多语：请完善${name}译文，并与当前中文保持一致`;
   }
   const match = /^content\.(title|description)\.translations\.(zh|en|ru)(?:\.|$)/.exec(normalized);
-  if (match) return `${locale[match[2] as keyof typeof locale]}${match[1] === 'title' ? '标题' : '描述'}：请填写并审核当前原文版本`;
+  if (match?.[2] === 'zh') return `中文${match[1] === 'title' ? '标题' : '描述'}：请保存多语资料以同步当前中文原文`;
+  if (match) return `${locale[match[2] as keyof typeof locale]}${match[1] === 'title' ? '标题' : '描述'}：请完善当前原文的译文`;
   if (normalized === 'facts.make' || normalized.startsWith('facts.make.')) return '品牌：请选择或新增品牌';
   if (normalized === 'facts.model' || normalized.startsWith('facts.model.')) return '车型：请选择或新增车型';
+  if (normalized === 'facts.trim' || normalized.startsWith('facts.trim.')) return '配置名称：请填写车型配置名称';
+  if (normalized === 'configuration' || normalized.startsWith('configuration.')) return '车辆详细配置：请按标准格式填写至少一项有效配置';
+  if (normalized === 'facts.modelYear') return '年款：请选择年款';
+  if (normalized === 'facts.powertrain') return '动力类型：请选择已知动力类型';
+  if (normalized === 'facts.mileageKm') return '里程：请填写公里数，确认零公里时可填0';
+  if (normalized === 'internal.purchaseCost' || normalized.startsWith('internal.purchaseCost.')) return '采购成本：请填写正数金额并核对币种';
+  if (normalized === 'content.description.sourceText') return '车况描述：请填写公开车况说明';
   if (normalized === 'facts.location' || normalized.startsWith('facts.location.')) return '所在地：请填写国家代码';
   if (normalized === 'content.title.sourceText') return '标题原文：请填写原文标题';
+  if (normalized === 'content.title.sourceLanguage') return '标题原文：请先在基础资料整理为中文';
+  if (normalized === 'content.description.sourceLanguage') return '车况描述：请先整理为中文';
   if (normalized === 'availability') return '库存：请实际核验库存状态并记录核验时间';
   if (normalized === 'media' || normalized.startsWith('media.')) return '图片：请确认全部图片处理完成，选择一张封面并保存草稿';
   if (normalized === 'price' || normalized.startsWith('price.')) return '公开价格：请检查价格口径、金额和币种';
   return '车辆资料：请检查未满足的发布条件';
+}
+
+/** Staff UI uses Chinese guidance, independent of diagnostic text returned by the API. */
+export function publicationReadinessIssueLabel(issue: PublicationIssue): string {
+  if (issue.stage === 'preview') return '发布预览：请检查并确认当前内容';
+  return publicationIssueLabel(issue.path);
 }
 
 /** A later rejection cannot prove that an earlier response-lost publish never committed. */

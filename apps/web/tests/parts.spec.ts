@@ -1,13 +1,28 @@
 import { expect, test } from '@playwright/test';
 
+const paginationNames = {
+  zh: '配件目录分页',
+  en: 'Parts catalog pagination',
+  ru: 'Страницы каталога запчастей',
+};
+
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  test(`${locale}: search reloads the catalog and part drafts use the requested quantity`, async ({ page }) => {
-    await page.goto(`/${locale}/parts/?category=transmission`);
-    await expect(page.locator('main [data-part]')).toHaveCount(12);
-    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+  test(`${locale}: search and pagination reload the catalog and part drafts use the requested quantity`, async ({ page }) => {
+    await page.goto(`/${locale}/parts/`);
     const records = page.locator('main [data-part]');
+    await expect(records).toHaveCount(44);
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+    await expect(page.locator('[data-counter-target="48689"] [data-counter-value]'))
+      .toHaveText(new Intl.NumberFormat(locale).format(48_689));
+    await expect(page.getByRole('link', { name: 'Genesis GV80 JX1 (2020–…)', exact: true }))
+      .toHaveAttribute('href', '#parts-catalog');
+    const pagination = page.getByRole('navigation', { name: paginationNames[locale] });
+    const currentPage = pagination.locator('[aria-current="page"]');
+    await expect(currentPage).toHaveText('1');
+    await expect(pagination.locator('button[value="2029"]')).toBeEnabled();
+    await page.goto(`/${locale}/parts/?category=chassis`);
+    await expect(records).toHaveCount(16);
     const ids = () => records.evaluateAll((rows) => rows.map((row) => row.getAttribute('data-part')));
-    const initial = await ids();
     const search = page.locator('main form').first();
     await search.locator('[name="q"]').fill('52910K2200');
     const [navigation] = await Promise.all([
@@ -15,12 +30,30 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       search.locator('[type="submit"]').click(),
     ]);
     expect(navigation.status()).toBe(200);
-    expect(new URL(navigation.url()).searchParams.get('category')).toBe('transmission');
+    expect(new URL(navigation.url()).searchParams.get('category')).toBe('chassis');
     expect(new URL(navigation.url()).searchParams.get('q')).toBe('52910K2200');
-    await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
-    await expect(page.locator('main a[aria-current=true][href*="category=transmission"]')).toBeVisible();
-    await expect(records).toHaveCount(12);
-    expect(await ids()).toEqual(initial);
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
+    await expect(records).toHaveCount(1);
+    expect(await ids()).toEqual(['52910k2200']);
+    const [pageResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().resourceType() === 'document'),
+      pagination.getByText('2', { exact: true }).click(),
+    ]);
+    expect(pageResponse.status()).toBe(200);
+    expect(pageResponse.request().method()).toBe('GET');
+    const pageParams = new URL(pageResponse.url()).searchParams;
+    expect(pageParams.get('page')).toBe('2');
+    expect(pageParams.get('category')).toBe('chassis');
+    expect(pageParams.get('q')).toBe('52910K2200');
+    await expect(currentPage).toHaveText('2');
+    expect(await ids()).toEqual(['52910k2200']);
+    await page.goBack();
+    await expect(currentPage).toHaveText('1');
+    await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
+    await page.goForward();
+    await expect(currentPage).toHaveText('2');
+    await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
     await expect(page.locator('main')).not.toContainText(/演示|示例|例子|\bdemo\b|\bsample\b|демо|пример/i);
     for (const input of await page.locator('main input[name="q"]').all()) {
       await expect(input).not.toHaveAttribute('placeholder', /例如|示例|e\.g\.|например/i);
@@ -52,13 +85,26 @@ test('Russian 320px without JavaScript retains search, quantity update, images a
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 320, height: 844 } });
   try {
     const page = await context.newPage();
-    await page.goto('/ru/parts/?category=transmission');
+    await page.goto('/ru/parts/?category=chassis');
+    const pagination = page.getByRole('navigation', { name: paginationNames.ru });
+    const catalogSearch = page.locator('main input[name="q"][form="parts-filters"]');
+    await catalogSearch.fill('52910K2200');
+    await pagination.getByRole('button', { name: 'Страница 2029', exact: true }).click();
+    await expect(pagination.locator('[aria-current="page"]')).toHaveText('2029');
+    const pagedUrl = new URL(page.url());
+    expect(pagedUrl.searchParams.get('page')).toBe('2029');
+    expect(pagedUrl.searchParams.get('q')).toBe('52910K2200');
+    await expect(catalogSearch).toHaveValue('52910K2200');
+    await expect(pagination.getByRole('button', { name: 'Следующая страница', exact: true })).toBeDisabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const search = page.locator('main form').first();
     await search.locator('[name="q"]').fill('52910K2200');
     await search.locator('[type="submit"]').click();
     await expect(page).toHaveURL(/q=52910K2200/);
-    await expect(page.locator('input[type=radio][name=category][value=transmission]')).toBeChecked();
-    await expect(page.locator('main [data-part]')).toHaveCount(12);
+    await expect(pagination.locator('[aria-current="page"]')).toHaveText('1');
+    expect(new URL(page.url()).searchParams.has('page')).toBe(false);
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
+    await expect(page.locator('main [data-part]')).toHaveCount(1);
     await page.locator('main [data-part="52910k2200"] h3 a').click();
     await page.locator('input[name="quantity"]').fill('2');
     await page.locator('main form [type="submit"]').click();
@@ -81,37 +127,37 @@ test('the catalog search reloads, header navigation clears it, and Back restores
   await catalogSearch.fill('52910K2200');
   const [navigation] = await Promise.all([
     page.waitForResponse((response) => response.request().resourceType() === 'document'),
-    page.locator('main button[form="parts-filters"]').click(),
+    catalogSearch.locator('..').getByRole('button').click(),
   ]);
   expect(navigation.status()).toBe(200);
   await expect(page).toHaveURL(/q=52910K2200/);
-  await expect(page.locator('main [data-part]')).toHaveCount(12);
+  await expect(page.locator('main [data-part]')).toHaveCount(1);
   await page.locator('header a[href="/en/parts/"]').first().click();
   await expect(page).toHaveURL(/\/en\/parts\/$/);
-  await expect(page.locator('main [data-part]')).toHaveCount(12);
+  await expect(page.locator('main [data-part]')).toHaveCount(44);
   await expect(page.locator('main form').first().locator('[name="q"]')).toHaveValue('');
   await search.locator('[name="q"]').fill('52910K2200'); await search.locator('[type="submit"]').click();
-  await expect(page.locator('main [data-part]')).toHaveCount(12);
+  await expect(page.locator('main [data-part]')).toHaveCount(1);
   await page.locator('main [data-part="52910k2200"] h3 a').click(); await expect(page.getByTestId('part-detail')).toBeVisible();
   await page.goBack(); await expect(page).toHaveURL(/q=52910K2200/);
-  await expect(page.locator('main [data-part]')).toHaveCount(12);
+  await expect(page.locator('main [data-part]')).toHaveCount(1);
   await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
 });
 
 test('part favorites persist separately and synchronize catalog, details and saved selection', async ({ page }) => {
   await page.goto('/en/parts/');
   const rows = page.locator('main [data-part]');
-  const summaries = rows.getByRole('heading', { level: 3 }).locator('..');
   const savedFilter = page.getByTestId('saved-parts-filter');
   await expect(savedFilter).toBeEnabled();
-  await expect(summaries).toHaveCount(12);
-  const before = await summaries.allInnerTexts();
+  await expect(rows).toHaveCount(44);
   await page.locator('main select[name="sort"]').selectOption('price-asc');
   await expect(page).toHaveURL(/sort=price-asc/);
   await expect(page.locator('main select[name="sort"]')).toHaveValue('price-asc');
   await expect(savedFilter).toBeEnabled();
-  await expect(summaries).toHaveText(before, { useInnerText: true });
-  await page.goto('/en/parts/?q=52910K2200');
+  await expect(rows).toHaveCount(44);
+  const prices = (await rows.locator('strong').allTextContents()).map((text) => Number(text.replace(/[$,]/g, '')));
+  expect(prices).toEqual([...prices].sort((a, b) => a - b));
+  await page.goto('/en/parts/?q=52910K2200&page=2');
   const card = page.locator('[data-part="52910k2200"]');
   await card.hover(); await card.getByRole('button', { name: 'Save part', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Unsave part', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -120,6 +166,8 @@ test('part favorites persist separately and synchronize catalog, details and sav
   await page.reload();
   await savedFilter.click();
   await expect(page.locator('main [data-part]')).toHaveCount(1);
+  await expect(page.getByText('Showing 1 part record', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: paginationNames.en })).toHaveCount(0);
   await page.locator('main h3 a').click();
   const detailSave = page.locator('main > div > div > aside').getByRole('button', { name: 'Unsave part', exact: true });
   await expect(detailSave).toHaveAttribute('aria-pressed', 'true'); await detailSave.click();
@@ -142,4 +190,34 @@ test('parts remain readable with corrupt preferences and storage denial falls ba
       await expect(page.locator('main [data-part]')).toHaveCount(1);
     } finally { await context.close(); }
   }
+});
+
+
+test('reference filter counts support native multi-selects over the real local records', async ({ page }) => {
+  await page.goto('/en/parts/');
+  const filters = page.locator('#parts-filters');
+  await expect(filters.locator('input[name="brand"]')).toHaveCount(3);
+  await expect(filters.locator('input[name="category"]')).toHaveCount(6);
+  await expect(filters.locator('input[name="category"][value="hardware"]')).toBeDisabled();
+  await expect(filters.locator('label').filter({ hasText: 'Hyundai' })).toContainText('48655');
+  await expect(filters.locator('label').filter({ hasText: 'Interior' })).toContainText('19814');
+  await filters.locator('[name="brand"][value="Hyundai"]').check();
+  await filters.locator('[name="brand"][value="Kia"]').check();
+  await filters.locator('[name="category"][value="chassis"]').check();
+  await filters.locator('[name="category"][value="transmission"]').check();
+  await filters.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  const url = new URL(page.url());
+  expect(url.searchParams.getAll('brand')).toEqual(['Hyundai', 'Kia']);
+  expect(url.searchParams.getAll('category')).toEqual(['transmission', 'chassis']);
+  await expect(filters.locator('[name="brand"][value="Kia"]')).toBeChecked();
+  await expect(filters.locator('[name="category"][value="chassis"]')).toBeChecked();
+  await page.getByRole('navigation', { name: 'Parts catalog pagination' }).getByText('2', { exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  await page.getByRole('navigation', { name: 'Parts by category', exact: true }).getByRole('link', { name: 'Clutch', exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(0);
+  expect(new URL(page.url()).searchParams.get('subcategory')).toBe('clutch');
+  await page.goBack();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  await expect(filters.locator('[name="brand"][value="Kia"]')).toBeChecked();
 });

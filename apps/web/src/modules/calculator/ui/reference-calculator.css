@@ -196,6 +196,14 @@
   font-size: 12px;
 }
 
+@supports (appearance: base-select) and selector(::picker(select)) {
+  /* Center the customizable select's value, including the shorter currency control. */
+  .calculator-reference.calculator-simple .input-wrap > select {
+    display: flex;
+    align-items: center;
+  }
+}
+
 .calculator-reference.calculator-simple .input-wrap select option {
   background: #1e1e1e;
   color: #f5f0eb;

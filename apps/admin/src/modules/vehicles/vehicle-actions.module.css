@@ -21,3 +21,16 @@
 
 .publicationStatus { margin: 20px 0; }
 .publicationStatus :global(.ant-alert-message) { font-weight: 600; }
+.headerControls { justify-content: flex-end; max-width: 100%; }
+.publishReady:not(:disabled) { background: #23733a; border-color: #23733a; color: #fff; }
+.publishReady:not(:disabled):hover { background: #195c2e !important; border-color: #195c2e !important; color: #fff !important; }
+.publishIncomplete:disabled { color: #a5281f; background: #fff1ef; border-color: #d9a29b; opacity: 1; }
+.serverIssues { margin: 14px 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.serverIssues li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.serverIssues :global(.ant-btn) { height: auto; padding: 0; white-space: normal; text-align: left; overflow-wrap: anywhere; }
+.readiness > :global(.ant-alert), .readinessModal > :global(.ant-alert) { margin: 12px 0; }
+.previewConfirmation { margin: 20px 0; }
+.previewConfirmation :global(.ant-card-body) { display: grid; gap: 14px; }
+.previewConfirmation :global(.ant-btn) { justify-self: start; }
+.readinessModal { min-width: 0; }
+@media (max-width: 600px) { .headerControls { justify-content: flex-start; }.serverIssues li { flex-wrap: wrap; }.previewConfirmation :global(.ant-btn) { width: 100%; } }

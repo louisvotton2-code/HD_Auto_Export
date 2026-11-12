@@ -1,0 +1,127 @@
+# Apply last after base/proxy/media/domains. Explicit release identity, no synthetic-mode override.
+# Production switch still requires the reviewed main manifest, backup/restore proof and PM release gate.
+services:
+  postgres:
+    cpus: 1.0
+    mem_limit: 1152m
+    shm_size: 128m
+    command: [postgres, -c, shared_buffers=192MB, -c, work_mem=4MB, -c, max_connections=40]
+    volumes: !override
+      - type: bind
+        source: ${POSTGRES_DATA_ROOT:?use the existing validated cluster path}
+        target: /var/lib/postgresql
+        bind: {create_host_path: false}
+  api:
+    # Keep DB/cache private while allowing explicitly configured translation/FX HTTPS.
+    networks:
+      default: {}
+      api_egress: {gw_priority: 1}
+    cpus: 1.25
+    mem_limit: 640m
+    environment:
+      HD_DATABASE_NAME: ${HD_DATABASE_NAME:?set the reviewed new logical release database}
+      HD_DEPLOYMENT_ENV: ${HD_DEPLOYMENT_ENV:?set production/local/test explicitly}
+      HD_RELEASE_ID: ${RELEASE_ID:?use the immutable release identity}
+      NODE_OPTIONS: --max-old-space-size=384
+      EXTERNAL_CATALOG_MODE: disabled
+      CATALOG_READ_MODE: combined
+      EXTERNAL_SYNC_MODE: off
+      PUBLIC_CATALOG_CACHE: redis
+      PUBLIC_CACHE_NAMESPACE: ${OPS_PUBLIC_CACHE_NAMESPACE}
+      PUBLIC_CACHE_TTL_MS: '15000'
+      PUBLIC_CACHE_MAX_LOADS: '4'
+      PUBLIC_REDIS_HOST: redis
+      PUBLIC_REDIS_PORT: '6379'
+      PUBLIC_REDIS_USER: hd-cache
+      PUBLIC_REDIS_PASSWORD_FILE: /run/secrets/public_cache_password
+      HD_SSR_SERVICE_SECRET_FILE: /run/secrets/ssr_service_secret
+      HD_SSR_SERVICE_PEERS: ${WEB_IP:?use the actual fixed Web peer}/32
+      TRANSLATION_MAX_CHARACTERS_PER_HOUR: '50000'
+    volumes:
+      - type: bind
+        source: ${MEDIA_DATA_ROOT:?set the empty new release media directory}
+        target: /data/media
+        bind: {create_host_path: false}
+    secrets: !override
+      - {source: release_app_db_password, target: app_db_password}
+      - auth_secret
+      - public_cache_password
+      - ssr_service_secret
+    depends_on:
+      redis: {condition: service_healthy}
+  migrate:
+    cpus: 1.0
+    mem_limit: 640m
+    environment:
+      HD_DATABASE_NAME: ${HD_DATABASE_NAME}
+      HD_DEPLOYMENT_ENV: ${HD_DEPLOYMENT_ENV}
+      HD_RELEASE_ID: ${RELEASE_ID}
+      TRANSLATION_PROVIDER: disabled
+    volumes:
+      - type: bind
+        source: ${MEDIA_DATA_ROOT}
+        target: /data/media
+        bind: {create_host_path: false}
+    secrets: !override
+      - {source: release_app_db_password, target: app_db_password}
+      - auth_secret
+  web:
+    cpus: 1.0
+    mem_limit: 768m
+    environment:
+      HD_DEPLOYMENT_ENV: ${HD_DEPLOYMENT_ENV}
+      HD_RELEASE_ID: ${RELEASE_ID}
+      NODE_OPTIONS: --max-old-space-size=512
+      HD_SSR_SERVICE_SECRET_FILE: /run/secrets/ssr_service_secret
+    secrets: [ssr_service_secret]
+  proxy:
+    networks:
+      default: {}
+      ingress: {gw_priority: 1}
+    cpus: 0.5
+    mem_limit: 192m
+    volumes:
+      - type: bind
+        source: ${MEDIA_DATA_ROOT}
+        target: /srv/private-media
+        read_only: true
+        bind: {create_host_path: false}
+  redis:
+    image: redis:7.4-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    user: '${APP_UID:?set non-root application UID}:${APP_GID:?set non-root GID}'
+    entrypoint: [sh, /etc/hd-public/redis-start.sh]
+    environment:
+      OPS_PUBLIC_CACHE_NAMESPACE: ${OPS_PUBLIC_CACHE_NAMESPACE:?bind exactly to the API namespace}
+    read_only: true
+    tmpfs: [/tmp:mode=1777, /data:mode=1777]
+    cpus: 0.25
+    mem_limit: 192m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    secrets: [public_cache_password]
+    volumes:
+      - ./production/redis-start.sh:/etc/hd-public/redis-start.sh:ro
+    healthcheck:
+      # The app ACL deliberately has no PING; GET is read-only and validates its exact key scope.
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$(cat /run/secrets/public_cache_password) redis-cli -e --raw -h 127.0.0.1 --user hd-cache GET "$${OPS_PUBLIC_CACHE_NAMESPACE}:slot:0" >/dev/null']
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    logging:
+      driver: local
+      options: {max-size: '10m', max-file: '3'}
+networks:
+  default:
+    internal: true
+  api_egress:
+    internal: false
+  ingress:
+    internal: false
+secrets:
+  public_cache_password:
+    file: ${RELEASE_SECRETS_ROOT:?set a new private release secrets directory}/public_cache_password
+  ssr_service_secret:
+    # Owner must be APP_UID and mode0600 so the non-root Web process can read the bind-mounted file.
+    file: ${RELEASE_SECRETS_ROOT}/ssr_service_secret
+  release_app_db_password:
+    file: ${RELEASE_SECRETS_ROOT}/app_db_password

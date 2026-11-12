@@ -39,6 +39,10 @@
 
 .translationStatus {
   margin-inline-start: 8px;
+  margin-inline-end: 0;
+  max-width: calc(100% - 8px);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .reason {
@@ -48,4 +52,81 @@
 
 .fileInput {
   max-width: 100%;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
+  gap: 12px;
+}
+
+.stats > div {
+  border-top: 2px solid #b08a37;
+}
+
+.stats .exportStatus {
+  background: #fbf8ee;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.filters label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.filters label > div {
+  width: 100%;
+}
+
+.listingTitle {
+  font-weight: 650;
+}
+
+.editHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e9dfc5;
+  border-radius: 8px;
+  background: #fbf8ee;
+  overflow-wrap: anywhere;
+}
+
+.editGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+
+.editSection {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e8e2d5;
+  border-radius: 8px;
+}
+
+.sourceValue {
+  display: block;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f6f5f1;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.listingFacts {
+  margin-top: 16px;
+  margin-bottom: 8px;
 }

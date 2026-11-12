@@ -374,35 +374,59 @@
 .pagination {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 32px;
+  padding-bottom: 32px;
   font-size: 13px;
 }
-.pagination :is(a, span) {
+.pageButton {
   display: inline-flex;
   justify-content: center;
   align-items: center;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 10px 14px;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border-radius: 8px;
   border: 1px solid #ffffff14;
+  background: #1e1e1e;
   text-decoration: none;
   color: #c0c0c0;
+  font-size: 14px;
+  font-weight: 500;
   transition:
     border-color 200ms,
-    background 200ms;
+    background 200ms,
+    color 200ms;
 }
-.pagination [aria-current] {
+.pageButton[aria-current] {
   border-color: #b67749;
   background: #b67749;
   color: #fff;
 }
-.pagination a:hover {
-  background: #1e1e1e;
+.pageButton:is(a):hover {
   border-color: #b67749;
+  color: #d99a6b;
+}
+.pageButton[aria-disabled] {
+  opacity: .4;
+  cursor: default;
+}
+.pageButton[data-compact-number] {
+  font-size: 11px;
+  letter-spacing: -.03em;
+}
+.pageDots {
+  padding: 0 4px;
+  color: #777;
+}
+.pageInfo {
+  margin-left: 8px;
+  color: #a3a3a3;
+  font-size: 12px;
+  line-height: 1.7;
 }
 :is(.pagination, .card, .filters) :is(a, button):focus-visible {
   outline: 2px solid #c88858;

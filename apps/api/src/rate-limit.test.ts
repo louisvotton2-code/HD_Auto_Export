@@ -41,7 +41,11 @@ test('authentication route keeps its 30/min limit and remaining Retry-After',asy
 });
 
 test('429 without a supplied retry header falls back to a full minute; 503 retains its five-second fallback',async t=>{
-  const {app,inventory}=await buildApp(config);t.after(()=>app.close());
+  const {app,inventory,db}=await buildApp(config);t.after(()=>app.close());
+  t.mock.method(db.pool,'query',async(sql:unknown)=>{
+    assert.equal(sql,'SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1');
+    return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'}],rowCount:1};
+  });
   const method=t.mock.method(inventory,'listPublic',async()=>{throw new ApiError(429,'RATE_LIMITED','Test rate limit.',undefined,true);});
   const limited=await app.inject({method:'GET',url:'/api/v1/vehicles',remoteAddress:'198.51.100.43'});
   assert.equal(limited.statusCode,429);assert.equal(limited.headers['retry-after'],'60');ApiErrorSchema.parse(limited.json());

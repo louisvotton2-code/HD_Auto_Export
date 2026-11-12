@@ -7,6 +7,7 @@ import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
+import { externalDetailCopy } from '../external-detail-copy';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
   publicAvailabilityLabel,
@@ -18,7 +19,9 @@ import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { VehiclePriceValues } from './vehicle-price-values';
 import { VehicleHistory } from './vehicle-history';
+import { VehicleConfiguration } from './vehicle-configuration';
 import { VehicleInspectionReport, VehicleReportLink } from './vehicle-inspection-report';
+import { hasInspectionContent } from '../vehicle-inspection';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -53,7 +56,8 @@ export function PublicVehicleDetail({
   const knownDate = vehicle.facts.manufacturedAt?.value;
   const contactId = `vehicle-contact-${vehicle.id}`;
   const inspection = vehicle.external?.detail?.inspection;
-  const reportId = inspection && (inspection.reportUrl || inspection.entries.length > 0)
+  const hasReport = vehicle.report?.hasReport === true;
+  const reportId = hasInspectionContent(inspection)
     ? `vehicle-report-${vehicle.id}`
     : undefined;
 
@@ -122,7 +126,7 @@ export function PublicVehicleDetail({
             />
 
             <section className={styles.card}>
-              <details className={styles.information}>
+              <details className={styles.information} open>
                 <summary>
                   {copy.basicInformation}
                   <span aria-hidden="true">⌄</span>
@@ -153,6 +157,7 @@ export function PublicVehicleDetail({
                 </p>
               </section>
             )}
+            <VehicleConfiguration configuration={vehicle.configuration} locale={locale} />
             <ExternalVehicleInformation vehicle={vehicle} locale={locale} />
           </div>
 
@@ -218,6 +223,15 @@ export function PublicVehicleDetail({
                 <p>{copy.consultBody}</p>
                 <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" />
                 <p className={styles.smallNote}>{t.contactNote}</p>
+                {hasReport && (
+                  <section className={styles.reportRequest} data-vehicle-report-request>
+                    <h3>
+                      <Icon name="document" size={17} />
+                      {externalDetailCopy[locale].requestReport}
+                    </h3>
+                    <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" purpose="inspection" />
+                  </section>
+                )}
               </div>
             </section>
             {reportId && <VehicleReportLink reportId={reportId} locale={locale} />}

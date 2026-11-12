@@ -4,6 +4,7 @@ import {
   type ExternalImportBatchRequest, type ExternalUpsertCandidate,
 } from './external-admin.js';
 import { PublicVehicleSchema, type Locale, type PublicText, type PublicVehicle } from './public.js';
+import { ExternalInspectionSchema, type ExternalInspection, type ExternalReportAccess } from './external-public.js';
 
 export const externalFixtureTime = '2026-11-09T00:00:00Z';
 const fixtureExpiry = '2099-11-09T00:00:00Z';
@@ -38,6 +39,35 @@ export function makeExternalCandidateFixture(index = 1): ExternalUpsertCandidate
       reportUrl: 'https://reports.example.invalid/synthetic-0001', entries: [{ name: tag('检测范围'), value: tag('合成测试项') }],
     } : null,
   });
+}
+
+/** Structured synthetic inspection; declared evidence times are fixed, not a claim about a live report. */
+export function makeExternalInspectionFixture(status: ExternalReportAccess['status'] = 'unknown'): ExternalInspection {
+  // Even a verified internal observation never changes the public contact-sales projection.
+  void status;
+  return ExternalInspectionSchema.parse({
+    reportUrl: null, reportAccess: { status: 'unknown', url: null, checkedAt: null, expiresAt: null }, entries: [],
+    checks: [{ category: tag('Body inspection', 'en'), defects: 1, groups: [
+      { name: tag('Exterior panels', 'en'), defects: 1, items: [
+        { part: tag('Left front door', 'en'), result: tag('Surface scratch observed', 'en'), ok: false },
+        { part: tag('Right front door', 'en'), result: null, ok: null },
+      ] },
+      { name: tag('Bonnet', 'en'), defects: 0, items: [
+        { part: tag('Bonnet surface', 'en'), result: tag('No defect observed', 'en'), ok: true },
+      ] },
+    ] }],
+    defects: [{ category: tag('Body inspection', 'en'), count: 1, items: [{
+      group: tag('Exterior panels', 'en'), part: tag('Left front door', 'en'), finding: tag('Surface scratch', 'en'),
+      details: [{ text: tag('Synthetic surface scratch description', 'en'), textZh: tag('合成样例：表面划痕说明。') }],
+    }] }],
+  });
+}
+
+export function makeExternalStructuredCandidateFixture(index = 1): ExternalUpsertCandidate {
+  const candidate = makeExternalCandidateFixture(index);
+  const { reportAccess: _evidence, ...inspection } = makeExternalInspectionFixture();
+  return ExternalUpsertCandidateSchema.parse({ ...candidate, history: { ownershipTransfers: 0 },
+    inspection: { ...inspection, hasReport: true, reportUrl: 'https://reports.example.invalid/synthetic-0001' } });
 }
 
 export function makeExternalImportFixture(count = 200): ExternalImportBatchRequest {
@@ -88,6 +118,7 @@ export function makeImportedPublicVehicleFixture(locale: Locale, state: 'supplie
       trim: missing, generation: missing, city: missing, location: missing, platform: ready(platform.name, 'en', 'original'),
       priceIncludes: [], mediaAlt: images.map(image => ({ mediaId: image.id, value: missing })) },
     content: { title: selectedTitle, description }, images,
+    ...(detail ? { report: { hasReport: !!source.inspection?.reportUrl || source.inspection?.hasReport === true } } : {}),
     price: state === 'missing' ? { kind: 'on_request', money: null, includes: [] } : { kind: 'reference', money: { amount: '128000.50', currency: 'CNY' }, includes: [] },
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: null, fetchedAt: externalFixtureTime, publishedAt: externalFixtureTime,
     external: {
@@ -95,10 +126,17 @@ export function makeImportedPublicVehicleFixture(locale: Locale, state: 'supplie
         : state === 'missing' ? [{ field: 'price', code: 'invalid' }, { field: 'images', code: 'missing' }] : [],
       ...(detail ? { detail: {
         original: { title: state === 'conflict' ? null : title, model: modelName ? original(modelName.name) : null, description },
-        specifications: source.specifications, inspection: source.inspection, relatedListingUrls: source.relatedListingUrls,
+        specifications: source.specifications, inspection: source.inspection ? { entries: source.inspection.entries, reportUrl: null } : null, relatedListingUrls: source.relatedListingUrls,
       } } : {}),
     },
   });
+}
+
+export function makeExternalStructuredPublicVehicleFixture(locale: Locale = 'en', status: ExternalReportAccess['status'] = 'unknown'): PublicVehicle {
+  const vehicle = makeImportedPublicVehicleFixture(locale, 'supplier', true);
+  vehicle.external!.detail!.history = { ownershipTransfers: 0 };
+  vehicle.external!.detail!.inspection = makeExternalInspectionFixture(status);
+  return PublicVehicleSchema.parse(vehicle);
 }
 
 export function makeExternalAdminFixture(locale: Locale = 'zh') {
@@ -111,7 +149,7 @@ export function makeExternalAdminFixture(locale: Locale = 'zh') {
   const listing = ExternalListingSchema.parse({
     id: vehicle.id, version: 3, state: 'published', identity: { provider: externalFixtureProvider, platformId: platform.id, externalId: candidate.externalId },
     sourceRevision: candidate.revision, sourceUpdatedAt: null, fetchedAt: candidate.fetchedAt, source: candidate,
-    overrides: { hidden: false, facts: {}, text: [] }, sourceHashes: { title: 'a'.repeat(64), model: 'b'.repeat(64), description: 'c'.repeat(64) }, vehicle,
+    overrides: { hidden: false, facts: {}, text: [] }, report: { hasReport: true, url: candidate.inspection?.reportUrl ?? null }, sourceHashes: { title: 'a'.repeat(64), model: 'b'.repeat(64), description: 'c'.repeat(64) }, vehicle,
   });
   const records = [
     { row: 1, listingId: vehicle.id, operation: 'upsert', status: 'applied', reason: null, issues: [] },

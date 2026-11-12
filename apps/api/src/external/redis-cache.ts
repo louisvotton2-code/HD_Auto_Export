@@ -19,7 +19,7 @@ const encode = (parts: string[]) => Buffer.concat([
 
 /** Dedicated ACL: GET and SET on the namespace's fixed slot keys. No administrative commands. */
 export async function createRedisPublicCacheStore(options: RedisPublicCacheOptions, maxValueBytes: number): Promise<PublicCacheStore> {
-  if (!['127.0.0.1', 'redis-scale'].includes(options.host) || !Number.isInteger(options.port) || options.port < 1 || options.port > 65535 ||
+  if (!['127.0.0.1', 'redis', 'redis-scale'].includes(options.host) || !Number.isInteger(options.port) || options.port < 1 || options.port > 65535 ||
       !/^[A-Za-z0-9_-]{1,64}$/.test(options.username) || !Number.isInteger(maxValueBytes) || maxValueBytes < 1 || maxValueBytes > 1_048_576) throw unavailable();
   const file = await open(options.passwordFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => { throw unavailable(); });
   let password: string;

@@ -21,7 +21,7 @@ export function VehicleEquipment({
 
   return (
     <section className={styles.card} data-vehicle-equipment>
-      <details className={styles.information}>
+      <details className={styles.information} open>
         <summary>
           <strong className={styles.equipmentTitle}>{title}<span className={styles.equipmentCount}>{count}</span></strong>
           <span aria-hidden="true">⌄</span>

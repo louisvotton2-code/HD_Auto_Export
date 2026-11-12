@@ -39,14 +39,72 @@ export const ExternalTaggedTextSchema = z.strictObject({
   contentLocale: LanguageTagSchema,
 });
 export const ExternalDetailEntrySchema = z.strictObject({ name: ExternalTaggedTextSchema, value: ExternalTaggedTextSchema });
-export const ExternalInspectionSchema = z.strictObject({
-  reportUrl: ExternalHttpsUrlSchema.nullable(),
-  entries: z.array(ExternalDetailEntrySchema).max(300),
+/** Explicit source history only. Inspection faults/checked never become history events. */
+export const ExternalHistorySchema = z.strictObject({
+  ownershipTransfers: z.number().int().min(0).max(100).nullable(),
 });
+export type ExternalHistory = z.infer<typeof ExternalHistorySchema>;
+
+const InspectionCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+export const ExternalInspectionCheckItemSchema = z.strictObject({
+  part: ExternalTaggedTextSchema, result: ExternalTaggedTextSchema.nullable(), ok: z.boolean().nullable(),
+});
+export const ExternalInspectionCheckGroupSchema = z.strictObject({
+  name: ExternalTaggedTextSchema, defects: InspectionCountSchema,
+  items: z.array(ExternalInspectionCheckItemSchema).max(1000),
+});
+export const ExternalInspectionCheckSchema = z.strictObject({
+  category: ExternalTaggedTextSchema, defects: InspectionCountSchema,
+  groups: z.array(ExternalInspectionCheckGroupSchema).max(100),
+});
+export const ExternalInspectionDefectDetailSchema = z.strictObject({
+  text: ExternalTaggedTextSchema.nullable(), textZh: ExternalTaggedTextSchema.nullable(),
+}).refine(value => value.text !== null || value.textZh !== null, 'A defect detail needs at least one safe text.');
+export const ExternalInspectionDefectItemSchema = z.strictObject({
+  group: ExternalTaggedTextSchema, part: ExternalTaggedTextSchema, finding: ExternalTaggedTextSchema,
+  details: z.array(ExternalInspectionDefectDetailSchema).max(100),
+});
+export const ExternalInspectionDefectSchema = z.strictObject({
+  category: ExternalTaggedTextSchema, count: InspectionCountSchema,
+  items: z.array(ExternalInspectionDefectItemSchema).max(1000),
+});
+export const EXTERNAL_INSPECTION_MAX_LEAVES = 1000;
+/** Shared by candidates and public output. Photos and other raw report fields are deliberately absent. */
+export const ExternalInspectionContentSchema = z.strictObject({
+  entries: z.array(ExternalDetailEntrySchema).max(300),
+  checks: z.array(ExternalInspectionCheckSchema).max(30).optional(),
+  defects: z.array(ExternalInspectionDefectSchema).max(30).optional(),
+}).superRefine((value, ctx) => {
+  let leaves = 0;
+  for (const category of value.checks ?? []) for (const group of category.groups) leaves += group.items.length;
+  for (const category of value.defects ?? []) for (const item of category.items) leaves += 1 + item.details.length;
+  if (leaves > EXTERNAL_INSPECTION_MAX_LEAVES) ctx.addIssue({ code: 'custom', message: 'Inspection content exceeds the total leaf limit.' });
+});
+
+/** Internal evidence model only; public inspection DTOs never expose these verified URLs. */
+export const ExternalReportAccessSchema = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.literal('unknown'), url: z.null(), checkedAt: z.null(), expiresAt: z.null() }),
+  z.strictObject({ status: z.literal('available'), url: ExternalHttpsUrlSchema, checkedAt: ExternalTimestampSchema, expiresAt: ExternalTimestampSchema }),
+  z.strictObject({ status: z.literal('unavailable'), url: z.null(), checkedAt: ExternalTimestampSchema, expiresAt: ExternalTimestampSchema }),
+  z.strictObject({ status: z.literal('expired'), url: z.null(), checkedAt: ExternalTimestampSchema, expiresAt: ExternalTimestampSchema }),
+]).refine(value => value.status === 'unknown' || Date.parse(value.expiresAt) > Date.parse(value.checkedAt),
+  'Report evidence must expire after it was checked.');
+export type ExternalReportAccess = z.infer<typeof ExternalReportAccessSchema>;
+/** A presence flag invites contact with sales; false is absence of evidence, not evidence of absence. */
+export const PublicReportSchema = z.strictObject({ hasReport: z.boolean() });
+export type PublicReport = z.infer<typeof PublicReportSchema>;
+export const PublicReportAccessSchema = z.strictObject({ status: z.literal('unknown'), url: z.null(), checkedAt: z.null(), expiresAt: z.null() });
+export const ExternalInspectionSchema = ExternalInspectionContentSchema.safeExtend({
+  // Retain the legacy slot as null. Original URLs belong only to authenticated admin details.
+  reportUrl: z.null(),
+  reportAccess: PublicReportAccessSchema.optional(),
+});
+export type ExternalInspection = z.infer<typeof ExternalInspectionSchema>;
 export const ExternalPublicDetailSchema = z.strictObject({
   original: z.strictObject({ title: PublicTextSchema.nullable(), model: PublicTextSchema.nullable(), description: PublicTextSchema.nullable() }),
   specifications: z.array(ExternalDetailEntrySchema).max(500),
   inspection: ExternalInspectionSchema.nullable(),
+  history: ExternalHistorySchema.nullable().optional(),
   relatedListingUrls: z.array(ExternalHttpsUrlSchema).max(20),
 });
 export type ExternalPublicDetail = z.infer<typeof ExternalPublicDetailSchema>;

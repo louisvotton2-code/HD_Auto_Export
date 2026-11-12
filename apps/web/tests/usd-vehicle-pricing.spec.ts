@@ -86,7 +86,12 @@ test('USD boundaries are inclusive on the projected cents, while original reques
   const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
   for (const resource of ['vehicles', 'vehicle-filters']) {
     expect(events.requests).toEqual(expect.arrayContaining([expect.objectContaining({
-      path: `/api/v1/${resource}`,
+      path: `/internal/public-catalog/${resource}`,
+      serviceAuthenticated: true,
+      hasVisitorIp: false,
+      hasCookie: false,
+      hasAuthorization: false,
+      hasRequestId: false,
       query: expect.objectContaining({ q, priceView: 'usd', priceCurrency: 'USD', priceMin: '999.50', priceMax: '1000.49' }),
     })]));
   }

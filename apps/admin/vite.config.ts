@@ -1,6 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-const proxy = { '/api': { target: process.env.ADMIN_API_TARGET ?? 'http://127.0.0.1:3320', changeOrigin: false } };
+const proxy = {
+  '/api': { target: process.env.ADMIN_API_TARGET ?? 'http://127.0.0.1:3320', changeOrigin: false },
+  ...(process.env.ADMIN_WEB_TARGET ? {
+    '/staff': { target: process.env.ADMIN_WEB_TARGET, changeOrigin: false },
+    '/_next': { target: process.env.ADMIN_WEB_TARGET, changeOrigin: false },
+  } : {}),
+};
 
 export default defineConfig({
   base: '/admin/',

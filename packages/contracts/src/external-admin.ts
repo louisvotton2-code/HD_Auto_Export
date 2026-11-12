@@ -1,10 +1,16 @@
 import { z } from 'zod';
-import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
+import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
-  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
+  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalHistorySchema, ExternalHttpsUrlSchema, ExternalInspectionContentSchema,
+  ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
 } from './external-public.js';
 import { PublicVehicleSchema } from './public.js';
+
+/** Authenticated detail only. Server source profiles additionally restrict the exact URL host. */
+export const AdminReportSchema = z.strictObject({ hasReport: z.boolean(), url: ExternalHttpsUrlSchema.nullable() })
+  .refine(value => value.url === null || value.hasReport, 'A report link implies report presence.');
+export type AdminReport = z.infer<typeof AdminReportSchema>;
 
 export const EXTERNAL_TRIAL_SIZE = 100;
 export const EXTERNAL_TRIAL_CHARACTER_LIMIT = 100_000;
@@ -63,7 +69,9 @@ export const ExternalUpsertCandidateSchema = CandidateIdentitySchema.extend({
   copy: ExternalCopySchema,
   images: z.array(RemoteImageCandidateSchema).max(30).refine(images => new Set(images.map(image => image.sourceMediaId)).size === images.length),
   specifications: z.array(ExternalDetailEntrySchema).max(500),
-  inspection: z.strictObject({ reportUrl: candidateUrl.nullable(), entries: z.array(ExternalDetailEntrySchema).max(300) }).nullable(),
+  history: ExternalHistorySchema.nullable().optional(),
+  // A source may submit content and a candidate URL, never server verification evidence.
+  inspection: ExternalInspectionContentSchema.safeExtend({ reportUrl: candidateUrl.nullable(), hasReport: z.boolean().optional() }).nullable(),
 });
 export const ExternalCandidateSchema = z.discriminatedUnion('operation', [
   ExternalUpsertCandidateSchema,
@@ -135,9 +143,57 @@ export const ExternalListingSchema = z.strictObject({
   overrides: ExternalOverridesSchema,
   sourceHashes: z.strictObject({ title: SourceHashSchema.nullable(), model: SourceHashSchema.nullable(), description: SourceHashSchema.nullable() }),
   vehicle: PublicVehicleSchema.nullable(),
+  report: AdminReportSchema.optional(),
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);
+export const ExternalListingListQuerySchema = ExternalAdminPageQuerySchema.extend({
+  q: z.string().trim().max(2048).regex(/^[^\u0000]*$/).optional(),
+  platformId: IdSchema.optional(),
+  state: ExternalListingSchema.shape.state.optional(),
+  make: IdSchema.optional(),
+  model: IdSchema.optional(),
+  powertrain: PowertrainSchema.optional(),
+  yearMin: VehicleFactsSchema.shape.modelYear.unwrap().optional(),
+  yearMax: VehicleFactsSchema.shape.modelYear.unwrap().optional(),
+  mileageMax: VehicleFactsSchema.shape.mileageKm.unwrap().optional(),
+  locale: LocaleSchema.default('zh'),
+}).refine(query => !query.model || !!query.make, { path: ['model'], message: 'Select a make before a model' })
+  .refine(query => query.yearMin === undefined || query.yearMax === undefined || query.yearMin <= query.yearMax,
+    { path: ['yearMax'], message: 'Maximum year must not precede minimum year' });
+export type ExternalListingListQuery = z.infer<typeof ExternalListingListQuerySchema>;
+export const ExternalListingOverviewQuerySchema = z.strictObject({ make: IdSchema.optional() });
+export const ExternalListingOverviewResponseSchema = responseSchema(z.strictObject({
+  total: CountSchema,
+  published: CountSchema,
+  hidden: CountSchema,
+  withdrawn: CountSchema,
+  platforms: z.array(IdSchema),
+  makes: z.array(NamedValueSchema),
+  models: z.array(NamedValueSchema),
+  years: z.array(VehicleFactsSchema.shape.modelYear.unwrap()),
+}));
+
+export const ExternalListingListFactsSchema = ExternalFactsSchema.pick({
+  make: true, model: true, modelYear: true, mileageKm: true, powertrain: true,
+});
+export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
+  id: ExternalListingIdSchema,
+  version: ListingVersionSchema,
+  listingUrl: candidateUrl.nullable(),
+  title: shortText(500).nullable(),
+  state: ExternalListingSchema.shape.state,
+  fetchedAt: TimestampSchema,
+  sourceUpdatedAt: TimestampSchema.nullable(),
+  publishedAt: TimestampSchema.nullable(),
+  hasOverrides: z.boolean(),
+  facts: ExternalListingListFactsSchema.nullable().optional(),
+});
+export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
+export const ExternalListingListResponseSchema = responseSchema(z.strictObject({
+  ...pageFields, items: z.array(ExternalListingSummarySchema).max(100),
+}));
+
 export const ExternalOverrideResponseSchema = responseSchema(ExternalListingSchema.pick({ id: true, version: true, state: true }));
 export const ExternalBulkVisibilityRequestSchema = z.strictObject({
   hidden: z.boolean(),
@@ -177,3 +233,25 @@ export const ExternalStatusResponseSchema = responseSchema(z.strictObject({
   sync: z.literal('manual_import_only'), translation: z.literal('dry_run'),
   lastBatch: ExternalBatchSchema.nullable(), batchCharacterLimit: z.literal(EXTERNAL_TRIAL_CHARACTER_LIMIT), accountFreeRemaining: z.null(),
 }));
+
+export const ExternalProviderAccountSchema = z.strictObject({
+  state: z.enum(['not_configured', 'ok', 'unauthorized', 'forbidden', 'rate_limited', 'unavailable', 'invalid_response']),
+  checkedAt: TimestampSchema.nullable(),
+  plan: z.string().min(1).max(80).nullable(),
+  expiresAt: TimestampSchema.nullable(),
+  sources: z.array(IdSchema).max(20),
+  dailyLimit: CountSchema.nullable(),
+  remainingToday: CountSchema.nullable(),
+});
+export type ExternalProviderAccount = z.infer<typeof ExternalProviderAccountSchema>;
+export const ExternalProviderStatusSchema = z.strictObject({
+  provider: z.literal('chinacarapi'),
+  worker: z.literal('not_configured'),
+  lastBatch: ExternalBatchSchema.nullable(),
+  lastImportAt: TimestampSchema.nullable(),
+  lastFetchedAt: TimestampSchema.nullable(),
+  lastSupplierUpdatedAt: TimestampSchema.nullable(),
+  account: ExternalProviderAccountSchema,
+});
+export type ExternalProviderStatus = z.infer<typeof ExternalProviderStatusSchema>;
+export const ExternalProviderStatusResponseSchema = responseSchema(ExternalProviderStatusSchema);

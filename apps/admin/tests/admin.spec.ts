@@ -1,3 +1,14 @@
+import './report-cases';
+import './workspace-layout-cases';
+import './workspace-cases';
+import './bundle-cases';
+import './configuration-cases';
+import './publication-tab-cases';
+import './publication-preview-deadline-cases';
+import './publication-readiness-cases';
+import './date-picker-cases';
+import './home-order-cases';
+import './external-inline-cases';
 import './ux-cases';
 import './lifecycle-cases';
 import './translation-cases';
@@ -273,12 +284,12 @@ test('public catalog scopes shared model IDs to their brand and normalizes model
       meta: { requestId: 'public-model-scope', catalog: 'curated', total: filtered.length, totalKind: 'exact', accessibleTotal: filtered.length, dataAsOf: '2026-11-08T00:00:00Z', freshness: 'fresh' },
     });
   });
-  await page.goto('/admin/public-catalog?model=shared&page=2&powertrain=petrol');
+  await page.goto('/admin/public-catalog/verification?model=shared&page=2&powertrain=petrol');
   const brandSelect = page.getByRole('combobox', { name: '品牌分类', exact: true });
   const modelSelect = page.getByRole('combobox', { name: '车型分类', exact: true });
   await expect(modelSelect).toBeDisabled();
   await expect(page.getByText('请先选择品牌，再选择该品牌下的车型。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL(/public-catalog\?powertrain=petrol$/);
+  await expect(page).toHaveURL(/public-catalog\/verification\?powertrain=petrol$/);
   await expect(page.getByText('MODEL-SCOPE-A', { exact: true })).toBeVisible();
   await expect(page.getByText('MODEL-SCOPE-B', { exact: true })).toBeVisible();
   expect(queries.every(query => !query.has('model'))).toBe(true);

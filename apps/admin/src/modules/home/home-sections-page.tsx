@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useBlocker } from 'react-router-dom';
 import { Alert, App, Badge, Button, Card, Empty, Image, Input, Modal, Pagination, Select, Space, Spin, Table, Tag, Typography } from 'antd';
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import {
   AdminHomeSectionsResponseSchema, AdminVehicleListSchema, AdminVehicleResponseSchema, SaveHomeSectionsRequestSchema,
   type AdminHomeSection, type AdminHomeSections, type AdminVehicle, type AdminVehicleList,
@@ -9,7 +9,8 @@ import {
 import { PublicHomeSectionsSchema, type Locale, type PublicHomeSections } from '@hd/contracts/public';
 import { ApiClientError, request } from '../../shared/api/client';
 import styles from './home-sections.module.css';
-import { addHomeVehicleId, isHomeEligible, moveHomeVehicleId } from './home-sections-model';
+import { addHomeVehicleId, isHomeEligible, reorderHomeVehicleId } from './home-sections-model';
+import { HomeVehicleOrder } from './home-vehicle-order';
 
 const { Title, Text, Paragraph } = Typography;
 const localeLabels = { zh: '中文', en: '英文', ru: '俄文' };
@@ -26,6 +27,9 @@ export function HomeSectionsPage() {
   const [draft, setDraft] = useState<AdminHomeSections | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [ordering, setOrdering] = useState<number | null>(null);
+  const orderingRef = useRef<number | null>(null);
+  const editingLocked = saving || ordering !== null;
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
   const [latest, setLatest] = useState<AdminHomeSections | null>(null);
@@ -124,18 +128,21 @@ export function HomeSectionsPage() {
   useEffect(() => { publicSequence.current += 1; setPublicResult(null); setPublicError(''); setPublicLoading(false); }, [publicLocale, base?.version]);
 
   function updateSection(index: number, update: (section: AdminHomeSection) => AdminHomeSection) {
+    if (inFlight.current || orderingRef.current !== null) return;
     setDraft(current => current ? { ...current, sections: current.sections.map((section, position) => position === index ? update(section) : section) } : current);
     setFieldErrors([]);
   }
-  function addVehicle(index: number, vehicle: AdminVehicle) {
-    if (saving || !isHomeEligible(vehicle)) return;
-    updateSection(index, section => ({ ...section, vehicleIds: addHomeVehicleId(section.vehicleIds, vehicle) }));
+  function addVehicle(index: number, vehicle: AdminVehicle, placement: 'start' | 'end' = 'end') {
+    const section = draft?.sections[index];
+    if (saving || inFlight.current || orderingRef.current !== null || !section || !isHomeEligible(vehicle) || section.vehicleIds.includes(vehicle.id) || section.vehicleIds.length >= 30) return;
+    updateSection(index, current => ({ ...current, vehicleIds: addHomeVehicleId(current.vehicleIds, vehicle, placement) }));
+    void message.success(`${vehicle.stockCode} 已加入区块 ${index + 1}${placement === 'start' ? '顶部' : '末尾'}，保存后生效。`);
   }
-  function move(index: number, position: number, direction: -1 | 1) {
-    updateSection(index, section => ({ ...section, vehicleIds: moveHomeVehicleId(section.vehicleIds, position, direction) }));
+  function move(index: number, id: string, target: number) {
+    updateSection(index, section => ({ ...section, vehicleIds: reorderHomeVehicleId(section.vehicleIds, id, target) }));
   }
   async function save() {
-    if (!draft || inFlight.current) return;
+    if (!draft || inFlight.current || orderingRef.current !== null) return;
     setError(''); setFieldErrors([]);
     const parsed = SaveHomeSectionsRequestSchema.safeParse(draft);
     if (!parsed.success) {
@@ -172,7 +179,7 @@ export function HomeSectionsPage() {
     } finally { inFlight.current = false; if (mounted.current) setSaving(false); }
   }
   async function reloadLatest() {
-    if (inFlight.current || reloadConfirming.current) return;
+    if (inFlight.current || reloadConfirming.current || orderingRef.current !== null) return;
     reloadConfirming.current = true;
     const dialog = modal.confirm({
       title: '放弃本地修改并载入最新配置？', content: '当前未保存的区块标题、车辆选择和顺序会被服务端最新配置替换。', okText: '载入最新配置', cancelText: '继续编辑',
@@ -215,28 +222,35 @@ export function HomeSectionsPage() {
     {error && <Alert type="error" showIcon title={error} description={fieldErrors.length ? <ul>{fieldErrors.map(field => <li key={field}>{field}</li>)}</ul> : undefined} action={latest ? <Button onClick={() => void reloadLatest()}>比较后载入最新配置</Button> : undefined} />}
     {latest && <Alert type="warning" showIcon title={`服务端已有配置版本 ${latest.version}，当前编辑已保留`} description={<Space orientation="vertical" size={6}>{latest.sections.map((section, index) => <Text key={section.id}>最新区块 {index + 1}：{section.title.zh} / {section.title.en} / {section.title.ru} · {section.vehicleIds.length} 辆</Text>)}</Space>} action={<Button onClick={() => void reloadLatest()}>放弃本地修改并载入最新</Button>} />}
     {Object.keys(referenceErrors).length > 0 && <Alert type="warning" title="部分车辆资料未能读取" action={<Button onClick={() => setReferenceRefresh(value => value + 1)} loading={referencesLoading}>重新核对</Button>} />}
-    {draft.sections.map((section, index) => <Card key={section.id} title={<Space wrap style={{ maxWidth: '100%' }}><Badge count={index + 1} color="#315b50" /><span>车源区块 {index + 1}</span><Tag>{section.vehicleIds.length} / 30 辆</Tag></Space>} extra={<Button icon={<PlusOutlined />} disabled={saving || section.vehicleIds.length >= 30} onClick={() => { setSelecting(index); setCandidatePage(1); setSearchText(''); setCandidateQuery(''); }}>选择车辆</Button>}>
-      <div className={styles.titles}>{(['zh', 'en', 'ru'] as const).map(locale => <label key={locale}><Text strong>{localeLabels[locale]}标题 <Text type="danger">*</Text></Text><Input aria-label={`区块 ${index + 1}${localeLabels[locale]}标题`} value={section.title[locale]} maxLength={120} disabled={saving} placeholder={`输入${localeLabels[locale]}区块标题`} onChange={event => updateSection(index, current => ({ ...current, title: { ...current.title, [locale]: event.target.value } }))} /></label>)}</div>
-      {section.vehicleIds.length ? <Table rowKey="id" size="middle" pagination={false} scroll={{ x: 650 }} dataSource={section.vehicleIds.map((id, position) => ({ id, position }))} columns={[
-        { title: '顺序', width: 70, render: (_, row) => <Text type="secondary">{String(row.position + 1).padStart(2, '0')}</Text> },
-        { title: '车辆', render: (_, row) => vehicleCell(row.id) },
-        { title: '区块操作', width: 245, render: (_, row) => <Space><Button aria-label={`区块 ${index + 1}上移车辆 ${row.position + 1}`} icon={<ArrowUpOutlined />} disabled={saving || row.position === 0} onClick={() => move(index, row.position, -1)} /><Button aria-label={`区块 ${index + 1}下移车辆 ${row.position + 1}`} icon={<ArrowDownOutlined />} disabled={saving || row.position === section.vehicleIds.length - 1} onClick={() => move(index, row.position, 1)} /><Button danger type="text" icon={<DeleteOutlined />} disabled={saving} onClick={() => updateSection(index, current => ({ ...current, vehicleIds: current.vehicleIds.filter(id => id !== row.id) }))}>从区块移除</Button></Space> },
-      ]} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未选择车辆，公开首页会隐藏空区块"><Button onClick={() => { setSelecting(index); setCandidatePage(1); setSearchText(''); setCandidateQuery(''); }} disabled={saving}>选择推荐车辆</Button></Empty>}
+    {draft.sections.map((section, index) => <Card key={section.id} title={<Space wrap style={{ maxWidth: '100%' }}><Badge count={index + 1} color="#315b50" /><span>车源区块 {index + 1}</span><Tag>{section.vehicleIds.length} / 30 辆</Tag></Space>} extra={<Button icon={<PlusOutlined />} disabled={editingLocked || section.vehicleIds.length >= 30} onClick={() => { setSelecting(index); setCandidatePage(1); setSearchText(''); setCandidateQuery(''); }}>选择车辆</Button>}>
+      <div className={styles.titles}>{(['zh', 'en', 'ru'] as const).map(locale => <label key={locale}><Text strong>{localeLabels[locale]}标题 <Text type="danger">*</Text></Text><Input aria-label={`区块 ${index + 1}${localeLabels[locale]}标题`} value={section.title[locale]} maxLength={120} disabled={editingLocked} placeholder={`输入${localeLabels[locale]}区块标题`} onChange={event => updateSection(index, current => ({ ...current, title: { ...current.title, [locale]: event.target.value } }))} /></label>)}</div>
+      {section.vehicleIds.length ? <HomeVehicleOrder sectionNumber={index + 1} ids={section.vehicleIds}
+        disabled={saving || (ordering !== null && ordering !== index)} renderVehicle={vehicleCell}
+        vehicleLabel={id => vehicleCache[id]?.stockCode ?? id}
+        onMove={(id, target) => move(index, id, target)}
+        onRemove={id => updateSection(index, current => ({ ...current, vehicleIds: current.vehicleIds.filter(value => value !== id) }))}
+        onBusyChange={active => { orderingRef.current = active ? index : null; setOrdering(active ? index : null); }}
+      /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未选择车辆，公开首页会隐藏空区块"><Button onClick={() => { setSelecting(index); setCandidatePage(1); setSearchText(''); setCandidateQuery(''); }} disabled={editingLocked}>选择推荐车辆</Button></Empty>}
     </Card>)}
-    <div className={styles.saveBar}><Space><Badge status={dirty ? 'processing' : 'default'} /><Text>{dirty ? '修改尚未保存' : '配置已与服务端同步'}</Text></Space><Space wrap><Button onClick={() => void reloadLatest()} disabled={saving || !dirty}>放弃本地修改</Button><Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty || Boolean(latest)} onClick={() => void save()}>保存首页配置</Button></Space></div>
+    <div className={styles.saveBar}><Space><Badge status={dirty ? 'processing' : 'default'} /><Text>{dirty ? '修改尚未保存' : '配置已与服务端同步'}</Text></Space><Space wrap><Button onClick={() => void reloadLatest()} disabled={editingLocked || !dirty}>放弃本地修改</Button><Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!dirty || editingLocked || Boolean(latest)} onClick={() => void save()}>保存首页配置</Button></Space></div>
     <Card title="核对公开首页数据" extra={<Space wrap><Select aria-label="首页公开语言" value={publicLocale} style={{ width: 100 }} onChange={setPublicLocale} options={Object.entries(localeLabels).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} loading={publicLoading} onClick={() => void readPublic()}>读取公开首页</Button></Space>}>
       <Paragraph type="secondary">这里显示公共接口的实际返回。空区块不会出现在公开数据中。</Paragraph>
       {publicError && <Alert type="error" title={publicError} />}
       {publicResult && (publicResult.sections.length ? <div className={styles.publicSections}>{publicResult.sections.map(section => <Card size="small" key={section.id} title={section.title}><Space orientation="vertical">{section.vehicles.map(vehicle => <Space key={vehicle.id} wrap><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text>{String(vehicle.source.kind) === 'demo' && <Tag color="gold">展示样例，非实际库存</Tag>}{vehicle.source.kind === 'external' && <Tag color="blue">外部挂牌 · {vehicle.source.platform.name}</Tag>}</Space>)}</Space></Card>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可公开的首页区块" />)}
     </Card>
     <Modal title="选择首页推荐车辆" open={selecting !== null} width={900} footer={<Button onClick={() => setSelecting(null)}>完成选择</Button>} onCancel={() => setSelecting(null)} destroyOnHidden>
-      <Paragraph type="secondary">搜索全部已发布车辆，按页查看。真实车辆需可售，展示样例与外部挂牌会明确标注；选择后可在区块内调整顺序。</Paragraph>
+      <Paragraph type="secondary">搜索全部已发布车辆，按页查看。“加入顶部”让新车排在第一位，“加入此区块”追加到末尾；选择后仍可调整顺序并统一保存。</Paragraph>
       <Input.Search aria-label="查找推荐车辆" placeholder="搜索车号、品牌、车型或标题" maxLength={100} value={searchText} onChange={event => setSearchText(event.target.value)} onSearch={value => { setCandidateQuery(value.trim()); setCandidatePage(1); }} enterButton="搜索" allowClear />
       {candidateError && <Alert type="error" title={candidateError} />}
       <Table<AdminVehicle> rowKey="id" size="small" loading={candidateLoading} pagination={false} scroll={{ x: 610 }} dataSource={candidates?.items ?? []} locale={{ emptyText: candidateError ? '读取失败，请重新搜索' : '此页没有已发布车辆' }} columns={[
         { title: '车辆', render: (_, vehicle) => vehicleCell(vehicle.id) },
         { title: '推荐条件', width: 130, render: (_, vehicle) => <Tag color={isHomeEligible(vehicle) ? 'success' : 'default'}>{isDemo(vehicle) ? '展示样例' : vehicle.draft.source.kind === 'external' ? '外部挂牌 · 库存未知' : vehicle.availability === 'available' ? '可售' : '库存不符合'}</Tag> },
-        { title: '选择', width: 130, render: (_, vehicle) => { const chosen = selecting !== null && draft.sections[selecting]?.vehicleIds.includes(vehicle.id); return <Button size="small" type={chosen ? 'default' : 'primary'} disabled={Boolean(chosen) || saving || !isHomeEligible(vehicle) || (selecting !== null && draft.sections[selecting]!.vehicleIds.length >= 30)} onClick={() => { if (selecting !== null) addVehicle(selecting, vehicle); }}>{chosen ? '已加入区块' : '加入此区块'}</Button>; } },
+        { title: '选择', width: 130, render: (_, vehicle) => {
+          const chosen = selecting !== null && draft.sections[selecting]?.vehicleIds.includes(vehicle.id);
+          const cannotAdd = Boolean(chosen) || editingLocked || !isHomeEligible(vehicle) || (selecting !== null && draft.sections[selecting]!.vehicleIds.length >= 30);
+          return <Space orientation="vertical" size={4}><Button size="small" type={chosen ? 'default' : 'primary'} disabled={cannotAdd} onClick={() => { if (selecting !== null) addVehicle(selecting, vehicle); }}>{chosen ? '已加入区块' : '加入此区块'}</Button>
+            {!chosen && <Button size="small" disabled={cannotAdd} onClick={() => { if (selecting !== null) addVehicle(selecting, vehicle, 'start'); }}>加入顶部</Button>}</Space>;
+        } },
       ]} />
       <div className={styles.candidatePagination}><Text type="secondary">共 {candidates?.total ?? 0} 辆已发布车辆，按当前条件查询</Text><Pagination current={candidatePage} pageSize={12} total={candidates?.total ?? 0} showSizeChanger={false} onChange={setCandidatePage} /></div>
     </Modal>

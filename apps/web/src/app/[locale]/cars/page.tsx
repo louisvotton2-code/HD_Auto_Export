@@ -4,11 +4,10 @@ import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
 import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
-import { PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
+import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
 import {
   getPublicCatalog,
   getPublicFilters,
-  parseCatalogPageQuery,
   publicRetryAfter,
 } from '@/modules/vehicles/server';
 import { localizedAlternates } from '@/shared/config/site';
@@ -33,8 +32,10 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   await connection();
-  const query = parseCatalogPageQuery(await searchParams, locale);
-  if (!query) notFound();
+  const request = parseCatalogPageRequest(await searchParams, locale);
+  if (!request) notFound();
+  if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
+  const { query } = request;
   const [result, filters] = await Promise.allSettled([
     getPublicCatalog(query),
     getPublicFilters(locale, query),

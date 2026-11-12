@@ -1,0 +1,139 @@
+.preview {
+  min-height: 0;
+  padding-block: 24px 48px;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 24px;
+  align-items: start;
+}
+.content {
+  min-width: 0;
+}
+.draft {
+  margin: 0 0 12px;
+  color: #dba171;
+  font-size: 12px;
+  letter-spacing: .04em;
+}
+.textState {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0 12px;
+  color: #aaa29b;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+.textState bdi {
+  color: #d3cbc3;
+}
+.review {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid #b6774955;
+  border-radius: 6px;
+  color: #e2ba94;
+  background: #b6774914;
+}
+.review[data-review-status='approved'] {
+  border-color: #4a886355;
+  color: #a0d2b2;
+  background: #4a886314;
+}
+.review[data-review-status='stale'] {
+  border-color: #da797255;
+  color: #efb2ab;
+  background: #da797214;
+}
+.imageNote {
+  margin: 12px 0 0;
+  color: #e2ba94;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.facts dd > .textState {
+  justify-content: flex-end;
+  margin-block: 5px 0;
+}
+.description {
+  padding: 0 20px 18px;
+}
+.description p {
+  margin: 0;
+  color: #d2cbc4;
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.description .textState {
+  margin-top: 0;
+}
+.price {
+  position: sticky;
+  top: 20px;
+  min-width: 0;
+  padding: 20px;
+}
+.price h2 {
+  margin: 0 0 12px;
+  color: #bdb1a5;
+  font-size: 13px;
+  font-weight: 500;
+}
+.amounts {
+  color: #f5f0eb;
+  overflow-wrap: anywhere;
+}
+.amounts > strong {
+  display: block;
+  font-size: 26px;
+  line-height: 1.4;
+}
+.priceNote {
+  margin: 14px 0 0;
+  color: #aaa29b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.includes {
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid #b6774933;
+}
+.includes h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.includes ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #c9bfb6;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.includes li {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .price {
+    position: static;
+  }
+}
+@media (max-width: 639px) {
+  .preview {
+    padding-block: 18px 30px;
+  }
+  .facts dd > .textState {
+    justify-content: flex-start;
+  }
+}

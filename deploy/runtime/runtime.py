@@ -48,6 +48,28 @@ def scale_database(values, project):
         raise ValueError('Use a non-root operator and a dedicated scale database, project and loopback bind address')
     return name
 
+def validate_production(values, root):
+    if root.resolve()!=root or any(p.is_symlink() for p in (root,*root.parents)):
+        raise ValueError('Production DATA_ROOT must use its canonical non-symlink path')
+    if values.get('HD_DEPLOYMENT_ENV') not in {'production','local','test'} or not re.fullmatch(r'hd_release_[a-f0-9]{12,40}',values.get('HD_DATABASE_NAME','')):
+        raise ValueError('Production profile needs explicit release database and deployment identity')
+    if not re.fullmatch(r'[a-f0-9]{40,64}|sha256:[a-f0-9]{64}',values.get('RELEASE_ID','')):
+        raise ValueError('Production profile requires an immutable release identity')
+    if not re.fullmatch(r'hd:catalog:[a-z0-9-]{1,48}',values.get('OPS_PUBLIC_CACHE_NAMESPACE','')):
+        raise ValueError('Production cache namespace must be explicit')
+    paths=[]
+    for key in ['POSTGRES_DATA_ROOT','MEDIA_DATA_ROOT','RELEASE_SECRETS_ROOT']:
+        path=pathlib.Path(values.get(key,''))
+        if not path.is_absolute() or path==pathlib.Path('/') or path.resolve()!=path or any(p.is_symlink() for p in (path,*path.parents)):
+            raise ValueError('Production storage paths must be explicit absolute non-symlink paths')
+        paths.append(path)
+    if paths[0]!=root/'postgres':
+        raise ValueError('Release profile must retain the validated existing physical cluster')
+    if any(a==b or a in b.parents or b in a.parents for i,a in enumerate(paths) for b in paths[i+1:]):
+        raise ValueError('Database, media and release secrets paths must be separate')
+    if any(path==old or old in path.parents or path in old.parents for path in paths[1:] for old in [root/'media',root/'secrets']):
+        raise ValueError('Use new media and per-release credentials, retaining original data privately')
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--env',type=pathlib.Path,required=True)
@@ -55,19 +77,27 @@ def main():
     p.add_argument('--compose-override',type=pathlib.Path,action='append',default=[])
     p.add_argument('action',choices=['init','backup','restore','validate'])
     p.add_argument('--backup',type=pathlib.Path)
+    p.add_argument('--keep-stopped',action='store_true',help='Backup maintenance window: never restart paused writers')
     a=p.parse_args(); values,root=config(a.env)
     app_uid,app_gid=validate_operator(values)
     if not re.fullmatch('[a-z0-9][a-z0-9_-]+',a.project): raise ValueError('Invalid project')
     # Clear inherited Compose overrides: the selected env file is the source of truth.
     env=os.environ.copy()
     for key in values: env.pop(key,None)
+    # A shell override must never make Compose connect to a different database than pg_dump.
+    for key in ['HD_DATABASE_NAME','HD_DEPLOYMENT_ENV','POSTGRES_DATA_ROOT','OPS_PUBLIC_CACHE_NAMESPACE','MEDIA_DATA_ROOT','RELEASE_SECRETS_ROOT']:env.pop(key,None)
     dc=['docker','compose','--project-name',a.project,'--env-file',str(a.env.resolve()),'-f',str(HERE/'compose.yaml')]
     scale=False
-    database='hd_auto'
+    database=values.get('HD_DATABASE_NAME','hd_auto')
+    if not re.fullmatch(r'hd_auto|hd_release_[a-f0-9]{12,40}',database): raise ValueError('Invalid release database target')
+    if a.keep_stopped and a.action!='backup': raise ValueError('--keep-stopped is only valid for backup')
     for override in a.compose_override:
+        if override.name=='compose.production.yaml':
+            validate_production(values,root)
         if override.name=='compose.proxy.yaml': validate_proxy(values)
         if override.name=='compose.domains.yaml': validate_domains(values)
         if override.name=='compose.ops-scale.yaml':
+            if 'HD_DATABASE_NAME' in values: raise ValueError('Synthetic scale uses its dedicated database configuration')
             scale=True
             database=scale_database(values,a.project)
         dc += ['-f',str(override.resolve())]
@@ -77,6 +107,11 @@ def main():
     def compose(*args,**kw): return run(dc+list(args),env=env,**kw)
     if a.action=='validate':
         compose('config','--quiet');print('Runtime configuration validated.');return
+    media_root=pathlib.Path(values.get('MEDIA_DATA_ROOT',str(root/'media')))
+    if not media_root.is_absolute() or media_root==pathlib.Path('/') or media_root.is_symlink(): raise ValueError('Use an absolute non-symlink media directory')
+    if a.action in {'init','restore'} and media_root!=root/'media': raise ValueError('Legacy physical init/restore cannot target release media directories')
+    if a.action in {'init','restore'} and not scale and database!='hd_auto':
+        raise ValueError('Existing-cluster release databases require the explicit release-db tool, never init/restore of the physical PG directory')
     if a.action=='init':
         if root.exists(): raise ValueError('DATA_ROOT already exists; initialization never overwrites data')
         root.mkdir(parents=True,mode=0o700)
@@ -110,20 +145,21 @@ def main():
                     compose('stop','--timeout','30','worker')
                 if 'api' in running: paused.append('api')
                 compose('stop','--timeout','30','api')
-                if scale:
+                if scale or a.keep_stopped:
                     clients=compose('exec','-T','postgres','psql','-X','-U','postgres','-d',database,'-Atc',
                         "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'",
                         capture_output=True,text=True).stdout.strip()
-                    if clients!='0': raise ValueError('Scale database still has clients; stop all writers before backup')
+                    if clients!='0': raise ValueError('Database still has clients; stop all writers before backup')
                 with (stage/'database.dump').open('wb') as f:
                     compose('exec','-T','postgres','pg_dump','-U','postgres','-d',database,'--format=custom','--no-owner','--no-acl',stdout=f)
                 media={}
                 with tarfile.open(stage/'media.tar','w') as tar:
-                    for item in sorted((root/'media').iterdir()):
+                    for item in sorted(media_root.iterdir()):
                         if not re.fullmatch(r'[0-9a-f-]{36}(?:\.thumb)?\.webp',item.name) or item.is_symlink() or not item.is_file() or item.stat().st_nlink!=1: raise ValueError('Unexpected media entry; reconcile before backup')
                         media[item.name]=digest(item); tar.add(item,arcname=item.name,recursive=False)
                 manifest={'format':1,'createdAt':datetime.now(timezone.utc).isoformat(),'release':values['RELEASE_ID'],'platform':values.get('TARGET_PLATFORM'),'media':media,'databaseSha256':digest(stage/'database.dump'),'mediaTarSha256':digest(stage/'media.tar')}
-                if scale: manifest.update(profile='synthetic-scale',sourceDatabase=database)
+                manifest['sourceDatabase']=database
+                if scale: manifest.update(profile='synthetic-scale')
                 (stage/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
                 stage.rename(backup)
                 print(f'Consistent backup completed: {len(media)} media files. This is a local copy, not offsite disaster recovery.')
@@ -132,9 +168,10 @@ def main():
                 raise
             finally:
                 failed_to_resume=[]
-                for service in reversed(paused):
+                for service in ([] if a.keep_stopped else reversed(paused)):
                     try: compose('start',service)
                     except (OSError,subprocess.CalledProcessError): failed_to_resume.append(service)
+                if a.keep_stopped: print('Maintenance window retained: paused writers were not restarted.')
                 if failed_to_resume:
                     print('Failed to resume services: '+', '.join(failed_to_resume),file=sys.stderr)
                     if not backup_failed: raise ValueError('Backup saved but service resumption failed')

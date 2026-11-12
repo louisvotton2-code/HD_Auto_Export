@@ -10,4 +10,13 @@
 .saveBar { position: sticky; bottom: 16px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 22px; border: 1px solid #e5dfd1; border-radius: 12px; background: #fff; box-shadow: 0 8px 30px #30271310; }
 .publicSections { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
 .candidatePagination { display: flex; gap: 15px; justify-content: space-between; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+.orderArea { min-width: 0; }
+.orderHelp { margin-bottom: 8px !important; }
+.orderStatus { min-height: 22px; margin-bottom: 8px; color: #795912; overflow-wrap: anywhere; }
+.dragHandle { touch-action: none; cursor: grab; }
+.dragHandle[aria-pressed="true"] { cursor: grabbing; background: #f1e5c6; }
+.sortingRow > td { background: #faf4e3 !important; }
+.dropBefore > td { box-shadow: inset 0 3px 0 #94701f; }
+.dropAfter > td { box-shadow: inset 0 -3px 0 #94701f; }
+.quickOrder { display: flex; gap: 8px; margin: 18px 0; }
 @media (max-width: 700px) { .page :global(.ant-card-head) { padding-block: 14px; }.page :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 12px; }.page :global(.ant-card-head-title) { white-space: normal; }.page :global(.ant-card-extra) { max-width: 100%; }.page :global(.ant-card-extra .ant-space) { flex-wrap: wrap; } .titles, .publicSections { grid-template-columns: minmax(0,1fr); }.pageHeader { flex-direction: column; }.saveBar { flex-wrap: wrap; padding: 14px; bottom: 0; }.candidatePagination { justify-content: center; } }

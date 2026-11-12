@@ -17,6 +17,10 @@ function validateVehicle(vehicle: PublicVehicle, locale: Locale, priceView?: 'us
     throw new Error('Localized vehicle projection unavailable');
   if (Boolean(vehicle.displayPrice) !== (priceView === 'usd'))
     throw new Error('Unexpected public price projection');
+  if (vehicle.configuration != null && !detail)
+    throw new Error('Unexpected configuration data in catalog projection');
+  if (vehicle.report !== undefined && !detail)
+    throw new Error('Unexpected report data in catalog projection');
   if (vehicle.external?.detail) {
     if (!detail) throw new Error('Unexpected detail data in catalog projection');
     for (const original of Object.values(vehicle.external.detail.original)) {
@@ -29,6 +33,7 @@ function validateVehicle(vehicle: PublicVehicle, locale: Locale, priceView?: 'us
     ...Object.values(fields),
     ...priceIncludes.map((x) => x.value),
     ...mediaAlt.map((x) => x.value),
+    ...(vehicle.configuration?.items.flatMap((item) => [item.name, item.value]) ?? []),
   ])
     if (field.requestedLocale !== locale) throw new Error('Localized vehicle projection mismatch');
   return vehicle;

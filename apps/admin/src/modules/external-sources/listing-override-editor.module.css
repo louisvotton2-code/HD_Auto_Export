@@ -1,0 +1,40 @@
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e9dfc5;
+  border-radius: 8px;
+  background: #fbf8ee;
+  overflow-wrap: anywhere;
+}
+.help { color: #666; line-height: 1.8; margin: 12px 0 16px; }
+.section { min-width: 0; margin: 20px 0; }
+.factGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.fact { min-width: 0; padding: 14px; border: 1px solid #e8e2d5; border-radius: 8px; background: #fff; }
+.fieldHeader { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.follow, .manual { font-size: 12px; color: #777; }
+.manual { color: #986b18; }
+.inputGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.inputGrid label { display: grid; gap: 4px; min-width: 0; color: #666; font-size: 12px; }
+.inputGrid :global(.ant-input-number), .inputGrid :global(.ant-select) { width: 100%; }
+.source { margin: 10px 0; font-size: 12px; color: #777; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.original { padding: 10px 12px; margin-bottom: 12px; background: #f6f5f1; border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.8; }
+.copyGroup { padding: 16px; margin: 12px 0; border: 1px solid #e8e2d5; border-radius: 8px; min-width: 0; }
+.textGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.translation { min-width: 0; }
+.translation :global(.ant-alert) { margin-bottom: 8px; }
+.textLabel { display: block; font-weight: 600; margin-bottom: 8px; }
+.comparisonScroll { max-width: 100%; overflow-x: auto; margin: 12px 0; border: 1px solid #e8e2d5; border-radius: 8px; }
+.comparison { width: 100%; min-width: 600px; border-collapse: collapse; text-align: left; font-size: 13px; }
+.comparison th, .comparison td { padding: 10px 12px; border-bottom: 1px solid #e8e2d5; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comparison th { background: #f6f5f1; }
+.comparison td { width: 40%; max-width: 340px; }
+@media (max-width: 980px) { .factGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) {
+  .factGrid, .textGrid { grid-template-columns: minmax(0, 1fr); }
+  .copyGroup, .fact { padding: 12px; }
+}

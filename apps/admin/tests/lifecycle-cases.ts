@@ -3,11 +3,12 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import { makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
+import { chooseUtcDateTime } from './publication-test-helpers';
 
 const deletedTime = '2026-11-08T09:00:00Z';
 function deletedVehicle() { return { ...vehicle(), deletedAt: deletedTime, publicationState: 'published' as const, version: 7, publishedRevisionId: 'fixture_revision', publishedAt: deletedTime, availability: 'available' as const, availabilityCheckedAt: deletedTime }; }
 async function openDelete(page: Page) {
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
   await page.getByRole('button', { name: /删除车辆$/ }).click();
   await expect(page.getByRole('dialog', { name: '删除到回收站？', exact: true })).toBeVisible();
 }
@@ -56,7 +57,8 @@ test('lifecycle recycle list requests deleted only; deleted details stay read on
   await page.getByRole('link', { name: 'Example Sample vehicle' }).click();
   expect(new URL((await details).url()).searchParams.get('includeDeleted')).toBe('true');
   await expect(page.getByText('车辆已移入回收站', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /保存草稿|发布车辆|下架车辆|核验并更新库存/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /保存草稿|下架车辆|核验并更新库存/ })).toHaveCount(0);
+  await expect(page.getByTestId('vehicle-publish')).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: '标题原文', exact: true })).toHaveCount(0);
   await expect(page.locator('input[type=file], main img')).toHaveCount(0);
   expect(mediaReads).toEqual([]);
@@ -254,7 +256,7 @@ test('external editing preserves immutable source identity, observed facts and h
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.saves.length).toBe(1);
   expect(api.saves[0]!.draft).toMatchObject({ source: before.source, facts: before.facts, price: { kind: 'on_request', money: null } });
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
   await expect(page.getByRole('combobox', { name: '核验后的库存状态', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /核验并更新库存$/ })).toHaveCount(0);
 });
@@ -270,8 +272,8 @@ test('publishing clears the earlier draft-only save notice after accepting the c
   await (await notes(page)).fill('先保存再明确发布，提示需要对应当前状态');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toBeVisible();
-  await tab(page, '三语与发布');
-  await page.getByRole('button', { name: /发布车辆$/ }).click();
+  await tab(page, '发布预览');
+  await page.getByTestId('vehicle-publish').click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本，请核对公开内容。' })).toBeVisible();
   await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toHaveCount(0);
@@ -299,7 +301,7 @@ test('external source identity rejection allows correction with a new key while 
   await page.getByLabel('来源平台名称', { exact: true }).fill('合成来源身份平台');
   await page.getByLabel('原始挂牌链接', { exact: true }).fill('https://example.invalid/listings/identity');
   await page.getByLabel('原始挂牌编号', { exact: true }).fill('already-exists');
-  await page.getByLabel('资料采集时间（UTC）', { exact: true }).fill('2026-11-08T08:00:00Z');
+  await chooseUtcDateTime(page, '资料采集时间（UTC）', { date: '2026-11-08', hour: 8, minute: 0 });
   await page.getByLabel('标题原文', { exact: true }).fill('重复来源身份纠正与未知创建测试');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => calls.length).toBe(1);

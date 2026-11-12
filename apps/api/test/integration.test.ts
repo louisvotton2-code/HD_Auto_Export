@@ -1,7 +1,7 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes,randomUUID} from 'node:crypto';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
+import {mkdtemp,rm,stat} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -9,27 +9,41 @@ import sharp from 'sharp';
 import type {InjectOptions} from 'fastify';
 import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleResponseSchema,PublicVehicleListSchema,ApiErrorSchema} from '@hd/contracts/public';
-import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
+import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,PublicationPreviewResponseSchema,PublishReadinessResponseSchema,TranslationPlanResponseSchema,TranslationPlanResultResponseSchema,VehicleTranslationBundleResponseSchema,type TranslationPlan,type TranslationPlanResult,type VehicleTranslationBundle,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createDatabase} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
 import {changeStaffLogin,createStaff,setStaffEnabled} from '../src/staff-cli.js';
 import {VehicleTranslator} from '../src/vehicles/translation.js';
+import {canonicalJson} from '../src/external/normalize.js';
 
 const baseUrl=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
-if(!['127.0.0.1','localhost'].includes(baseUrl.hostname)||baseUrl.pathname!=='/postgres') throw new Error('Integration tests require a local PostgreSQL maintenance database; never point at production.');
+if(!['postgres:','postgresql:'].includes(baseUrl.protocol)||!['127.0.0.1','localhost'].includes(baseUrl.hostname)||baseUrl.pathname!=='/postgres'||baseUrl.search||baseUrl.hash) throw new Error('Integration tests require a local PostgreSQL maintenance database without connection options; never point at production.');
+async function localTransport(url:URL):Promise<string> {
+  const socket=process.env.API_TEST_DATABASE_SOCKET;
+  if(socket===undefined)return url.toString();
+  if(!path.isAbsolute(socket)||!(await stat(path.join(socket,`.s.PGSQL.${url.port||'5432'}`))).isSocket())throw new Error('API_TEST_DATABASE_SOCKET must name an existing local PostgreSQL socket directory.');
+  const transport=new URL(url);transport.searchParams.set('host',socket);return transport.toString();
+}
 const databaseName=`hd_api_test_${randomBytes(8).toString('hex')}`;
-const maintenance=createDatabase(baseUrl.toString(),2);
+let maintenance:ReturnType<typeof createDatabase>;
+let createdDatabase=false;
 let runtime:Awaited<ReturnType<typeof buildApp>>;
 let root:string;let cookie:string;let editorId:string;let requestCounter=0;
 const origin='http://127.0.0.1:3318';
 const password='Isolated_test_password_903!';
 let dbUrl:string;
 let translationHook:((text:string,target:'en'|'ru')=>Promise<string>)|null=null;
+let translationCalls=0;
 const headers=()=>({cookie,origin});
 const call=(options:InjectOptions)=>runtime.app.inject({...options,remoteAddress:`198.51.${Math.floor(requestCounter/240)}.${++requestCounter%240+1}`});
-function draft():VehicleDraftInput {const value=makeVehicleDraftFixture();value.media=[];return value;}
+function rejectedPublication(response:Awaited<ReturnType<typeof call>>,fieldPath:string){
+  assert.equal(response.statusCode,422,response.body);const error=ApiErrorSchema.parse(response.json()).error;
+  assert.equal(error.code,'PUBLISH_VALIDATION_FAILED');assert.ok(error.fields?.some(field=>field.path===fieldPath),response.body);
+}
+const configuration=()=>({version:1 as const,items:[{name:'基础配置',value:'标准'}]});
+function draft():VehicleDraftInput {const value=makeVehicleDraftFixture();value.media=[];value.facts.trim={id:'fixture_trim',name:'Synthetic fixture configuration'};value.configuration=configuration();return value;}
 // Escape every UTF-16 unit in every JSON string, including property names, without changing the parsed request.
 function escapedJson(value:object):string {
   return JSON.stringify(value).replace(/"(?:[^"\\]|\\.)*"/g,token=>`"${(JSON.parse(token) as string).split('').map(unit=>`\\u${unit.charCodeAt(0).toString(16).padStart(4,'0')}`).join('')}"`);
@@ -44,6 +58,26 @@ async function create(value=draft()):Promise<AdminVehicle> {
 async function save(vehicle:AdminVehicle):Promise<AdminVehicle> {
   const r=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:vehicle.draft}});
   assert.equal(r.statusCode,200,r.body);return r.json().data;
+}
+async function bundle(id:string):Promise<VehicleTranslationBundle> {
+  const response=await call({url:`/api/v1/admin/vehicles/${id}/translation-bundle`,headers:headers()});
+  assert.equal(response.statusCode,200,response.body);return VehicleTranslationBundleResponseSchema.parse(response.json()).data;
+}
+const bundlePayload=(value:VehicleTranslationBundle)=>({version:value.vehicle.version,localizationRevision:value.localization.revision,
+  content:value.vehicle.draft.content,localization:value.localization.data,sourceLanguageConfirmations:[]});
+async function plan(vehicle:AdminVehicle):Promise<TranslationPlan> {
+  const response=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-plans`,headers:headers(),payload:{version:vehicle.version}});
+  assert.equal(response.statusCode,200,response.body);return TranslationPlanResponseSchema.parse(response.json()).data;
+}
+const generation=(value:TranslationPlan,key=randomUUID())=>({method:'POST' as const,url:`/api/v1/admin/vehicles/${value.vehicleId}/translation-plans/${value.id}/generate`,
+  headers:{...headers(),'idempotency-key':key},payload:{confirmed:true as const,sourceFingerprint:value.sourceFingerprint,maximumCharacters:value.estimate.maximumCharacters,acceptUnknownCost:true as const}});
+async function generate(value:TranslationPlan):Promise<TranslationPlanResult> {
+  const response=await call(generation(value));assert.equal(response.statusCode,200,response.body);return TranslationPlanResultResponseSchema.parse(response.json()).data;
+}
+async function historicalReceipt(operation:string,key:string,input:unknown,response:unknown) {
+  // Explicit pre-UX11 receipt fixture in the random test database; this is not a provider call.
+  await runtime.db.pool.query("INSERT INTO idempotency_keys(actor_id,operation,key,request_hash,response,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '1 hour')",
+    [editorId,operation,key,createHash('sha256').update(canonicalJson(input)).digest('hex'),JSON.stringify(response)]);
 }
 async function upload(vehicle:AdminVehicle, provenance?:{listingUrl:string;imageUrl:string;collectedAt:string}) {
   const bytes=await sharp({create:{width:32,height:24,channels:3,background:'#224466'}}).png().toBuffer();
@@ -67,15 +101,48 @@ async function readyDemo():Promise<AdminVehicle> {
   return save(vehicle);
 }
 async function publish(vehicle:AdminVehicle):Promise<AdminVehicle> {
+  vehicle=await confirmReady(vehicle);
   const r=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
   assert.equal(r.statusCode,200,r.body);return r.json().data;
 }
+/** Success-path synthetic fixtures explicitly complete display text, then acknowledge the exact preview. */
+async function confirmReady(vehicle:AdminVehicle):Promise<AdminVehicle> {
+  const local=await localization(vehicle.id);
+  assert.equal(local.vehicleVersion,vehicle.version,'Successful publication must use the current vehicle version.');
+  if(local.data.fields.some(field=>['zh','en','ru'].some(locale=>{
+    const value=field.translations[locale as 'zh'|'en'|'ru'];
+    return !value||value.sourceVersion!==field.sourceVersion||value.reviewStatus==='stale';
+  }))){await reviewDisplay(vehicle.id);vehicle=await freshVehicle(vehicle.id);}
+  const response=await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=zh`,headers:headers()});
+  assert.equal(response.statusCode,200,response.body);const preview=PublicationPreviewResponseSchema.parse(response.json()).data;
+  const confirmed=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview/confirm`,headers:headers(),payload:{version:preview.vehicleVersion,publicContentRevision:preview.publicContentRevision,fingerprint:preview.fingerprint,locale:preview.locale}});
+  assert.equal(confirmed.statusCode,200,confirmed.body);assert.equal(PublishReadinessResponseSchema.parse(confirmed.json()).data.canPublish,true);
+  return vehicle;
+}
+/** Models pre-ADUX10 published data in this random database, never a new publication request. */
+async function seedHistoricalPublication(vehicle:AdminVehicle):Promise<AdminVehicle> {
+  await runtime.db.transaction(async client=>{
+    await client.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[vehicle.id]);
+    const media=await client.query<{id:string;width:number;height:number}>("SELECT id,width,height FROM media_assets WHERE vehicle_id=$1 AND state='ready'",[vehicle.id]);
+    const images=vehicle.draft.media.map(image=>{
+      const stored=media.rows.find(row=>row.id===image.id);assert.ok(stored);
+      return {...image,url:`/api/v1/media/${image.id}`,width:stored.width,height:stored.height};
+    });
+    const {source,facts,price,content}=vehicle.draft;const publication=randomUUID();
+    await client.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,vehicle.id,JSON.stringify({source,facts,price,content,images})]);
+    for(const image of images)await client.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publication,image.id]);
+    await client.query("UPDATE vehicles SET publication_state='published',published_revision_id=$2,published_at=now(),version=version+1 WHERE id=$1",[vehicle.id,publication]);
+  });
+  return freshVehicle(vehicle.id);
+}
 before(async()=>{
   root=await mkdtemp(path.join(os.tmpdir(),'hd-api-test-'));
+  maintenance=createDatabase(await localTransport(baseUrl),2);
   await maintenance.pool.query(`CREATE DATABASE "${databaseName}"`);
-  const url=new URL(baseUrl);url.pathname=`/${databaseName}`;dbUrl=url.toString();
-  const config=readConfig({NODE_ENV:'test',DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin});
-  runtime=await buildApp(config,{translator:new VehicleTranslator({engineVersion:'isolated-http-stub:1',async translate(text,target){return translationHook?translationHook(text,target):`${target}:${text}`;}},1_000_000)});await migrateDatabase(runtime.db);await migrateDatabase(runtime.db);
+  createdDatabase=true;
+  const url=new URL(baseUrl);url.pathname=`/${databaseName}`;dbUrl=await localTransport(url);
+  const config=readConfig({NODE_ENV:'test',DATABASE_URL:url.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin});
+  runtime=await buildApp({...config,databaseUrl:dbUrl},{translator:new VehicleTranslator({engineVersion:'isolated-http-stub:1',async translate(text,target){translationCalls++;return translationHook?translationHook(text,target):`${target}:${text}`;}},1_000_000)});await migrateDatabase(runtime.db);await migrateDatabase(runtime.db);
   await createStaff(runtime.auth,{email:'admin@example.invalid',name:'Test admin',role:'admin',password});
   const editor=await createStaff(runtime.auth,{email:'editor@example.invalid',name:'Test editor',role:'editor',password});editorId=editor.user.id;
   const login=await call({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email:'editor@example.invalid',password}});
@@ -85,7 +152,7 @@ before(async()=>{
 });
 after(async()=>{
   if(runtime) await runtime.app.close();
-  await maintenance.pool.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);await maintenance.close();
+  if(createdDatabase)await maintenance.pool.query(`DROP DATABASE "${databaseName}"`);if(maintenance)await maintenance.close();
   if(root) await rm(root,{recursive:true,force:true});
 });
 
@@ -150,7 +217,7 @@ test('full multibyte translation drafts survive save/readback, escaped JSON and 
   const smallMutation=await call({method:'POST',url:`${url}/publish`,headers:{...headers(),'content-type':'application/json','idempotency-key':randomUUID()},payload:padJson(JSON.stringify({version:vehicle.version}),100_001)});
   assert.equal(smallMutation.statusCode,413,smallMutation.body); // The general 100k limit was not raised.
   const refreshed=await call({method:'GET',url,headers:headers()});assert.equal(refreshed.statusCode,200,refreshed.body);
-  assert.deepEqual(refreshed.json().data,vehicle); // All six complete texts persisted; failed requests made no change.
+  assert.deepEqual(refreshed.json().data,{...vehicle,report:{hasReport:false,url:null}}); // All six complete texts persisted; failed requests made no change.
   context.diagnostic(`UTF-8 create=${Buffer.byteLength(creation)}, adopted save=${Buffer.byteLength(adopted)}, all-string-escaped save=${Buffer.byteLength(escaped)} bytes; exact route cap=${limit}.`);
 });
 test('one MiB covers bounded full-field draft JSON even when every string is Unicode-escaped',context=>{
@@ -189,36 +256,56 @@ test('publishable changes are authoritative; identical publish is a version-prot
   const archived=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/archive`,headers:headers(),payload:{version:vehicle.version}});vehicle=archived.json().data;assert.equal(vehicle.hasUnpublishedChanges,false);
   const republished=await publish(vehicle);assert.equal(republished.version,vehicle.version+1);assert.equal(republished.publicationState,'published');
 });
-test('translation suggestions enforce auth, origin, version/idempotency and leave human content untouched',async()=>{
+test('confirmed translation plans enforce auth, origin, versions and idempotency while historical suggestions only replay',async()=>{
   let vehicle=await create();const url=`/api/v1/admin/vehicles/${vehicle.id}/translation-suggestions`;const key=randomUUID();
   for(const options of [{headers:{'idempotency-key':key},status:401},{headers:{cookie,'idempotency-key':key},status:403}]) {
     const result=await call({method:'POST',url,headers:options.headers,payload:{version:vehicle.version}});assert.equal(result.statusCode,options.status,result.body);
   }
   const request={method:'POST' as const,url,headers:{...headers(),'idempotency-key':key},payload:{version:vehicle.version}};
-  assert.equal((await call({...request,payload:{version:vehicle.version+1}})).statusCode,409);
   assert.equal((await call({...request,headers:headers()})).statusCode,400);
-  const result=await call(request);assert.equal(result.statusCode,200,result.body);
-  const suggested=VehicleTranslationSuggestionsResponseSchema.parse(result.json()).data;assert.equal(suggested.version,vehicle.version);
-  assert.equal(suggested.content.title.translations.en.reviewStatus,'pending');assert.equal(suggested.content.title.translations.en.kind,'machine');
-  assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
-  const replay=await call(request);assert.deepEqual(replay.json().data,suggested);
+  const blocked=await call(request);assert.equal(blocked.statusCode,422,blocked.body);assert.equal(blocked.json().error.code,'TRANSLATION_CONFIRMATION_REQUIRED');
+  const planUrl=`/api/v1/admin/vehicles/${vehicle.id}/translation-plans`;
+  assert.equal((await call({method:'POST',url:planUrl,headers:headers(),payload:{version:vehicle.version+1}})).statusCode,409);
+  const prepared=await plan(vehicle),generateRequest=generation(prepared);
+  assert.equal((await call({...generateRequest,headers:{'idempotency-key':randomUUID()}})).statusCode,401);
+  assert.equal((await call({...generateRequest,headers:{cookie,'idempotency-key':randomUUID()}})).statusCode,403);
+  assert.equal((await call({...generateRequest,headers:headers()})).statusCode,400);
+  assert.equal((await call({...generateRequest,payload:{...generateRequest.payload,confirmed:false}})).statusCode,400);
+  const result=await call(generateRequest);assert.equal(result.statusCode,200,result.body);
+  const generated=TranslationPlanResultResponseSchema.parse(result.json()).data;assert.equal(generated.vehicleVersion,vehicle.version);assert.equal(generated.status,'completed');
+  const title=generated.fields.find(field=>field.ref==='content.title')!;
+  assert.equal(title.translations.en!.reviewStatus,'pending');assert.equal(title.translations.en!.kind,'machine');
+  assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),{...vehicle,report:{hasReport:false,url:null}});
+  const used=translationCalls;assert.deepEqual((await call(generateRequest)).json().data,generated);assert.equal(translationCalls,used);
+  const legacyField=(field:typeof title)=>({sourceLanguage:'zh',sourceText:field.sourceText,sourceVersion:field.sourceVersion,sourceHash:field.sourceHash,
+    targetHumanEditVersions:field.targetHumanEditVersions,translations:field.translations});
+  const suggested={vehicleId:vehicle.id,version:vehicle.version,engineVersion:'isolated-http-stub:1',content:{title:legacyField(title),description:legacyField(generated.fields.find(field=>field.ref==='content.description')!)}};
+  await historicalReceipt(`vehicle.translationSuggestions:${vehicle.id}`,key,{id:vehicle.id,version:vehicle.version},suggested);
+  assert.deepEqual(VehicleTranslationSuggestionsResponseSchema.parse((await call(request)).json()).data,suggested);
   vehicle.draft.internal.notes='edit after suggestion';vehicle=await save(vehicle);
-  assert.deepEqual((await call(request)).json().data,suggested); // historical receipt; caller must compare current version
+  assert.deepEqual((await call(generateRequest)).json().data,generated);
+  assert.deepEqual((await call(request)).json().data,suggested);
   const keyConflict=await call({...request,payload:{version:vehicle.version}});assert.equal(keyConflict.statusCode,409);assert.equal(keyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
-  vehicle.draft.content.title.sourceLanguage='en';vehicle=await save(vehicle);
-  const unsupported=await call({...request,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(unsupported.statusCode,422);assert.equal(unsupported.json().error.code,'TRANSLATION_SOURCE_UNSUPPORTED');
+  const planKeyConflict=await call({...generateRequest,payload:{...generateRequest.payload,maximumCharacters:prepared.estimate.maximumCharacters+1}});assert.equal(planKeyConflict.statusCode,409);assert.equal(planKeyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
+  // Existing und declarations require an explicit bundle confirmation, never automatic relabeling.
+  await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,title,sourceLanguage}','\"und\"') WHERE vehicle_id=$1",[vehicle.id]);
+  const unsupported=await call({method:'POST',url:planUrl,headers:headers(),payload:{version:vehicle.version}});assert.equal(unsupported.statusCode,422);assert.equal(unsupported.json().error.code,'TRANSLATION_SOURCE_UNSUPPORTED');
+  const priorCalls=translationCalls;translationHook=async()=>{throw new Error('Provider must not run for historical replay');};
+  try {assert.deepEqual((await call(request)).json().data,suggested);assert.equal(translationCalls,priorCalls);}finally{translationHook=null;}
 });
 test('translation results racing with an edit are rejected and upstream failures never change the draft',async()=>{
   const input=draft();input.content.title.sourceText=`隔离旧建议${randomUUID()}`;input.content.description.sourceText=null;let vehicle=await create(input);
   let release!:()=>void;let started!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});const invoked=new Promise<void>(resolve=>{started=resolve;});
-  translationHook=async(_text,target)=>{started();await gate;return `${target}:generated`;};
-  const request={method:'POST' as const,url:`/api/v1/admin/vehicles/${vehicle.id}/translation-suggestions`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}};
+  translationHook=async(text,target)=>{started();await gate;return `${target}:${text}`;};
+  const request=generation(await plan(vehicle));
   try {
     const pending=call(request);await invoked;vehicle.draft.internal.notes='Concurrent edit';vehicle=await save(vehicle);release();
-    const stale=await pending;assert.equal(stale.statusCode,409,stale.body);assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
+    const stale=await pending;assert.equal(stale.statusCode,409,stale.body);assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),{...vehicle,report:{hasReport:false,url:null}});
     translationHook=async()=>{throw new Error('private upstream failure');};vehicle.draft.content.title.sourceText=`隔离失败${randomUUID()}`;vehicle=await save(vehicle);
-    const failed=await call({...request,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(failed.statusCode,503,failed.body);assert.equal(failed.json().error.code,'TRANSLATION_UPSTREAM_FAILED');assert.ok(!failed.body.includes('private upstream'));
-    assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),vehicle);
+    const failed=await call(generation(await plan(vehicle)));assert.equal(failed.statusCode,200,failed.body);
+    const partial=TranslationPlanResultResponseSchema.parse(failed.json()).data;assert.equal(partial.status,'partial');
+    assert.ok(partial.failures.some(field=>field.ref==='content.title'&&field.code==='upstream_failed'));assert.ok(!failed.body.includes('private upstream'));
+    assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),{...vehicle,report:{hasReport:false,url:null}});
   } finally{release();translationHook=null;}
 });
 test('demo publication stays non-inventory across catalog counts, home, detail and media; manual gates remain',async()=>{
@@ -252,7 +339,7 @@ test('demo publication stays non-inventory across catalog counts, home, detail a
   const archivedHome={...configured.json().data};
   assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:archivedHome})).statusCode,422);
   let manual=await ready();manual.draft.facts.location=null;manual=await save(manual);
-  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}})).statusCode,422);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}}),'draft.facts.location');
   const noInventory=await readyDemo();const source=structuredClone(noInventory.draft);source.source.kind='manual';
   const manualUnknown=await create({...source,media:[]});const img=await upload(manualUnknown);manualUnknown.draft.media=[{id:img.id,sortOrder:0,isCover:true,alt:''}];manualUnknown.draft.facts.location={country:'CN',city:null,displayName:null};const saved=await save(manualUnknown);
   const unverified=await call({method:'POST',url:`/api/v1/admin/vehicles/${saved.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:saved.version}});assert.equal(unverified.statusCode,422);assert.ok(unverified.json().error.fields.some((f:{path:string})=>f.path==='availability'));
@@ -260,31 +347,34 @@ test('demo publication stays non-inventory across catalog counts, home, detail a
 test('demo publish rejects corrupted inventory metadata and source switching in either direction',async()=>{
   const demo=await readyDemo();
   await runtime.db.pool.query("UPDATE vehicles SET availability='available',availability_checked_at=now() WHERE id=$1",[demo.id]);
-  const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(rejected.statusCode,422);
+  const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});rejectedPublication(rejected,'availability');
   await runtime.db.pool.query("UPDATE vehicles SET availability='unknown',availability_checked_at=null WHERE id=$1",[demo.id]);
   const invalid=structuredClone(demo.draft);invalid.facts.mileageKm=100;
   await runtime.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[demo.id,JSON.stringify(invalid)]);
-  const badFacts=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(badFacts.statusCode,422);
+  const badFacts=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});rejectedPublication(badFacts,'draft.facts.mileageKm');
   await runtime.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[demo.id,JSON.stringify(demo.draft)]);
   const manual=await create();const demoInput=makeDemoVehicleDraftFixture();demoInput.media=[];
   const changed=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${manual.id}`,headers:headers(),payload:{version:manual.version,draft:demoInput}});assert.equal(changed.statusCode,422);assert.equal(changed.json().error.code,'DEMO_RESTRICTION');
 });
-test('demo pending text can publish without human-review claims, but stale or missing text cannot',async()=>{
+test('current pending demo and manual text can publish without human-review claims, while stale or missing text cannot',async()=>{
   let demo=await readyDemo();
   for(const language of ['zh','en','ru'] as const) assert.equal(demo.draft.content.title.translations[language]!.reviewStatus,'pending');
   demo=await publish(demo);assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
   demo.draft.content.title.translations.ru!.kind='original';demo=await save(demo);
-  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}})).statusCode,422);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}}),'draft.content.title.translations.ru.kind');
   demo.draft.content.title.translations.ru!.kind='machine';demo=await save(demo);
   demo.draft.content.title.sourceText='Updated demonstration source';demo=await save(demo);
-  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});assert.equal(stale.statusCode,422);
+  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});rejectedPublication(stale,'draft.content.title.translations.en');
   for(const language of ['zh','en','ru'] as const) {const text=demo.draft.content.title.translations[language]!;text.sourceVersion=demo.draft.content.title.sourceVersion;text.reviewStatus='pending';}
   demo.draft.content.title.translations.zh!.text=demo.draft.content.title.sourceText!;demo=await save(demo);demo=await publish(demo);
   assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
   demo.draft.content.title.translations.en=null;demo=await save(demo);
-  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}})).statusCode,422);
-  let manual=await ready();manual.draft.content.title.translations.en!.reviewStatus='pending';manual=await save(manual);
-  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}})).statusCode,422);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}}),'draft.content.title.translations.en');
+  let manual=await ready();manual.draft.content.title.translations.en!.reviewStatus='pending';manual.draft.content.title.translations.en!.kind='machine';manual.draft.content.title.translations.en!.engineVersion='isolated-pending:1';manual=await save(manual);
+  manual=await publish(manual);assert.equal((await runtime.inventory.getPublic(manual.id,'en')).content.title.reviewed,false);
+  assert.equal((await runtime.inventory.getPublic(manual.id,'en')).content.title.kind,'machine');
+  manual.draft.content.title.translations.en=null;manual=await save(manual);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}}),'draft.content.title.translations.en');
 });
 test('bulk reports independent results, preserves unselected records and replays exact requests without duplicate writes',async()=>{
   const good=await publish(await ready()),stale=await create(),untouched=await create(),demo=await readyDemo(),missing=randomUUID();
@@ -410,7 +500,7 @@ test('concurrent edits and idempotent create/publish retries preserve one busine
   let vehicle:AdminVehicle=a.json().data;
   const edits=await Promise.all(['First','Second'].map(note=>call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:{...vehicle.draft,internal:{...vehicle.draft.internal,notes:note}}}})));
   assert.deepEqual(edits.map(r=>r.statusCode).sort(),[200,409]);
-  vehicle=await ready();const publishKey=randomUUID();
+  vehicle=await confirmReady(await ready());const publishKey=randomUUID();
   const attempts=await Promise.all([1,2].map(()=>call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':publishKey},payload:{version:vehicle.version}})));
   assert.deepEqual(attempts.map(r=>r.statusCode),[200,200]);assert.equal(attempts[0]!.json().data.version,attempts[1]!.json().data.version);
   assert.equal((await runtime.db.pool.query("SELECT count(*)::int AS count FROM audit_events WHERE vehicle_id=$1 AND operation='vehicle.publish'",[vehicle.id])).rows[0].count,1);
@@ -429,12 +519,20 @@ test('media ownership, invalid binary, rights, UUID parameters and missing data 
   const invalid=await call({method:'PUT',url:permit.uploadUrl,headers:{...headers(),'if-match':'1','content-type':'image/png'},payload:Buffer.alloc(20)});assert.equal(invalid.statusCode,400,invalid.body);
   assert.equal((await runtime.media.get(permit.media.id)).status,'pending');
 });
-test('on-request price and unknown dates stay null; stale translations cannot be published',async()=>{
-  let vehicle=await ready();vehicle.draft.price={kind:'on_request',money:null,includes:[]};vehicle.draft.facts.manufacturedAt=null;vehicle.draft.facts.mileageKm=null;
-  vehicle=await save(vehicle);vehicle=await publish(vehicle);
-  const visible=await runtime.inventory.getPublic(vehicle.id,'ru');assert.equal(visible.price.money,null);assert.equal(visible.facts.manufacturedAt,null);assert.equal(visible.facts.mileageKm,null);
+test('incomplete manual drafts stay private; demo unknown facts stay null and stale translations cannot publish',async()=>{
+  let vehicle=await publish(await ready());const visible=await runtime.inventory.getPublic(vehicle.id,'ru');
+  vehicle.draft.price={kind:'on_request',money:null,includes:[]};vehicle.draft.facts.manufacturedAt=null;vehicle.draft.facts.mileageKm=null;
+  vehicle=await save(vehicle);
+  const incomplete=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  assert.equal(incomplete.statusCode,422,incomplete.body);
+  for(const path of ['draft.price','draft.facts.mileageKm'])assert.ok(incomplete.json().error.fields.some((field:{path:string})=>field.path===path));
+  assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'ru'),visible);
+  const demo=await publish(await readyDemo());const unknown=await runtime.inventory.getPublic(demo.id,'ru');
+  assert.equal(unknown.price.money,null);assert.equal(unknown.facts.manufacturedAt,null);assert.equal(unknown.facts.mileageKm,null);
+  vehicle.draft.price=draft().price;vehicle.draft.facts.mileageKm=0;
   vehicle.draft.content.title.sourceText='Changed source';vehicle=await save(vehicle);vehicle=await save(vehicle);
   const blocked=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(blocked.statusCode,422,blocked.body);
+  assert.ok(blocked.json().error.fields.some((field:{path:string})=>field.path==='draft.content.title.translations.en'));
   assert.equal((await runtime.inventory.getPublic(vehicle.id,'ru')).content.title.text,visible.content.title.text);
 });
 test('expired upload cleanup advances past removed rows and protects ready/public images',async()=>{
@@ -469,21 +567,33 @@ test('media removed while a mutation waits for its vehicle lock returns 404 inst
     } finally {await blocker.query('ROLLBACK');blocker.release();if(response) await response;}
   }
 });
-test('regional original text can be reviewed and published without hiding its actual language tag',async()=>{
-  let vehicle=await ready();vehicle.draft.content.title.sourceLanguage='zh-CN';vehicle=await save(vehicle);
-  for(const locale of ['zh','en','ru'] as const) {
-    const text=vehicle.draft.content.title.translations[locale]!;
-    assert.equal(text.reviewStatus,'stale');text.sourceVersion=vehicle.draft.content.title.sourceVersion;text.reviewStatus='approved';
-  }
-  vehicle=await save(vehicle);vehicle=await publish(vehicle);
+test('legacy regional snapshots retain their language while new publication requires explicit Chinese-source confirmation',async()=>{
+  let vehicle=await ready();
+  // This random-database row models an existing regional declaration; new workflows use a Chinese source.
+  await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,title,sourceLanguage}','\"zh-CN\"') WHERE vehicle_id=$1",[vehicle.id]);
+  vehicle=await seedHistoricalPublication(await freshVehicle(vehicle.id));
+  const legacy=await runtime.inventory.getPublic(vehicle.id,'zh');assert.equal(legacy.content.title.contentLocale,'zh-CN');
+  vehicle.draft.internal.notes='Private edit preserves legacy source declaration';vehicle=await save(vehicle);
+  assert.equal(vehicle.draft.content.title.sourceLanguage,'zh-CN');assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'zh'),legacy);
+  const blocked=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  rejectedPublication(blocked,'draft.content.title.sourceLanguage');
+  let workspace=await bundle(vehicle.id);assert.ok(workspace.sourceLanguageConfirmationRequired.includes('content.title'));
+  workspace.vehicle.draft.content.title.sourceLanguage='zh';
+  const confirmed=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-bundle`,headers:headers(),
+    payload:{...bundlePayload(workspace),sourceLanguageConfirmations:['content.title']}});
+  assert.equal(confirmed.statusCode,200,confirmed.body);workspace=VehicleTranslationBundleResponseSchema.parse(confirmed.json()).data;
+  assert.equal(workspace.vehicle.draft.content.title.sourceLanguage,'zh');
+  for(const locale of ['zh','en','ru'] as const){const text=workspace.vehicle.draft.content.title.translations[locale]!;text.sourceVersion=workspace.vehicle.draft.content.title.sourceVersion;text.reviewStatus='approved';}
+  const reviewed=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-bundle`,headers:headers(),payload:bundlePayload(workspace)});
+  assert.equal(reviewed.statusCode,200,reviewed.body);vehicle=await publish(VehicleTranslationBundleResponseSchema.parse(reviewed.json()).data.vehicle);
   const zh=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=zh`});assert.equal(zh.statusCode,200,zh.body);
-  assert.deepEqual(zh.json().data.content.title,{text:vehicle.draft.content.title.sourceText,requestedLocale:'zh',contentLocale:'zh-CN',kind:'original',reviewed:true});
+  assert.deepEqual(zh.json().data.content.title,{text:vehicle.draft.content.title.sourceText,requestedLocale:'zh',contentLocale:'zh',kind:'original',reviewed:true});
   assert.equal((await runtime.inventory.getPublic(vehicle.id,'ru')).content.title.contentLocale,'ru');
 });
 test('published snapshots reject mutation and an interrupted publication transaction rolls back',async()=>{
   let vehicle=await ready();vehicle=await publish(vehicle);
   await assert.rejects(runtime.db.pool.query("UPDATE vehicle_publications SET data='{}' WHERE id=$1",[vehicle.publishedRevisionId]),/immutable/);
-  const next=await ready();const actor={id:editorId,requestId:randomUUID()};
+  const next=await confirmReady(await ready());const actor={id:editorId,requestId:randomUUID()};
   await runtime.db.pool.query(`CREATE FUNCTION test_fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operation='vehicle.publish' THEN RAISE EXCEPTION 'injected test failure'; END IF; RETURN NEW; END $$`);
   await runtime.db.pool.query('CREATE TRIGGER test_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION test_fail_audit()');
   try {await assert.rejects(runtime.inventory.publish(next.id,next.version,actor,randomUUID()),/injected/);}
@@ -502,6 +612,7 @@ test('a full published photo set can replace an image without deleting historica
   }
   vehicle=await runtime.inventory.save(vehicle.id,vehicle.version,vehicle.draft,actor);
   vehicle=await runtime.inventory.availability(vehicle.id,{version:vehicle.version,availability:'available',checkedAt:new Date().toISOString()},actor);
+  vehicle=await confirmReady(vehicle);
   vehicle=await runtime.inventory.publish(vehicle.id,vehicle.version,actor,randomUUID());
   await assert.rejects(runtime.media.create({vehicleId:vehicle.id,contentType:'image/png',sizeBytes:bytes.length,rights:{basis:'owned',note:'Over quota'}},actor),/at most 30/);
   const old=vehicle.draft.media.pop()!;vehicle=await runtime.inventory.save(vehicle.id,vehicle.version,vehicle.draft,actor);
@@ -548,7 +659,7 @@ test('a fresh API instance reads persisted data and reports readiness',async()=>
   } finally {await second.app.close();}
 });
 test('production cookies are Secure and a missing database fails readiness without failing liveness',async()=>{
-  const production=await buildApp(readConfig({NODE_ENV:'production',DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:'https://admin.example.invalid',TRUSTED_ORIGINS:'https://admin.example.invalid'}));
+  const production=await buildApp(readConfig({NODE_ENV:'production',HD_DEPLOYMENT_ENV:'production',HD_RELEASE_ID:'a'.repeat(40),DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:'https://admin.example.invalid',TRUSTED_ORIGINS:'https://admin.example.invalid'}));
   try {
     const login=await production.app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin:'https://admin.example.invalid'},payload:{email:'admin@example.invalid',password}});
     assert.equal(login.statusCode,200,login.body);assert.match(String(login.headers['set-cookie']),/; Secure/);assert.match(String(login.headers['set-cookie']),/__Secure-hd-auto/);
@@ -619,7 +730,7 @@ test('delete and restore roll back home, state and idempotency when audit fails;
   assert.equal(race.filter(item=>item.status==='fulfilled').length,1);
   const current=await runtime.inventory.getAdmin(vehicle.id,true);const removed=current.deletedAt?current:await runtime.inventory.remove(current.id,current.version,actor,randomUUID());
   await runtime.db.pool.query(`CREATE FUNCTION reject_restore_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.vehicle_id='${vehicle.id}' AND NEW.operation='vehicle.restore' THEN RAISE EXCEPTION 'test rollback'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_restore_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_restore_audit()`);
-  try {await assert.rejects(runtime.inventory.restore(vehicle.id,removed.version,actor,randomUUID()));assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id,true),removed);}
+  try {await assert.rejects(runtime.inventory.restore(vehicle.id,removed.version,actor,randomUUID()));assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id,true),{...removed,report:{hasReport:false,url:null}});}
   finally {await runtime.db.pool.query('DROP TRIGGER reject_restore_audit ON audit_events; DROP FUNCTION reject_restore_audit()');}
 });
 test('legacy idempotent receipts survive added deletion fields without resurrecting deleted records',async()=>{
@@ -630,12 +741,39 @@ test('legacy idempotent receipts survive added deletion fields without resurrect
   const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.equal(replay.json().data.deletedAt,null);assert.equal(replay.json().data.hasUnpublishedChanges,null);assert.equal(replay.json().data.version,1);
   assert.equal((await runtime.inventory.getAdmin(vehicle.id,true)).version,removed.version);await assert.rejects(runtime.inventory.getAdmin(vehicle.id));
 });
-test('manual external listing preserves provenance, reference facts and unreviewed translations with immutable publication snapshots',async()=>{
+test('current pending staff external copy publishes after confirmation and explicit review preserves reference facts and machine provenance',async()=>{
   const input=makeExternalVehicleDraftFixture();input.media=[];if(input.source.kind!=='external') throw new Error('external fixture required');
+  input.facts.trim={id:'external_fixture_trim',name:'Synthetic external configuration'};input.internal.purchaseCost={amount:'18000',currency:'USD'};input.configuration=configuration();
   input.source.externalId=randomUUID();input.source.listingUrl='https://listing.example.invalid/item/'+input.source.externalId;input.facts.make={id:`external_${randomBytes(4).toString('hex')}`,name:'External listing fixture'};
   let vehicle=await create(input);assert.equal(vehicle.availability,'unknown');assert.equal(vehicle.availabilityCheckedAt,null);
   const photo=await upload(vehicle,{listingUrl:input.source.listingUrl,imageUrl:'https://images.example.invalid/original.png',collectedAt:input.source.collectedAt});
-  vehicle.draft.media=[{id:photo.id,sortOrder:0,isCover:true,alt:'Observed source photo'}];vehicle=await publish(await save(vehicle));
+  vehicle.draft.media=[{id:photo.id,sortOrder:0,isCover:true,alt:'Observed source photo'}];vehicle=await save(vehicle);
+  const pendingContent=structuredClone(vehicle.draft.content);
+  const pending=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  for(const field of ['title','description'] as const)for(const language of ['zh','en','ru'] as const){
+    assert.equal(pendingContent[field].translations[language]!.reviewStatus,'pending');
+    assert.ok(!pending.json().error.fields.some((issue:{path:string})=>issue.path===`draft.content.${field}.translations.${language}`));
+  }
+  rejectedPublication(pending,'publicationPreview');
+  assert.equal((await runtime.db.pool.query('SELECT count(*)::int AS count FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].count,0);
+  vehicle=await publish(vehicle);
+  assert.equal((await runtime.inventory.getPublic(vehicle.id,'en')).content.title.reviewed,false);
+  assert.equal((await runtime.inventory.getPublic(vehicle.id,'en')).content.title.kind,'machine');
+  const reviewedDraft=structuredClone(vehicle.draft);
+  for(const field of Object.values(reviewedDraft.content))for(const language of ['zh','en','ru'] as const)field.translations[language]!.reviewStatus='approved';
+  // Explicit staff PATCH changes only review status; the source, text, provenance and supplied versions stay intact.
+  const reviewed=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:reviewedDraft}});
+  assert.equal(reviewed.statusCode,200,reviewed.body);vehicle=reviewed.json().data;
+  for(const field of ['title','description'] as const){
+    assert.equal(vehicle.draft.content[field].sourceVersion,pendingContent[field].sourceVersion);
+    for(const language of ['zh','en','ru'] as const){
+      const prior=pendingContent[field].translations[language]!;
+      assert.deepEqual(vehicle.draft.content[field].translations[language],{...prior,reviewStatus:'approved',humanEditVersion:prior.humanEditVersion+1});
+    }
+  }
+  vehicle=await confirmReady(vehicle);
+  const publication=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  assert.equal(publication.statusCode,200,publication.body);vehicle=publication.json().data;
   for(const locale of ['zh','en','ru']) {
     const response=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}`});assert.equal(response.statusCode,200,response.body);
     const published=PublicVehicleResponseSchema.parse(response.json()).data;assert.equal(published.source.kind,'external');assert.equal(published.price.kind,'reference');assert.equal(published.availability,'unknown');assert.equal(published.availabilityCheckedAt,null);assert.equal(published.content.title.reviewed,false);assert.equal(published.content.description?.reviewed,false);assert.equal(published.content.title.kind,locale==='zh'?'original':'machine');assert.equal(published.fetchedAt,input.source.collectedAt);assert.deepEqual(published.facts,vehicle.draft.facts);
@@ -651,7 +789,7 @@ test('manual external listing preserves provenance, reference facts and unreview
   const bulk=await call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':randomUUID()},payload:{operation:'availability',availability:'available',checkedAt:new Date().toISOString(),items:[{id:vehicle.id,expectedVersion:vehicle.version}]}});assert.equal(bulk.json().data.results[0].error.code,'EXTERNAL_RESTRICTION');
   const before=await runtime.inventory.getPublic(vehicle.id,'en');vehicle.draft.content.title.sourceText='Source title updated after publication';vehicle=await save(vehicle);
   assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'en'),before);assert.equal(vehicle.draft.content.title.translations.en!.reviewStatus,'stale');
-  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(stale.statusCode,422);
+  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});rejectedPublication(stale,'draft.content.title.translations.en');
   const archived=await runtime.inventory.archive(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()});assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}`})).statusCode,404);assert.equal((await call({method:'GET',url:`/api/v1/media/${photo.id}`})).statusCode,404);assert.equal(archived.availability,'unknown');
 });
 test('external identity, source type, price and per-image evidence cannot be bypassed',async()=>{
@@ -667,7 +805,7 @@ test('external identity, source type, price and per-image evidence cannot be byp
   const media=await upload(vehicle);vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:''}];vehicle=await save(vehicle);
   const missingEvidence=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(missingEvidence.statusCode,422);assert.ok(missingEvidence.json().error.fields.some((field:{path:string})=>field.path.startsWith('draft.media')));
   const wrongSourcePhoto=await upload(vehicle,{listingUrl:'https://other.example.invalid/listing',imageUrl:'https://other.example.invalid/image.png',collectedAt:value.source.collectedAt});vehicle.draft.media=[{id:wrongSourcePhoto.id,sortOrder:0,isCover:true,alt:''}];vehicle=await save(vehicle);
-  assert.equal((await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}})).statusCode,422);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}}),`draft.media.${wrongSourcePhoto.id}.rights`);
   await runtime.inventory.remove(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()},randomUUID());assert.equal((await request(value)).statusCode,409);
   const other={...value,source:{...value.source,platform:{id:'different-platform',name:'Different isolated platform'}}};assert.equal((await request(other)).statusCode,201);
 });
@@ -676,7 +814,7 @@ test('unverified image rights remain an external-only publishing exception',asyn
     const media=await upload(vehicle,{listingUrl:'https://source.example.invalid/vehicle',imageUrl:'https://source.example.invalid/image.png',collectedAt:new Date().toISOString()});
     vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Unverified local test image'}];vehicle=await save(vehicle);
     const rejected=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
-    assert.equal(rejected.statusCode,422,rejected.body);assert.ok(rejected.json().error.fields.some((field:{path:string})=>field.path==='draft.media'));
+    rejectedPublication(rejected,`draft.media.${media.id}.rights`);
     assert.equal((await runtime.db.pool.query('SELECT 1 FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rowCount,0);
   }
 });
@@ -711,29 +849,29 @@ async function saveLocalization(value:VehicleLocalization,pathId=value.vehicleId
 async function reviewDisplay(id:string,extra=false){
   let local=await localization(id);
   if(extra){local.data.facts={generation:{id:'gen_test',name:'Generation One'},drivetrain:'awd'};local=await saveLocalization(local);}
-  for(const field of local.data.fields)field.sourceLanguage=/\p{Script=Han}/u.test(field.sourceText)?'zh':'en';
-  local=await saveLocalization(local);
+  for(const field of local.data.fields)assert.equal(field.sourceLanguage,'zh');
   for(const field of local.data.fields)for(const locale of ['zh','en','ru'] as const){
-    field.translations[locale]={text:locale===field.sourceLanguage?field.sourceText:`${locale} reviewed ${field.ref}`,kind:locale===field.sourceLanguage?'original':'human',reviewStatus:'approved',sourceVersion:field.sourceVersion,humanEditVersion:field.translations[locale]?.humanEditVersion??0,engineVersion:null};
+    field.translations[locale]={text:locale==='zh'?field.sourceText:field.ref.startsWith('configuration.')?`${field.sourceText} (${locale})`:`${locale} reviewed ${field.ref}`,kind:locale==='zh'?'original':'human',reviewStatus:'approved',sourceVersion:field.sourceVersion,humanEditVersion:field.translations[locale]?.humanEditVersion??0,engineVersion:null};
   }
   return saveLocalization(local);
 }
 async function freshVehicle(id:string):Promise<AdminVehicle>{const r=await call({method:'GET',url:`/api/v1/admin/vehicles/${id}`,headers:headers()});assert.equal(r.statusCode,200,r.body);return r.json().data;}
 
-test('localized sidecars are optional, private, versioned and immutable with their publication',async()=>{
-  let vehicle=await ready();vehicle.draft.facts.make={id:'manual_toyota_localized',name:'丰田'};vehicle.draft.facts.model={id:'localized_model',name:'车型甲'};vehicle=await publish(await save(vehicle));
-  const legacy=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en`});assert.equal(legacy.statusCode,200,legacy.body);
-  assert.equal('display' in legacy.json().data,false);assert.equal('generation' in legacy.json().data.facts,false);
-  let read=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`});assert.equal(read.statusCode,200,read.body);
-  assert.equal(read.json().data.facts.make.name,'Toyota');assert.equal(read.json().data.display.model.status,'missing');assert.equal(read.json().data.facts.generation,null);
+test('localized sidecars may be incomplete in drafts but are required, private and immutable on new publication',async()=>{
+  let vehicle=await ready();vehicle.draft.facts.make={id:'manual_toyota_localized',name:'丰田'};vehicle.draft.facts.model={id:'localized_model',name:'车型甲'};vehicle=await save(vehicle);
+  assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en`})).statusCode,404);
+  const preview=await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=en`,headers:headers()});assert.equal(preview.statusCode,200,preview.body);
+  assert.equal(preview.json().data.vehicle.display.make.text,'Toyota');assert.equal(preview.json().data.vehicle.display.model.reviewStatus,'missing');assert.equal(preview.json().data.vehicle.facts.generation,null);
   assert.equal((await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}/localization`})).statusCode,401);
-  let local=await localization(vehicle.id);assert.equal(local.revision,0);
+  let local=await localization(vehicle.id);assert.ok(local.revision>=1);assert.ok(local.data.fields.every(field=>field.sourceLanguage==='zh'&&field.translations.zh?.kind==='original'));
   // First PUT via upper-case UUID must use the same deterministic includes refs.
   local=await saveLocalization(local,vehicle.id.toUpperCase());
-  const premature=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:local.vehicleVersion}});assert.equal(premature.statusCode,422,premature.body);
+  const premature=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:local.vehicleVersion}});rejectedPublication(premature,'localization.model.en');
   local=await reviewDisplay(vehicle.id,true);vehicle=await freshVehicle(vehicle.id);assert.equal(vehicle.hasUnpublishedChanges,true);
   vehicle=await publish(vehicle);assert.equal(vehicle.hasUnpublishedChanges,false);
-  read=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`});assert.equal(read.statusCode,200,read.body);
+  const legacy=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en`});assert.equal(legacy.statusCode,200,legacy.body);
+  assert.equal('display' in legacy.json().data,false);assert.equal('generation' in legacy.json().data.facts,false);
+  const read=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`});assert.equal(read.statusCode,200,read.body);
   assert.equal(read.json().data.facts.model.name,'en reviewed model');assert.equal(read.json().data.facts.generation.id,'gen_test');assert.equal(read.json().data.facts.drivetrain,'awd');
   for(const secret of ['sourceHash','engineVersion','internal','sourceText','humanEditVersion'])assert.equal(read.body.includes(`"${secret}"`),false,secret);
   const priorPublication=vehicle.publishedRevisionId;
@@ -756,7 +894,13 @@ test('full-catalog ranges are inclusive, original-currency, model-year based and
     let v=await ready();v.draft.facts.make={id:makeId,name:'Toyota'};v.draft.facts.model={id:'range_model',name:'范围车型'};v.draft.facts.trim={id:'trim_test',name:'配置甲'};
     v.draft.facts.mileageKm=spec.mileage;v.draft.facts.modelYear=spec.year;v.draft.facts.manufacturedAt={precision:'year',value:'1999'};
     v.draft.price=spec.price===null?{kind:'on_request',money:null,includes:[]}:{kind:'asking',money:{amount:spec.price,currency:spec.currency},includes:[]};
-    v=await save(v);if(spec.currency==='CNY')await reviewDisplay(v.id,true);await publish(await freshVehicle(v.id));
+    v=await save(v);
+    if(spec.price===null||spec.price==='0.00') {
+      // Existing zero/unknown values must remain queryable; new staff publication now rejects them.
+      const blocked=await call({method:'POST',url:`/api/v1/admin/vehicles/${v.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:v.version}});
+      assert.equal(blocked.statusCode,422,blocked.body);assert.ok(blocked.json().error.fields.some((field:{path:string})=>field.path==='draft.price'));
+      await seedHistoricalPublication(v);
+    } else {if(spec.currency==='CNY')await reviewDisplay(v.id,true);await publish(await freshVehicle(v.id));}
   }
   const query=`locale=en&view=localized&make=${makeId}`;
   const list=async(extra:string)=>{const r=await call({method:'GET',url:`/api/v1/vehicles?${query}${extra}`});assert.equal(r.statusCode,200,r.body);return r.json();};
@@ -797,22 +941,39 @@ test('localized q, facets, detail and home use the same publication projection w
   }
 });
 
-test('display suggestions never save drafts and reject concurrent source/human edits',async()=>{
+test('confirmed display suggestions save only through a versioned bundle and cannot overwrite source or human edits',async()=>{
   let vehicle=await ready();vehicle.draft.facts.model!.name='机器建议车型';vehicle=await save(vehicle);
-  let local=await localization(vehicle.id);local.data.fields.find(field=>field.ref==='model')!.sourceLanguage='zh';local=await saveLocalization(local);
+  let workspace=await bundle(vehicle.id);const local=workspace.localization;
   const input={vehicleVersion:local.vehicleVersion,revision:local.revision,refs:['model']};const key=randomUUID();
-  const generated=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':key},payload:input});assert.equal(generated.statusCode,200,generated.body);
+  const oldRequest={method:'POST' as const,url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':key},payload:input};
+  const blocked=await call(oldRequest);assert.equal(blocked.statusCode,422,blocked.body);assert.equal(blocked.json().error.code,'TRANSLATION_CONFIRMATION_REQUIRED');
+  const generated=await generate(await plan(vehicle));assert.equal(generated.status,'completed');
   assert.equal((await localization(vehicle.id)).data.fields.find(field=>field.ref==='model')!.translations.en,null);
-  const received=generated.json().data.fields[0];assert.equal(received.translations.en.kind,'machine');assert.equal(received.translations.en.reviewStatus,'pending');assert.equal(received.translations.en.humanEditVersion,0);
-  local.data.fields.find(field=>field.ref==='model')!.translations.en={text:'Human revision',kind:'human',reviewStatus:'approved',sourceVersion:local.data.fields.find(field=>field.ref==='model')!.sourceVersion,humanEditVersion:0,engineVersion:null};
-  const latest=await saveLocalization(local);const old=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/localization`,headers:headers(),payload:{vehicleVersion:local.vehicleVersion,revision:local.revision,data:{...local.data,fields:local.data.fields.map(field=>field.ref==='model'?received:field)}}});assert.equal(old.statusCode,409,old.body);
-  const replay=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':key},payload:input});assert.equal(replay.statusCode,200,replay.body);assert.deepEqual(replay.json().data,generated.json().data);
+  const result=generated.fields.find(field=>field.ref==='model')!;
+  assert.equal(result.translations.en!.kind,'machine');assert.equal(result.translations.en!.reviewStatus,'pending');assert.equal(result.translations.en!.humanEditVersion,0);
+  const received={...local.data.fields.find(field=>field.ref==='model')!,translations:result.translations};
+  const receipt={vehicleId:vehicle.id,vehicleVersion:local.vehicleVersion,revision:local.revision,fields:[received]};
+  await historicalReceipt(`vehicle.displayTranslationSuggestions:${vehicle.id}`,key,{id:vehicle.id,...input},receipt);
+  workspace.localization.data.fields.find(field=>field.ref==='model')!.translations=result.translations;
+  const adoption=bundlePayload(workspace),bundleUrl=`/api/v1/admin/vehicles/${vehicle.id}/translation-bundle`;
+  const adopted=await call({method:'PUT',url:bundleUrl,headers:headers(),payload:adoption});assert.equal(adopted.statusCode,200,adopted.body);
+  workspace=VehicleTranslationBundleResponseSchema.parse(adopted.json()).data;
+  const model=workspace.localization.data.fields.find(field=>field.ref==='model')!;
+  assert.equal(model.translations.en!.kind,'machine');assert.equal(model.translations.en!.reviewStatus,'pending');
+  model.translations.en={text:'Human revision',kind:'human',reviewStatus:'approved',sourceVersion:model.sourceVersion,humanEditVersion:model.translations.en!.humanEditVersion,engineVersion:null};
+  const human=await call({method:'PUT',url:bundleUrl,headers:headers(),payload:bundlePayload(workspace)});assert.equal(human.statusCode,200,human.body);
+  const latest=VehicleTranslationBundleResponseSchema.parse(human.json()).data;
+  const old=await call({method:'PUT',url:bundleUrl,headers:headers(),payload:adoption});assert.equal(old.statusCode,409,old.body);
+  const current=await bundle(vehicle.id);current.localization.data.fields.find(field=>field.ref==='model')!.translations=result.translations;
+  const targetConflict=await call({method:'PUT',url:bundleUrl,headers:headers(),payload:bundlePayload(current)});assert.equal(targetConflict.statusCode,409,targetConflict.body);
+  assert.equal((await localization(vehicle.id)).data.fields.find(field=>field.ref==='model')!.translations.en!.text,'Human revision');
+  const calls=translationCalls,replay=await call(oldRequest);assert.equal(replay.statusCode,200,replay.body);assert.deepEqual(replay.json().data,receipt);assert.equal(translationCalls,calls);
   let entered!:()=>void,release!:()=>void;const started=new Promise<void>(resolve=>entered=resolve),gate=new Promise<void>(resolve=>release=resolve);
   translationHook=async(text,target)=>{entered();await gate;return `${target} fresh ${text}`;};
-  vehicle=await freshVehicle(vehicle.id);vehicle.draft.facts.model!.name='并发新车型';vehicle=await save(vehicle);local=await localization(vehicle.id);
-  const running=call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/localization/translation-suggestions`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{vehicleVersion:local.vehicleVersion,revision:local.revision,refs:['model']}});
+  vehicle=await freshVehicle(vehicle.id);vehicle.draft.facts.model!.name='并发新车型';vehicle=await save(vehicle);
+  const running=call(generation(await plan(vehicle)));
   await started;try{vehicle.draft.facts.model!.name='并发再修改';await save(vehicle);}finally{release();translationHook=null;}
-  const conflict=await running;assert.equal(conflict.statusCode,409,conflict.body);assert.ok(latest.vehicleVersion>input.vehicleVersion);
+  const conflict=await running;assert.equal(conflict.statusCode,409,conflict.body);assert.ok(latest.vehicle.version>input.vehicleVersion);
 });
 
 test('new vehicle receipts remain readable by the old strict DTO and preserve immutable new metadata',async()=>{

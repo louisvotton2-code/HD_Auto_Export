@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {readConfig} from './config.js';
-const base={DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/test',AUTH_SECRET:'test-only-long-secret-which-is-not-used-in-production'};
+const base={NODE_ENV:'test',DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/test',AUTH_SECRET:'test-only-long-secret-which-is-not-used-in-production'};
 test('capacity mode is isolated from the original synthetic guard and accepts only its dedicated Compose aliases',()=>{
-  const env={...base,NODE_ENV:'test',EXTERNAL_CATALOG_MODE:'synthetic-scale',TRANSLATION_PROVIDER:'disabled',HOST:'0.0.0.0',
+  const env={...base,HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),NODE_ENV:'test',EXTERNAL_CATALOG_MODE:'synthetic-scale',TRANSLATION_PROVIDER:'disabled',HOST:'0.0.0.0',
     DATABASE_URL:'postgresql://local:local@postgres-scale:5432/hd_ext_scale_config'};
   assert.equal(readConfig(env).externalScale,true);
   assert.equal(readConfig(env).externalCatalog,true);
@@ -103,4 +103,29 @@ test('default proxy configuration ignores spoofed forwarding headers',async()=>{
     const response=await app.inject({url:'/',remoteAddress:'172.29.0.2',headers:{'x-forwarded-for':'198.51.100.9'}});
     assert.equal(response.json().ip,'172.29.0.2');
   } finally {await app.close();}
+});
+
+test('formal reads and caches are independent of ingestion, while synthetic protections remain intact',()=>{
+  const release={HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40)};
+  const config=readConfig({...base,...release,CATALOG_READ_MODE:'combined',PUBLIC_CATALOG_CACHE:'memory'});
+  assert.equal(config.externalCatalog,true);assert.equal(config.externalIngestion,false);assert.equal(config.externalSync,'off');
+  assert.equal(config.publicCache.ttlMs,15000);assert.equal(config.publicCache.maxConcurrentLoads,4);
+  assert.equal(config.publicCache.maxBytes,16*1048576);assert.equal(config.publicCache.maxEntries,64);
+  assert.equal(readConfig({...base,...release,PUBLIC_CATALOG_CACHE:'memory'}).externalCatalog,false);
+  const redis=readConfig({...base,...release,PUBLIC_CATALOG_CACHE:'redis',PUBLIC_REDIS_HOST:'redis',PUBLIC_REDIS_USER:'catalog',PUBLIC_REDIS_PASSWORD_FILE:'/run/secrets/cache'});
+  assert.equal(redis.publicCache.redis?.host,'redis');
+  for(const patch of [{EXTERNAL_SYNC_MODE:'on'},{PUBLIC_CACHE_MAX_LOADS:'5'},{PUBLIC_CACHE_TTL_MS:'15001'},
+    {PUBLIC_REDIS_HOST:'redis-scale'},{EXTERNAL_CATALOG_MODE:'synthetic',DATABASE_URL:'postgresql://local@127.0.0.1/hd_ext_guard'}])
+    assert.throws(()=>readConfig({...base,...release,PUBLIC_CATALOG_CACHE:'memory',...patch}));
+});
+test('actual runtime and enabled caches require explicit deployment identity, with only cache-off tests defaulting',()=>{
+  assert.deepEqual(readConfig(base).deployment,{environment:'test',releaseId:'unreleased'});
+  for(const patch of [{NODE_ENV:'development'},{PUBLIC_CATALOG_CACHE:'memory'},
+    {NODE_ENV:'production',AUTH_BASE_URL:'https://example.invalid',TRUSTED_ORIGINS:'https://example.invalid'}])
+    assert.throws(()=>readConfig({...base,...patch}),/HD_DEPLOYMENT_ENV/);
+  assert.throws(()=>readConfig(base,{runtime:true}),/HD_DEPLOYMENT_ENV/);
+  const release={HD_DEPLOYMENT_ENV:'local',HD_RELEASE_ID:'a'.repeat(40)};
+  assert.equal(readConfig({...base,...release},{runtime:true}).deployment.environment,'local');
+  for(const value of ['',' ','latest','test-secret\n'])assert.throws(()=>readConfig({...base,...release,HD_RELEASE_ID:value}),/HD_RELEASE_ID/);
+  assert.throws(()=>readConfig({...base,...release,NODE_ENV:'production',AUTH_BASE_URL:'https://example.invalid',TRUSTED_ORIGINS:'https://example.invalid'}),/HD_DEPLOYMENT_ENV=production/);
 });

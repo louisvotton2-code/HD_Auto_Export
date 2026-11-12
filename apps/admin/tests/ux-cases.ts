@@ -126,7 +126,7 @@ test('published demo basics fit 320px after switching from the publication tab',
   await installApi(page, { items: [demo] });
   await page.goto(`/admin/vehicles/${demo.id}`);
   const { tab } = await import('./ui-helpers');
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
   await page.setViewportSize({ width: 320, height: 844 });
   await tab(page, '基础资料');
   const overflow = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth,

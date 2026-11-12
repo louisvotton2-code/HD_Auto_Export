@@ -18,3 +18,6 @@ export const reasonLabels = {
 };
 export const issueLabels = { missing: '来源缺项', conflict: '来源值冲突', invalid: '来源值无效', expired: '已失效' };
 export const pageSize = 25;
+
+const platformLabels = new Map([['dongchedi', '懂车帝'], ['che168', '车168']]);
+export const platformName = (id: string) => platformLabels.get(id) ?? id;

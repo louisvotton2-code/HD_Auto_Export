@@ -7,11 +7,12 @@ export const VehicleExtraFactsSchema=z.strictObject({generation:NamedValueSchema
 export type VehicleExtraFacts=z.infer<typeof VehicleExtraFactsSchema>;
 /** Keep localized projections within the original field's public contract. Never truncate translations. */
 export function getDisplayTextLimit(ref:string):number {
+  if(ref.startsWith('configuration.'))return ref.endsWith('.name')?100:500;
   if(ref.startsWith('media.'))return 500;
   if(ref==='location.displayName'||ref.startsWith('price.includes.'))return 200;
   return 120;
 }
-export const DisplayRefSchema=z.string().regex(/^(?:make|model|trim|generation|location\.city|location\.displayName|source\.platform|media\.[0-9a-f-]{36}\.alt|price\.includes\.[0-9a-f-]{36})$/).refine(ref=>{
+export const DisplayRefSchema=z.string().max(450).regex(/^(?:make|model|trim|generation|location\.city|location\.displayName|source\.platform|media\.[0-9a-f-]{36}\.alt|price\.includes\.[0-9a-f-]{36}|configuration\.cfg-(?:[0-9a-f]{4}){1,100}\.(?:name|value))$/).refine(ref=>{
   if(ref.startsWith('media.'))return z.uuid().safeParse(ref.slice(6,-4)).success;
   if(ref.startsWith('price.includes.'))return z.uuid().safeParse(ref.slice(15)).success;
   return true;
@@ -32,7 +33,7 @@ export const DisplayFieldSchema=z.strictObject({
     ctx.addIssue({code:'custom',path:['translations',locale,'text'],message:`This display field is limited to ${max} characters`});
 });
 export type DisplayField=z.infer<typeof DisplayFieldSchema>;
-export const LocalizationDataSchema=z.strictObject({facts:VehicleExtraFactsSchema,fields:z.array(DisplayFieldSchema).max(70)}).superRefine((value,ctx)=>{
+export const LocalizationDataSchema=z.strictObject({facts:VehicleExtraFactsSchema,fields:z.array(DisplayFieldSchema).max(470)}).superRefine((value,ctx)=>{
   if(new Set(value.fields.map(field=>field.ref)).size!==value.fields.length)ctx.addIssue({code:'custom',path:['fields'],message:'Duplicate display refs'});
 });
 export type LocalizationData=z.infer<typeof LocalizationDataSchema>;

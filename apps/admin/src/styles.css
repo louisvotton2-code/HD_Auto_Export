@@ -15,6 +15,10 @@ a { text-underline-offset:3px; }
 .brand-mark:hover { color:#fff; }.brand-type small { display:block; font-size:10px; font-weight:400; letter-spacing:.12em; color:#e5c05b; margin-top:5px; }
 .nav-caption { color:#a69c87; font-size:11px; margin:8px 18px 13px; letter-spacing:.12em; }
 .sidebar-inner .ant-menu { background:transparent; border:none; }.sidebar-inner .ant-menu-item { height:46px; line-height:46px; margin:5px 0; width:100%; }.sidebar-inner .ant-menu-item-selected { background:#36301f !important; color:#e5c05b; }
+.sidebar-inner > nav { flex:1; display:flex; min-height:0; overflow:auto; margin-bottom:12px; }
+.sidebar-inner > nav .ant-menu { display:flex; flex-direction:column; width:100%; }
+.sidebar-inner > nav .ant-menu-item { flex-shrink:0; }
+.sidebar-inner > nav .supplier-nav-item { margin-top:auto; }
 .nav-bottom { margin-top:auto; padding:20px 16px 0; display:flex; align-items:center; gap:12px; border-top:1px solid #ffffff10; color:#c7beaa; font-size:12px; }.nav-bottom small { display:block; color:#a69c87; margin-top:4px; }
 .workspace-body { min-width:0; }.topbar { height:76px !important; line-height:normal !important; background:#fff !important; border-bottom:1px solid #e8e2d5; padding:0 32px !important; display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .staff-avatar { background:#f2e9d2; color:#89671a; }

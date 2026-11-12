@@ -4,6 +4,8 @@
 
 ## 新 Agent 从这里开始
 
+Claude Code 从根目录 [CLAUDE.md](../CLAUDE.md) 加载公共入口，角色会话与接手步骤见 [Claude Code 交接](协作/Claude-Code-交接.md)。
+
 1. 按 **根目录 [AGENTS.md](../AGENTS.md) → 本导航 → [当前进度](开发进度.md) → 自己的角色文件 → 本次相关契约** 阅读，确认实际能力、环境和阶段。用户须指定角色和本轮任务；目录或路线图存在不代表允许自主实现全部模块。
 2. 加载 [hd-auto-development](../.agents/skills/hd-auto-development/SKILL.md)。支持 Skill 的工具可显式使用 `$hd-auto-development`；其他 Agent 直接读取同一文件即可，无需安装第二套规范。
 3. 按下表只读自己的角色文件及任务所需资料，检查实际代码和已有改动，然后执行。身兼多职时按本轮涉及的职责补读，跨角色变更先协调文件归属。

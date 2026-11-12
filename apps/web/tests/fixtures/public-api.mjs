@@ -1,13 +1,19 @@
 /** Isolated HTTP fixtures for the website. Never points at a database or operating inventory. */
 import { createServer } from 'node:http';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import { makeImportedPublicVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture, makeConfigurationDisplayFixture, makeExternalInspectionFixture } from '@hd/contracts/fixtures';
+import { PublicationPreviewQuerySchema, PublicationPreviewResponseSchema } from '@hd/contracts/admin';
 import {
   ApiErrorSchema,
   ExternalMediaFailureRequestSchema,
   IdSchema,
   PublicFilterQuerySchema,
+  PublicCatalogCacheStampSchema,
+  PublicCatalogVersionQuerySchema,
+  PublicCatalogVersionResponseSchema,
   PublicHomeSectionsSchema,
   PublicLocaleQuerySchema,
   PublicMediaQuerySchema,
@@ -187,16 +193,110 @@ const resetState = () => ({
   importedPublished: false,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
+  catalogSampleCount: null,
+  historyScenario: 'default',
+  configurationMode: 'none',
+  inspectionMode: 'legacy',
+  reportPresenceMode: 'default',
   responseDelayMs: 0,
   publicRateLimited: false,
   filtersRateLimited: false,
   longTitles: false,
   richCatalog: false,
   usdRateAvailable: true,
+  usdRateDivisor: 8,
+  cacheVersionFailure: false,
+  cacheMismatch: 'none',
+  cachePayloadTtlMs: 15_000,
+  cacheFxTtlMs: 3_600_000,
+  cacheMediaTtlMs: 3_600_000,
+  previewMode: 'ready',
+  previewPrice: 'normal',
+  previewVersion: 4,
+  previewDelayMs: 0,
+  previewSlowLocale: '',
+  previewImageCount: 1,
 });
+
+// Deliberately synthetic employee sessions, draft content and image bytes. These endpoints
+// belong only to the isolated fixture server and never authenticate a real account.
+const previewVehicleIds = [
+  '00000000-0000-4000-8000-000000000001',
+  '00000000-0000-4000-8000-000000000003',
+];
+const previewMediaIds = Array.from({ length: 12 }, (_, index) =>
+  `00000000-0000-4000-8000-${(index === 0 ? 2 : index + 3).toString(16).padStart(12, '0')}`);
+const previewModes = [
+  'ready', 'incomplete', 'stale', 'machine', 'unauthenticated', 'forbidden', 'not_found',
+  'conflict', 'unavailable', 'malformed', 'wrong_id', 'wrong_locale', 'private_field',
+];
+const previewStaff = (req) => /(?:^|;\s*)hd-preview-staff=authorized(?:;|$)/.test(req.headers.cookie ?? '');
+
+function fixtureConfiguration(locale, mode) {
+  if (mode === 'none') return null;
+  const configuration = makeConfigurationDisplayFixture(locale);
+  if (mode === 'missing') configuration.items[1].value = {
+    status: 'missing', text: null, requestedLocale: locale, contentLocale: null, provenance: null, reviewed: false,
+  };
+  if (mode === 'fallback') {
+    configuration.items[0].name = { ...configuration.items[0].name, text: '排量(cc)', contentLocale: 'zh', provenance: 'original' };
+    configuration.items[0].value.text = '1989 cm³ / 8 AT';
+  }
+  if (mode === 'long') {
+    configuration.items[0].name.text = 'Длинная характеристика '.repeat(4).slice(0, 100);
+    configuration.items[0].value.text = '1234567890'.repeat(50);
+  }
+  if (mode === 'wrong_name_locale') configuration.items[0].name.requestedLocale = locale === 'ru' ? 'en' : 'ru';
+  if (mode === 'wrong_value_locale') configuration.items[0].value.requestedLocale = locale === 'ru' ? 'en' : 'ru';
+  return configuration;
+}
+
+function withReportPresence(row, mode) {
+  if (mode === 'known') row.report = { hasReport: true };
+  else if (mode === 'false') row.report = { hasReport: false };
+  else if (mode === 'absent') delete row.report;
+  return row;
+}
+
+function previewResponse(state, id, requestedLocale) {
+  const locale = state.previewMode === 'wrong_locale' ? (requestedLocale === 'ru' ? 'en' : 'ru') : requestedLocale;
+  const scenario = ['incomplete', 'stale', 'machine'].includes(state.previewMode) ? state.previewMode : 'ready';
+  const preview = makePublicationPreviewFixture(locale, scenario);
+  withReportPresence(preview.vehicle, state.reportPresenceMode);
+  if (state.configurationMode !== 'none') preview.vehicle.configuration = fixtureConfiguration(locale, state.configurationMode);
+  preview.vehicle.id = state.previewMode === 'wrong_id' ? previewVehicleIds[1] : id;
+  preview.vehicle.stockCode = id === previewVehicleIds[0] ? 'FIXTURE-0001' : 'FIXTURE-0002';
+  preview.vehicleVersion = state.previewVersion;
+  preview.publicContentRevision = state.previewVersion - 1;
+  preview.fingerprint = state.previewVersion.toString(16).padStart(64, '0');
+  // Synthetic private gallery only; ordinary public fixtures and the real API are unchanged.
+  if (preview.vehicle.images.length && state.previewImageCount > 1) {
+    const cover = preview.vehicle.images[0];
+    preview.vehicle.images = previewMediaIds.slice(0, state.previewImageCount).map((mediaId, index) => ({
+      ...cover, id: mediaId, url: `/api/v1/admin/media/${mediaId}/preview`,
+      sortOrder: index, isCover: index === 0,
+    }));
+  }
+  if (state.previewPrice === 'on_request') {
+    preview.vehicle.price = { kind: 'on_request', money: null, includes: [], status: 'on_request',
+      displayPrice: { status: 'on_request', money: null, conversion: null } };
+  } else if (state.previewPrice === 'zero') {
+    preview.vehicle.price = { kind: 'asking', money: { amount: '0', currency: 'USD' }, includes: [], status: 'ready',
+      displayPrice: { status: 'ready', kind: 'asking', money: { amount: '0', currency: 'USD' }, conversion: null } };
+  } else if (state.previewPrice === 'unavailable') {
+    preview.vehicle.price = { kind: 'asking', money: { amount: '128000.50', currency: 'CNY' }, includes: [], status: 'ready',
+      displayPrice: { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' } };
+  }
+  const response = PublicationPreviewResponseSchema.parse({ data: preview, meta: { requestId: 'fixture-publication-preview' } });
+  if (state.previewMode === 'private_field') response.data.vehicle.internal = { purchaseCost: 'PRIVATE_COST_SENTINEL', notes: 'PRIVATE_NOTES_SENTINEL' };
+  return response;
+}
 function visibleVehicles(state, locale) {
   if (state.mode === 'empty') return [];
-  const rows = [
+  // Extra unique records exist only inside this health-marked fixture, never operating inventory.
+  const rows = state.catalogSampleCount !== null
+    ? Array.from({ length: state.catalogSampleCount }, (_, index) => vehicle(`fixture_car_${index + 1}`, locale))
+    : [
     vehicle('fixture_demo', locale),
     ...Array.from({ length: 24 }, (_, i) => vehicle(`fixture_car_${i + 1}`, locale)),
     vehicle('fixture_reserved', locale),
@@ -286,14 +386,15 @@ function cents(text) {
   const [whole, fraction = ''] = text.split('.');
   return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
 }
-function fixtureUsdPrice(row, rateAvailable) {
+function fixtureUsdPrice(row, rateAvailable, divisor = 8) {
   const { kind, money } = row.price;
   if (!money) return { status: 'on_request', money: null, conversion: null };
   const native = money.currency === 'USD';
   if (!native && (!rateAvailable || money.currency !== 'CNY'))
     return { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
-  // The isolated sample rate is exactly 8 CNY per USD, with half-up cent rounding.
-  const value = native ? cents(money.amount) : (cents(money.amount) + 4n) / 8n;
+  // This controlled quote is synthetic. Changing it also changes the fixture FX version.
+  const denominator = BigInt(divisor);
+  const value = native ? cents(money.amount) : (cents(money.amount) + denominator / 2n) / denominator;
   return {
     status: 'ready',
     kind: native ? kind : 'reference',
@@ -383,6 +484,55 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
     throw new Error('Use a dedicated fixture port, never API 3320.');
   let state = resetState();
   let requests = [];
+  // The nonce survives every reset. A prior test's cache key can never become current again.
+  const catalogEpoch = randomUUID();
+  let catalogRevision = 0;
+  let fxVersion = randomUUID();
+  let stateChangedAt = Date.now();
+  let mismatchesRemaining = 0;
+  const secretPath = process.env.HD_SSR_SERVICE_SECRET_FILE;
+  let serviceSecret;
+  if (secretPath) {
+    const stat = lstatSync(secretPath);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600)
+      throw new Error('The isolated SSR fixture requires a regular mode-600 secret file.');
+    serviceSecret = readFileSync(secretPath, 'utf8').trim();
+    if (!/^[a-f0-9]{64,128}$/.test(serviceSecret))
+      throw new Error('The isolated SSR fixture requires its generated test service credential.');
+  }
+  const changed = (patch = {}) => {
+    catalogRevision++;
+    stateChangedAt = Date.now();
+    if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
+      fxVersion = randomUUID();
+    mismatchesRemaining = state.cacheMismatch === 'once' ? 1 : 0;
+  };
+  const stamp = (priceView, mismatch = false) => {
+    const now = Date.now();
+    const fx = priceView === 'usd' && state.usdRateAvailable && now < stateChangedAt + state.cacheFxTtlMs
+      ? { version: fxVersion, expiresAt: new Date(stateChangedAt + state.cacheFxTtlMs).toISOString() }
+      : null;
+    // importedPhotosRemoved removes only the supplier row's photos; other imports still expire.
+    const hasActiveRemoteImages = state.importedPublished &&
+      now < stateChangedAt + state.cacheMediaTtlMs;
+    const validUntil = Math.min(now + state.cachePayloadTtlMs,
+      fx ? Date.parse(fx.expiresAt) : Infinity,
+      hasActiveRemoteImages ? stateChangedAt + state.cacheMediaTtlMs : Infinity);
+    if (validUntil <= now) return null;
+    return PublicCatalogCacheStampSchema.parse({
+      version: createHash('sha256').update(`${catalogEpoch}:${catalogRevision}:${priceView}:${fx?.version ?? 'no-fx'}:${hasActiveRemoteImages ? 'active-media' : 'no-active-media'}:${mismatch ? 'mismatch' : 'current'}`).digest('hex'),
+      priceView, fx, checkedAt: new Date(now).toISOString(), validUntil: new Date(validUntil).toISOString(),
+    });
+  };
+  const authenticated = (req) => {
+    const peer = req.socket.remoteAddress;
+    if (!serviceSecret || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) return false;
+    const supplied = req.headers['x-hd-ssr-key'];
+    if (typeof supplied !== 'string') return false;
+    const actual = Buffer.from(supplied), expected = Buffer.from(serviceSecret);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  };
+  changed();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -390,6 +540,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, { suite: fixtureSuite });
       if (url.pathname === '/__fixtures/reset' && req.method === 'POST') {
         state = resetState();
+        changed({ usdRateAvailable: true });
         requests = [];
         return send(res, 200, { suite: fixtureSuite, state });
       }
@@ -407,12 +558,29 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
+          catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 10_080,
+          historyScenario: (v) => ['default', 'complete', 'empty', 'conflict', 'structured-zero', 'structured-null', 'structured-two'].includes(v),
+          configurationMode: (v) => ['none', 'ready', 'missing', 'fallback', 'long', 'wrong_name_locale', 'wrong_value_locale'].includes(v),
+          inspectionMode: (v) => ['legacy', 'structured', 'large', 'legacy-large', 'empty'].includes(v),
+          reportPresenceMode: (v) => ['default', 'known', 'false', 'absent'].includes(v),
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
           usdRateAvailable: (v) => typeof v === 'boolean',
+          usdRateDivisor: (v) => [4, 8].includes(v),
+          cacheVersionFailure: (v) => typeof v === 'boolean',
+          cacheMismatch: (v) => ['none', 'once', 'always'].includes(v),
+          cachePayloadTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 15_000,
+          cacheFxTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 3_600_000,
+          cacheMediaTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 3_600_000,
+          previewMode: (v) => previewModes.includes(v),
+          previewPrice: (v) => ['normal', 'on_request', 'zero', 'unavailable'].includes(v),
+          previewVersion: (v) => Number.isInteger(v) && v >= 2 && v <= 100,
+          previewDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
+          previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
+          previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
         };
         if (
           !patch ||
@@ -424,11 +592,44 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         )
           return send(res, 400, error('INVALID_REQUEST'));
         state = { ...state, ...patch };
+        changed(patch);
         return send(res, 200, { suite: fixtureSuite, state });
       }
       if (url.pathname === '/__fixtures/requests' && req.method === 'GET')
         return send(res, 200, { suite: fixtureSuite, requests });
-      if (url.pathname.startsWith('/api/v1/')) {
+      const internalRequest = url.pathname.startsWith('/internal/');
+      if (internalRequest) {
+        // Store only presence flags, including for rejected requests. Never record the service key.
+        const authorized = authenticated(req);
+        const visitorIpHeaders = ['x-forwarded-for', 'forwarded', 'x-real-ip', 'x-hd-visitor-ip'];
+        const hasVisitorIp = visitorIpHeaders.some(name => req.headers[name] !== undefined);
+        const hasCookie = req.headers.cookie !== undefined;
+        const hasAuthorization = req.headers.authorization !== undefined;
+        const hasRequestId = req.headers['x-request-id'] !== undefined || req.headers['request-id'] !== undefined;
+        requests.push({ path: url.pathname, method: req.method, query: Object.fromEntries(url.searchParams),
+          serviceAuthenticated: authorized, hasVisitorIp, hasCookie, hasAuthorization, hasRequestId });
+        if (requests.length > 1000) requests.shift();
+        if (!authorized || req.method !== 'GET') return send(res, 404, error('NOT_FOUND'));
+        const versionRequest = url.pathname === '/internal/public-catalog/version';
+        const alias = /^\/internal\/public-catalog\/(vehicles(?:\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})?|vehicle-filters|home\/vehicles)$/.exec(url.pathname);
+        if (!versionRequest && !alias) return send(res, 404, error('NOT_FOUND'));
+        if (hasCookie || hasAuthorization || hasRequestId || (!versionRequest && hasVisitorIp))
+          return send(res, 400, error('INVALID_REQUEST'));
+        if (versionRequest) {
+          if ([...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1))
+            return send(res, 400, error('INVALID_REQUEST'));
+          const query = PublicCatalogVersionQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+          if (!query.success) return send(res, 400, error('INVALID_REQUEST'));
+          if (state.cacheVersionFailure) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+          // This is the entry quota check: a warm DTO is not allowed to bypass it.
+          if (state.publicRateLimited) return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
+          const current = stamp(query.data.priceView ?? 'original');
+          return current ? send(res, 200, PublicCatalogVersionResponseSchema.parse({ data: current, meta: { requestId: 'fixture-version' } }))
+            : send(res, 503, error('SERVICE_UNAVAILABLE', true));
+        }
+        url.pathname = `/api/v1/${alias[1]}`;
+      }
+      if (!internalRequest && url.pathname.startsWith('/api/v1/')) {
         requests.push({
           path: url.pathname,
           method: req.method,
@@ -437,6 +638,35 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           authorization: req.headers.authorization ?? null,
         });
         if (requests.length > 1000) requests.shift();
+      }
+      const previewMatch = /^\/api\/v1\/admin\/vehicles\/([A-Za-z0-9_-]+)\/publication-preview\/?$/.exec(url.pathname);
+      const previewMedia = /^\/api\/v1\/admin\/media\/([A-Za-z0-9_-]+)\/preview\/?$/.exec(url.pathname);
+      if (previewMatch || previewMedia) {
+        if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
+        if (!previewStaff(req) || state.previewMode === 'unauthenticated')
+          return send(res, 401, error('UNAUTHENTICATED'));
+        if (state.previewMode === 'forbidden') return send(res, 403, error('FORBIDDEN'));
+        if (previewMedia) {
+          if (!previewMediaIds.includes(previewMedia[1])) return send(res, 404, error('NOT_FOUND'));
+          const png = imageBytes(previewMedia[1], false);
+          res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length, 'cache-control': 'no-store' });
+          return res.end(png);
+        }
+        const requested = PublicationPreviewQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+        if (!requested.success) return send(res, 400, error('INVALID_REQUEST'));
+        const snapshot = { ...state };
+        const locale = requested.data.locale;
+        if (snapshot.previewDelayMs && (!snapshot.previewSlowLocale || snapshot.previewSlowLocale === locale))
+          await new Promise((resolve) => setTimeout(resolve, snapshot.previewDelayMs));
+        if (!previewVehicleIds.includes(previewMatch[1]) || snapshot.previewMode === 'not_found') return send(res, 404, error('NOT_FOUND'));
+        if (snapshot.previewMode === 'conflict') return send(res, 409, error('VERSION_CONFLICT'));
+        if (snapshot.previewMode === 'unavailable') {
+          const failure = error('SERVICE_UNAVAILABLE', true);
+          failure.error.message = 'PRIVATE_UPSTREAM_ERROR_SENTINEL';
+          return send(res, 503, failure);
+        }
+        if (snapshot.previewMode === 'malformed') return send(res, 200, { data: { internal: 'PRIVATE_PAYLOAD_SENTINEL' } });
+        return send(res, 200, previewResponse(snapshot, previewMatch[1], locale));
       }
       const mediaFailure = /^\/api\/v1\/external-media\/(ximg-[a-f0-9-]+)\/failure$/.exec(url.pathname);
       if (mediaFailure && req.method === 'POST') {
@@ -493,9 +723,17 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         !url.pathname.startsWith('/api/v1/media/')
       )
         return send(res, 200, { badFixture: true });
+      const publicDto = url.pathname === '/api/v1/home/vehicles' || url.pathname === '/api/v1/vehicles' ||
+        url.pathname === '/api/v1/vehicle-filters' || /^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname);
+      const mismatch = internalRequest && (state.cacheMismatch === 'always' || mismatchesRemaining > 0);
+      const dtoStamp = publicDto ? stamp(url.searchParams.get('priceView') === 'usd' ? 'usd' : 'original', mismatch) : null;
+      if (publicDto && !dtoStamp) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+      if (publicDto && mismatch && mismatchesRemaining > 0) mismatchesRemaining--;
+      const catalogMeta = (requestId, extra = {}) => ({ requestId, ...extra, catalogCache: dtoStamp });
       const priceProjection = (row) =>
         url.searchParams.get('priceView') === 'usd'
-          ? { ...row, displayPrice: fixtureUsdPrice(row, state.usdRateAvailable) }
+          ? { ...row, displayPrice: fixtureUsdPrice(row,
+              state.usdRateAvailable && Date.now() < stateChangedAt + state.cacheFxTtlMs, state.usdRateDivisor) }
           : row;
       const project = (row) => priceProjection(
         url.searchParams.get('view') === 'localized' ? localizedProjection(row, locale) : row,
@@ -506,7 +744,53 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         : [];
       const makeImport = (kind, detail = false) => {
         const item = makeImportedPublicVehicleFixture(locale, kind, detail);
-        if (state.importedPhotosRemoved && kind === 'supplier') {
+        // Relative deadlines keep the otherwise unchanged synthetic remote records usable
+        // on any test date, and let cache tests shorten their signed-media lifetime.
+        for (const image of item.images) if (image.remote) {
+          image.remote.refreshedAt = new Date(stateChangedAt).toISOString();
+          image.remote.expiresAt = new Date(stateChangedAt + state.cacheMediaTtlMs).toISOString();
+        }
+        if (detail && kind === 'supplier' && state.historyScenario !== 'default') {
+          // Deliberately synthetic history records exercise public rendering only. The default
+          // supplier projection and its unverified report URL keep their previous behavior.
+          const entry = (name, value) => ({ name: { text: name, contentLocale: 'en' }, value: { text: value, contentLocale: 'en' } });
+          const specs = item.external.detail.specifications;
+          const inspection = item.external.detail.inspection;
+          if (state.historyScenario === 'complete') {
+            specs.push(entry('accidentCount', '0'), entry('Ownership transfers', '2'), entry('ownerCount', '3'), entry('plateChangeCount', '0'));
+            inspection.entries.push(entry('theft', 'false'), entry('floodCount', '0'), entry('waterDamage', 'false'), entry('fire damage', 'false'), entry('total loss', 'false'),
+              entry('Accident items', '9 / 24'), entry('Flood items', '0 / 18'));
+          } else if (state.historyScenario === 'empty') {
+            specs.push(entry('Ownership transfers', 'unknown'), entry('accidentCount', '—'));
+            inspection.entries.push(entry('theft history', 'not provided'), entry('Accident items', '0 / 24'), entry('Flood items', '0 / 18'));
+          } else if (state.historyScenario === 'conflict') {
+            specs.push(entry('Ownership transfers', '0'), entry('accidentCount', '0'));
+            inspection.entries.push(entry('owner changes', '2'), entry('number of accidents', '1'), entry('waterDamage', 'unknown'));
+          } else {
+            item.external.detail.history = { ownershipTransfers: state.historyScenario === 'structured-null' ? null : state.historyScenario === 'structured-zero' ? 0 : 2 };
+            // A structured null/zero takes precedence over an obsolete generic entry.
+            specs.push(entry('Ownership transfers', '9'));
+          }
+        }
+        if (detail && kind === 'supplier' && state.inspectionMode !== 'legacy') {
+          item.external.detail.inspection = state.inspectionMode === 'structured' || state.inspectionMode === 'large'
+            ? makeExternalInspectionFixture('unknown')
+            : { entries: [], checks: [], defects: [], reportUrl: null };
+          if (state.inspectionMode === 'large' || state.inspectionMode === 'legacy-large') {
+            const inspection = item.external.detail.inspection;
+            const sample = makeExternalInspectionFixture('unknown').checks[0];
+            inspection.checks = state.inspectionMode === 'legacy-large' ? [] : Array.from({ length: 8 }, (_, index) => ({
+              ...sample, category: { text: `Inspection category ${index + 1}`, contentLocale: 'en' },
+              groups: [{ ...sample.groups[0], items: Array.from({ length: 24 }, (_, leaf) => ({
+                part: { text: `Inspection part ${leaf + 1}`, contentLocale: 'en' }, result: null, ok: null,
+              })) }],
+            }));
+            inspection.entries = Array.from({ length: 8 }, (_, index) => ({ name: { text: `Inspection summary ${index + 1}`, contentLocale: 'en' }, value: { text: 'Not provided', contentLocale: 'en' } }));
+          }
+        }
+        if (detail) withReportPresence(item, state.reportPresenceMode);
+        if (detail && state.configurationMode !== 'none') item.configuration = fixtureConfiguration(locale, state.configurationMode);
+        if ((state.importedPhotosRemoved && kind === 'supplier') || Date.now() >= stateChangedAt + state.cacheMediaTtlMs) {
           item.images = [];
           item.display.mediaAlt = [];
           item.external.issues.push({ field: 'images', code: 'expired' });
@@ -540,7 +824,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           200,
           PublicHomeSectionsSchema.parse({
             data: { sections },
-            meta: { requestId: 'fixture-home' },
+            meta: catalogMeta('fixture-home'),
           }),
         );
       }
@@ -557,15 +841,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               pageSize,
               hasMore: page * pageSize < filtered.length,
             },
-            meta: {
-              requestId: 'fixture-list',
+            meta: catalogMeta('fixture-list', {
               catalog: 'curated',
               total: filtered.length,
               totalKind: 'exact',
               accessibleTotal: filtered.length,
               dataAsOf: timestamp,
               freshness: 'fresh',
-            },
+            }),
           }),
         );
       }
@@ -648,14 +931,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                   }
                 : {}),
             },
-            meta: { requestId: 'fixture-filters' },
+            meta: catalogMeta('fixture-filters'),
           }),
         );
       }
       const detailId = url.pathname.match(/^\/api\/v1\/vehicles\/([A-Za-z0-9_-]+)$/)?.[1];
       if (detailId) {
         const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
-        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:{requestId:'fixture-import-detail'}}));
+        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:catalogMeta('fixture-import-detail')}));
         const found =
           all.find((v) => v.id === detailId) ??
           (detailId === 'fixture_sold'
@@ -668,8 +951,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               res,
               200,
               PublicVehicleResponseSchema.parse({
-                data: project(found),
-                meta: { requestId: 'fixture-detail' },
+                data: withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode),
+                meta: catalogMeta('fixture-detail'),
               }),
             )
           : send(res, 404, error('NOT_FOUND'));

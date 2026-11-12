@@ -4,6 +4,7 @@ import { ExternalImportBatchRequestSchema, type ExternalImportBatchRequest, type
 import { IdSchema, MoneySchema, PartialDateSchema, TimestampSchema, type Locale, type Powertrain } from '@hd/contracts/public';
 import { isPublicText, jsonHash, sha256 } from './normalize.js';
 import { chinaCarSampleProfile, getPlatform, knownPhotoExpiry, publicLink } from './profiles.js';
+import { sourceInspectionContent } from './inspection.js';
 
 type JsonObject = Record<string, unknown>;
 type Copy = ExternalUpsertCandidate['copy'];
@@ -175,7 +176,10 @@ function specifications(row: JsonObject, disputes: JsonObject[]): Entries {
   return entries;
 }
 function inspection(row: JsonObject, report: JsonObject | undefined): ExternalUpsertCandidate['inspection'] {
-  const reportUrl = publicLink(str(row.inspectionReportUrl), 'report', chinaCarSampleProfile);
+  const originalUrl = str(row.inspectionReportUrl);
+  const reportUrl = publicLink(originalUrl, 'report', chinaCarSampleProfile);
+  const matchedRecord = report && ['summary', 'counts', 'checks', 'defects'].some(field => array(report[field]).length > 0);
+  const hasReport = !!matchedRecord || row.hasInspectionReport === true || row.inspectionAvailable === true || row.hasReport === true || typeof row.inspectionReportUrl === 'string' && /\S/.test(row.inspectionReportUrl);
   const entries: Entries = [];
   for (const value of array(report?.summary)) {
     const item = object(value);
@@ -188,7 +192,9 @@ function inspection(row: JsonObject, report: JsonObject | undefined): ExternalUp
     const checked = asNumber(item.checked, 0, 10_000);
     if (faults !== null && checked !== null) entry(entries, item.category, `${faults} / ${checked}`);
   }
-  return reportUrl || entries.length ? { reportUrl, entries: entries.slice(0, 300) } : null;
+  const content = sourceInspectionContent(report, (value, language) => actualText(value, language, 500));
+  return hasReport || entries.length || content.checks?.length || content.defects?.length
+    ? { hasReport, reportUrl, entries: entries.slice(0, 300), ...content } : null;
 }
 
 export function adaptChinaCarSample(row: JsonObject, fetchedAt: unknown, captures: LanguageCapture = {}, evidence: JsonObject[] = [], report?: JsonObject): ExternalUpsertCandidate | null {
@@ -209,7 +215,8 @@ export function adaptChinaCarSample(row: JsonObject, fetchedAt: unknown, capture
     fetchedAt: collected, sourceUpdatedAt: updated, listingUrl: str(row.url) ?? '',
     relatedListingUrls: array(row.alsoListedOn).flatMap(item => str(object(item).url) ?? []).slice(0, 20),
     facts, disputes: [...disputes], price: candidatePrice(row.price), sellerPrice: candidatePrice(row.sellerPrice),
-    copy: sourceCopy(row, captures), images: photos(row), specifications: specifications(row, evidence), inspection: inspection(row, report),
+    copy: sourceCopy(row, captures), images: photos(row), specifications: specifications(row, evidence), inspection: inspection(row, report && String(report.id) === String(row.id) && report.source === row.source ? report : undefined),
+    history: { ownershipTransfers: evidence.some(item => item.field === 'ownershipTransfers') ? null : asNumber(row.ownershipTransfers, 0, 100) },
   };
 }
 
@@ -291,7 +298,8 @@ export async function loadChinaCarSample(folder: string) {
       const languages = captures.get(key);
       const evidence = disputes.get(key) ?? [];
       const report = reports.get(key);
-      const candidate = adaptChinaCarSample(row, info.api_response_received_at_utc, languages, evidence, report);
+      // Supply the already verified capture platform as adapter context; archive the untouched report below.
+      const candidate = adaptChinaCarSample(row, info.api_response_received_at_utc, languages, evidence, report ? { ...report, source: row.source } : undefined);
       return { raw: JSON.stringify({ sourceLine: line, captureLanguage: 'en', observedAt: info.api_response_received_at_utc, pairedCaptures: languages, evidence, inspection: report }), candidate };
     }) });
   };

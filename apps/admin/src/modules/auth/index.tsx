@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Avatar, Breadcrumb, Button, Card, Drawer, Form, Grid, Input, Layout, Menu, Modal, Result, Space, Spin, Tag, Typography } from 'antd';
-import { CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
 import { StaffLoginSchema, StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request, signIn, signOut } from '../../shared/api/client';
 import { Link, Outlet, useLocation } from 'react-router-dom';
@@ -79,14 +79,20 @@ export function Workspace() {
     <section className="login-story"><Link to="/" className="brand-mark"><BrandIdentity /></Link><div><div className="login-kicker">为每一次交付，做好准备</div><h1>让车源管理<br />更清楚、更从容。</h1><p>从车辆档案到内容审核，再到网站展示，<br />把团队的日常工作放在同一个空间。</p><div className="login-steps">{['整理车辆资料', '核对图片与三语', '确认发布与展示'].map((text, i) => <div key={text}><span>0{i + 1}</span>{text}<CheckCircleOutlined /></div>)}</div></div><small>HD Auto Export · 员工协作平台</small></section>
     <section className="login-panel">{error ? <Card className="login-card"><Result status="warning" title="暂时无法进入工作台" subTitle={error} extra={<Button onClick={() => void load()}>重新连接</Button>} /></Card> : <Card className="login-card" bordered={false}><LoginForm onLogin={loggedIn} /></Card>}</section>
   </main>;
-  const current = location.pathname.startsWith('/external-sources') ? '/external-sources' : location.pathname.startsWith('/home-sections') ? '/home-sections' : location.pathname.startsWith('/public-catalog') ? '/public-catalog' : location.pathname.startsWith('/recycle-bin') ? '/recycle-bin' : '/vehicles';
-  const pageName = current === '/external-sources' ? '外部车源管理' : current === '/home-sections' ? '首页展示配置' : current === '/public-catalog' ? '公开车源核验' : current === '/recycle-bin' ? '车辆回收站' : '车辆工作台';
+  const pathname = location.pathname;
+  const current = pathname.startsWith('/public-catalog') || pathname.startsWith('/external-sources/listings/') ? '/public-catalog'
+    : pathname.startsWith('/external-sources') ? '/external-sources'
+    : pathname.startsWith('/home-sections') ? '/home-sections'
+    : pathname.startsWith('/recycle-bin') ? '/recycle-bin' : '/vehicles';
+  const pageName = current === '/external-sources' ? '三方 API 状态' : current === '/home-sections' ? '首页展示配置' : current === '/public-catalog' ? '三方车源管理' : current === '/recycle-bin' ? '车辆回收站' : '车辆工作台';
   const menuItems = [
     { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">车辆管理</Link> },
-    ...(staff.permissions.includes('vehicles:read') ? [{ key: '/external-sources', icon: <CarOutlined />, label: <Link to="/external-sources">外部车源管理</Link> }] : []),
     { key: '/recycle-bin', icon: <DeleteOutlined />, label: <Link to="/recycle-bin">车辆回收站</Link> },
     ...(staff.permissions.includes('home:write') ? [{ key: '/home-sections', icon: <HomeOutlined />, label: <Link to="/home-sections">首页展示配置</Link> }] : []),
-    { key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">公开车源核验</Link> },
+    ...(staff.permissions.includes('vehicles:read') ? [
+      { key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">三方车源管理</Link> },
+      { key: '/external-sources', className: 'supplier-nav-item', icon: <ApiOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> },
+    ] : []),
   ];
   const navigation = <div className="sidebar-inner"><Link className="brand-mark" to="/vehicles"><BrandIdentity /></Link><div className="nav-caption">运营空间</div><nav aria-label="后台导航"><Menu theme="dark" selectedKeys={[current]} items={menuItems} /></nav><div className="nav-bottom"><SafetyCertificateOutlined /><div>内部协作空间<small>车源 · 内容 · 展示</small></div></div></div>;
   return <>

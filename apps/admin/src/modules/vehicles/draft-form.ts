@@ -1,5 +1,6 @@
 import { VehicleDraftInputSchema, type PartialDate, type VehicleDraftInput } from '@hd/contracts/admin';
 import { sourceForKind } from './vehicle-editor-helpers';
+import { configurationFromText, configurationToText } from './configuration-form';
 
 export const publicationLabels = { draft: '草稿', published: '已发布', archived: '已下架' };
 export const availabilityLabels = { available: '可售', reserved: '已预订', sold: '已售', unknown: '待核验' };
@@ -8,8 +9,8 @@ export const powertrainLabels = { petrol: '汽油', diesel: '柴油', hev: '油�
 export function emptyDraft(): VehicleDraftInput {
   const text = () => ({ sourceLanguage: 'zh', sourceText: null, sourceVersion: 1, translations: { zh: null, en: null, ru: null } });
   return {
-    source: { kind: 'manual' },
-    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'unknown', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, body: null, transmission: null, location: null },
+    source: { kind: 'manual' }, configuration: null,
+    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'registered', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, body: null, transmission: null, location: null },
     price: { kind: 'on_request', money: null, includes: [] },
     content: { title: text(), description: text() }, media: [],
     internal: { purchaseCost: null, notes: null, supplierContact: null, vin: null },
@@ -28,6 +29,7 @@ export function draftToForm(draft: VehicleDraftInput) {
     makeId: facts.make?.id ?? '', makeName: facts.make?.name ?? '',
     modelId: facts.model?.id ?? '', modelName: facts.model?.name ?? '',
     trimId: facts.trim?.id ?? '', trimName: facts.trim?.name ?? '',
+    configuration: configurationToText(draft.configuration),
     modelYear: facts.modelYear?.toString() ?? '', mileageKm: facts.mileageKm?.toString() ?? '',
     engineCc: facts.engineCc?.toString() ?? '', powerKw: facts.powerKw?.toString() ?? '',
     manufacturedAt: facts.manufacturedAt?.value ?? '', manufacturedPrecision: facts.manufacturedAt?.precision ?? 'month',
@@ -73,16 +75,19 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
     if (unchanged(...keys)) Object.assign(result.facts, { [key]: structuredClone(base.facts[key as keyof typeof base.facts]) });
   }
   const includes = result.price.includes;
-  result.price = form.priceKind === 'on_request' ? { kind: 'on_request', money: null, includes } : { kind: form.priceKind, money: { amount: form.amount.trim(), currency: form.currency }, includes };
+  result.price = form.priceKind === 'on_request' ? { kind: 'on_request', money: null, includes }
+    : form.priceKind === 'asking' ? { kind: 'asking', money: { amount: nullable(form.amount), currency: form.currency }, includes }
+    : { kind: 'reference', money: { amount: form.amount.trim(), currency: form.currency }, includes };
   if (unchanged('priceKind', 'amount', 'currency')) result.price = structuredClone(base.price);
   if (!unchanged('titleLanguage')) result.content.title.sourceLanguage = form.titleLanguage.trim();
   if (!unchanged('title')) result.content.title.sourceText = nullable(form.title);
   if (!unchanged('descriptionLanguage')) result.content.description.sourceLanguage = form.descriptionLanguage.trim();
   if (!unchanged('description')) result.content.description.sourceText = nullable(form.description);
-  result.internal = { notes: nullable(form.notes), supplierContact: nullable(form.supplierContact), vin: nullable(form.vin), purchaseCost: form.purchaseAmount.trim() === '' ? null : { amount: form.purchaseAmount.trim(), currency: form.purchaseCurrency } };
+  result.internal = { notes: nullable(form.notes), supplierContact: nullable(form.supplierContact), vin: nullable(form.vin), purchaseCost: { amount: nullable(form.purchaseAmount), currency: form.purchaseCurrency } };
   for (const key of ['notes', 'supplierContact', 'vin'] as const) if (unchanged(key)) result.internal[key] = base.internal[key];
   if (unchanged('purchaseAmount', 'purchaseCurrency')) result.internal.purchaseCost = structuredClone(base.internal.purchaseCost);
   if (base.source.kind === 'external') result.source = sourceForKind('external', form, base.source);
+  if (!unchanged('configuration')) result.configuration = configurationFromText(form.configuration);
   return VehicleDraftInputSchema.parse(result);
 }
 
@@ -90,12 +95,13 @@ export const fieldLabels: Record<keyof DraftForm, string> = {
   sourcePlatformId: '来源平台标识', sourcePlatformName: '来源平台名称', sourceListingUrl: '原始挂牌链接',
   sourceExternalId: '原始挂牌编号', sourceCollectedAt: '资料采集时间（UTC）', sourceUpdatedAt: '来源更新时间（UTC）',
   makeId: '品牌标识', makeName: '品牌名称', modelId: '车型标识', modelName: '车型名称', trimId: '配置标识', trimName: '配置名称',
+  configuration: '车辆详细配置',
   modelYear: '年款', mileageKm: '里程（公里）', engineCc: '排量（cc）', powerKw: '功率（kW）',
   manufacturedAt: '制造日期', manufacturedPrecision: '制造日期精度', firstRegistration: '首次登记日期', registrationPrecision: '首次登记日期精度',
   registrationStatus: '登记状态', powertrain: '动力类型', body: '车身形式', transmission: '变速箱',
   country: '所在地国家代码', city: '所在地城市', locationName: '公开所在地描述',
   priceKind: '公开价格口径', amount: '公开价格金额', currency: '公开价格币种', includes: '价格包含项目',
-  titleLanguage: '标题原文语言', title: '标题原文', descriptionLanguage: '描述原文语言', description: '描述原文',
+  titleLanguage: '标题原文语言', title: '标题原文', descriptionLanguage: '描述原文语言', description: '车况描述',
   purchaseAmount: '内部采购成本', purchaseCurrency: '采购成本币种', notes: '内部备注', supplierContact: '供应商联系方式', vin: 'VIN',
 };
 
@@ -106,10 +112,13 @@ const pathFields: Record<string, keyof DraftForm> = {
   'facts.trim.id': 'trimId', 'facts.trim.name': 'trimName', 'facts.modelYear': 'modelYear', 'facts.mileageKm': 'mileageKm',
   'facts.engineCc': 'engineCc', 'facts.powerKw': 'powerKw', 'facts.manufacturedAt': 'manufacturedAt', 'facts.firstRegistration': 'firstRegistration',
   'facts.location.country': 'country', 'facts.location.city': 'city', 'facts.location.displayName': 'locationName',
-  'price.money.amount': 'amount', 'price.money.currency': 'currency', 'price.includes': 'includes',
+  'facts.make': 'makeName', 'facts.model': 'modelName', 'facts.trim': 'trimName',
+  'configuration': 'configuration',
+  'facts.powertrain': 'powertrain', 'facts.registrationStatus': 'registrationStatus',
+  'price.kind': 'priceKind', 'price.money.amount': 'amount', 'price.money.currency': 'currency', 'price.includes': 'includes', 'price.money': 'amount',
   'content.title.sourceLanguage': 'titleLanguage', 'content.title.sourceText': 'title',
   'content.description.sourceLanguage': 'descriptionLanguage', 'content.description.sourceText': 'description',
-  'internal.purchaseCost.amount': 'purchaseAmount', 'internal.notes': 'notes', 'internal.supplierContact': 'supplierContact', 'internal.vin': 'vin',
+  'internal.purchaseCost.amount': 'purchaseAmount', 'internal.purchaseCost.currency': 'purchaseCurrency', 'internal.purchaseCost': 'purchaseAmount', 'internal.notes': 'notes', 'internal.supplierContact': 'supplierContact', 'internal.vin': 'vin',
 };
 export function fieldForPath(path: string): keyof DraftForm | undefined {
   const normalized = path.replace(/^draft\./, '');
