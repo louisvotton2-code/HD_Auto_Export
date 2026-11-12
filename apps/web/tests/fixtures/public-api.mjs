@@ -1,5 +1,7 @@
 /** Isolated HTTP fixtures for the website. Never points at a database or operating inventory. */
 import { createServer } from 'node:http';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture, makeConfigurationDisplayFixture, makeExternalInspectionFixture } from '@hd/contracts/fixtures';
@@ -9,6 +11,9 @@ import {
   ExternalMediaFailureRequestSchema,
   IdSchema,
   PublicFilterQuerySchema,
+  PublicCatalogCacheStampSchema,
+  PublicCatalogVersionQuerySchema,
+  PublicCatalogVersionResponseSchema,
   PublicHomeSectionsSchema,
   PublicLocaleQuerySchema,
   PublicMediaQuerySchema,
@@ -199,6 +204,12 @@ const resetState = () => ({
   longTitles: false,
   richCatalog: false,
   usdRateAvailable: true,
+  usdRateDivisor: 8,
+  cacheVersionFailure: false,
+  cacheMismatch: 'none',
+  cachePayloadTtlMs: 15_000,
+  cacheFxTtlMs: 3_600_000,
+  cacheMediaTtlMs: 3_600_000,
   previewMode: 'ready',
   previewPrice: 'normal',
   previewVersion: 4,
@@ -375,14 +386,15 @@ function cents(text) {
   const [whole, fraction = ''] = text.split('.');
   return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
 }
-function fixtureUsdPrice(row, rateAvailable) {
+function fixtureUsdPrice(row, rateAvailable, divisor = 8) {
   const { kind, money } = row.price;
   if (!money) return { status: 'on_request', money: null, conversion: null };
   const native = money.currency === 'USD';
   if (!native && (!rateAvailable || money.currency !== 'CNY'))
     return { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
-  // The isolated sample rate is exactly 8 CNY per USD, with half-up cent rounding.
-  const value = native ? cents(money.amount) : (cents(money.amount) + 4n) / 8n;
+  // This controlled quote is synthetic. Changing it also changes the fixture FX version.
+  const denominator = BigInt(divisor);
+  const value = native ? cents(money.amount) : (cents(money.amount) + denominator / 2n) / denominator;
   return {
     status: 'ready',
     kind: native ? kind : 'reference',
@@ -472,6 +484,55 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
     throw new Error('Use a dedicated fixture port, never API 3320.');
   let state = resetState();
   let requests = [];
+  // The nonce survives every reset. A prior test's cache key can never become current again.
+  const catalogEpoch = randomUUID();
+  let catalogRevision = 0;
+  let fxVersion = randomUUID();
+  let stateChangedAt = Date.now();
+  let mismatchesRemaining = 0;
+  const secretPath = process.env.HD_SSR_SERVICE_SECRET_FILE;
+  let serviceSecret;
+  if (secretPath) {
+    const stat = lstatSync(secretPath);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600)
+      throw new Error('The isolated SSR fixture requires a regular mode-600 secret file.');
+    serviceSecret = readFileSync(secretPath, 'utf8').trim();
+    if (!/^[a-f0-9]{64,128}$/.test(serviceSecret))
+      throw new Error('The isolated SSR fixture requires its generated test service credential.');
+  }
+  const changed = (patch = {}) => {
+    catalogRevision++;
+    stateChangedAt = Date.now();
+    if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
+      fxVersion = randomUUID();
+    mismatchesRemaining = state.cacheMismatch === 'once' ? 1 : 0;
+  };
+  const stamp = (priceView, mismatch = false) => {
+    const now = Date.now();
+    const fx = priceView === 'usd' && state.usdRateAvailable && now < stateChangedAt + state.cacheFxTtlMs
+      ? { version: fxVersion, expiresAt: new Date(stateChangedAt + state.cacheFxTtlMs).toISOString() }
+      : null;
+    // importedPhotosRemoved removes only the supplier row's photos; other imports still expire.
+    const hasActiveRemoteImages = state.importedPublished &&
+      now < stateChangedAt + state.cacheMediaTtlMs;
+    const validUntil = Math.min(now + state.cachePayloadTtlMs,
+      fx ? Date.parse(fx.expiresAt) : Infinity,
+      hasActiveRemoteImages ? stateChangedAt + state.cacheMediaTtlMs : Infinity);
+    if (validUntil <= now) return null;
+    return PublicCatalogCacheStampSchema.parse({
+      version: createHash('sha256').update(`${catalogEpoch}:${catalogRevision}:${priceView}:${fx?.version ?? 'no-fx'}:${hasActiveRemoteImages ? 'active-media' : 'no-active-media'}:${mismatch ? 'mismatch' : 'current'}`).digest('hex'),
+      priceView, fx, checkedAt: new Date(now).toISOString(), validUntil: new Date(validUntil).toISOString(),
+    });
+  };
+  const authenticated = (req) => {
+    const peer = req.socket.remoteAddress;
+    if (!serviceSecret || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) return false;
+    const supplied = req.headers['x-hd-ssr-key'];
+    if (typeof supplied !== 'string') return false;
+    const actual = Buffer.from(supplied), expected = Buffer.from(serviceSecret);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  };
+  changed();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -479,6 +540,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, { suite: fixtureSuite });
       if (url.pathname === '/__fixtures/reset' && req.method === 'POST') {
         state = resetState();
+        changed({ usdRateAvailable: true });
         requests = [];
         return send(res, 200, { suite: fixtureSuite, state });
       }
@@ -496,7 +558,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
-          catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 120,
+          catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 10_080,
           historyScenario: (v) => ['default', 'complete', 'empty', 'conflict', 'structured-zero', 'structured-null', 'structured-two'].includes(v),
           configurationMode: (v) => ['none', 'ready', 'missing', 'fallback', 'long', 'wrong_name_locale', 'wrong_value_locale'].includes(v),
           inspectionMode: (v) => ['legacy', 'structured', 'large', 'legacy-large', 'empty'].includes(v),
@@ -507,6 +569,12 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
           usdRateAvailable: (v) => typeof v === 'boolean',
+          usdRateDivisor: (v) => [4, 8].includes(v),
+          cacheVersionFailure: (v) => typeof v === 'boolean',
+          cacheMismatch: (v) => ['none', 'once', 'always'].includes(v),
+          cachePayloadTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 15_000,
+          cacheFxTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 3_600_000,
+          cacheMediaTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 3_600_000,
           previewMode: (v) => previewModes.includes(v),
           previewPrice: (v) => ['normal', 'on_request', 'zero', 'unavailable'].includes(v),
           previewVersion: (v) => Number.isInteger(v) && v >= 2 && v <= 100,
@@ -524,11 +592,44 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         )
           return send(res, 400, error('INVALID_REQUEST'));
         state = { ...state, ...patch };
+        changed(patch);
         return send(res, 200, { suite: fixtureSuite, state });
       }
       if (url.pathname === '/__fixtures/requests' && req.method === 'GET')
         return send(res, 200, { suite: fixtureSuite, requests });
-      if (url.pathname.startsWith('/api/v1/')) {
+      const internalRequest = url.pathname.startsWith('/internal/');
+      if (internalRequest) {
+        // Store only presence flags, including for rejected requests. Never record the service key.
+        const authorized = authenticated(req);
+        const visitorIpHeaders = ['x-forwarded-for', 'forwarded', 'x-real-ip', 'x-hd-visitor-ip'];
+        const hasVisitorIp = visitorIpHeaders.some(name => req.headers[name] !== undefined);
+        const hasCookie = req.headers.cookie !== undefined;
+        const hasAuthorization = req.headers.authorization !== undefined;
+        const hasRequestId = req.headers['x-request-id'] !== undefined || req.headers['request-id'] !== undefined;
+        requests.push({ path: url.pathname, method: req.method, query: Object.fromEntries(url.searchParams),
+          serviceAuthenticated: authorized, hasVisitorIp, hasCookie, hasAuthorization, hasRequestId });
+        if (requests.length > 1000) requests.shift();
+        if (!authorized || req.method !== 'GET') return send(res, 404, error('NOT_FOUND'));
+        const versionRequest = url.pathname === '/internal/public-catalog/version';
+        const alias = /^\/internal\/public-catalog\/(vehicles(?:\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})?|vehicle-filters|home\/vehicles)$/.exec(url.pathname);
+        if (!versionRequest && !alias) return send(res, 404, error('NOT_FOUND'));
+        if (hasCookie || hasAuthorization || hasRequestId || (!versionRequest && hasVisitorIp))
+          return send(res, 400, error('INVALID_REQUEST'));
+        if (versionRequest) {
+          if ([...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1))
+            return send(res, 400, error('INVALID_REQUEST'));
+          const query = PublicCatalogVersionQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+          if (!query.success) return send(res, 400, error('INVALID_REQUEST'));
+          if (state.cacheVersionFailure) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+          // This is the entry quota check: a warm DTO is not allowed to bypass it.
+          if (state.publicRateLimited) return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
+          const current = stamp(query.data.priceView ?? 'original');
+          return current ? send(res, 200, PublicCatalogVersionResponseSchema.parse({ data: current, meta: { requestId: 'fixture-version' } }))
+            : send(res, 503, error('SERVICE_UNAVAILABLE', true));
+        }
+        url.pathname = `/api/v1/${alias[1]}`;
+      }
+      if (!internalRequest && url.pathname.startsWith('/api/v1/')) {
         requests.push({
           path: url.pathname,
           method: req.method,
@@ -622,9 +723,17 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         !url.pathname.startsWith('/api/v1/media/')
       )
         return send(res, 200, { badFixture: true });
+      const publicDto = url.pathname === '/api/v1/home/vehicles' || url.pathname === '/api/v1/vehicles' ||
+        url.pathname === '/api/v1/vehicle-filters' || /^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname);
+      const mismatch = internalRequest && (state.cacheMismatch === 'always' || mismatchesRemaining > 0);
+      const dtoStamp = publicDto ? stamp(url.searchParams.get('priceView') === 'usd' ? 'usd' : 'original', mismatch) : null;
+      if (publicDto && !dtoStamp) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+      if (publicDto && mismatch && mismatchesRemaining > 0) mismatchesRemaining--;
+      const catalogMeta = (requestId, extra = {}) => ({ requestId, ...extra, catalogCache: dtoStamp });
       const priceProjection = (row) =>
         url.searchParams.get('priceView') === 'usd'
-          ? { ...row, displayPrice: fixtureUsdPrice(row, state.usdRateAvailable) }
+          ? { ...row, displayPrice: fixtureUsdPrice(row,
+              state.usdRateAvailable && Date.now() < stateChangedAt + state.cacheFxTtlMs, state.usdRateDivisor) }
           : row;
       const project = (row) => priceProjection(
         url.searchParams.get('view') === 'localized' ? localizedProjection(row, locale) : row,
@@ -635,6 +744,12 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         : [];
       const makeImport = (kind, detail = false) => {
         const item = makeImportedPublicVehicleFixture(locale, kind, detail);
+        // Relative deadlines keep the otherwise unchanged synthetic remote records usable
+        // on any test date, and let cache tests shorten their signed-media lifetime.
+        for (const image of item.images) if (image.remote) {
+          image.remote.refreshedAt = new Date(stateChangedAt).toISOString();
+          image.remote.expiresAt = new Date(stateChangedAt + state.cacheMediaTtlMs).toISOString();
+        }
         if (detail && kind === 'supplier' && state.historyScenario !== 'default') {
           // Deliberately synthetic history records exercise public rendering only. The default
           // supplier projection and its unverified report URL keep their previous behavior.
@@ -675,7 +790,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         }
         if (detail) withReportPresence(item, state.reportPresenceMode);
         if (detail && state.configurationMode !== 'none') item.configuration = fixtureConfiguration(locale, state.configurationMode);
-        if (state.importedPhotosRemoved && kind === 'supplier') {
+        if ((state.importedPhotosRemoved && kind === 'supplier') || Date.now() >= stateChangedAt + state.cacheMediaTtlMs) {
           item.images = [];
           item.display.mediaAlt = [];
           item.external.issues.push({ field: 'images', code: 'expired' });
@@ -709,7 +824,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           200,
           PublicHomeSectionsSchema.parse({
             data: { sections },
-            meta: { requestId: 'fixture-home' },
+            meta: catalogMeta('fixture-home'),
           }),
         );
       }
@@ -726,15 +841,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               pageSize,
               hasMore: page * pageSize < filtered.length,
             },
-            meta: {
-              requestId: 'fixture-list',
+            meta: catalogMeta('fixture-list', {
               catalog: 'curated',
               total: filtered.length,
               totalKind: 'exact',
               accessibleTotal: filtered.length,
               dataAsOf: timestamp,
               freshness: 'fresh',
-            },
+            }),
           }),
         );
       }
@@ -817,14 +931,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                   }
                 : {}),
             },
-            meta: { requestId: 'fixture-filters' },
+            meta: catalogMeta('fixture-filters'),
           }),
         );
       }
       const detailId = url.pathname.match(/^\/api\/v1\/vehicles\/([A-Za-z0-9_-]+)$/)?.[1];
       if (detailId) {
         const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
-        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:{requestId:'fixture-import-detail'}}));
+        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:catalogMeta('fixture-import-detail')}));
         const found =
           all.find((v) => v.id === detailId) ??
           (detailId === 'fixture_sold'
@@ -838,7 +952,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               200,
               PublicVehicleResponseSchema.parse({
                 data: withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode),
-                meta: { requestId: 'fixture-detail' },
+                meta: catalogMeta('fixture-detail'),
               }),
             )
           : send(res, 404, error('NOT_FOUND'));

@@ -10,6 +10,7 @@ export {
 } from './public-presentation';
 export { PublicVehicleCard } from './ui/public-vehicle-card';
 export { PublicVehicleList } from './ui/public-vehicle-list';
+export { CatalogOffsetLimitNotice } from './ui/catalog-offset-limit';
 export { PublicVehicleDetail } from './ui/public-vehicle-detail';
 export { PublicationPreviewDetail } from './ui/publication-preview-detail';
 export type { VehicleGalleryImageStatus } from './ui/vehicle-gallery-image';
@@ -24,6 +25,6 @@ export { VehicleFavorites } from './ui/vehicle-favorites';
 
 export { localizedHomeSchema } from './localized-projection';
 export { VehiclePhoto } from './ui/vehicle-photo';
-export { publicUsdFilterQuery, publicUsdView, publicQueryString } from './public-query';
+export { publicUsdFilterQuery, publicUsdView, publicQueryString, parseCatalogPageRequest } from './public-query';
 export { VehicleRateAttribution } from './ui/vehicle-rate-attribution';
 export { VehiclePriceValues } from './ui/vehicle-price-values';

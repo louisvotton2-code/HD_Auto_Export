@@ -1,6 +1,7 @@
 import {
   PublicFilterQuerySchema,
   PublicVehicleQuerySchema,
+  isPublicCatalogOffsetAllowed,
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -99,6 +100,34 @@ export function parseCatalogPageQuery(
   }
   return parseCatalogQuery({ ...input, ...publicUsdView }, locale);
 }
+
+export type CatalogPageRequest = {
+  kind: 'query' | 'offset_limit';
+  query: PublicVehicleQuery;
+};
+
+/** Only a valid offset beyond the public browsing window gets a readable recovery page. */
+export function parseCatalogPageRequest(
+  params: Record<string, string | string[] | undefined>,
+  locale: Locale,
+): CatalogPageRequest | null {
+  if (catalogQueryKeys.some((key) => Array.isArray(params[key]))) return null;
+  // Page presentation fixes these values, but malformed incoming transport fields
+  // must not be hidden by that override and mistaken for an offset-only failure.
+  for (const key of ['catalog', 'view', 'priceView'] as const) {
+    const value = params[key] === '' && key !== 'priceView' ? undefined : params[key];
+    if (!PublicVehicleQuerySchema.shape[key].safeParse(value).success) return null;
+  }
+  const query = parseCatalogPageQuery(params, locale);
+  if (query) return { kind: 'query', query };
+  if (typeof params.page !== 'string' || !/^[1-9]\d*$/.test(params.page)) return null;
+  const page = PublicVehicleQuerySchema.shape.page.safeParse(Number(params.page));
+  if (!page.success) return null;
+  const firstPage = parseCatalogPageQuery({ ...params, page: '1' }, locale);
+  if (!firstPage || isPublicCatalogOffsetAllowed(page.data, firstPage.pageSize)) return null;
+  return { kind: 'offset_limit', query: firstPage };
+}
+
 export function parseFilterQuery(
   params: Record<string, string | string[] | undefined>,
   locale: Locale,

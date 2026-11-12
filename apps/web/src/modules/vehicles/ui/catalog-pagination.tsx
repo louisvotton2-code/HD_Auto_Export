@@ -4,6 +4,7 @@ import type { Locale } from '@/i18n/routing';
 import { catalogPagination } from '../catalog-pagination';
 import { publicCatalogHref } from '../public-presentation';
 import { publicVehicleMessages } from '../public-messages';
+import { CatalogOffsetLimitHint } from './catalog-offset-limit';
 import styles from './public-vehicles.module.css';
 
 const copy = {
@@ -71,6 +72,7 @@ export function CatalogPagination({ result, query, locale, onPageClick }: {
           <>{pager.totalKind === 'accessible' && `${labels.accessible} `}{page.toLocaleString(locale)}{pager.totalPages !== null && <> / {pager.totalPages.toLocaleString(locale)}</>}</>
         )}
       </span>
+      {pager.truncated && <CatalogOffsetLimitHint locale={locale} />}
     </nav>
   );
 }

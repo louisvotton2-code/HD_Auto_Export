@@ -177,8 +177,9 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     const requests = (await fixture(request, 'get', 'requests')).requests;
     expect(
       requests.some(
-        (r: { path: string; query: Record<string, string> }) =>
-          r.path === '/api/v1/vehicles' && r.query.page === '2' && r.query.pageSize === '2',
+        (r: { path: string; query: Record<string, string>; serviceAuthenticated?: boolean; hasVisitorIp?: boolean }) =>
+          r.path === '/internal/public-catalog/vehicles' && r.serviceAuthenticated === true
+          && r.hasVisitorIp === false && r.query.page === '2' && r.query.pageSize === '2',
       ),
     ).toBe(true);
     expect(

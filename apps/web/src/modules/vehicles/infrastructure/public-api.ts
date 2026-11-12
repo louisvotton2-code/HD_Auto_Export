@@ -2,7 +2,8 @@ import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contrac
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
-import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, type UsdFilterScope } from '../public-query';
+import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicQueryString as queryString, type UsdFilterScope } from '../public-query';
+import { PublicApiError, publicApiOrigin, readPublicJsonBody, isPublicApiError } from './public-http';
 import {
   legacyListSchema,
   legacyVehicleSchema,
@@ -11,15 +12,8 @@ import {
   localizedVehicleSchema,
 } from '../localized-projection';
 export { parseCatalogQuery, parseCatalogPageQuery } from '../public-query';
-
-export class PublicApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly retryAfter?: string,
-  ) {
-    super('Public vehicle service unavailable');
-  }
-}
+export { publicQueryString as queryString } from '../public-query';
+export { PublicApiError, publicApiOrigin } from './public-http';
 
 /** Parallel page reads, including facets, share the public JSON rate bucket. */
 export function publicRetryAfter(...outcomes: PromiseSettledResult<unknown>[]): number {
@@ -27,27 +21,12 @@ export function publicRetryAfter(...outcomes: PromiseSettledResult<unknown>[]): 
     0,
     ...outcomes.map((outcome) =>
       outcome.status === 'rejected' &&
-      outcome.reason instanceof PublicApiError &&
+      isPublicApiError(outcome.reason) &&
       outcome.reason.status === 429
         ? retryAfterSeconds(outcome.reason.retryAfter)
         : 0,
     ),
   );
-}
-
-/** Server-only configuration. Never passed to client components or serialized in errors. */
-export function publicApiOrigin() {
-  const url = new URL(process.env.VEHICLE_API_BASE_URL || 'http://127.0.0.1:3320');
-  if (
-    !['http:', 'https:'].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.pathname !== '/' ||
-    url.search ||
-    url.hash
-  )
-    throw new PublicApiError(503);
-  return url.origin;
 }
 
 export async function requestPublicApi(
@@ -95,42 +74,12 @@ export async function readPublicJson<T>(
 ) {
   try {
     const response = await requestPublicApi(path, fetch, incoming, postJson);
-    if (!response.headers.get('content-type')?.includes('application/json'))
-      throw new PublicApiError(503);
-    const reader = response.body?.getReader();
-    if (!reader) throw new PublicApiError(503);
-    let size = 0;
-    const parts: Uint8Array[] = [];
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > 8_000_000) throw new PublicApiError(503);
-        parts.push(value);
-      }
-    } finally {
-      await reader.cancel();
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const part of parts) {
-      bytes.set(part, offset);
-      offset += part.byteLength;
-    }
-    return schema.parse(JSON.parse(new TextDecoder().decode(bytes)));
+    return await readPublicJsonBody(response, schema);
   } catch (error) {
     if (error instanceof PublicApiError) throw error;
     throw new PublicApiError(503);
   }
 }
-
-export const queryString = (query: Record<string, string | number | undefined>) => {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query))
-    if (value !== undefined) params.set(key, String(value));
-  return params.toString();
-};
 
 export function getPublicHome(locale: Locale) {
   return readPublicJson(
