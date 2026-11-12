@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {findBrand,LocalizationDataSchema,type DisplayField,type LocalizationData,type VehicleDraftInput} from '@hd/contracts/admin';
-import type {DisplayText,Locale,PublicVehicle,VehicleDisplay} from '@hd/contracts/public';
+import {PublicPriceSchema,type DisplayText,type Locale,type PublicVehicle,type VehicleDisplay} from '@hd/contracts/public';
 import {conflict,ApiError} from '../errors.js';
 import {locales} from './content.js';
 
@@ -99,6 +99,7 @@ export function resolveDisplay(field:DisplayField|undefined,locale:Locale,manual
 }
 export type DisplayProjection=Pick<PublicVehicle,'facts'|'price'|'images'|'source'|'display'>;
 export function projectDisplay(id:string,source:Source,locale:Locale,saved?:PublishedLocalization):DisplayProjection {
+  const price=PublicPriceSchema.parse(source.price);
   const state=syncLocalization(id,source,saved?{...saved,revision:1,retiredFields:[]}:undefined);
   const manual=source.source.kind==='manual';const byRef=new Map(state.data.fields.map(field=>[field.ref,field]));
   const get=(ref:string)=>resolveDisplay(byRef.get(ref),locale,manual);
@@ -114,7 +115,7 @@ export function projectDisplay(id:string,source:Source,locale:Locale,saved?:Publ
     facts:{...source.facts,make:named(source.facts.make,display.make),model:named(source.facts.model,display.model),trim:named(source.facts.trim,display.trim),
       generation:named(state.data.facts.generation,display.generation),drivetrain:state.data.facts.drivetrain,
       location:source.facts.location?{country:source.facts.location.country,city:display.city.text,displayName:display.location.text}:null},
-    price:{...source.price,includes:display.priceIncludes.flatMap(item=>item.value.text?[item.value.text]:[])},
+    price:{...price,includes:display.priceIncludes.flatMap(item=>item.value.text?[item.value.text]:[])},
     images:(source.images??[]).map(media=>({...media,alt:get(`media.${media.id.toLowerCase()}.alt`).text??''})),
     source:source.source.kind==='external'?{kind:'external',listingUrl:source.source.listingUrl,platform:{id:source.source.platform.id,name:display.platform.text??placeholder}}:{kind:source.source.kind},
   };
