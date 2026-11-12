@@ -30,8 +30,8 @@
 | 配置/bundle/preview | 统一200项/name100/value500/总16000 UTF-16及65536 UTF-8原JSON限制；验证与parseVehicleDraftWrite canonical存储分开，遗漏保留/空清除；公共与私有配置共用展示schema，真实语言/数字单位/ID不漂移 |
 | 发布跨页 | 去逐字段approved但仍三语完整/非stale及最新预览确认，machine/pending保留，库存/权限/版本/指纹/幂等不撤销；配置/译文/换车/旧loadId/跨页返回不得复用旧证明 |
 | 费用取消/未知 | 创建plan/GET status/取消/无明确确认等0fake调用；本版cost只能unknown，amount/currency/免费额度均null，不能写0或免费；acceptUnknownCost和maximumCharacters须显式匹配原计划 |
-| fake执行/恢复 | 不注入真实Ali key，仅BE受控fake seam；持久预算预占/结算、并发、缓存、幂等、部分失败、outcome_unknown和分段复用；只读状态/重放不新增调用或重发POST，中断租约如实标partial |
-| 历史/报告 | 0/null及false/null区分，缺陷数不作事故次数；四态与过期/源hash失配覆盖，GET不探外网。真实证据0available/19unknown，合成available不写真实业务 |
+| fake执行/恢复 | 不注入真实Ali key，仅BE受控fake seam；持久预算预占/结算、并发、缓存、幂等、部分失败、outcome_unknown和分段复用；只读状态/重放不新增调用或重发POST，按持久结果重建completed/partial，finishedAt可null |
+| 历史/报告（新合同待SHA） | 0/null、false/null及缺陷/历史含义保持；最新用户改为公开API/SSR/鉴权preview零源报告URL，已知有报告只联系销售。后台同车安全来源URL有按钮、无URL无按钮，安全新窗口；unknown不阻塞，不自动核正文/新域，不改真实来源数据 |
 
 当前代理通用读取超时30s，与新generate120s聚合预算/AD150s请求需在候选按路由同组对齐，并禁代理/客户端POST重试；本轮当前配置未改。最大合法三语bundle需核实际UTF-8字节与API/Nginx/client上限，不截断；默认限流保持，用真实reset在用例/完成阶段等待。
 
@@ -42,3 +42,13 @@ UX11的源/写前回退点是届时最新冻结的当前交付库（现15条）�
 等新三端精确组合、迁移/fake预算联调及独立review通过、PM明确同组放行后，才停写排空、重新备份最新当前库/媒体/配置，恢复新交付副本并仅新库迁移，三端/合同/私图/SSR UDS和持久入口同组切。新写入前失败成组回冻结当前15；开放后（登录/会话也算）先维护停写并排空，再完整保全新库/媒体/配置及计划/分段回执/预算/幂等/审计，之后修复，不旧API接新schema、不以旧快照覆盖新写入，不延长已过期确认或声称失败未计费。
 
 Ali恢复与AD一次确认/BE预算/新组合同组，非秘密账户站点与余额未知如实提示。未调用真实Ali、供应商账户或报告站；0资源执行与不代表运行放行的边界已写入模板。当前任务完成后继续等待候选，不为准备方案提前启服务。
+
+## 最小状态合同修订与最新报告方向
+
+仅接入四文件最小补丁`56beaba64ee80c6989322e90c12a823a20c1570e`（实际父97cc，但不挑该父链），本地合同提交`27e9edad700fd83310d9947c3bce1e71f199f4a2`。raw patch与原56逐字节相同，当前contracts tree为`d5187a28cfd5371165090207907ba342a9c9b85d`。`pnpm --filter @hd/contracts check`类型/构建及77测试通过；初始2e的76和28边界记录保留各自时点，不混称新增全量验收。应用/迁移/根锁未变，当前7d共同基线仍固定。
+
+completed/partial均可finishedAt:null，表示租约中断后只读重建结果、未持久化final回执；按state/result处理，null不表示未收费，GET不外呼、不能自动POST重试。新增422 TRANSLATION_CONFIRMATION_REQUIRED（旧suggestion新请求须plan确认）与TRANSLATION_FACT_MISMATCH（配置译文改变事实token）纳入候选矩阵。
+
+用户最新报告决定取代原自动正文可用性门禁：公开已知有报告只提示联系销售，公开API、SSR/序列化与鉴权preview连嵌套inspection.reportUrl/reportAccess.available.url也不能泄露源URL；后台原权限下仅同车真实安全来源链接，有URL才有按钮，target=_blank且noopener noreferrer，不要求available、不声称正文已核验。false/缺失不是断言不存在。真实0available/19unknown保留历史但不阻塞本轮，PA停止新域请求，OPS不探外网。
+
+BE拟定公开/preview vehicle.report?:{hasReport:boolean}，后台report另带安全HTTPS url|null；正式新合同SHA尚未交付。OPS只更新准备清单，不凭口头形状改公共schema；候选模板ready=false并新增待报告政策合同门禁。当前2e+56旧四态合同不能当作新公开投影已实现。三端应用/迁移/fake seam最终候选仍待准确版本，同组验收后才另请PM切换，当前3363/账号/数据/disabled翻译保持。
