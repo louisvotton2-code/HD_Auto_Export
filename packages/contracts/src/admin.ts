@@ -1,6 +1,7 @@
 import { z } from 'zod';
 export * from './external-admin.js';
 export * from './publication.js';
+export * from './publication-frame.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, MoneySchema, NamedValueSchema, PowertrainSchema, PublicationStateSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema, VehicleFactsSchema,
