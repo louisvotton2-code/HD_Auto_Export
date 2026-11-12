@@ -88,3 +88,9 @@ BE/AD协调方向为现有bundle事务支持事实变更，不拆正文与展示
 AD交接docs/private/ad-ux11/live-case-handoff.md已读取并绑定SHA256，OPS承接六项真实API流程及同版真实FE私图故障第七项；逐例入口、完整预期与实际方法/API/浏览器/零调用观察/清理证据空位已录入docs/private/ops-ux11/七例执行矩阵.json。补充报告链接仅核href/target/rel和同车身份、权限与晚回包，不点击/探测；公开与preview无私有URL。历史local/Ali suggestions两个专用case明确不跑、不记通过。
 
 OPS将另记实际执行方法，不能冒称原run-live guarded命令通过；原端口/随机库/付费/限流守卫不改，遵守429窗口、不自动重试业务写入。执行参数索引为docs/private/ops-ux11/AD真实联调参数.json，明确OPS私有UDS组合为选定方法，AD不用数据库凭据或自行启动runner。全部七例not_run，SHA/最终manifest/review和实际方法待交付后绑定；原P2尚未关闭，ready=false，无脚本/服务/迁移执行。Ali恢复时另核实际预算与整车plan，不把500测试限额当业务默认，费用/免费余额未知。
+
+## FIX01精确接入与当前目录只读核查
+
+BE来源fe2ba4a6841a9f941cbe17467d4b1e4a772ccf93（父0540）六文件补丁映射OPS e502d1e，binary patch逐字节一致；合同/迁移Git树不变。统一bundle允许facts变更，来源/双版本与事务保护保留；新generation refs服务器派生，旧译文stale，单改驱动不重译。BE受影响真实SQL/HTTP29、API188/类型/build及准确SHA六文件独立review PASS；不冒记父167全库为修复后重跑。OPS仅重建候选API成功，Git源码逐项匹配，dist及migrations独立副本/hash登记于private releases/be-fe2ba4a/identity.json，未重做冻结FE。API修复已审不等于facts P2组合关闭，仍待最终AD及七例真实AD→API/公开前后证据；ready=false，未迁移/启动。
+
+当前3363仅GET公开目录分页核查：5页、每页上限48，220唯一项（20员工UUID+200 ext），前20项均员工，公开可见。BE另报首页20唯一featured，本轮不重复计为OPS首页实测。初次pageSize100被400拒绝后改合法48；首次解析误按data列表，改为data.items后完成统计；均只读、无业务写入。结果保存docs/private/ops-ux11/当前公开数量核验.json。未重导、登录/改密、切环境或调用Ali/报告站。候选API构建不改运行3363；AD最终候选未齐，继续等待。
