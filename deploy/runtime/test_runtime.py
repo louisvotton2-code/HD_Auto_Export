@@ -10,17 +10,73 @@ class RuntimeFailureTests(unittest.TestCase):
         self.uid=os.getuid() or 1000;self.gid=os.getgid() or 1000
         self.env=self.base/'runtime.env';self.env.write_text(f'DATA_ROOT={self.root}\nRELEASE_ID=test\nAPP_UID={self.uid}\nAPP_GID={self.gid}\n')
         self.backup=self.base/'backup';self.calls=[]
-    def invoke(self,action='backup',scale=False):
+    def invoke(self,action='backup',scale=False,extra=()):
         project='hd-ops-ext02-test' if scale else 'test-runtime'
         options=['--compose-override','compose.ops-scale.yaml'] if scale else []
         if scale:
             with self.env.open('a') as env: env.write('OPS_EXT_SCALE_DATABASE=hd_ext_scale_test\nBIND_ADDRESS=127.0.0.1\n')
-        args=['runtime.py','--env',str(self.env),'--project',project,*options,action,'--backup',str(self.backup)]
+        args=['runtime.py','--env',str(self.env),'--project',project,*options,action,'--backup',str(self.backup),*extra]
         with patch.object(sys,'argv',args): r.main()
     def fake(self,args,**kw):
         self.calls.append(args)
         if 'pg_dump' in args: raise subprocess.CalledProcessError(1,args)
-        return subprocess.CompletedProcess(args,0,stdout='api\n' if 'ps' in args else '')
+        return subprocess.CompletedProcess(args,0,stdout='api\n' if 'ps' in args else ('0\n' if any('pg_stat_activity' in v for v in args) else ''))
+    def test_shell_database_override_cannot_diverge_from_selected_file(self):
+        def capture(args,**kw):
+            self.calls.append(args)
+            self.assertNotIn('HD_DATABASE_NAME',kw['env'])
+            self.assertNotIn('HD_DEPLOYMENT_ENV',kw['env'])
+            return subprocess.CompletedProcess(args,0,stdout='')
+        with patch.dict(os.environ,{'HD_DATABASE_NAME':'hd_release_123456789abc','HD_DEPLOYMENT_ENV':'production'}),patch.object(r,'run',side_effect=capture):
+            self.invoke('validate')
+    def test_production_profile_requires_database_and_identity_in_file(self):
+        with patch.dict(os.environ,{'HD_DATABASE_NAME':'hd_release_123456789abc','HD_DEPLOYMENT_ENV':'production'}),patch.object(r,'run',side_effect=self.fake),self.assertRaises(ValueError):
+            self.invoke('validate',extra=['--compose-override','compose.production.yaml'])
+        self.assertEqual(self.calls,[])
+    def test_closed_window_keeps_previous_api_stopped_even_if_dump_fails(self):
+        with patch.object(r,'run',side_effect=self.fake),self.assertRaises(subprocess.CalledProcessError):
+            self.invoke(extra=['--keep-stopped'])
+        self.assertTrue(any('stop' in c for c in self.calls))
+        self.assertFalse(any('start' in c for c in self.calls))
+        self.assertFalse(self.backup.exists())
+    def test_release_backup_records_exact_database_and_keeps_window_closed(self):
+        database='hd_release_123456789abc'
+        with self.env.open('a') as f:f.write('HD_DATABASE_NAME='+database+'\n')
+        def success(args,**kw):
+            self.calls.append(args)
+            if 'pg_dump' in args:kw['stdout'].write(b'synthetic backup content')
+            return subprocess.CompletedProcess(args,0,stdout='api\n' if 'ps' in args else ('0\n' if any('pg_stat_activity' in v for v in args) else ''))
+        with patch.object(r,'run',side_effect=success):self.invoke(extra=['--keep-stopped'])
+        dump=next(c for c in self.calls if 'pg_dump' in c)
+        self.assertEqual(dump[dump.index('-d')+1],database)
+        self.assertFalse(any('start' in c for c in self.calls))
+        self.assertEqual(json.loads((self.backup/'manifest.json').read_text())['sourceDatabase'],database)
+    def test_release_backup_uses_selected_media_and_refuses_remaining_clients(self):
+        media=self.base/'new-media';media.mkdir()
+        name='11111111-1111-4111-8111-111111111111.webp'
+        (media/name).write_bytes(b'synthetic media')
+        with self.env.open('a') as f:f.write('MEDIA_DATA_ROOT='+str(media)+'\n')
+        def success(args,**kw):
+            self.calls.append(args)
+            if 'pg_dump' in args:kw['stdout'].write(b'synthetic backup')
+            return subprocess.CompletedProcess(args,0,stdout='api\n' if 'ps' in args else ('0\n' if any('pg_stat_activity' in v for v in args) else ''))
+        with patch.object(r,'run',side_effect=success):self.invoke(extra=['--keep-stopped'])
+        self.assertEqual(set(json.loads((self.backup/'manifest.json').read_text())['media']),{name})
+        self.backup=self.base/'second-backup';self.calls=[]
+        def busy(args,**kw):
+            self.calls.append(args)
+            return subprocess.CompletedProcess(args,0,stdout='api\n' if 'ps' in args else '1\n')
+        with patch.object(r,'run',side_effect=busy),self.assertRaises(ValueError):self.invoke(extra=['--keep-stopped'])
+        self.assertFalse(any('pg_dump' in c or 'start' in c for c in self.calls))
+    def test_release_database_refuses_physical_cluster_restore(self):
+        with self.env.open('a') as f:f.write('HD_DATABASE_NAME=hd_release_123456789abc\n')
+        for action in ['init','restore']:
+            with patch.object(r,'run',side_effect=self.fake),self.assertRaises(ValueError):self.invoke(action)
+        self.assertEqual(self.calls,[])
+    def test_keep_stopped_does_not_change_other_actions(self):
+        with patch.object(r,'run',side_effect=self.fake),self.assertRaises(ValueError):
+            self.invoke('validate',extra=['--keep-stopped'])
+        self.assertEqual(self.calls,[])
     @unittest.skipUnless(os.getuid()==0,'requires isolated root runtime')
     def test_root_initialization_keeps_root_private_and_acme_worker_owned(self):
         newroot=self.base/'newroot';self.env.write_text(self.env.read_text().replace(str(self.root),str(newroot)))
