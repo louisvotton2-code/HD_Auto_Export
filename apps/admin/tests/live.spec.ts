@@ -433,13 +433,49 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
     expect(data.images[0]).toMatchObject({ isCover: true, alt: '合成测试封面' });
     expect((await page.request.get(data.images[0]!.url)).status()).toBe(200);
   }
+  const versionBeforeSourceEdit = AdminVehicleResponseSchema.parse(await inventoryOnly.json()).data.version;
+  const vehiclePath = `/api/v1/admin/vehicles/${initial.id}`;
+  const blockedTranslationWrites = { bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 };
+  const observeBlockedTranslationWrites = (request: import('@playwright/test').Request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'PUT' && path === `${vehiclePath}/translation-bundle`) blockedTranslationWrites.bundle++;
+    if (request.method() !== 'POST') return;
+    if (path === `${vehiclePath}/translation-plans`) blockedTranslationWrites.plan++;
+    if (path.startsWith(`${vehiclePath}/translation-plans/`) && path.endsWith('/generate')) blockedTranslationWrites.generate++;
+    if (path.startsWith(`${vehiclePath}/`) && path.endsWith('/translation-suggestions')) blockedTranslationWrites.legacySuggestions++;
+  };
+  page.on('request', observeBlockedTranslationWrites);
   await tab(page, '基础资料');
   await page.getByLabel('标题原文', { exact: true }).fill('尚未发布的新原文');
   await tab(page, '公开字段多语');
-  await expect(page.getByLabel('英文标题', { exact: true })).toBeDisabled();
-  await expect(page.getByTestId('vehicle-translation-generate')).toBeDisabled();
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('vehicle-translation-generate')).toHaveCount(0);
+  await expect(page.getByText('请先保存车辆资料，再编辑或生成译文', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /重新读取多语资料$/ })).toBeDisabled();
   await expect(page.getByRole('checkbox', { name: /已审核/ })).toHaveCount(0);
-  const edited = await save(page, initial.id);
+  expect(blockedTranslationWrites).toEqual({ bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 });
+  // The first workspace visit after reload has no bundle while core facts are dirty.
+  // Save this tab's core action explicitly; its footer disappears once the new bundle can load.
+  const sourceSaved = page.waitForResponse(response => response.request().method() === 'PATCH' && new URL(response.url()).pathname === vehiclePath);
+  await page.getByRole('button', { name: /保存基础资料$/ }).click();
+  const sourceResponse = await sourceSaved;
+  expect(sourceResponse.status()).toBe(200);
+  const { SaveVehicleRequestSchema } = await import('@hd/contracts/admin');
+  const sourceInput = SaveVehicleRequestSchema.parse(sourceResponse.request().postDataJSON());
+  expect(sourceInput.version).toBe(versionBeforeSourceEdit);
+  const edited = AdminVehicleResponseSchema.parse(await sourceResponse.json()).data;
+  expect(edited.id).toBe(initial.id);
+  expect(edited.version).toBe(versionBeforeSourceEdit + 1);
+  expect(edited.draft.content.title.sourceText).toBe('尚未发布的新原文');
+  await expect(page.getByRole('button', { name: /保存基础资料$/ })).toHaveCount(0);
+  await expect(page.getByText('请先保存车辆资料，再编辑或生成译文', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveValue('尚未发布的新原文');
+  await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveAttribute('readonly', '');
+  await expect(page.getByLabel('英文标题', { exact: true })).toBeEnabled();
+  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(edited.draft.content.title.translations.en!.text);
+  await expect(page.getByTestId('vehicle-translation-generate')).toBeEnabled();
+  expect(blockedTranslationWrites).toEqual({ bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 });
+  page.off('request', observeBlockedTranslationWrites);
   expect(edited.hasUnpublishedChanges).toBe(true);
   expect(edited.draft.content.title.translations.en?.reviewStatus).toBe('stale');
   expect(PublicVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/vehicles/${initial.id}?locale=zh`)).json()).data.content.title.text).toBe(initial.draft.content.title.sourceText);
