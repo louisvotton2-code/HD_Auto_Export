@@ -67,9 +67,10 @@ export async function buildApp(config:Config=readConfig(), options:{
   catch (error) { await db.close(); throw error; }
   const auth=createAuth(db,config);
   const loginAccounts=new LoginAccountLimiter(config.authSecret);
-  const inventory=new InventoryService(db,config.externalCatalog);
+  const mediaStore=new LocalMediaStore(config.mediaRoot);
+  const inventory=new InventoryService(db,config.externalCatalog,mediaStore);
   const translator=options.translator??createVehicleTranslator(config.translation);
-  const media=new MediaService(db,new LocalMediaStore(config.mediaRoot));
+  const media=new MediaService(db,mediaStore);
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.body','res.headers.set-cookie']} : false,
     genReqId:()=>randomUUID(),requestIdHeader:false,bodyLimit:100_000,requestTimeout:30_000,trustProxy:config.trustProxy,
     logController:new LogController({disableRequestLogging:true})}).withTypeProvider<ZodTypeProvider>();
@@ -165,9 +166,10 @@ export async function buildApp(config:Config=readConfig(), options:{
   if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:!!catalogCache,metrics:catalogCache?.metrics()??null}));
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT h.id,v.deleted_at,l.revision,pl.projections,im.receipt_hash,fx.version FROM home_config h
+      const ready=await db.pool.query(`SELECT h.id,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
-        LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false WHERE h.id=1`);
+        LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
+        LEFT JOIN publication_preview_confirmations pc ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
         const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
@@ -237,6 +239,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.patch('/api/v1/admin/vehicles/:id',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicle',{params:IdParams,body:adm.SaveVehicleRequestSchema,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>{
     const body=request.body as adm.SaveVehicleRequest;return response(await inventory.save((request.params as {id:string}).id,body.version,body.draft,actor(request)),request);
   });
+  app.get('/api/v1/admin/vehicles/:id/publish-readiness',{schema:adminSchema('vehiclePublishReadiness',{params:IdParams,querystring:adm.PublicationPreviewQuerySchema,response:{200:adm.PublishReadinessResponseSchema,...errorResponses}})},async request=>response(await inventory.publishReadiness((request.params as {id:string}).id,(request.query as adm.PublicationPreviewQuery).locale,actor(request)),request));
+  app.get('/api/v1/admin/vehicles/:id/publication-preview',{schema:adminSchema('vehiclePublicationPreview',{params:IdParams,querystring:adm.PublicationPreviewQuerySchema,response:{200:adm.PublicationPreviewResponseSchema,...errorResponses}})},async request=>response(await inventory.publicationPreview((request.params as {id:string}).id,(request.query as adm.PublicationPreviewQuery).locale,actor(request)),request));
+  app.post('/api/v1/admin/vehicles/:id/publication-preview/confirm',{schema:adminSchema('confirmVehiclePublicationPreview',{params:IdParams,body:adm.ConfirmPublicationPreviewRequestSchema,response:{200:adm.PublishReadinessResponseSchema,...errorResponses}})},async request=>response(await inventory.confirmPublicationPreview((request.params as {id:string}).id,request.body as adm.ConfirmPublicationPreviewRequest,actor(request)),request));
   app.post('/api/v1/admin/vehicles/:id/publish',{schema:adminSchema('publishVehicle',{params:IdParams,body:adm.PublishVehicleRequestSchema,headers:idemHeader,response:{200:adm.AdminVehicleResponseSchema,...errorResponses}})},async request=>response(await inventory.publish((request.params as {id:string}).id,(request.body as adm.VersionRequest).version,actor(request),request.headers['idempotency-key'] as string),request));
   app.post('/api/v1/admin/vehicles/:id/translation-suggestions',{schema:adminSchema('generateVehicleTranslations',{params:IdParams,body:adm.GenerateVehicleTranslationsRequestSchema,headers:idemHeader,response:{200:adm.VehicleTranslationSuggestionsResponseSchema,...errorResponses}})},async request=>response(await inventory.translationSuggestions((request.params as {id:string}).id,(request.body as adm.GenerateVehicleTranslationsRequest).version,actor(request),request.headers['idempotency-key'] as string,translator),request));
   app.get('/api/v1/admin/vehicles/:id/localization',{schema:adminSchema('getVehicleLocalization',{params:IdParams,response:{200:adm.VehicleLocalizationResponseSchema,...errorResponses}})},async request=>response(await inventory.getLocalization((request.params as {id:string}).id),request));
