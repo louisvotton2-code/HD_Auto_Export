@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ConfigurationDisplaySchema } from './configuration-display.js';
 import {
   AvailabilitySchema, IdSchema, LanguageTagSchema, LocaleSchema, MoneySchema,
   TimestampSchema, VehicleFactsSchema, VersionSchema, responseSchema,
@@ -37,6 +38,7 @@ export const PublicationPreviewVehicleSchema = z.strictObject({
   id: IdSchema, stockCode: z.string().min(1).max(60), source: SourceSchema,
   facts: VehicleFactsSchema.extend({ generation: VehicleFactsSchema.shape.model, drivetrain: DrivetrainSchema.nullable() }),
   content: z.strictObject({ title: PublicationPreviewTextSchema, description: PublicationPreviewTextSchema }),
+  configuration: ConfigurationDisplaySchema.nullable().optional(),
   display: z.strictObject({
     make: PublicationPreviewTextSchema, model: PublicationPreviewTextSchema, trim: PublicationPreviewTextSchema,
     generation: PublicationPreviewTextSchema, city: PublicationPreviewTextSchema, location: PublicationPreviewTextSchema,

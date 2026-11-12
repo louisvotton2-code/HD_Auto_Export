@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
-  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
+  ExternalDetailEntrySchema, ExternalDisputeFieldSchema, ExternalHistorySchema, ExternalInspectionContentSchema,
+  ExternalIssueSchema, ExternalListingIdSchema, ExternalTaggedTextSchema, ExternalTimestampSchema,
 } from './external-public.js';
 import { PublicVehicleSchema } from './public.js';
 
@@ -63,7 +64,9 @@ export const ExternalUpsertCandidateSchema = CandidateIdentitySchema.extend({
   copy: ExternalCopySchema,
   images: z.array(RemoteImageCandidateSchema).max(30).refine(images => new Set(images.map(image => image.sourceMediaId)).size === images.length),
   specifications: z.array(ExternalDetailEntrySchema).max(500),
-  inspection: z.strictObject({ reportUrl: candidateUrl.nullable(), entries: z.array(ExternalDetailEntrySchema).max(300) }).nullable(),
+  history: ExternalHistorySchema.nullable().optional(),
+  // A source may submit content and a candidate URL, never server verification evidence.
+  inspection: ExternalInspectionContentSchema.safeExtend({ reportUrl: candidateUrl.nullable() }).nullable(),
 });
 export const ExternalCandidateSchema = z.discriminatedUnion('operation', [
   ExternalUpsertCandidateSchema,

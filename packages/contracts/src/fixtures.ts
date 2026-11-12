@@ -196,3 +196,4 @@ export const contractFixtures = {
   staleTranslation: VehicleDraftInputSchema.parse(staleTranslation),
   untranslatedKorean: VehicleDraftInputSchema.parse(koreanSource),
 };
+export * from './configuration-fixtures.js';

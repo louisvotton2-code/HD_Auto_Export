@@ -4,6 +4,7 @@ import {
   type ExternalImportBatchRequest, type ExternalUpsertCandidate,
 } from './external-admin.js';
 import { PublicVehicleSchema, type Locale, type PublicText, type PublicVehicle } from './public.js';
+import { ExternalInspectionSchema, type ExternalInspection, type ExternalReportAccess } from './external-public.js';
 
 export const externalFixtureTime = '2026-11-09T00:00:00Z';
 const fixtureExpiry = '2099-11-09T00:00:00Z';
@@ -38,6 +39,37 @@ export function makeExternalCandidateFixture(index = 1): ExternalUpsertCandidate
       reportUrl: 'https://reports.example.invalid/synthetic-0001', entries: [{ name: tag('检测范围'), value: tag('合成测试项') }],
     } : null,
   });
+}
+
+/** Structured synthetic inspection; declared evidence times are fixed, not a claim about a live report. */
+export function makeExternalInspectionFixture(status: ExternalReportAccess['status'] = 'unknown'): ExternalInspection {
+  const reportUrl = 'https://reports.example.invalid/synthetic-0001';
+  const reportAccess = status === 'unknown' ? { status, url: null, checkedAt: null, expiresAt: null }
+    : { status, url: status === 'available' ? reportUrl : null,
+      checkedAt: externalFixtureTime, expiresAt: '2026-11-09T01:00:00Z' };
+  return ExternalInspectionSchema.parse({
+    reportUrl: status === 'available' ? reportUrl : null, reportAccess, entries: [],
+    checks: [{ category: tag('Body inspection', 'en'), defects: 1, groups: [
+      { name: tag('Exterior panels', 'en'), defects: 1, items: [
+        { part: tag('Left front door', 'en'), result: tag('Surface scratch observed', 'en'), ok: false },
+        { part: tag('Right front door', 'en'), result: null, ok: null },
+      ] },
+      { name: tag('Bonnet', 'en'), defects: 0, items: [
+        { part: tag('Bonnet surface', 'en'), result: tag('No defect observed', 'en'), ok: true },
+      ] },
+    ] }],
+    defects: [{ category: tag('Body inspection', 'en'), count: 1, items: [{
+      group: tag('Exterior panels', 'en'), part: tag('Left front door', 'en'), finding: tag('Surface scratch', 'en'),
+      details: [{ text: tag('Synthetic surface scratch description', 'en'), textZh: tag('合成样例：表面划痕说明。') }],
+    }] }],
+  });
+}
+
+export function makeExternalStructuredCandidateFixture(index = 1): ExternalUpsertCandidate {
+  const candidate = makeExternalCandidateFixture(index);
+  const { reportAccess: _evidence, ...inspection } = makeExternalInspectionFixture();
+  return ExternalUpsertCandidateSchema.parse({ ...candidate, history: { ownershipTransfers: 0 },
+    inspection: { ...inspection, reportUrl: 'https://reports.example.invalid/synthetic-0001' } });
 }
 
 export function makeExternalImportFixture(count = 200): ExternalImportBatchRequest {
@@ -99,6 +131,13 @@ export function makeImportedPublicVehicleFixture(locale: Locale, state: 'supplie
       } } : {}),
     },
   });
+}
+
+export function makeExternalStructuredPublicVehicleFixture(locale: Locale = 'en', status: ExternalReportAccess['status'] = 'unknown'): PublicVehicle {
+  const vehicle = makeImportedPublicVehicleFixture(locale, 'supplier', true);
+  vehicle.external!.detail!.history = { ownershipTransfers: 0 };
+  vehicle.external!.detail!.inspection = makeExternalInspectionFixture(status);
+  return PublicVehicleSchema.parse(vehicle);
 }
 
 export function makeExternalAdminFixture(locale: Locale = 'zh') {

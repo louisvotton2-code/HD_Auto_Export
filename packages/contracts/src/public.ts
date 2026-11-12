@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { ConfigurationDisplaySchema } from './configuration-display.js';
+export * from './configuration-display.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
   PublicPriceSchema, RequestMetaSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
@@ -65,6 +67,8 @@ export const PublicVehicleSchema = z.strictObject({
   content: z.strictObject({ title: PublicTextSchema, description: PublicTextSchema.nullable() }),
   images: z.array(PublicMediaSchema).max(30),
   external: ExternalPublicSummarySchema.optional(),
+  // Detail-only. Lists omit the potentially large configuration payload.
+  configuration: ConfigurationDisplaySchema.nullable().optional(),
   availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   sourceUpdatedAt: TimestampSchema.nullable(),
