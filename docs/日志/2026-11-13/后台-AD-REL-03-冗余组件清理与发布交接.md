@@ -23,3 +23,9 @@ Node24下@hd/admin check：类型通过、12文件99/99单元通过；build通�
 ## 独立复查
 
 沿用唯一只读Reviewer /root/ad_ux11_review 审查全部11文件，确认2旧UI无静态/动态/路由/导出消费者，3测试文件仅声明删除、用例正文未变，现行编辑器/模型/有效回归保留；4成品与f0c逐字节相同，未变166/真实七类无需重复。Reviewer实际hooks:check、diffcheck、44本地链接/围栏通过，核本轮99单元/类型/构建/workspace28/504文件证据，未发现确认问题。保存后仍由同一Reviewer绑定准确SHA；最终记录在私有交付索引，不冒充已推送或运行切换。
+
+## 正式缓存契约消费者检查
+
+BE冻结并独立审查绑定7de8e93038665724065fa1ef8fa7a999b77cff34（81契约/48分页大小验证），AD采用为1de5d8f5b0feff8c839b836e71b686129696e072。公开list/detail/filters/home允许可选meta.catalogCache；缺省旧响应兼容，管理/预览DTO未改。AD没有新增缓存或修改请求行为，保留cache:no-store。
+
+已按新契约重新构建contracts和admin：类型、12文件99单元、构建通过。证据在忽略目录ad-rel03的contracts-cache-build.log、cache-consumer-check.log、cache-consumer-build.log。本节是新契约消费者重新构建，前述与f0c字节相同仅指先前清理阶段/旧57e契约，不能将旧包称为新组合。新公共schema会改变浏览器bundle，产物另存清单，不替代尚开发的正式API/SSR通道、Linux或完整缓存组合验收；未重复未受影响界面/真实流程，未新增业务测试通过主张。
