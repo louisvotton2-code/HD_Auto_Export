@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { adminVehicleFixture } from '@hd/contracts/fixtures';
 import type { AdminVehicle } from '@hd/contracts/admin';
-import { addHomeVehicleId, isHomeEligible, moveHomeVehicleId } from './home-sections-model';
+import { addHomeVehicleId, isHomeEligible, moveHomeVehicleId, reorderHomeVehicleId } from './home-sections-model';
 
 function vehicle(publicationState: AdminVehicle['publicationState'], availability: AdminVehicle['availability']): AdminVehicle {
   return { ...structuredClone(adminVehicleFixture), publicationState, availability };
@@ -48,5 +48,27 @@ describe('homepage recommendations', () => {
     expect(moveHomeVehicleId(original, 0, -1)).toEqual(original);
     expect(moveHomeVehicleId(original, 2, 1)).toEqual(original);
     expect(original).toEqual(['a', 'b', 'c']);
+  });
+  it('places a new vehicle first without bypassing eligibility, uniqueness or the limit', () => {
+    const ready = vehicle('published', 'available');
+    expect(addHomeVehicleId(['a', 'b'], ready, 'start')).toEqual([ready.id, 'a', 'b']);
+    expect(addHomeVehicleId(['a', ready.id], ready, 'start')).toEqual(['a', ready.id]);
+    expect(addHomeVehicleId(['a'], vehicle('published', 'sold'), 'start')).toEqual(['a']);
+    const full = Array.from({ length: 30 }, (_, index) => `existing_${index}`);
+    expect(addHomeVehicleId(full, ready, 'start')).toEqual(full);
+  });
+  it('moves by vehicle identity to a final position and preserves the other vehicles’ relative order', () => {
+    const original = ['a', 'b', 'c', 'd'];
+    expect(reorderHomeVehicleId(original, 'd', 0)).toEqual(['d', 'a', 'b', 'c']);
+    expect(reorderHomeVehicleId(original, 'a', 3)).toEqual(['b', 'c', 'd', 'a']);
+    expect(reorderHomeVehicleId(original, 'd', 1)).toEqual(['a', 'd', 'b', 'c']);
+    expect(original).toEqual(['a', 'b', 'c', 'd']);
+  });
+  it('rejects missing identities and invalid positions without dropping or duplicating vehicles', () => {
+    const ids = ['a', 'b', 'c'];
+    for (const position of [-1, 3, 1.5, NaN, Infinity]) expect(reorderHomeVehicleId(ids, 'b', position)).toEqual(ids);
+    expect(reorderHomeVehicleId(ids, 'removed', 0)).toEqual(ids);
+    expect(reorderHomeVehicleId(ids, 'b', 1)).toEqual(ids);
+    expect(reorderHomeVehicleId([], 'a', 0)).toEqual([]);
   });
 });

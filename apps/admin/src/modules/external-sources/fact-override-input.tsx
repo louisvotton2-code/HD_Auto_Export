@@ -1,6 +1,9 @@
-import { Input, InputNumber, Select, Space } from 'antd';
+import { Input, InputNumber, Select } from 'antd';
 import { powertrainLabels } from '../vehicles/draft-form';
-import { ExternalFactsSchema } from '@hd/contracts/admin';
+import { ExternalFactsSchema, type PartialDate } from '@hd/contracts/admin';
+import { PartialDateField } from '../../shared/ui/partial-date-field';
+import { fieldLabels } from './external-labels';
+import styles from './listing-override-editor.module.css';
 
 export type FactField = keyof typeof ExternalFactsSchema.shape;
 const namedFields: readonly FactField[] = ['make', 'model', 'trim', 'generation'];
@@ -35,11 +38,13 @@ export function formatExternalFact(field: FactField, value: unknown): string {
   return '未提供';
 }
 
-export function FactOverrideInput({ field, value, onChange }: {
-  field: FactField; value: unknown; onChange: (value: unknown) => void;
+export function FactOverrideInput({ field, value, onChange, disabled = false }: {
+  field: FactField; value: unknown; onChange: (value: unknown) => void; disabled?: boolean;
 }) {
+  const fieldLabel = fieldLabels[field];
   if (numericFields.includes(field)) {
-    return <InputNumber aria-label="修订值" suffix={numericUnits[field]?.trim()} value={typeof value === 'number' ? value : null} onChange={onChange} />;
+    return <div className={styles.inputGrid}><InputNumber aria-label={`${fieldLabel}修订值`} disabled={disabled}
+      suffix={numericUnits[field]?.trim()} placeholder="未知" value={typeof value === 'number' ? value : null} onChange={onChange} /></div>;
   }
   const fields: Record<string, unknown> = {
     ...(field === 'location' ? { city: null, displayName: null } : {}),
@@ -49,21 +54,16 @@ export function FactOverrideInput({ field, value, onChange }: {
     const item = fields[key];
     return typeof item === 'string' ? item : '';
   };
-  const input = (key: string, label: string, allowNull = false) => <label>
-    {label}<Input value={text(key)} onChange={event => {
+  const input = (key: string, label: string, allowNull = false, maxLength = 120) => <label>
+    {label}<Input aria-label={`${fieldLabel}${label}`} value={text(key)} disabled={disabled} maxLength={maxLength} onChange={event => {
       const next = event.target.value;
       onChange({ ...fields, [key]: allowNull && !next ? null : next });
     }} />
   </label>;
-  if (namedFields.includes(field)) return <Space wrap>{input('id', '稳定编号')}{input('name', '名称')}</Space>;
-  if (field === 'location') return <Space wrap>{input('country', '两字母国家代码')}{input('city', '城市', true)}{input('displayName', '地点说明', true)}</Space>;
+  if (namedFields.includes(field)) return <div className={styles.inputGrid}>{input('name', '名称')}{input('id', '稳定编号', false, 100)}</div>;
+  if (field === 'location') return <div className={styles.inputGrid}>{input('country', '两字母国家代码', false, 2)}{input('city', '城市', true)}{input('displayName', '地点说明', true, 200)}</div>;
   if (field === 'manufacturedAt' || field === 'firstRegistration') {
-    return <Space wrap>
-      <Select aria-label="日期精度" value={text('precision') || undefined} placeholder="选择日期精度" style={{ minWidth: 130 }}
-        options={[{ value: 'year', label: '年' }, { value: 'month', label: '年月' }, { value: 'day', label: '年月日' }]}
-        onChange={precision => onChange({ ...fields, precision })} />
-      {input('value', '日期（YYYY / YYYY-MM / YYYY-MM-DD）')}
-    </Space>;
+    return <PartialDateField label={fieldLabel} value={value && typeof value === 'object' ? value as PartialDate : null} onChange={onChange} disabled={disabled} />;
   }
   const enums = {
     registrationStatus: ExternalFactsSchema.shape.registrationStatus.options,
@@ -73,6 +73,7 @@ export function FactOverrideInput({ field, value, onChange }: {
     drivetrain: ExternalFactsSchema.shape.drivetrain.unwrap().options,
   };
   const options = enums[field as keyof typeof enums];
-  return <Select aria-label="修订值" value={typeof value === 'string' ? value : undefined} style={{ minWidth: 160 }}
-    options={options.map(option => ({ value: option, label: optionLabels[option] ?? option }))} onChange={onChange} />;
+  return <div className={styles.inputGrid}><Select aria-label={`${fieldLabel}修订值`} value={typeof value === 'string' ? value : undefined}
+    disabled={disabled} virtual={false} getPopupContainer={trigger => trigger.parentElement ?? trigger} placeholder="未知"
+    options={options.map(option => ({ value: option, label: optionLabels[option] ?? option }))} onChange={onChange} /></div>;
 }

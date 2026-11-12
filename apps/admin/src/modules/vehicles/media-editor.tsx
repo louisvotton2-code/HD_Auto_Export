@@ -1,3 +1,4 @@
+import { UtcDateTimeField } from '../../shared/ui/utc-date-time-field';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CheckCircleOutlined, CloudUploadOutlined, DeleteOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
@@ -226,7 +227,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       {source.kind === 'external' && <div className={styles.externalSources}>
         <Alert showIcon type="warning" title="逐张记录图片来源" description="原图地址仅作来源记录，不会自动下载。使用许可待核验仅供本地资料整理，生产使用前需核验。" />
         <Form.Item label="图片挂牌来源" htmlFor="media-listing-url"><Input id="media-listing-url" aria-label="图片挂牌来源" value={source.listingUrl} readOnly /></Form.Item>
-        <Form.Item label="图片采集时间（UTC）" htmlFor="media-collected-at" required><Input id="media-collected-at" aria-label="图片采集时间（UTC）" type="datetime-local" value={collectedAt} disabled={locked} onChange={event => setCollectedAt(event.target.value)} /></Form.Item>
+        <Form.Item label="图片采集时间（UTC）" htmlFor="media-collected-at" required><UtcDateTimeField id="media-collected-at" label="图片采集时间（UTC）" value={collectedAt} disabled={locked} onChange={value => setCollectedAt(value.slice(0, 16))} /></Form.Item>
         <Form.Item label="逐图原始地址" htmlFor="media-image-urls" required help="每行一个 HTTP(S) 原图地址，数量与本次选择的文件相同，并保持相同顺序。"><Input.TextArea id="media-image-urls" aria-label="逐图原始地址" value={imageUrls} disabled={locked} onChange={event => setImageUrls(event.target.value)} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="https://来源网站/图片1.jpg&#10;https://来源网站/图片2.jpg" /></Form.Item>
       </div>}
       <Form.Item label="上传车辆图片" htmlFor="vehicle-image-upload" help="JPEG / PNG / WebP，单张最大 10 MiB，每辆车最多 30 张。请先填写图片使用依据。">

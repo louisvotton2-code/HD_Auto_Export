@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, App, Button, Checkbox, Form, Input, Modal, Select, Space, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, App, Button, Checkbox, Form, Input, Modal, Space, Typography } from 'antd';
 import {
   ExternalFactsSchema, ExternalListingResponseSchema, ExternalOverrideResponseSchema, SaveExternalOverridesSchema,
   type ExternalListing, type ExternalTrialField, type Locale,
@@ -10,18 +10,39 @@ import { FactOverrideInput, formatExternalFact, type FactField } from './fact-ov
 import { useExternalAction } from './use-external-action';
 import { useExternalGuard } from './external-workspace';
 import { request } from '../../shared/api/client';
-import styles from './external-sources.module.css';
+import styles from './listing-override-editor.module.css';
 
 const factGroups: { label: string; fields: FactField[] }[] = [
   { label: '车辆识别', fields: ['make', 'model', 'trim', 'generation', 'modelYear', 'body'] },
   { label: '车况和登记', fields: ['mileageKm', 'manufacturedAt', 'firstRegistration', 'registrationStatus', 'location'] },
   { label: '动力和传动', fields: ['powertrain', 'engineCc', 'powerKw', 'transmission', 'drivetrain'] },
 ];
-const factOptions = factGroups.map(group => ({
-  label: group.label, options: group.fields.map(value => ({ value, label: fieldLabels[value] })),
-}));
 const textFields = ['title', 'model', 'description'] as const;
-const fieldPopupContainer = (trigger: HTMLElement) => trigger.parentElement ?? trigger;
+const locales: Locale[] = ['zh', 'en', 'ru'];
+
+function factValue(facts: Record<string, unknown>, source: ExternalListing['source'], field: FactField) {
+  return Object.hasOwn(facts, field) ? facts[field] : source?.facts[field];
+}
+function factStatus(facts: Record<string, unknown>, field: FactField) {
+  return Object.hasOwn(facts, field) ? facts[field] === null ? '人工修订为未知' : '人工修订' : '跟随来源';
+}
+function comparisonFact(facts: Record<string, unknown>, source: ExternalListing['source'], field: FactField) {
+  const value = factValue(facts, source, field);
+  let display = formatExternalFact(field, value);
+  if (value && typeof value === 'object') {
+    if ('id' in value) display += `（编号：${String(value.id)}）`;
+    if ('precision' in value) display += `（${{ year: '年', month: '年月', day: '年月日' }[value.precision as 'year' | 'month' | 'day']}）`;
+    if ('country' in value) {
+      const location = value as { country: string; city: string | null; displayName: string | null };
+      display = [location.country, location.city, location.displayName].filter(Boolean).join(' · ');
+    }
+  }
+  return `${factStatus(facts, field)} · ${display}`;
+}
+function comparisonText(items: ExternalListing['overrides']['text'], hashes: ExternalListing['sourceHashes'], field: ExternalTrialField, locale: Locale) {
+  const item = items.find(value => value.field === field && value.locale === locale);
+  return item ? `${item.text}${item.sourceHash !== hashes[field] ? '（原文已变化，待核对）' : ''}` : '未设人工文案，跟随自动展示';
+}
 
 export function ListingOverrideEditor({ listing, initialLocale, onClose, onRefresh }: {
   listing: ExternalListing; initialLocale: Locale; onClose: () => void; onRefresh: () => void;
@@ -31,16 +52,12 @@ export function ListingOverrideEditor({ listing, initialLocale, onClose, onRefre
   const [facts, setFacts] = useState<Record<string, unknown>>({ ...listing.overrides.facts });
   const [text, setText] = useState(listing.overrides.text);
   const [hidden, setHidden] = useState(listing.overrides.hidden);
-  const [fact, setFact] = useState<FactField>('modelYear');
-  const [field, setField] = useState<ExternalTrialField>('title');
-  const [locale, setLocale] = useState<Locale>(initialLocale);
   const [invalid, setInvalid] = useState('');
   const [latest, setLatest] = useState<ExternalListing>();
   const [checking, setChecking] = useState(false);
   const [opened, setOpened] = useState(false);
-  const present = Object.hasOwn(facts, fact);
-  const currentText = text.find(item => item.field === field && item.locale === locale);
-  const sourceHash = listing.sourceHashes[field];
+  const feedback = useRef<HTMLDivElement>(null);
+  const modelWarning = useRef<HTMLDivElement>(null);
   const locked = action.busy || action.uncertain;
   const editorDisabled = locked || !opened;
   const conflict = action.errorCode === 'VERSION_CONFLICT';
@@ -49,16 +66,21 @@ export function ListingOverrideEditor({ listing, initialLocale, onClose, onRefre
   const changedModelText = text.some(item => item.field === 'model' && !listing.overrides.text.some(saved =>
     saved.field === item.field && saved.locale === item.locale && saved.sourceHash === item.sourceHash && saved.text === item.text));
   const splitModelEdit = modelBindingChanged && changedModelText;
+  const orderedLocales = [initialLocale, ...locales.filter(locale => locale !== initialLocale)];
   useExternalGuard(dirty);
+  useEffect(() => { if (action.error) feedback.current?.scrollIntoView({ block: 'center' }); }, [action.error]);
+  useEffect(() => { if (splitModelEdit) modelWarning.current?.scrollIntoView({ block: 'center' }); }, [splitModelEdit]);
 
   async function submit(retry = false) {
-    if (!retry && (conflict || splitModelEdit)) return;
+    if (!retry && (conflict || splitModelEdit || editorDisabled)) return;
     const parsed = SaveExternalOverridesSchema.safeParse({ version: listing.version, overrides: { hidden, facts, text } });
     if (!retry && !parsed.success) {
       const issue = parsed.error.issues[0];
       const path = issue.path.map(String);
-      const label = path[1] === 'facts' ? fieldLabels[path[2]] : '译文';
+      const entry = path[1] === 'text' ? text[Number(path[2])] : undefined;
+      const label = path[1] === 'facts' ? fieldLabels[path[2]] : entry ? `${fieldLabels[entry.field]} · ${languageLabels[entry.locale]}` : '文案';
       setInvalid(`${label ?? '修订'}内容格式有误，请核对后提交。`);
+      document.getElementById(path[1] === 'facts' ? `override-fact-${path[2]}` : entry ? `override-text-${entry.field}-${entry.locale}` : '')?.scrollIntoView({ block: 'center' });
       return;
     }
     setInvalid('');
@@ -90,89 +112,97 @@ export function ListingOverrideEditor({ listing, initialLocale, onClose, onRefre
     if (refresh) onRefresh();
     else onClose();
   }
-  function removeFact() {
-    const next = { ...facts };
-    delete next[fact];
-    setFacts(next);
+  function removeFact(field: FactField) {
+    setFacts(current => { const next = { ...current }; delete next[field]; return next; });
   }
-  function changeText(value: string) {
+  function changeText(field: ExternalTrialField, locale: Locale, value: string) {
+    const sourceHash = listing.sourceHashes[field];
     if (!sourceHash) return;
-    const next = text.filter(item => item.field !== field || item.locale !== locale);
-    setText(value ? [...next, { field, locale, sourceHash, text: value }] : next);
+    setText(items => {
+      const next = items.filter(item => item.field !== field || item.locale !== locale);
+      return value ? [...next, { field, locale, sourceHash, text: value }] : next;
+    });
   }
 
-  return <Modal open afterOpenChange={setOpened} width={940} title="人工修订挂牌" okText="保存修订" cancelText="取消"
-    closable={!locked} keyboard={!locked} mask={{ closable: false }} confirmLoading={action.busy}
+  return <Modal open afterOpenChange={setOpened} width={1180} title="人工修订挂牌" okText="保存修订" cancelText="取消"
+    styles={{ body: { maxHeight: 'calc(100dvh - 220px)', overflowY: 'auto', paddingInlineEnd: 4 } }}
+    style={{ top: 24 }} closable={!locked} keyboard={!locked} mask={{ closable: false }} confirmLoading={action.busy}
     okButtonProps={{ disabled: editorDisabled || !dirty || conflict || splitModelEdit }} cancelButtonProps={{ disabled: locked }}
     onCancel={() => { if (!locked) void discard(); }} onOk={() => void submit()}>
     <Form layout="vertical" disabled={editorDisabled}>
-      <div className={styles.editHeader}>
+      <div className={styles.header}>
         <div>
           <Typography.Text strong>{listing.vehicle?.content.title.text ?? listing.source?.copy.title?.original.text ?? listing.id}</Typography.Text>
           <div><Typography.Text type="secondary">管理版本 {listing.version} · 来源版本 {listing.sourceRevision}</Typography.Text></div>
         </div>
-        <Checkbox checked={hidden} disabled={listing.state === 'withdrawn'} onChange={event => setHidden(event.target.checked)}>从公开目录隐藏</Checkbox>
+        <Checkbox checked={hidden} disabled={editorDisabled || listing.state === 'withdrawn'} onChange={event => setHidden(event.target.checked)}>从公开目录隐藏</Checkbox>
       </div>
-      <div className={styles.editGrid}>
-        <section className={styles.editSection}>
-          <Typography.Title level={5}>车辆事实</Typography.Title>
-          <Form.Item label="事实字段">
-            <Select aria-label="事实字段" virtual={false} getPopupContainer={fieldPopupContainer} value={fact} onChange={setFact}
-              showSearch={{ optionFilterProp: 'label' }} options={factOptions} />
-          </Form.Item>
-          <Form.Item label={`人工修订 · ${fieldLabels[fact]}`}>
-            <Space orientation="vertical" align="start">
-              <Typography.Text type="secondary" className={styles.sourceValue}>来源值 · {formatExternalFact(fact, listing.source?.facts[fact])}</Typography.Text>
-              <FactOverrideInput field={fact} value={present ? facts[fact] : listing.source?.facts[fact]} onChange={value => setFacts(current => ({ ...current, [fact]: value }))} />
-              <Space wrap>
-                {ExternalFactsSchema.shape[fact].safeParse(null).success && <Button onClick={() => setFacts(current => ({ ...current, [fact]: null }))}>修订为未知</Button>}
-                <Button disabled={!present} onClick={removeFact}>恢复跟随来源</Button>
-              </Space>
-              <Typography.Text type="secondary">{present ? '已设置人工修订' : '当前跟随来源'}</Typography.Text>
+      <p className={styles.help}>直接修改需要更正的内容，最后统一保存。未修改的事实继续跟随来源；“修订为未知”会保留人工清空，“恢复跟随来源”会移除人工修订。</p>
+      {factGroups.map(group => <section key={group.label} className={styles.section} aria-label={group.label}>
+        <Typography.Title level={5}>{group.label}</Typography.Title>
+        <div className={styles.factGrid}>{group.fields.map(field => {
+          const present = Object.hasOwn(facts, field);
+          return <section key={field} id={`override-fact-${field}`} aria-label={`${fieldLabels[field]}人工修订`} className={styles.fact}>
+            <div className={styles.fieldHeader}><Typography.Text strong>{fieldLabels[field]}</Typography.Text><span className={present ? styles.manual : styles.follow}>{factStatus(facts, field)}</span></div>
+            <FactOverrideInput field={field} value={factValue(facts, listing.source, field)} disabled={editorDisabled}
+              onChange={value => setFacts(current => ({ ...current, [field]: value }))} />
+            <div className={styles.source}>来源值 · {formatExternalFact(field, listing.source?.facts[field])}</div>
+            <Space wrap size={4}>
+              {ExternalFactsSchema.shape[field].safeParse(null).success && <Button size="small" disabled={editorDisabled || present && facts[field] === null} onClick={() => setFacts(current => ({ ...current, [field]: null }))}>修订为未知</Button>}
+              <Button size="small" disabled={editorDisabled || !present} onClick={() => removeFact(field)}>恢复跟随来源</Button>
             </Space>
-          </Form.Item>
-        </section>
-        <section className={styles.editSection}>
-          <Typography.Title level={5}>公开文案</Typography.Title>
-          <Form.Item label="字段和语言">
-            <Space wrap>
-              <Select aria-label="译文修订字段" virtual={false} getPopupContainer={fieldPopupContainer} value={field} onChange={setField}
-                options={textFields.map(value => ({ value, label: fieldLabels[value] }))} />
-              <Select aria-label="译文修订语言" value={locale} onChange={setLocale}
-                options={Object.entries(languageLabels).map(([value, label]) => ({ value, label }))} />
-            </Space>
-          </Form.Item>
-          <Form.Item label="人工译文">
-            {currentText && currentText.sourceHash !== sourceHash && <Alert type="warning" title="原文已变化，请核对后重新填写译文。" />}
-            <div className={styles.sourceValue}>
-              <Typography.Text type="secondary">来源原文</Typography.Text>
-              <div>{listing.source?.copy[field]?.original.text ?? '来源未提供原文'}</div>
-              {listing.source?.copy[field]?.translations[locale] && <div>供应商译文 · {listing.source.copy[field]?.translations[locale]?.text}</div>}
-            </div>
-            {field === 'model' && modelBindingChanged && <Alert type="warning" title="请先保存品牌或车型事实，再核对当前车型原文。" />}
-            <Input.TextArea aria-label="人工译文" value={currentText?.text ?? ''} disabled={!sourceHash || editorDisabled || (field === 'model' && modelBindingChanged)}
-              showCount maxLength={{ title: 500, model: 120, description: 2000 }[field]} onChange={event => changeText(event.target.value)} rows={3} />
-            {currentText && <Button type="link" onClick={() => setText(items => items.filter(item => item.field !== field || item.locale !== locale))}>移除此语言的人工译文</Button>}
-          </Form.Item>
-        </section>
-      </div>
+          </section>;
+        })}</div>
+      </section>)}
+      <section className={styles.section} aria-label="公开文案">
+        <Typography.Title level={5}>公开文案 · 中英俄</Typography.Title>
+        <p className={styles.help}>直接填写人工文案可替代自动展示；清空或移除该语言的人工文案后恢复自动展示。未填写的语言不会自动复制其他语言。</p>
+        {textFields.map(field => <section key={field} className={styles.copyGroup} aria-label={`${fieldLabels[field]}三语文案`}>
+          <Typography.Title level={5}>{fieldLabels[field]}</Typography.Title>
+          <div className={styles.original}><strong>来源原文</strong><div>{listing.source?.copy[field]?.original.text ?? '来源未提供原文'}</div></div>
+          {field === 'model' && modelBindingChanged && <Alert type="warning" title="请先保存品牌或车型事实，再核对当前车型原文。" />}
+          <div className={styles.textGrid}>{orderedLocales.map(locale => {
+            const currentText = text.find(item => item.field === field && item.locale === locale);
+            const sourceHash = listing.sourceHashes[field];
+            const label = `${fieldLabels[field]} · ${languageLabels[locale]}人工文案`;
+            return <section key={locale} id={`override-text-${field}-${locale}`} className={styles.translation} aria-label={label}>
+              <label htmlFor={`override-input-${field}-${locale}`} className={styles.textLabel}>{languageLabels[locale]}</label>
+              {currentText && currentText.sourceHash !== sourceHash && <Alert type="warning" title="原文已变化，请核对后重新填写文案。" />}
+              <Input.TextArea id={`override-input-${field}-${locale}`} aria-label={label} value={currentText?.text ?? ''}
+                disabled={!sourceHash || editorDisabled || field === 'model' && modelBindingChanged}
+                placeholder={sourceHash ? '未设人工文案，当前跟随自动展示' : '缺少来源原文，暂不能新增人工文案'}
+                showCount maxLength={{ title: 500, model: 120, description: 2000 }[field]} rows={field === 'description' ? 4 : 2}
+                onChange={event => changeText(field, locale, event.target.value)} />
+              <div className={styles.source}>供应商译文 · {listing.source?.copy[field]?.translations[locale]?.text ?? '未提供'}</div>
+              {currentText && <Button type="link" size="small" disabled={editorDisabled} onClick={() => setText(items => items.filter(item => item.field !== field || item.locale !== locale))}>移除此语言的人工文案</Button>}
+            </section>;
+          })}</div>
+        </section>)}
+      </section>
     </Form>
-    {splitModelEdit && <Alert type="warning" showIcon title="本次品牌或车型事实修改会改变车型译文的来源绑定。"
+    {splitModelEdit && <div ref={modelWarning}><Alert type="warning" showIcon title="本次品牌或车型事实修改会改变车型译文的来源绑定。"
       description={<Space wrap><span>可撤销事实修改，或保留已保存的车型译文后先提交事实。</span>
         <Button disabled={locked} onClick={() => setText(items => [
           ...items.filter(item => item.field !== 'model'), ...listing.overrides.text.filter(item => item.field === 'model'),
         ])}>保留已保存的车型译文</Button>
-      </Space>} />}
+      </Space>} /></div>}
     {invalid && <Alert type="error" title={invalid} />}
-    <ActionFeedback {...action} retry={() => void submit(true)} reconcile={() => void discard(true)} />
-    {conflict && !action.uncertain && <Space orientation="vertical" align="start">
+    <div ref={feedback}><ActionFeedback {...action} retry={() => void submit(true)} reconcile={() => void discard(true)} /></div>
+    {conflict && !action.uncertain && <section className={styles.section} aria-label="版本冲突核对">
+      <p>当前输入已保留。读取最新版本后，可逐项核对所有事实和三语文案；不会自动覆盖当前输入。</p>
       <Button loading={checking} onClick={() => void compare()}>核对最新版本</Button>
-      {latest && <Alert type="warning" title={`当前版本 ${latest.version}，本次编辑基于版本 ${listing.version}`}
-        description={<div>
-          <p>当前{fieldLabels[fact]}：{formatExternalFact(fact, Object.hasOwn(latest.overrides.facts, fact) ? latest.overrides.facts[fact] : latest.source?.facts[fact])}</p>
-          <p>当前人工译文：{latest.overrides.text.find(item => item.field === field && item.locale === locale)?.text ?? '暂无'}</p>
-        </div>} />}
-      {latest && <Button onClick={() => void discard(true)}>放弃输入并重新读取挂牌</Button>}
-    </Space>}
+      {latest && <>
+        <Alert type="warning" title={`当前版本 ${latest.version}，本次编辑基于版本 ${listing.version}`} />
+        <div className={styles.comparisonScroll} tabIndex={0} role="region" aria-label="全部修订对比，可横向滚动"><table className={styles.comparison}>
+          <thead><tr><th>字段</th><th>当前输入</th><th>服务端最新内容</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">从公开目录隐藏</th><td>{hidden ? '是' : '否'}</td><td>{latest.overrides.hidden ? '是' : '否'}</td></tr>
+            {factGroups.flatMap(group => group.fields).map(field => <tr key={field}><th scope="row">{fieldLabels[field]}</th><td>{comparisonFact(facts, listing.source, field)}</td><td>{comparisonFact(latest.overrides.facts, latest.source, field)}</td></tr>)}
+            {textFields.flatMap(field => locales.map(locale => <tr key={`${field}:${locale}`}><th scope="row">{fieldLabels[field]} · {languageLabels[locale]}</th><td>{comparisonText(text, listing.sourceHashes, field, locale)}</td><td>{comparisonText(latest.overrides.text, latest.sourceHashes, field, locale)}</td></tr>))}
+          </tbody>
+        </table></div>
+        <Button onClick={() => void discard(true)}>放弃输入并重新读取挂牌</Button>
+      </>}
+    </section>}
   </Modal>;
 }

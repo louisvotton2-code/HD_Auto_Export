@@ -1,0 +1,7 @@
+.panel { min-width: 0; }
+.panel :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 8px; padding-block: 12px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+.notice { margin-bottom: 16px; }
+.frameWrap { max-width: 1120px; margin-inline: auto; border: 1px solid #e6e0d3; border-radius: 10px; overflow: hidden; background: #fff; }
+.frame { display: block; width: 100%; min-height: 240px; border: 0; background: #fff; }
+@media (max-width: 600px) { .panel :global(.ant-card-body) { padding: 12px; }.toolbar { align-items: stretch; } }

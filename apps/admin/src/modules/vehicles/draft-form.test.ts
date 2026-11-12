@@ -46,6 +46,21 @@ describe('草稿表单与统一契约', () => {
     expect(result.facts.mileageKm).toBe(0);
     expect(result.facts.engineCc).toBeNull();
   });
+  it('缺少金额的报价草稿保留报价意图及两项已选币种', () => {
+    const base = emptyDraft();
+    const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', currency: 'CNY', purchaseAmount: '', purchaseCurrency: 'EUR' });
+    expect(result.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'CNY' }, includes: [] });
+    expect(result.internal.purchaseCost).toEqual({ amount: null, currency: 'EUR' });
+    expect(formToDraft(result, draftToForm(result))).toEqual(result);
+    expect(() => formToDraft(base, { ...draftToForm(base), priceKind: 'reference', amount: '' })).toThrow();
+  });
+  it('清空已有金额不改成待询价或零，采购币种可单独保留', () => {
+    const base = makeVehicleDraftFixture();
+    const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', purchaseAmount: '', purchaseCurrency: 'CNY' });
+    expect(result.price.kind).toBe('asking');
+    expect(result.price.money?.amount).toBeNull();
+    expect(result.internal.purchaseCost).toEqual({ amount: null, currency: 'CNY' });
+  });
   it('切到待询价时清空金额但保留价格包含项目', () => {
     const draft = makeVehicleDraftFixture();
     draft.price.includes = [' 已有范围 ', ' 已有范围 '];

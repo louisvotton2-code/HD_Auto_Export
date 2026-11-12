@@ -3,6 +3,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, translationSuggestions, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
+import { acknowledgePublicationPreview, chooseYear } from './publication-test-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 const savedNotice = /已填入\d+项语言内容，请核对并保存草稿/;
@@ -16,9 +17,10 @@ function publishedVehicle(): AdminVehicle {
   return { ...vehicle(), id, publicationState: 'published', publishedRevisionId: 'fixture_revision', publishedAt: '2026-11-08T08:00:00Z', availability: 'available', availabilityCheckedAt: '2026-11-08T08:00:00Z', hasUnpublishedChanges: false };
 }
 const mtButton = (page: Page) => page.getByRole('button', { name: /生成英俄译文$/ });
-const publishButton = (page: Page) => page.getByRole('button', { name: /发布车辆$|发布已保存的修改$|已发布，暂无待发布修改$|先保存当前修改$/ });
+const publishButton = (page: Page) => page.getByTestId('vehicle-publish');
 function requestSnapshot(route: Route) { return { key: route.request().headers()['idempotency-key'], body: route.request().postData() }; }
-async function openReview(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '三语与发布'); }
+async function openTranslations(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '公开字段多语'); }
+async function openPreview(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '发布预览'); }
 async function signInAgain(page: Page) {
   await page.getByLabel('账号或工作邮箱').fill('editor@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill('synthetic-test-password');
@@ -40,14 +42,15 @@ test('translation Chinese-first save then generation yields original Chinese and
   await page.goto('/admin/vehicles/new');
   await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
   await page.getByLabel('标题原文', { exact: true }).fill('中文优先录入测试');
-  await tab(page, '三语与发布');
-  await page.getByLabel('描述原文', { exact: true }).fill('这段中文将生成英俄译文，不代表已人工审核。');
+  await tab(page, '价格与内部信息');
+  await page.getByLabel('车况描述', { exact: true }).fill('这段中文将生成英俄译文，不代表已人工审核。');
+  await tab(page, '公开字段多语');
   await expect(mtButton(page)).toHaveCount(0);
   await expect(page.getByText('先保存中文原文，再生成英俄译文', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect(page).toHaveURL(new RegExp(`/admin/vehicles/${id}$`));
   expect(api.items[0]!.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: '中文优先录入测试' });
-  await tab(page, '三语与发布');
+  await tab(page, '公开字段多语');
   await mtButton(page).click();
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Machine generated title');
   await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue('Машинное описание');
@@ -60,14 +63,16 @@ test('translation Chinese-first save then generation yields original Chinese and
   expect(api.items[0]!.draft.content.title.translations.en).toBeNull();
   expect(api.items[0]!.publicationState).toBe('draft');
   await expect(page.locator('.ant-message').filter({ hasText: savedNotice })).toBeVisible();
+  await tab(page, '发布预览');
   await expect(publishButton(page)).toBeDisabled();
+  await tab(page, '公开字段多语');
   await captureFixtureEvidence(page, 'generated-suggestions');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.saves.length).toBe(1);
   await expect(page.locator('.ant-alert').filter({ hasText: /已填入\d+项语言内容，请核对并保存草稿|译文已填入当前草稿，请核对并保存/ })).toHaveCount(0);
   expect(api.saves[0]!.draft.content.title.translations).toMatchObject({ zh: { kind: 'original', reviewStatus: 'pending' }, en: { kind: 'machine', reviewStatus: 'pending', engineVersion: 'fixture-machine-translation-v1' }, ru: { kind: 'machine', reviewStatus: 'pending' } });
   expect(api.items[0]!.publicationState).toBe('draft');
-  await page.reload(); await tab(page, '三语与发布');
+  await page.reload(); await tab(page, '公开字段多语');
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Machine generated title');
 });
 
@@ -75,11 +80,11 @@ test('translation generation is unavailable for unsaved source edits and saved n
   const record = chineseVehicle(); const api = await installApi(page, { items: [record] });
   await page.goto(`/admin/vehicles/${id}`);
   await page.getByLabel('标题原文', { exact: true }).fill('还没有保存的中文标题');
-  await tab(page, '三语与发布');
+  await tab(page, '公开字段多语');
   await expect(mtButton(page)).toBeDisabled();
   expect(api.translations).toEqual([]);
   record.draft.content.title.sourceLanguage = 'en'; record.draft.content.title.sourceText = 'Saved English source';
-  await page.reload(); await tab(page, '三语与发布');
+  await page.reload(); await tab(page, '公开字段多语');
   await expect(mtButton(page)).toBeDisabled();
   await expect(page.getByText('请先准备中文原文', { exact: true })).toBeVisible();
   expect(api.translations).toEqual([]);
@@ -93,7 +98,7 @@ test('translation suggestions preserve human and approved target text instead of
   const protectedTitle = structuredClone(record.draft.content.title.translations.en);
   const protectedDescription = structuredClone(record.draft.content.description.translations.ru);
   const api = await installApi(page, { items: [record] });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByLabel('俄文标题', { exact: true })).toHaveValue('Машинный заголовок');
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Human corrected title');
   await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue('Проверенное описание');
@@ -112,7 +117,7 @@ for (const mismatch of ['vehicle version', 'source hash', 'target edit revision'
     if (mismatch === 'source hash') suggestion.content.title.sourceHash = '0'.repeat(64);
     if (mismatch === 'target edit revision') suggestion.content.title.targetHumanEditVersions.en = 9;
     await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => reply(route, envelope(suggestion)));
-    await openReview(page, record); await mtButton(page).click();
+    await openTranslations(page, record); await mtButton(page).click();
     await expect(page.locator('.ant-alert').filter({ hasText: /变化|过期|不一致|核对|更新/ }).first()).toBeVisible();
     await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
     expect(api.saves).toEqual([]);
@@ -125,11 +130,13 @@ test('translation in flight locks editing and a same-task double click sends one
   const calls: ReturnType<typeof requestSnapshot>[] = [];
   let release!: () => void; const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, async route => { calls.push(requestSnapshot(route)); await pause; return reply(route, envelope(translationSuggestions(record))); });
-  await openReview(page, record);
+  await openTranslations(page, record);
   await mtButton(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
   await expect.poll(() => calls.length).toBe(1);
   await expect(page.getByLabel('英文标题', { exact: true })).toBeDisabled();
-  await expect(page.getByLabel('描述原文', { exact: true })).toBeDisabled();
+  await tab(page, '价格与内部信息');
+  await expect(page.getByLabel('车况描述', { exact: true })).toBeDisabled();
+  await tab(page, '公开字段多语');
   await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
   release();
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Machine generated title');
@@ -144,7 +151,7 @@ for (const scenario of [
   test(`translation ${scenario.code} remains an explicit failure without changing text or claiming success`, async ({ page }) => {
     const record = chineseVehicle(); const api = await installApi(page, { items: [record] });
     await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => reply(route, error(scenario.code), scenario.status));
-    await openReview(page, record); await mtButton(page).click();
+    await openTranslations(page, record); await mtButton(page).click();
     await expect(page.locator('.ant-alert').filter({ hasText: /未配置|未开启|失败|不可用|不支持|未完成|尚未|未返回|请先保存中文/ }).first()).toBeVisible();
     await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
     await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue('');
@@ -156,11 +163,13 @@ for (const scenario of [
 test('translation a first 401 requests login and leaves saved source text unchanged', async ({ page }) => {
   const record = chineseVehicle(); const api = await installApi(page, { items: [record] }); let calls = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => { calls++; api.authenticated = false; return reply(route, error('UNAUTHENTICATED'), 401); });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByLabel('账号或工作邮箱')).toBeVisible();
   await signInAgain(page);
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('描述原文', { exact: true })).toHaveValue(record.draft.content.description.sourceText!);
+  await tab(page, '价格与内部信息');
+  await expect(page.getByLabel('车况描述', { exact: true })).toHaveValue(record.draft.content.description.sourceText!);
+  await tab(page, '公开字段多语');
   expect(calls).toBe(1); expect(api.saves).toEqual([]);
 });
 
@@ -173,7 +182,7 @@ test('translation an ambiguous request retries its frozen version and key after 
     if (calls.length === 2) { api.authenticated = false; return reply(route, error('UNAUTHENTICATED'), 401); }
     return reply(route, envelope(translationSuggestions(record)));
   });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByRole('button', { name: /重试原翻译请求$/ })).toBeVisible();
   await page.getByRole('button', { name: /重试原翻译请求$/ }).click();
   await expect(page.getByLabel('账号或工作邮箱')).toBeVisible(); await signInAgain(page);
@@ -192,7 +201,7 @@ test('translation replayed suggestions are rejected after another employee chang
     if (calls.length === 1) return route.abort('failed');
     return reply(route, envelope(receipt));
   });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByRole('button', { name: /重试原翻译请求$/ })).toBeVisible();
   record.version = 2; record.draft.content.title.sourceText = '另一位员工已经改过的中文标题'; record.draft.content.title.sourceVersion = 2;
   record.draft.content.title.translations.en = { ...receipt.content.title.translations.en, text: 'Saved by another employee', kind: 'human', humanEditVersion: 4, sourceVersion: 2 };
@@ -213,7 +222,7 @@ test('translation replayed suggestions cannot fill a vehicle that has since been
     calls.push(requestSnapshot(route));
     return calls.length === 1 ? route.abort('failed') : reply(route, envelope(receipt));
   });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByRole('button', { name: /重试原翻译请求$/ })).toBeVisible();
   Object.assign(record, { deletedAt: '2026-11-08T09:00:00Z', version: 2 });
   await page.getByRole('button', { name: /重试原翻译请求$/ }).click();
@@ -231,7 +240,7 @@ test('translation acknowledged suggestions with a failed fresh read retain the s
     return route.fallback();
   });
   await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => { calls.push(requestSnapshot(route)); if (calls.length === 1) failRead = true; return reply(route, envelope(translationSuggestions(record))); });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.getByText('翻译结果尚未确认', { exact: true })).toBeVisible();
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
   await expect(page.getByRole('button', { name: /重试原翻译请求$/ })).toBeEnabled();
@@ -252,7 +261,7 @@ test('translation whole-flow deadline keeps an acknowledged request recoverable 
     await route.abort('aborted').catch(() => { /* The browser deadline already cancelled this read. */ });
   });
   await page.route(`**/api/v1/admin/vehicles/${id}/translation-suggestions`, route => { calls.push(requestSnapshot(route)); if (calls.length === 1) stallRead = true; return reply(route, envelope(translationSuggestions(record))); });
-  await openReview(page, record); await mtButton(page).click();
+  await openTranslations(page, record); await mtButton(page).click();
   await expect(page.locator('.ant-alert-error').filter({ hasText: '翻译等待超时' })).toBeVisible({ timeout: 40_000 });
   await expect(page.getByText('翻译结果尚未确认', { exact: true })).toBeVisible();
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
@@ -266,14 +275,14 @@ test('translation whole-flow deadline keeps an acknowledged request recoverable 
 test('publication unchanged state survives refresh and internal or inventory changes do not unlock publishing', async ({ page }) => {
   const record = publishedVehicle(); const api = await installApi(page, { items: [record] });
   await page.route(`**/api/v1/admin/vehicles/${id}/availability`, route => { const body = route.request().postDataJSON(); Object.assign(record, { version: record.version + 1, availability: body.availability, availabilityCheckedAt: body.checkedAt }); return reply(route, envelope(record)); });
-  await openReview(page, record);
+  await openPreview(page, record);
   await expect(publishButton(page)).toHaveText(/已发布，暂无待发布修改/); await expect(publishButton(page)).toBeDisabled();
-  await page.reload(); await tab(page, '三语与发布'); await expect(publishButton(page)).toBeDisabled();
+  await page.reload(); await tab(page, '发布预览'); await expect(publishButton(page)).toBeDisabled();
   await (await notes(page)).fill('只修改内部备注');
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(record.hasUnpublishedChanges).toBe(false);
   await expect(page.locator('.ant-alert-success').filter({ hasText: '草稿已保存，对外内容已是最新，无需重复发布。' })).toBeVisible();
-  await tab(page, '三语与发布'); await expect(publishButton(page)).toBeDisabled();
+  await tab(page, '发布预览'); await expect(publishButton(page)).toBeDisabled();
   await select(page, '核验后的库存状态', '已售');
   await page.getByRole('button', { name: /核验并更新库存$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
@@ -284,10 +293,15 @@ test('publication unchanged state survives refresh and internal or inventory cha
 test('publication saving a public field sets unpublished changes and allows an explicit new publication', async ({ page }) => {
   const record = publishedVehicle(); const api = await installApi(page, { items: [record] });
   await page.goto(`/admin/vehicles/${id}`);
-  await page.getByLabel('年款', { exact: true }).fill('2025');
+  await chooseYear(page, '年款', 2025);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(record.hasUnpublishedChanges).toBe(true);
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
+  await expect(publishButton(page)).toHaveText('请完善信息'); await expect(publishButton(page)).toBeDisabled();
+  expect(api.previewConfirmations).toEqual([]);
+  await acknowledgePublicationPreview(page);
+  expect(api.previewConfirmations).toHaveLength(1);
+  expect(api.previewConfirmations[0]!.input.version).toBe(record.version);
   await expect(publishButton(page)).toHaveText(/发布已保存的修改/); await expect(publishButton(page)).toBeEnabled();
 });
 
@@ -295,7 +309,8 @@ test('publication same-task double clicks create one confirmation and one reques
   const record = { ...publishedVehicle(), hasUnpublishedChanges: true }; await installApi(page, { items: [record] });
   let calls = 0; let release!: () => void; const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, async route => { calls++; await pause; Object.assign(record, { version: 2, hasUnpublishedChanges: false, publishedRevisionId: 'fixture_revision_2' }); return reply(route, envelope(record)); });
-  await openReview(page, record);
+  await openPreview(page, record);
+  await expect(publishButton(page)).toBeEnabled();
   await publishButton(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
   await expect(page.getByRole('dialog', { name: '发布当前已保存的草稿？', exact: true })).toHaveCount(1); expect(calls).toBe(0);
   if (process.env.ADMIN_CAPTURE_PUBLISH_CONFIRMATION === '1') await captureFixtureEvidence(page, 'publish-confirmation');
@@ -306,13 +321,13 @@ test('publication same-task double clicks create one confirmation and one reques
   await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本' })).toBeVisible();
   await expect(publishButton(page)).toHaveText(/已发布，暂无待发布修改/); await expect(publishButton(page)).toBeDisabled();
   await captureFixtureEvidence(page, 'published-disabled');
-  await page.reload(); await tab(page, '三语与发布'); await expect(publishButton(page)).toBeDisabled(); expect(calls).toBe(1);
+  await page.reload(); await tab(page, '发布预览'); await expect(publishButton(page)).toBeDisabled(); expect(calls).toBe(1);
 });
 
 test('publication a definitive validation failure has a toast and a persistent recovery message', async ({ page }) => {
   const record = { ...publishedVehicle(), hasUnpublishedChanges: true }; await installApi(page, { items: [record] });
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => reply(route, error('PUBLISH_VALIDATION_FAILED'), 422));
-  await openReview(page, record); await publishButton(page).click();
+  await openPreview(page, record); await publishButton(page).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-message-error').filter({ hasText: '尚未满足发布条件' })).toBeVisible();
   await expect(page.locator('.ant-alert-error').filter({ hasText: '尚未满足发布条件' })).toBeVisible();
@@ -327,7 +342,7 @@ test('publication an unknown original request remains retryable even after the s
     if (calls.length === 1) { Object.assign(record, { version: 2, hasUnpublishedChanges: false, publishedRevisionId: 'fixture_revision_2' }); return route.abort('failed'); }
     return reply(route, envelope(record));
   });
-  await openReview(page, record); await publishButton(page).click();
+  await openPreview(page, record); await publishButton(page).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.getByRole('button', { name: /重试原发布请求$/ })).toBeEnabled();
   await page.getByRole('button', { name: /重试原发布请求$/ }).click();
@@ -339,9 +354,9 @@ test('publication missing historical comparison requires a fresh read before sho
   const record: AdminVehicle = { ...publishedVehicle(), hasUnpublishedChanges: null }; await installApi(page, { items: [record] });
   let publishes = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => { publishes++; return reply(route, error('INTERNAL_ERROR'), 500); });
-  await openReview(page, record);
+  await openPreview(page, record);
   await expect(page.getByText('发布差异待核对', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /已发布，暂无待发布修改$/ })).toHaveCount(0);
+  await expect(publishButton(page)).not.toHaveText('已发布，暂无待发布修改');
   record.hasUnpublishedChanges = false;
   await page.getByRole('button', { name: /^(?:reload )?核对发布状态$/ }).click();
   await expect(publishButton(page)).toHaveText(/已发布，暂无待发布修改/); await expect(publishButton(page)).toBeDisabled();
@@ -356,7 +371,7 @@ test('publication a replayed publish receipt cannot announce success after the c
     if (calls === 1) { Object.assign(record, { ...receipt, deletedAt: '2026-11-08T09:00:00Z', version: 3 }); return route.abort('failed'); }
     return reply(route, envelope(receipt));
   });
-  await openReview(page, record); await publishButton(page).click();
+  await openPreview(page, record); await publishButton(page).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await page.getByRole('button', { name: /重试原发布请求$/ }).click();
   await expect(page.getByText('车辆已移入回收站', { exact: true })).toBeVisible();

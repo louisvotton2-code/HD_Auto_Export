@@ -3,6 +3,28 @@ import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { select, tab } from './ui-helpers';
 
+test('vehicle list distinguishes an incomplete asking quote from an explicit on-request price', async ({ page }) => {
+  const missingMoney = vehicle(); missingMoney.stockCode = 'ASKING-NO-MONEY';
+  missingMoney.draft.price = { kind: 'asking', money: null, includes: [] };
+  const missingAmount = vehicle(); missingAmount.id = 'fixture_missing_amount'; missingAmount.stockCode = 'ASKING-CNY-NO-AMOUNT';
+  missingAmount.draft.price = { kind: 'asking', money: { amount: null, currency: 'CNY' }, includes: [] };
+  const onRequest = vehicle(); onRequest.id = 'fixture_on_request'; onRequest.stockCode = 'ON-REQUEST';
+  onRequest.draft.price = { kind: 'on_request', money: null, includes: [] };
+  await installApi(page, { items: [missingMoney, missingAmount, onRequest] });
+  await page.goto('/admin/vehicles');
+  for (const [stockCode, amountText, kindText] of [
+    ['ASKING-NO-MONEY', '报价待填写', '公开报价'],
+    ['ASKING-CNY-NO-AMOUNT', '报价待填写 · CNY', '公开报价'],
+    ['ON-REQUEST', '待询价', '暂无公开报价'],
+  ]) {
+    const row = page.getByRole('row').filter({ has: page.getByText(stockCode, { exact: true }) });
+    const price = row.locator('.vehicle-price');
+    await expect(price).toHaveText(`${amountText} ${kindText}`);
+    if (stockCode !== 'ON-REQUEST') await expect(price).not.toContainText('待询价');
+    else await expect(price).not.toContainText('报价待填写');
+  }
+});
+
 test('manual entry defaults and model suggestions are saved as draft facts only', async ({ page }) => {
   const api = await installApi(page);
   await page.goto('/admin/vehicles/new');
@@ -21,7 +43,7 @@ test('manual entry defaults and model suggestions are saved as draft facts only'
   } });
   expect(api.items[0]).toMatchObject({ availability: 'unknown', availabilityCheckedAt: null });
   await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
   await expect(page.getByText('发布后可在这里查看官网访客能读取的内容。', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '预览官网公开内容' })).toHaveCount(0);
   await expect(page.locator('.ant-form-item').filter({ has: page.getByRole('combobox', { name: '核验后的库存状态' }) })).toContainText('可售');
@@ -38,7 +60,7 @@ test('public snapshot preview distinguishes a missing locale from a proxy route 
     return reply(route, envelope(published));
   });
   await page.goto(`/admin/vehicles/${published.id}`);
-  await tab(page, '三语与发布');
+  await tab(page, '发布预览');
   const preview = page.getByRole('button', { name: '预览官网公开内容' });
   await preview.click();
   await expect(page.getByRole('heading', { name: published.content.title.text, exact: true })).toBeVisible();
