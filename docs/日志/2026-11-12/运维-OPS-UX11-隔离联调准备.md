@@ -31,7 +31,7 @@
 | 发布跨页 | 去逐字段approved但仍三语完整/非stale及最新预览确认，machine/pending保留，库存/权限/版本/指纹/幂等不撤销；配置/译文/换车/旧loadId/跨页返回不得复用旧证明 |
 | 费用取消/未知 | 创建plan/GET status/取消/无明确确认等0fake调用；本版cost只能unknown，amount/currency/免费额度均null，不能写0或免费；acceptUnknownCost和maximumCharacters须显式匹配原计划 |
 | fake执行/恢复 | 不注入真实Ali key，仅BE受控fake seam；持久预算预占/结算、并发、缓存、幂等、部分失败、outcome_unknown和分段复用；只读状态/重放不新增调用或重发POST，按持久结果重建completed/partial，finishedAt可null |
-| 历史/报告（新合同待SHA） | 0/null、false/null及缺陷/历史含义保持；最新用户改为公开API/SSR/鉴权preview零源报告URL，已知有报告只联系销售。后台同车安全来源URL有按钮、无URL无按钮，安全新窗口；unknown不阻塞，不自动核正文/新域，不改真实来源数据 |
+| 历史/报告（正式3a，实施待候选） | 0/null、false/null及缺陷/历史含义保持；最新用户改为公开API/SSR/鉴权preview零源报告URL，已知有报告只联系销售。后台同车安全来源URL有按钮、无URL无按钮，安全新窗口；unknown不阻塞，不自动核正文/新域，不改真实来源数据 |
 
 当前代理通用读取超时30s，与新generate120s聚合预算/AD150s请求需在候选按路由同组对齐，并禁代理/客户端POST重试；本轮当前配置未改。最大合法三语bundle需核实际UTF-8字节与API/Nginx/client上限，不截断；默认限流保持，用真实reset在用例/完成阶段等待。
 
@@ -51,4 +51,12 @@ completed/partial均可finishedAt:null，表示租约中断后只读重建结果
 
 用户最新报告决定取代原自动正文可用性门禁：公开已知有报告只提示联系销售，公开API、SSR/序列化与鉴权preview连嵌套inspection.reportUrl/reportAccess.available.url也不能泄露源URL；后台原权限下仅同车真实安全来源链接，有URL才有按钮，target=_blank且noopener noreferrer，不要求available、不声称正文已核验。false/缺失不是断言不存在。真实0available/19unknown保留历史但不阻塞本轮，PA停止新域请求，OPS不探外网。
 
-BE拟定公开/preview vehicle.report?:{hasReport:boolean}，后台report另带安全HTTPS url|null；正式新合同SHA尚未交付。OPS只更新准备清单，不凭口头形状改公共schema；候选模板ready=false并新增待报告政策合同门禁。当前2e+56旧四态合同不能当作新公开投影已实现。三端应用/迁移/fake seam最终候选仍待准确版本，同组验收后才另请PM切换，当前3363/账号/数据/disabled翻译保持。
+正式3a已冻结公开/preview vehicle.report?:{hasReport:boolean}，后台report另带安全HTTPS url|null。OPS按准确八文件补丁接入，不凭口头形状改schema；候选模板仍ready=false等API/页面/迁移/fake seam。旧2e+56四态合同保留历史，当前公开兼容字段只unknown/null，内部证据四态不作为入口前提；仍不能把schema通过当新公开投影已实现。三端应用/迁移/fake seam最终候选仍待准确版本，同组验收后才另请PM切换，当前3363/账号/数据/disabled翻译保持。
+
+## 正式报告合同接入与当前终态
+
+仅挑`3a0681b5822b60b3fa8c863bf4c1bb32af2e6109`的八文件，不重复旧链；本地合同提交`4ea2694c6c60fb51489ba16d8ee1561810e20a89`，当前contracts tree为`57e403827125c491aca57d5d36afdee2293f3f3a`。原补丁逐字节一致，应用/迁移/根锁/保护不变。契约类型/构建及78测试、workspace28/478代码文件边界通过；原76/77记录保留，不合称新增全量。精确挑拣与private准备方案独立review通过，最终文档HEAD另绑定，不新增运行测试。
+
+PublicVehicle/PublicationPreviewVehicle.report严格仅hasReport，拒任何url；AdminVehicle/ExternalListing.report允许true+url:null，非空URL必需true，后台不拼缺失URL。公开旧inspection.reportUrl固定null，reportAccess仅unknown且url/时间null，内部证据四态不接公共DTO。列表/home实际投影需省略report；公开API/SSR/鉴权preview零源URL与后台同车/权限/安全新窗口、无URL无按钮都待候选实际回归，不能由schema测试替代。
+
+稳定共同7d、根dirty/main及当前3363/账号/数据/翻译disabled均保持。OPS只完成合同和隔离准备，尚无三端完整候选、API新迁移或fake seam冻结，不开库/端口/服务、不提前切换、不付费smoke。当前准备文件与非可运行模板在docs/private/ops-ux11，旧15库为未来冻结源，旧14只是历史；新写入后先维护停写排空、完整备份新数据再修复。
