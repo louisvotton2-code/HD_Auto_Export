@@ -659,7 +659,7 @@ test('a fresh API instance reads persisted data and reports readiness',async()=>
   } finally {await second.app.close();}
 });
 test('production cookies are Secure and a missing database fails readiness without failing liveness',async()=>{
-  const production=await buildApp(readConfig({NODE_ENV:'production',DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:'https://admin.example.invalid',TRUSTED_ORIGINS:'https://admin.example.invalid'}));
+  const production=await buildApp(readConfig({NODE_ENV:'production',HD_DEPLOYMENT_ENV:'production',HD_RELEASE_ID:'a'.repeat(40),DATABASE_URL:dbUrl,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),AUTH_BASE_URL:'https://admin.example.invalid',TRUSTED_ORIGINS:'https://admin.example.invalid'}));
   try {
     const login=await production.app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin:'https://admin.example.invalid'},payload:{email:'admin@example.invalid',password}});
     assert.equal(login.statusCode,200,login.body);assert.match(String(login.headers['set-cookie']),/; Secure/);assert.match(String(login.headers['set-cookie']),/__Secure-hd-auto/);

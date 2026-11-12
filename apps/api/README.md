@@ -118,3 +118,17 @@ pnpm --filter @hd/api external:sync --once
 - `external:trial-fake --seed` 生成固定100条的模拟计划；`--grant <trialId> <characters>` 只写隔离模拟额度；`--run <trialId> [limit]` 使用模拟文本。`--interrupt-after-dispatch` 可用于单独验证中断留账，修复后重跑。脚本输出 `realCalls:0`，不会写公开译文。
 
 真实参考汇率的 `external:fx --refresh` 仅在新建回环预览库 `hd_ext_fx_preview_*`、`NODE_ENV=test`、`EXTERNAL_CATALOG_MODE=synthetic` 和 `EXTERNAL_FX_NETWORK=enabled` 下显式执行。可由隔离调度器每小时尝试，数据库限制滚动24小时最多一次外呼。失败保留原快照且不会延长有效期。页面请求和容量环境均无外呼。`--health` 返回快照及最近尝试状态，`retained` 表示已超过24小时且仍在七天有效期内；不输出汇率。健康命令读到缺失或过期仍正常退出，告警应判断状态。刷新在24小时冷却时正常退出且报告未发起；本次实际刷新失败返回非零退出码。接口与署名见[车辆接口第16节](../../docs/开发/车辆接口.md#16-be-ext-02-目录容量与美元展示)。
+
+## REL03 正式读取、SSR回源与额度
+
+REL03增量不改变UX11冻结运行环境。实际main启动必须显式提供`HD_DEPLOYMENT_ENV=production|local|test`和`HD_RELEASE_ID`（40至64位小写commit，或`sha256:`镜像摘要）；缺失报配置错误。只有明确test且缓存关闭的纯测试可以使用稳定未发布默认值。发布身份参与不透明公共版本，恢复库后仍必须按旧流程轮换公共epoch，不能沿用旧缓存命名空间解释旧数据。
+
+正式运行保持`EXTERNAL_CATALOG_MODE=disabled`，以`CATALOG_READ_MODE=staff|combined`单独选择只读员工车或合并既有外部目录，默认staff。`EXTERNAL_SYNC_MODE=off`是唯一允许值，正式模式拒绝批次导入POST；不启动worker、不拉供应商、不导入数据。既有synthetic/synthetic-scale的隔离数据库、网络和翻译关闭护栏保留，不能混用正式PUBLIC_*缓存选项。
+
+`PUBLIC_CATALOG_CACHE=off|memory|redis`默认off。正式TTL默认/上限15000ms，`PUBLIC_CACHE_MAX_LOADS`默认/上限4；L1最多64项、16MiB，单值1MiB。Redis使用固定内部alias`redis`（原生隔离运行可127.0.0.1）、`PUBLIC_REDIS_PORT`默认6379、`PUBLIC_REDIS_USER`和绝对`PUBLIC_REDIS_PASSWORD_FILE`；`PUBLIC_CACHE_NAMESPACE`默认`hd:catalog:production`，可按环境显式设置。Redis服务由OPS设`maxmemory 128mb`和`allkeys-lru`，应用ACL只需GET/SET `<namespace>:slot:*`，不授予CONFIG权限。即使off也进行有界、回源前后DB版本核验并返回stamp，只是不保存DTO。DB断开不返回旧数据；Redis失败最多4路回源，正式模式最多16个等待key，共享原请求3秒期限，满/超时503且过期等待不发起回源；连接/超时/项大小继续有界。
+
+FE/API以私有文件`HD_SSR_SERVICE_SECRET_FILE`共享32–256位可打印ASCII密钥；API同时配置`HD_SSR_SERVICE_PEERS`实际FE socket IP/CIDR，并在`TRUST_PROXY`中只信实际转发链。内部`/internal/public-catalog/`只提供公开GET/版本，公网代理必须拒绝整个前缀，API不能有公网端口。静态`X-HD-SSR-Key`不进入浏览器/日志/缓存；外部公开请求带同名头没有特权。内部数据桶30r/s、burst40、无排队，底层回源4；每SSR请求的version读取仍按可信访客public-json120/min，命中不豁免。多进程扩容前需重新制定共享入口/并发预算，当前服务桶按单API进程。完整路径、TTL与FE用法见车辆接口第19节。
+
+迁移新增`0017_translation_budget.sql`，ready同时核对公共版本与额度单例和新表。须先停旧写入者，再显式迁移、启动新API；不能让旧内存额度进程并行写入。每次provider调用前在PG短事务锁定全局额度、以数据库时间累计过去一小时UTF-16预留并提交；失败、超时、未知结果均不退回，进程重启/engine切换不清零，DB失败则不发外呼。过去25小时以前记录仅在下一次成功预留时清理，不提前释放小时额度。新迁移对过去一小时旧计划的潜在调用分段保守按5000字符预留一小时（明确未尝试/额度拒绝除外），可能暂时阻止新翻译，不能手动清空账本绕过。
+
+同计划/同幂等key恢复继续读持久分段和完成回执，不自动重发未知结果；新计划仍需员工费用确认，账户免费余额/实际费用未知不填0。本轮测试使用fake provider及随机隔离库，包含子进程被SIGKILL后重启，未调用真实Ali、未导入真实车源或部署。迁移后不可直接回退旧内存额度API；先停翻译写入并由OPS按保留数据方案处理。

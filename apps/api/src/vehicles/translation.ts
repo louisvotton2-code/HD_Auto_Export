@@ -3,6 +3,7 @@ import type { TranslatableField, VehicleTranslationSuggestionField, VehicleTrans
 import { VehicleTranslationSuggestionsSchema,getDisplayTextLimit } from '@hd/contracts/admin';
 import type { Config } from '../config.js';
 import { ApiError } from '../errors.js';
+import { translationQuotaExceeded, type TranslationBudget } from './translation-budget.js';
 import { locales, sourceHash } from './content.js';
 
 export interface TranslationProvider {
@@ -116,7 +117,8 @@ export class VehicleTranslator {
   private cache=new Map<string,{text:string;expiresAt:number}>();
   private inFlight=new Map<string,Promise<string>>();
   constructor(private provider:TranslationProvider|null,private maxCharactersPerHour=50_000,
-    private providerName:Config['translation']['provider']=provider instanceof AliyunGeneralProvider?'aliyun':'libretranslate') {}
+    private providerName:Config['translation']['provider']=provider instanceof AliyunGeneralProvider?'aliyun':'libretranslate',
+    private budget?:TranslationBudget) {}
   metadata() {
     return {provider:this.provider?this.providerName:'disabled' as const,engineVersion:this.provider?.engineVersion??null,
       hourlyCharacterLimit:this.maxCharactersPerHour};
@@ -172,17 +174,22 @@ export class VehicleTranslator {
       const source=field.sourceText!;
       signal.throwIfAborted();
       if(this.providerActive>=2)throw new ApiError(503,'TRANSLATION_BUSY','Translation provider capacity is busy.',undefined,true);
-      if(Date.now()-this.windowStart>=3_600_000){this.windowStart=Date.now();this.usedCharacters=0;}
-      if(this.usedCharacters+source.length>this.maxCharactersPerHour)throw new ApiError(429,'TRANSLATION_QUOTA_EXCEEDED','The local hourly translation character budget is exhausted.');
-      this.usedCharacters+=source.length; // Failed calls may still be billed; reserve before sending.
       const chunks:string[]=[];
-      for(const part of splitTranslationText(source)) {
-        signal.throwIfAborted();
-        if(this.providerActive>=2)throw new ApiError(503,'TRANSLATION_BUSY','Translation provider capacity is busy.',undefined,true);
-        this.providerActive++;
-        try {chunks.push(await this.provider!.translate(part,target,signal));} finally {this.providerActive--;}
-        signal.throwIfAborted();
-      }
+      this.providerActive++;
+      try {
+        if(this.budget) await this.budget.reserve(source.length,this.maxCharactersPerHour);
+        else {
+          // Isolated injected providers only. Runtime construction always supplies the PG ledger.
+          if(Date.now()-this.windowStart>=3_600_000){this.windowStart=Date.now();this.usedCharacters=0;}
+          if(this.usedCharacters+source.length>this.maxCharactersPerHour)throw translationQuotaExceeded();
+          this.usedCharacters+=source.length;
+        }
+        for(const part of splitTranslationText(source)) {
+          signal.throwIfAborted();
+          chunks.push(await this.provider!.translate(part,target,signal));
+          signal.throwIfAborted();
+        }
+      } finally {this.providerActive--;}
       const text=chunks.join('');if(text.length>10_000)throw upstream();
       checked(text);
       signal.throwIfAborted();
@@ -219,8 +226,8 @@ export class VehicleTranslator {
   }
 }
 
-export function createVehicleTranslator(config:Config['translation']):VehicleTranslator {
+export function createVehicleTranslator(config:Config['translation'],budget:TranslationBudget):VehicleTranslator {
   const provider=config.provider==='libretranslate' && config.libreUrl && config.libreEngineVersion?new LibreTranslateProvider(config):
     config.provider==='aliyun' && config.accessKeyId && config.accessKeySecret?new AliyunGeneralProvider(config):null;
-  return new VehicleTranslator(provider,config.maxCharactersPerHour,config.provider);
+  return new VehicleTranslator(provider,config.maxCharactersPerHour,config.provider,budget);
 }

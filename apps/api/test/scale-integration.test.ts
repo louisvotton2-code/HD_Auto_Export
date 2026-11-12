@@ -30,7 +30,7 @@ before(async () => {
   temp = await mkdtemp(path.join(tmpdir(),'hd-scale-integration-'));
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);
   created = true;
-  config = readConfig({NODE_ENV:'test',HOST:'127.0.0.1',DATABASE_URL:databaseUrl.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),
+  config = readConfig({NODE_ENV:'test',HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),HOST:'127.0.0.1',DATABASE_URL:databaseUrl.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),
     EXTERNAL_CATALOG_MODE:'synthetic-scale',TRANSLATION_PROVIDER:'disabled',MEDIA_ROOT:temp,
     EXTERNAL_PUBLIC_CACHE:redisPort?'redis':'memory',EXTERNAL_REDIS_PORT:redisPort,EXTERNAL_REDIS_HOST:'127.0.0.1',EXTERNAL_REDIS_USER:'scale_cache',
     EXTERNAL_CACHE_NAMESPACE:'hd-ext-scale-redis-test',EXTERNAL_REDIS_PASSWORD_FILE:process.env.API_TEST_SCALE_REDIS_PASSWORD_FILE});

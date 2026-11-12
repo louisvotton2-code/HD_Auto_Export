@@ -28,7 +28,7 @@ test('USD results, indexable bounds, cache and cursor use the active stored quot
   try {
     await maintenance.pool.query(`CREATE DATABASE "${name}"`);
     created = true;
-    const config = readConfig({NODE_ENV:'test',HOST:'127.0.0.1',DATABASE_URL:databaseUrl.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),
+    const config = readConfig({NODE_ENV:'test',HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),HOST:'127.0.0.1',DATABASE_URL:databaseUrl.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),
       EXTERNAL_CATALOG_MODE:'synthetic-scale',TRANSLATION_PROVIDER:'disabled',EXTERNAL_PUBLIC_CACHE:'memory',MEDIA_ROOT:mediaRoot});
     const migration = createDatabase(config.databaseUrl, 2);
     try { await migrateDatabase(migration); } finally { await migration.close(); }

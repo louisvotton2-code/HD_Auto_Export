@@ -6,7 +6,7 @@ import type {TranslatableField} from '@hd/contracts/admin';
 import {readConfig} from '../config.js';
 import {sourceHash} from './content.js';
 import {ApiError} from '../errors.js';
-const config=readConfig({DATABASE_URL:'postgres://example:example@127.0.0.1/example',AUTH_SECRET:'a'.repeat(32),TRANSLATION_PROVIDER:'aliyun',ALI_MT_ACCESS_KEY_ID:'test-id',ALI_MT_ACCESS_KEY_SECRET:'test-secret'}).translation;
+const config=readConfig({NODE_ENV:'test',DATABASE_URL:'postgres://example:example@127.0.0.1/example',AUTH_SECRET:'a'.repeat(32),TRANSLATION_PROVIDER:'aliyun',ALI_MT_ACCESS_KEY_ID:'test-id',ALI_MT_ACCESS_KEY_SECRET:'test-secret'}).translation;
 const source=()=>({id:'550e8400-e29b-41d4-a716-446655440000',version:3,draft:makeVehicleDraftFixture()});
 const code=(expected:string)=>(error:unknown)=>!!error && typeof error==='object' && 'code' in error && error.code===expected;
 
