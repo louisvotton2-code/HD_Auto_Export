@@ -78,3 +78,10 @@
 - 真实Nginx定向检查首轮原3项通过、新增预览项在HEAD时因测试客户端仍读响应体而错误；修正HTTPResponse的method后只复查新增项通过，保留首错。它覆盖preview GET/HEAD、POST拒绝、非法UUID/其他私有路径拒绝、cars HTTP+HTTPS拒绝、静态成功/缺失缓存及两个字体去敏头。不是伪造首轮4/4。
 - 另一次真实冻结Next成品的最小双域私有路由检查通过：BUILD Gn2-2DAG9GD61KdnWEi5R 的匿名预览壳HTML、13个初始JS/CSS和两个实际wOF2字体在admin域可达，同源frame/CSP/referrer及private/no-store保持，cars域拒绝。使用私有Unix/TLS，没有公开TCP入口、账号登录或发布；不扩大为重跑完整真实员工发布流程。证据私有 `docs/private/ops-rel03/preview-routing-b94b92fddbb6cd0f`，临时Next/Nginx/目录均由finally退场。
 - 该补丁不改应用、契约、数据缓存、预算、队列和被测公开API路径；不重跑七例或20性能。待Reviewer闭合此P1、保存新最终SHA后，按保护对新SHA重新执行唯一有效verify:push，首轮中断记录保留。生产写入/PR合并仍未执行。
+
+## SSR429旧预期同步
+
+- 双域补修保存为 `f99083ca8fb18c5aeb602ea44fea261f9d0018d9`；继续回看原e1中断日志，确认其中还有一项真实未接受测试失败：public-polish首页SSR429用例原期待目录总数26，实际unknown，原例及本地门禁的自动重试均失败，不能只当中断略过。新fixture将publicRateLimited同步用于internal/version配额检查，首页与facets都被拒；根据首页null→unknown/—约定，应保持未知而不是保留旧总数。独立语义审查逐段核实协议、fixture、首页与CountUpValue及既有unknown/0单测，确认仅同步spec，不改产品。
+- 为避免已知旧断言重复到浏览器阶段，停止f990的第二轮自有门禁（尚未再触发此失败）：check/build已通过，整体exit -15，仍不记verify成功。自有17进程停止/1个已退出、纯合成PG与volume清理成功；锁owner在自有树内且确已退出、无其他验证运行后才清理stale lock，3100/3327/3319/55432释放。原两轮日志与中断/清理证明保留，不沿用任何旧gate通过。
+- 仅修改 `apps/web/tests/public-polish.spec.ts` 首页旧总数断言为data-counter-value=unknown且文本—；保留真实429、2秒Retry-After、禁用重试、focus/visibility不自动读、提前点击不读、到期人工重试一次且fresh等全部断言。未修改fixture、应用、配额或重试保护。Web应用src/config/public仍精确FE15d；整体Web树新增这一单独经OPS修正的test-only差异，不再声称Web整树完全等于FE。
+- 定向只跑该首页用例一次通过（1项、0重试，5.8秒含启动），私有 `docs/private/ops-rel03/ssr429-legacy-spec/test.log`。13私有资源/七例/20性能不重跑。待此最小测试/文档差异独审、最终SHA绑定后再做唯一有效整仓门禁；不把两次中断或旧断言失败记绿。
