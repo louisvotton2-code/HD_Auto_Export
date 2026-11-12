@@ -1,5 +1,6 @@
 import { z } from 'zod';
 export * from './external-admin.js';
+export * from './publication.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LanguageTagSchema, MoneySchema, NamedValueSchema, PowertrainSchema, PublicationStateSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, TranslationKindSchema, VehicleFactsSchema,
@@ -53,14 +54,24 @@ export const VehicleDraftSourceSchema = z.discriminatedUnion('kind', [
   ExternalVehicleSourceSchema,
 ]);
 export type VehicleDraftSource = z.infer<typeof VehicleDraftSourceSchema>;
+/** A selected draft currency can survive while its amount is still unknown. */
+export const DraftMoneySchema = MoneySchema.extend({ amount: MoneySchema.shape.amount.nullable() });
+export type DraftMoney = z.infer<typeof DraftMoneySchema>;
+/** Only employee asking-price drafts may be incomplete; published prices stay strict. */
+export const DraftPriceSchema = z.discriminatedUnion('kind', [
+  PublicPriceSchema.options[0].extend({ money: DraftMoneySchema.nullable() }),
+  PublicPriceSchema.options[1],
+  PublicPriceSchema.options[2],
+]);
+export type DraftPrice = z.infer<typeof DraftPriceSchema>;
 export const VehicleDraftInputSchema = z.strictObject({
   source: VehicleDraftSourceSchema,
   facts: VehicleFactsSchema,
-  price: PublicPriceSchema,
+  price: DraftPriceSchema,
   content: z.strictObject({ title: TranslatableFieldSchema, description: TranslatableFieldSchema }),
   media: z.array(DraftMediaSchema).max(30),
   internal: z.strictObject({
-    purchaseCost: MoneySchema.nullable(),
+    purchaseCost: DraftMoneySchema.nullable(),
     notes: z.string().min(1).max(10_000).nullable(),
     supplierContact: z.string().min(1).max(1000).nullable(),
     vin: z.string().min(1).max(17).nullable(),

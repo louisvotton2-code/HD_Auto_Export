@@ -3,7 +3,7 @@ import type { PoolClient, QueryResult } from 'pg';
 import { AdminVehicleSchema, VehicleDraftInputSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
   type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
-import { PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
+import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
@@ -14,7 +14,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,validateLocali
 import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 
 export type Actor = { id: string; requestId: string };
-type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'price'|'content'> & { images: PublicMedia[] };
+type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'content'> & { price: PublicVehicle['price']; images: PublicMedia[] };
 type Row = {
   id: string; stock_number: string; version: number; publication_state: AdminVehicle['publicationState'];
   availability: AdminVehicle['availability']; availability_checked_at: Date|null; published_revision_id: string|null;
@@ -390,7 +390,7 @@ export class InventoryService {
         const stored=media.rows.find(r=>r.id===m.id)!;
         return {id:m.id,url:`/api/v1/media/${m.id}`,alt:m.alt,sortOrder:m.sortOrder,isCover:m.isCover,width:stored.width,height:stored.height};
       }).sort((a,b)=>a.sortOrder-b.sortOrder);
-      const snapshot:Snapshot={source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,images};
+      const snapshot:Snapshot={source:draft.source,facts:draft.facts,price:PublicPriceSchema.parse(draft.price),content:draft.content,images};
       const publicationId=randomUUID();
       await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publicationId,id,JSON.stringify(snapshot)]);
       if(localization){
