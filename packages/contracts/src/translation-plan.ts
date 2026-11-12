@@ -100,8 +100,8 @@ export const TranslationPlanStatusSchema = z.strictObject({
   result: TranslationPlanResultSchema.nullable(), startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),
 }).superRefine((value, ctx) => {
   const finished = value.state === 'completed' || value.state === 'partial';
-  // A pure recovery read can expose an interrupted partial outcome before finalization is persisted.
-  if (finished !== (value.result !== null) || (!finished && value.finishedAt !== null) || (value.state === 'completed' && value.finishedAt === null) || (value.state === 'ready') !== (value.startedAt === null))
+  // A pure recovery read can expose a recovered outcome before finalization is persisted.
+  if (finished !== (value.result !== null) || (!finished && value.finishedAt !== null) || (value.state === 'ready') !== (value.startedAt === null))
     ctx.addIssue({ code: 'custom', message: 'Execution state and its result timestamps must agree.' });
   if (value.result && (value.result.planId !== value.planId || value.result.vehicleId !== value.vehicleId || value.result.status !== value.state))
     ctx.addIssue({ code: 'custom', path: ['result'], message: 'Result belongs to a different plan or state.' });

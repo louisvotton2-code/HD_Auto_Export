@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CreateVehicleRequestSchema, SaveVehicleRequestSchema, VehicleDraftInputSchema, parseVehicleDraftWrite,
-  TranslationPlanSchema, TranslationPlanResultSchema, TranslationPlanRefSchema } from '../dist/admin.js';
+  TranslationPlanSchema, TranslationPlanResultSchema, TranslationPlanRefSchema, TranslationPlanStatusSchema } from '../dist/admin.js';
 import { makeVehicleDraftFixture } from '../dist/fixtures.js';
 
 test('pasted configuration is validated before duplicates can be discarded and stored canonically', () => {
@@ -56,4 +56,11 @@ test('partial results cannot masquerade as completion or forged human review', (
   assert.deepEqual(TranslationPlanResultSchema.parse(partial), partial);
   partial.failures.push({ ...partial.failures[0] });
   assert.equal(TranslationPlanResultSchema.safeParse(partial).success, false);
+});
+
+test('a read-only recovery can reconstruct all successful segments without inventing finalization time', () => {
+  const status = { planId: id, vehicleId: id, state: 'completed', result: result(), startedAt: '2026-11-12T00:01:00Z', finishedAt: null };
+  assert.deepEqual(TranslationPlanStatusSchema.parse(status), status);
+  assert.equal(TranslationPlanStatusSchema.safeParse({ ...status, state: 'running' }).success, false);
+  assert.equal(TranslationPlanStatusSchema.safeParse({ ...status, result: null }).success, false);
 });
