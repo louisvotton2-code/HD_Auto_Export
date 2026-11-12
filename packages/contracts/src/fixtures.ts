@@ -1,5 +1,6 @@
 /** Synthetic, isolated examples. Never import these as production inventory. */
 export * from './external-fixtures.js';
+export * from './publication-fixtures.js';
 import { ApiErrorSchema } from './common.js';
 import {
   AdminVehicleSchema, MediaAssetSchema, VehicleDraftInputSchema,
