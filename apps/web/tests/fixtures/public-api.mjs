@@ -2,7 +2,7 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture, makeConfigurationDisplayFixture, makeExternalInspectionFixture } from '@hd/contracts/fixtures';
 import { PublicationPreviewQuerySchema, PublicationPreviewResponseSchema } from '@hd/contracts/admin';
 import {
   ApiErrorSchema,
@@ -190,6 +190,9 @@ const resetState = () => ({
   importedPhotosRemoved: false,
   catalogSampleCount: null,
   historyScenario: 'default',
+  configurationMode: 'none',
+  inspectionMode: 'legacy',
+  reportPresenceMode: 'default',
   responseDelayMs: 0,
   publicRateLimited: false,
   filtersRateLimited: false,
@@ -218,10 +221,38 @@ const previewModes = [
 ];
 const previewStaff = (req) => /(?:^|;\s*)hd-preview-staff=authorized(?:;|$)/.test(req.headers.cookie ?? '');
 
+function fixtureConfiguration(locale, mode) {
+  if (mode === 'none') return null;
+  const configuration = makeConfigurationDisplayFixture(locale);
+  if (mode === 'missing') configuration.items[1].value = {
+    status: 'missing', text: null, requestedLocale: locale, contentLocale: null, provenance: null, reviewed: false,
+  };
+  if (mode === 'fallback') {
+    configuration.items[0].name = { ...configuration.items[0].name, text: '排量(cc)', contentLocale: 'zh', provenance: 'original' };
+    configuration.items[0].value.text = '1989 cm³ / 8 AT';
+  }
+  if (mode === 'long') {
+    configuration.items[0].name.text = 'Длинная характеристика '.repeat(4).slice(0, 100);
+    configuration.items[0].value.text = '1234567890'.repeat(50);
+  }
+  if (mode === 'wrong_name_locale') configuration.items[0].name.requestedLocale = locale === 'ru' ? 'en' : 'ru';
+  if (mode === 'wrong_value_locale') configuration.items[0].value.requestedLocale = locale === 'ru' ? 'en' : 'ru';
+  return configuration;
+}
+
+function withReportPresence(row, mode) {
+  if (mode === 'known') row.report = { hasReport: true };
+  else if (mode === 'false') row.report = { hasReport: false };
+  else if (mode === 'absent') delete row.report;
+  return row;
+}
+
 function previewResponse(state, id, requestedLocale) {
   const locale = state.previewMode === 'wrong_locale' ? (requestedLocale === 'ru' ? 'en' : 'ru') : requestedLocale;
   const scenario = ['incomplete', 'stale', 'machine'].includes(state.previewMode) ? state.previewMode : 'ready';
   const preview = makePublicationPreviewFixture(locale, scenario);
+  withReportPresence(preview.vehicle, state.reportPresenceMode);
+  if (state.configurationMode !== 'none') preview.vehicle.configuration = fixtureConfiguration(locale, state.configurationMode);
   preview.vehicle.id = state.previewMode === 'wrong_id' ? previewVehicleIds[1] : id;
   preview.vehicle.stockCode = id === previewVehicleIds[0] ? 'FIXTURE-0001' : 'FIXTURE-0002';
   preview.vehicleVersion = state.previewVersion;
@@ -466,7 +497,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
           catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 120,
-          historyScenario: (v) => ['default', 'complete', 'empty', 'conflict'].includes(v),
+          historyScenario: (v) => ['default', 'complete', 'empty', 'conflict', 'structured-zero', 'structured-null', 'structured-two'].includes(v),
+          configurationMode: (v) => ['none', 'ready', 'missing', 'fallback', 'long', 'wrong_name_locale', 'wrong_value_locale'].includes(v),
+          inspectionMode: (v) => ['legacy', 'structured', 'large', 'legacy-large', 'empty'].includes(v),
+          reportPresenceMode: (v) => ['default', 'known', 'false', 'absent'].includes(v),
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
@@ -614,11 +648,33 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           } else if (state.historyScenario === 'empty') {
             specs.push(entry('Ownership transfers', 'unknown'), entry('accidentCount', '—'));
             inspection.entries.push(entry('theft history', 'not provided'), entry('Accident items', '0 / 24'), entry('Flood items', '0 / 18'));
-          } else {
+          } else if (state.historyScenario === 'conflict') {
             specs.push(entry('Ownership transfers', '0'), entry('accidentCount', '0'));
             inspection.entries.push(entry('owner changes', '2'), entry('number of accidents', '1'), entry('waterDamage', 'unknown'));
+          } else {
+            item.external.detail.history = { ownershipTransfers: state.historyScenario === 'structured-null' ? null : state.historyScenario === 'structured-zero' ? 0 : 2 };
+            // A structured null/zero takes precedence over an obsolete generic entry.
+            specs.push(entry('Ownership transfers', '9'));
           }
         }
+        if (detail && kind === 'supplier' && state.inspectionMode !== 'legacy') {
+          item.external.detail.inspection = state.inspectionMode === 'structured' || state.inspectionMode === 'large'
+            ? makeExternalInspectionFixture('unknown')
+            : { entries: [], checks: [], defects: [], reportUrl: null };
+          if (state.inspectionMode === 'large' || state.inspectionMode === 'legacy-large') {
+            const inspection = item.external.detail.inspection;
+            const sample = makeExternalInspectionFixture('unknown').checks[0];
+            inspection.checks = state.inspectionMode === 'legacy-large' ? [] : Array.from({ length: 8 }, (_, index) => ({
+              ...sample, category: { text: `Inspection category ${index + 1}`, contentLocale: 'en' },
+              groups: [{ ...sample.groups[0], items: Array.from({ length: 24 }, (_, leaf) => ({
+                part: { text: `Inspection part ${leaf + 1}`, contentLocale: 'en' }, result: null, ok: null,
+              })) }],
+            }));
+            inspection.entries = Array.from({ length: 8 }, (_, index) => ({ name: { text: `Inspection summary ${index + 1}`, contentLocale: 'en' }, value: { text: 'Not provided', contentLocale: 'en' } }));
+          }
+        }
+        if (detail) withReportPresence(item, state.reportPresenceMode);
+        if (detail && state.configurationMode !== 'none') item.configuration = fixtureConfiguration(locale, state.configurationMode);
         if (state.importedPhotosRemoved && kind === 'supplier') {
           item.images = [];
           item.display.mediaAlt = [];
@@ -781,7 +837,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               res,
               200,
               PublicVehicleResponseSchema.parse({
-                data: project(found),
+                data: withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode),
                 meta: { requestId: 'fixture-detail' },
               }),
             )

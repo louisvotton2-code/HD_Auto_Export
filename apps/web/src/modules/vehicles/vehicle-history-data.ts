@@ -63,5 +63,14 @@ export function explicitHistoryEntries(entries: readonly Entry[], locale: Locale
 
 export function vehicleHistory(vehicle: Pick<PublicVehicle, 'external'>, locale: Locale) {
   const detail = vehicle.external?.detail;
-  return explicitHistoryEntries([...(detail?.specifications ?? []), ...(detail?.inspection?.entries ?? [])], locale);
+  const modernHistory = detail !== undefined && Object.hasOwn(detail, 'history');
+  const legacy = explicitHistoryEntries([...(detail?.specifications ?? []), ...(detail?.inspection?.entries ?? [])], locale)
+    .filter(({ kind }) => !modernHistory || kind !== 'transfers');
+  const grouped = new Map(legacy.map((record) => [record.kind, record]));
+  const transfers = detail?.history?.ownershipTransfers;
+  // An explicit modern null supersedes old text too; only absent history supports legacy fallback.
+  if (modernHistory && typeof transfers === 'number' && Number.isInteger(transfers) && transfers >= 0 && transfers <= 100) {
+    grouped.set('transfers', { kind: 'transfers', label: labels[locale].transfers, value: String(transfers), lang: undefined });
+  }
+  return [...new Set(fields.map(({ kind }) => kind))].flatMap((kind) => grouped.get(kind) ?? []);
 }

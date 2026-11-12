@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makePublicationPreviewFixture } from '@hd/contracts/fixtures';
+import { makeConfigurationDisplayFixture, makePublicationPreviewFixture } from '@hd/contracts/fixtures';
 import { PreviewReadError, readPublicationPreview, validatePreviewScope } from './read-preview';
 import { parsePreviewFrameScope } from './scope';
 
@@ -10,6 +10,14 @@ const scope = { vehicleId, loadId, locale: 'en' as const };
 afterEach(() => vi.unstubAllGlobals());
 
 describe('private preview scope', () => {
+  it.each(['name', 'value'] as const)('validates configuration %s scope while retaining actual language and units', (field) => {
+    const preview = makePublicationPreviewFixture('en');
+    preview.vehicle.configuration = makeConfigurationDisplayFixture('en');
+    preview.vehicle.configuration.items[0][field].contentLocale = 'zh';
+    expect(validatePreviewScope(preview, scope)).toBe(preview);
+    preview.vehicle.configuration.items[0][field].requestedLocale = 'ru';
+    expect(() => validatePreviewScope(preview, scope)).toThrow('invalid_response');
+  });
   it('uses the shared frame contract and only defaults a missing locale', () => {
     expect(parsePreviewFrameScope(vehicleId, undefined, loadId)).toEqual({ vehicleId, loadId, locale: 'zh' });
     for (const locale of ['', 'fr', ['en']]) expect(parsePreviewFrameScope(vehicleId, locale, loadId)).toBeNull();
@@ -31,6 +39,12 @@ describe('private preview scope', () => {
 });
 
 describe('authorized draft preview reads', () => {
+  it('rejects a private original report URL mixed into the preview existence fact', async () => {
+    const preview = makePublicationPreviewFixture('en');
+    const data = { ...preview, vehicle: { ...preview.vehicle, report: { hasReport: true, url: 'https://reports.example.invalid/private' } } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data, meta: { requestId: 'private-report' } }), { headers: { 'content-type': 'application/json' } })));
+    await expect(readPublicationPreview(scope, new AbortController().signal)).rejects.toEqual(new PreviewReadError('invalid_response'));
+  });
   it('fetches the dedicated endpoint with the employee session and no cache', async () => {
     const data = makePublicationPreviewFixture('en', 'incomplete');
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data, meta: { requestId: 'private-preview-fixture' } }), { headers: { 'content-type': 'application/json' } }));

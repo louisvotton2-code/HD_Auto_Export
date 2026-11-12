@@ -13,6 +13,7 @@ import { VehicleGallery } from './vehicle-gallery';
 import type { VehicleGalleryImageStatus } from './vehicle-gallery-image';
 import { VehicleHistory } from './vehicle-history';
 import { VehiclePriceAmounts } from './vehicle-price-values';
+import { VehicleConfiguration } from './vehicle-configuration';
 import detailStyles from './public-detail.module.css';
 import styles from './publication-preview-detail.module.css';
 
@@ -117,6 +118,8 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
                 </dl>
               </details>
             </section>
+
+            <VehicleConfiguration configuration={vehicle.configuration} locale={locale} showMetadata />
 
             <VehicleHistory vehicle={vehicle} locale={locale} />
 

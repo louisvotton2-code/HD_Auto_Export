@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   makeLocalizedPublicVehicleFixture,
   makePublicVehicleFixture,
+  makeConfigurationDisplayFixture,
 } from '@hd/contracts/fixtures';
 import {
   localizedHomeSchema,
@@ -10,6 +11,27 @@ import {
 } from './localized-projection';
 
 describe('localized public projection boundary', () => {
+  it.each([true, false])('only accepts the detail report existence fact (%s) without an original URL', (hasReport) => {
+    const vehicle = makeLocalizedPublicVehicleFixture('en');
+    vehicle.report = { hasReport };
+    const meta = { requestId: 'report-presence' };
+    expect(localizedVehicleSchema('en').parse({ data: vehicle, meta }).data.report).toEqual({ hasReport });
+    expect(() => localizedVehicleSchema('en').parse({ data: { ...vehicle, report: { hasReport, url: 'https://reports.example.invalid/private' } }, meta })).toThrow();
+    expect(() => localizedListSchema('en').parse({ data: { items: [vehicle], page: 1, pageSize: 24, hasMore: false }, meta })).toThrow();
+    expect(() => localizedHomeSchema('en').parse({ data: { sections: [{ id: 'featured', title: 'Cars', vehicles: [vehicle] }] }, meta })).toThrow();
+  });
+  it.each(['name', 'value'] as const)('checks configuration %s locale and keeps detail-only content out of lists/home', (field) => {
+    const vehicle = makeLocalizedPublicVehicleFixture('en');
+    vehicle.configuration = makeConfigurationDisplayFixture('en');
+    const envelope = { data: vehicle, meta: { requestId: 'configuration' } };
+    expect(localizedVehicleSchema('en').parse(envelope).data.configuration).toEqual(vehicle.configuration);
+    expect(() => localizedHomeSchema('en').parse({ data: { sections: [{ id: 'featured', title: 'Cars', vehicles: [vehicle] }] }, meta: envelope.meta })).toThrow();
+    expect(() => localizedListSchema('en').parse({ data: { items: [vehicle], page: 1, pageSize: 24, hasMore: false }, meta: envelope.meta })).toThrow();
+    vehicle.configuration.items[0][field].contentLocale = 'zh';
+    expect(localizedVehicleSchema('en').parse(envelope).data.configuration).toEqual(vehicle.configuration);
+    vehicle.configuration.items[0][field].requestedLocale = 'ru';
+    expect(() => localizedVehicleSchema('en').parse(envelope)).toThrow();
+  });
   it.each(['zh', 'en', 'ru'] as const)(
     'accepts actual %s projections including missing text metadata',
     (locale) => {

@@ -1,0 +1,27 @@
+.block { min-width:0; margin:0; padding:0 20px 18px; }
+.block > h3 { margin:0 0 10px; color:#d6c9bf; font-size:14px; font-weight:600; }
+.groups { display:grid; gap:8px; min-width:0; }
+.disclosure { min-width:0; border:1px solid #b6774933; border-radius:10px; background:#ffffff04; }
+.disclosure > summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; padding:12px; cursor:pointer; color:#ddd3cb; font-size:13px; line-height:1.6; overflow-wrap:anywhere; transition:background .15s ease; }
+.disclosure > summary:hover { background:#b6774910; }
+.disclosure > summary:focus-visible,.more:focus-visible { outline:2px solid #d69b6c; outline-offset:3px; }
+.disclosureBody { min-width:0; padding:0 10px 10px; }
+.noScript { margin:0; padding:0 12px 12px; color:#bfb3aa; font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.count { color:#ab9c91; font-size:11px; font-weight:400; }
+.items { display:grid; gap:8px; min-width:0; margin:0; }
+.items > div,.findings > article { min-width:0; padding:10px; border-radius:8px; background:#ffffff07; overflow-wrap:anywhere; }
+.items dt { color:#d6c9bf; font-size:12px; font-weight:600; }
+.items dd { margin:4px 0 0; color:#c4b8af; font-size:12px; }
+.items p,.findings p,.notes p { margin:0 0 6px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; }
+.items small { color:#9e948d; font-size:11px; }
+.items strong { font-weight:500; }
+.items [data-inspection-ok='true'] { color:#9fc6ac; }
+.items [data-inspection-ok='false'] { color:#e4ac82; }
+.items [data-inspection-ok='unknown'] { color:#b0a69f; }
+.findings { display:grid; gap:8px; min-width:0; }
+.findings h4 { margin:0 0 7px; color:#d8cabe; font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.findings p,.notes p { color:#bfb3aa; font-size:12px; }
+.more { display:block; max-width:calc(100% - 40px); margin:10px 20px 14px; padding:7px 10px; border:1px solid #b6774944; border-radius:8px; background:#b6774910; color:#dba171; font:inherit; font-size:12px; cursor:pointer; overflow-wrap:anywhere; }
+.more:hover { background:#b6774920; }
+@media (max-width:639px) { .block { padding-inline:12px; } .disclosure > summary { padding:10px; } .disclosureBody { padding-inline:7px; } }
+@media (prefers-reduced-motion:reduce) { .disclosure > summary { transition:none; } }

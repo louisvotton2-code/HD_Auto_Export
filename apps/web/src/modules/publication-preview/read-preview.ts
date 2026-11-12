@@ -22,6 +22,7 @@ export function validatePreviewScope(preview: PublicationPreview, scope: Preview
     preview.vehicle.display.platform,
     ...preview.vehicle.display.priceIncludes.map((item) => item.value),
     ...preview.vehicle.display.mediaAlt.map((item) => item.value),
+    ...(preview.vehicle.configuration?.items.flatMap((item) => [item.name, item.value]) ?? []),
   ];
   if (preview.vehicle.id !== scope.vehicleId || preview.locale !== scope.locale || values.some((value) => value.requestedLocale !== scope.locale)) {
     throw new PreviewReadError('invalid_response');

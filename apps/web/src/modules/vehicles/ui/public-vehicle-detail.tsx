@@ -19,7 +19,9 @@ import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { VehiclePriceValues } from './vehicle-price-values';
 import { VehicleHistory } from './vehicle-history';
+import { VehicleConfiguration } from './vehicle-configuration';
 import { VehicleInspectionReport, VehicleReportLink } from './vehicle-inspection-report';
+import { hasInspectionContent } from '../vehicle-inspection';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -54,7 +56,8 @@ export function PublicVehicleDetail({
   const knownDate = vehicle.facts.manufacturedAt?.value;
   const contactId = `vehicle-contact-${vehicle.id}`;
   const inspection = vehicle.external?.detail?.inspection;
-  const reportId = inspection && inspection.entries.length > 0
+  const hasReport = vehicle.report?.hasReport === true;
+  const reportId = hasInspectionContent(inspection)
     ? `vehicle-report-${vehicle.id}`
     : undefined;
 
@@ -154,6 +157,7 @@ export function PublicVehicleDetail({
                 </p>
               </section>
             )}
+            <VehicleConfiguration configuration={vehicle.configuration} locale={locale} />
             <ExternalVehicleInformation vehicle={vehicle} locale={locale} />
           </div>
 
@@ -219,7 +223,7 @@ export function PublicVehicleDetail({
                 <p>{copy.consultBody}</p>
                 <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" />
                 <p className={styles.smallNote}>{t.contactNote}</p>
-                {reportId && (
+                {hasReport && (
                   <section className={styles.reportRequest} data-vehicle-report-request>
                     <h3>
                       <Icon name="document" size={17} />

@@ -52,16 +52,42 @@ describe('published vehicle history', () => {
     expect(html).toContain('data-history-kind="theft"');
     expect(html).not.toContain('Manufactured');
   });
+
+  it.each([0, 2])('uses structured ownership transfers %s over conflicting old text', (ownershipTransfers) => {
+    const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
+    const detail = vehicle.external!.detail!;
+    detail.history = { ownershipTransfers };
+    detail.specifications = [entry('Ownership transfers', '9'), entry('accidentCount', '0')];
+    detail.inspection!.entries = [entry('过户次数', '1'), entry('theft', 'false')];
+    const history = vehicleHistory(vehicle, 'en');
+    expect(history.find(({ kind }) => kind === 'transfers')?.value).toBe(String(ownershipTransfers));
+    expect(history.map(({ kind }) => kind)).toEqual(['accidents', 'transfers', 'theft']);
+  });
+
+  it.each([null, { ownershipTransfers: null }])('does not restore guessed transfers when structured history is unknown', (history) => {
+    const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
+    const detail = vehicle.external!.detail!;
+    detail.history = history;
+    detail.specifications = [entry('Ownership transfers', '0'), entry('accidentCount', '1')];
+    expect(vehicleHistory(vehicle, 'en').map(({ kind, value }) => [kind, value])).toEqual([['accidents', '1']]);
+  });
+
+  it('retains legacy ownership only when structured history is absent', () => {
+    const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
+    delete vehicle.external!.detail!.history;
+    vehicle.external!.detail!.specifications = [entry('Ownership transfers', '2')];
+    expect(vehicleHistory(vehicle, 'ru')).toMatchObject([{ kind: 'transfers', value: '2' }]);
+  });
 });
 
-describe('inspection data versus an accessible report document', () => {
-  it('preserves inspection facts without exposing an unverified external document link', () => {
-    const html = renderToStaticMarkup(createElement(VehicleInspectionReport, { id: 'report', locale: 'en', inspection: { reportUrl: 'https://reports.example.invalid/report', entries: [entry('Result', 'Recorded inspection')] } }));
+describe('inspection data stays independent from a report enquiry', () => {
+  it('preserves inspection facts while the public legacy URL slot remains null', () => {
+    const html = renderToStaticMarkup(createElement(VehicleInspectionReport, { id: 'report', locale: 'en', inspection: { reportUrl: null, entries: [entry('Result', 'Recorded inspection')] } }));
     expect(html).toContain('Recorded inspection');
     expect(html).not.toContain('https://reports.example.invalid');
     expect(html).not.toContain('target="_blank"');
   });
-  it('does not render an empty report card just because a raw URL is supplied', () => {
-    expect(renderToStaticMarkup(createElement(VehicleInspectionReport, { id: 'report', locale: 'zh', inspection: { reportUrl: 'https://reports.example.invalid/report', entries: [] } }))).toBe('');
+  it('does not render an empty inspection card without inspection facts', () => {
+    expect(renderToStaticMarkup(createElement(VehicleInspectionReport, { id: 'report', locale: 'zh', inspection: { reportUrl: null, entries: [] } }))).toBe('');
   });
 });
