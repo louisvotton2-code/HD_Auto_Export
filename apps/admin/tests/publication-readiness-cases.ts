@@ -25,6 +25,7 @@ async function setup(page: Page, ready: PublishReadiness, item = record()) {
   }));
   await page.goto(`/admin/vehicles/${item.id}`);
   await expect.poll(() => api.readinessReads.length).toBeGreaterThan(0);
+  await tab(page, '发布预览');
   return api;
 }
 
@@ -56,7 +57,7 @@ async function frameMessage(page: Page, ready: PublishReadiness, event: 'loading
 
 for (const scenario of [
   { stage: 'required_fields' as const, path: 'draft.price.money.amount', message: '公开价格：请检查价格口径、金额和币种', target: '价格与内部信息' },
-  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '英文标题：请填写并审核当前原文版本', target: '公开字段多语' },
+  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '英文标题：请完善当前原文的译文', target: '公开字段多语' },
 ]) {
   test(`publication readiness reports and navigates server ${scenario.stage} issues`, async ({ page }) => {
     const item = record();
@@ -162,6 +163,7 @@ test('publication readiness blocks dirty input, retains private-only confirmatio
   const api = await setup(page, ready, item);
   await expect(page.getByRole('button', { name: /发布车辆$/ })).toBeEnabled();
   await (await notes(page)).fill('仅更新内部跟进信息');
+  await tab(page, '发布预览');
   await expect(page.getByRole('button', { name: /请完善信息$/ })).toBeDisabled();
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.saves.length).toBe(1);
@@ -177,6 +179,7 @@ test('publication readiness blocks dirty input, retains private-only confirmatio
   expect(afterPublic.publicContentRevision).toBe(ready.publicContentRevision + 1);
   expect(afterPublic.fingerprint).not.toBe(ready.fingerprint);
   expect(afterPublic.previewConfirmed).toBe(false); expect(afterPublic.confirmation).toBeNull();
+  await tab(page, '发布预览');
   await expect(page.getByRole('button', { name: /请完善信息$/ })).toBeDisabled();
   expect(api.previewConfirmations).toHaveLength(0);
 });

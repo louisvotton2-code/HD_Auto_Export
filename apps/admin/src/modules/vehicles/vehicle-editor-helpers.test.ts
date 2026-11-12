@@ -13,8 +13,9 @@ describe('display sample conversion', () => {
     expect(hasDemoRestrictedValues(result)).toBe(false);
   });
   it('treats a confirmed zero mileage as a fact requiring conversion confirmation', () => {
-    expect(hasDemoRestrictedValues({ ...draftToForm(emptyDraft()), mileageKm: '0' })).toBe(true);
-    expect(hasDemoRestrictedValues(draftToForm(emptyDraft()))).toBe(false);
+    const noInventoryFacts = { ...draftToForm(emptyDraft()), registrationStatus: 'unknown' as const };
+    expect(hasDemoRestrictedValues({ ...noInventoryFacts, mileageKm: '0' })).toBe(true);
+    expect(hasDemoRestrictedValues(noInventoryFacts)).toBe(false);
   });
 });
 

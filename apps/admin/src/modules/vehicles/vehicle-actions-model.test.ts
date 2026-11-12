@@ -30,17 +30,17 @@ describe('publication recovery', () => {
 });
 
 describe('publication validation hints', () => {
-  it('identifies the specific reviewed locale and content field', () => {
-    expect(publicationIssueLabel('draft.content.title.translations.ru')).toBe('俄文标题：请填写并审核当前原文版本');
-    expect(publicationIssueLabel('draft.content.description.translations.en.text')).toBe('英文描述：请填写并审核当前原文版本');
+  it('identifies the locale and current translation field', () => {
+    expect(publicationIssueLabel('draft.content.title.translations.ru')).toBe('俄文标题：请完善当前原文的译文');
+    expect(publicationIssueLabel('draft.content.description.translations.en.text')).toBe('英文描述：请完善当前原文的译文');
   });
   it('describes cover and verification requirements without echoing unknown server details', () => {
     expect(publicationIssueLabel('draft.media.0')).toContain('选择一张封面');
     expect(publicationIssueLabel('availability')).toContain('实际核验');
     expect(publicationIssueLabel('private.database.stack')).toBe('车辆资料：请检查未满足的发布条件');
   });
-  it('routes localization validation to the dedicated public-field language review', () => {
-    expect(publicationIssueLabel('localization.location.city.en')).toBe('公开字段多语：请填写并审核英文的当前来源版本');
+  it('routes localization validation to the dedicated translation workspace', () => {
+    expect(publicationIssueLabel('localization.location.city.en')).toBe('公开字段多语：请完善英文译文，并与当前中文保持一致');
     expect(publicationIssueLabel('localization.media.550e8400-e29b-41d4-a716-446655440001.alt.ru')).toContain('俄文');
   });
 });
@@ -88,7 +88,7 @@ describe('后台发布缺项中文提示', () => {
   it('不把服务端英文诊断或内部值直接显示给操作员', () => {
     expect(publicationReadinessIssueLabel({ stage: 'preview', path: 'publicationPreview', code: 'PREVIEW_CONFIRMATION_REQUIRED', message: 'Confirm the current publication preview before publishing.' })).toBe('发布预览：请检查并确认当前内容');
     expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.internal.purchaseCost.amount', code: 'REQUIRED_FOR_PUBLICATION', message: 'PRIVATE_DIAGNOSTIC_VALUE' })).toBe('采购成本：请填写正数金额并核对币种');
-    expect(publicationReadinessIssueLabel({ stage: 'localization', path: 'draft.content.title.translations.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'A reviewed translation is required.' })).toBe('英文标题：请填写并审核当前原文版本');
-    expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.facts.trim', code: 'REQUIRED_FOR_PUBLICATION', message: 'Trim is required.' })).toBe('配置：请填写车辆配置');
+    expect(publicationReadinessIssueLabel({ stage: 'localization', path: 'draft.content.title.translations.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'A reviewed translation is required.' })).toBe('英文标题：请完善当前原文的译文');
+    expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.facts.trim', code: 'REQUIRED_FOR_PUBLICATION', message: 'Trim is required.' })).toBe('配置名称：请填写车型配置名称');
   });
 });

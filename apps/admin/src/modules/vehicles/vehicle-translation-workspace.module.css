@@ -1,0 +1,26 @@
+.workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
+.workspace > * { min-width: 0; }
+.workspace :global(.ant-alert-section) { min-width: 0; overflow-wrap: anywhere; }
+.generateCard { border-color: #e8e2d5; background: #fffdf8; }
+.generateRow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.generateRow > div { min-width: 0; }
+.generateRow :global(.ant-typography) { margin-top: 0; }
+.generateRow :global(.ant-typography:last-child) { margin-bottom: 0; }
+.generateRow > button { flex: none; }
+.sourceList { margin: 8px 0 16px; padding-left: 20px; max-height: 200px; overflow: auto; overflow-wrap: anywhere; }
+.factFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.factFields > * { min-width: 0; }
+.factFields :global(.ant-select) { width: 100%; }
+.saveRow { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 8px; }
+.comparisonText { white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.plan :global(.ant-typography) { margin-bottom: 0; }
+.planFields { margin: 0; padding: 12px 12px 12px 32px; max-height: 280px; overflow: auto; border: 1px solid #e8e2d5; border-radius: 8px; background: #fffdf8; }
+.planFields li { margin-bottom: 12px; overflow-wrap: anywhere; }
+.planFields li:last-child { margin-bottom: 0; }
+.planSource { color: #716b5f; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; max-height: 140px; overflow: auto; }
+@media (max-width: 760px) {
+  .generateRow { align-items: flex-start; flex-direction: column; }
+  .factFields { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+@media (max-width: 380px) { .saveRow > button { width: 100%; } }

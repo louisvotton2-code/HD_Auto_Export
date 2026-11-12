@@ -1,9 +1,9 @@
 import type { TranslatableField } from '@hd/contracts/admin';
 import { useRef } from 'react';
-import { Alert, App, Button, Card, Checkbox, Form, Input, Space, Tag, Tooltip, Typography } from 'antd';
-import { CheckCircleFilled, CopyOutlined, DeleteOutlined, GlobalOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Form, Input, Space, Typography } from 'antd';
+import { DeleteOutlined, GlobalOutlined } from '@ant-design/icons';
 import {
-  approveTranslation, editTranslation, translationLocaleLabels, translationLocales,
+  editTranslation, translationLocaleLabels, translationLocales,
   translationReviewState, translationSource,
 } from './translation-model';
 import styles from './translation-editor.module.css';
@@ -17,9 +17,9 @@ type Props = {
   disabled?: boolean;
   requiredForPublish?: boolean;
 };
-const reviewLabels = { empty: '未填写', pending: '待审核', approved: '已审核', stale: '需重新审核' };
 const kindLabels = { original: '原文', machine: '机器译文', human: '人工编辑' };
-const languageCodes = { zh: 'ZH', en: 'EN', ru: 'RU' };
+const targetLocales = ['en', 'ru'] as const;
+const languageCodes = { en: 'EN', ru: 'RU' };
 
 export function TranslationEditor({ name, value, sourceText, sourceLanguage, onChange, disabled = false, requiredForPublish = false }: Props) {
   const { modal } = App.useApp();
@@ -31,30 +31,38 @@ export function TranslationEditor({ name, value, sourceText, sourceLanguage, onC
   const fieldName = name === 'title' ? '标题' : '描述';
   const source = translationSource(value, sourceText, sourceLanguage);
   const headingId = `${name}-translations-heading`;
+  const sourceId = `${name}-translation-source`;
+  const sourceHelpId = `${sourceId}-help`;
+  const chineseSource = source.language.split('-')[0].toLowerCase() === 'zh';
+  const sourceLocation = name === 'title' ? '基础资料' : '价格与内部信息中的车况描述';
   const hasTranslations = translationLocales.some(locale => value.translations[locale] !== null);
-  const reviewedCount = translationLocales.filter(locale => translationReviewState(value, locale, sourceText, sourceLanguage) === 'approved').length;
   return <section className={styles.editor} aria-labelledby={headingId}>
     <div className={styles.heading}>
-      <Space wrap><Typography.Title level={4} id={headingId} style={{ margin: 0 }}><GlobalOutlined /> {fieldName}三语审核</Typography.Title><Tag color={reviewedCount === 3 ? 'success' : 'default'}>{reviewedCount} / 3 已审核</Tag></Space>
-      <Tooltip title="原文修改后需先保存，再对新版本逐语审核；修改译文会撤销该语种审核。"><Typography.Text type="secondary">原文版本 {value.sourceVersion} <InfoCircleOutlined /></Typography.Text></Tooltip>
+      <Typography.Title level={4} id={headingId} style={{ margin: 0 }}><GlobalOutlined /> {fieldName}译文</Typography.Title>
     </div>
-    <Typography.Paragraph type="secondary">核对每种语言的内容后，勾选“已审核”。审核完成还需要保存草稿，再单独发布。</Typography.Paragraph>
-    {source.changed && <Alert className={styles.sourceAlert} showIcon type="warning" title={`${fieldName}原文有未保存的修改。请先保存草稿，再审核三语内容。`} />}
-    {name === 'description' && !source.text && !requiredForPublish && <Alert className={styles.sourceAlert} showIcon type="info" title="描述可以留空" description="如果不展示描述，请将原文和三语描述都清空后保存。" action={hasTranslations ? <Button size="small" icon={<DeleteOutlined />} disabled={disabled} onClick={() => modal.confirm({ title: '清空三语描述？', content: '这会移除当前草稿的中英俄描述，保存后才会生效。', okText: '清空描述', cancelText: '保留内容', okButtonProps: { danger: true }, onOk: () => onChange({ ...value, translations: { zh: null, en: null, ru: null } }) })}>清空三语描述</Button> : undefined} />}
+    <div className={styles.source}>
+      <Form.Item label={chineseSource ? '中文原文' : '原文'} htmlFor={sourceId}>
+        <Input.TextArea id={sourceId} aria-label={`${fieldName}原文（只读）`} aria-describedby={sourceHelpId} readOnly value={sourceText} autoSize={{ minRows: 1, maxRows: 8 }} placeholder="尚未填写原文" />
+      </Form.Item>
+      <Typography.Text id={sourceHelpId} className={styles.sourceHelp}>原文来自{sourceLocation}，请在该处修改并保存。</Typography.Text>
+    </div>
+    {!chineseSource && <Alert className={styles.sourceAlert} showIcon type="warning" title={`${fieldName}原文尚未整理为中文`} description={`当前记录的来源语言为 ${source.language || '未明确'}。请先在${sourceLocation}整理中文并保存，再生成英俄译文；现有内容及来源信息仍保留。`} />}
+    {source.changed && <Alert className={styles.sourceAlert} showIcon type="info" title={`${fieldName}原文有未保存的修改，请先保存草稿，再生成对应译文。`} />}
+    {name === 'description' && !source.text && !requiredForPublish && hasTranslations && <div className={styles.emptyDescription}>
+      <Typography.Text type="secondary">描述原文留空时，可一并清空现有译文。</Typography.Text>
+      <Button size="small" icon={<DeleteOutlined />} disabled={disabled} onClick={() => modal.confirm({ title: '清空三语描述？', content: '这会移除当前草稿的中英俄描述，保存后才会生效。', okText: '清空描述', cancelText: '保留内容', okButtonProps: { danger: true }, onOk: () => onChange({ ...value, translations: { zh: null, en: null, ru: null } }) })}>清空三语描述</Button>
+    </div>}
     <div className={styles.languages}>
-      {translationLocales.map(locale => {
+      {targetLocales.map(locale => {
         const translation = value.translations[locale];
         const state = translationReviewState(value, locale, sourceText, sourceLanguage);
         const id = `${name}-translation-${locale}`;
         const helpId = `${id}-help`;
-        const isSourceLocale = source.language.split('-')[0] === locale;
-        return <Card size="small" className={styles.language} key={locale} title={<Space><span className={styles.languageCode}>{languageCodes[locale]}</span>{translationLocaleLabels[locale]}</Space>} extra={<Tag color={state === 'approved' ? 'success' : state === 'stale' ? 'warning' : state === 'pending' ? 'processing' : 'default'} icon={state === 'approved' ? <CheckCircleFilled /> : undefined}>{reviewLabels[state]}</Tag>}>
+        return <Card size="small" className={styles.language} key={locale} title={<Space><span className={styles.languageCode}>{languageCodes[locale]}</span>{translationLocaleLabels[locale]}</Space>}>
           <Form.Item label={`${translationLocaleLabels[locale]}${fieldName}`} htmlFor={id} required={name === 'title' || requiredForPublish}>
             <Input.TextArea id={id} name={id} aria-label={`${translationLocaleLabels[locale]}${fieldName}`} value={translation?.text ?? ''} autoSize={{ minRows: name === 'title' ? 3 : 5, maxRows: 10 }} maxLength={10000} disabled={disabled} aria-describedby={helpId} placeholder={`填写${translationLocaleLabels[locale]}${fieldName}`} onChange={event => onChange(editTranslation(value, locale, event.target.value, sourceText, sourceLanguage, revisions.current[locale]))} />
           </Form.Item>
-          <div id={helpId} className={styles.provenance}>{translation ? <Space size={6} wrap><Tag>{kindLabels[translation.kind]}</Tag><Typography.Text type="secondary">对应原文 v{translation.sourceVersion}</Typography.Text></Space> : <Typography.Text type="secondary">尚无内容，可人工填写。</Typography.Text>}</div>
-          {isSourceLocale && source.text && <Button type="link" size="small" icon={<CopyOutlined />} className={styles.copyButton} disabled={disabled} onClick={() => onChange(editTranslation(value, locale, source.text!, sourceText, sourceLanguage, revisions.current[locale]))}>{translationLocaleLabels[locale]}{fieldName}使用原文</Button>}
-          <div className={styles.review}><Checkbox checked={state === 'approved'} disabled={disabled || source.changed || !translation || !translation.text.trim()} onChange={event => onChange(approveTranslation(value, locale, event.target.checked, sourceText, sourceLanguage))}>{translationLocaleLabels[locale]}{fieldName}已审核</Checkbox></div>
+          <div id={helpId} className={styles.provenance}>{translation ? kindLabels[translation.kind] : '尚无译文，可生成或直接填写。'}{state === 'stale' && !source.changed && <span className={styles.stale}>原文已更新，请重新生成或修改译文。</span>}</div>
         </Card>;
       })}
     </div>

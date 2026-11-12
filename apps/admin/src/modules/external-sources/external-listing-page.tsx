@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from 'antd';
 import { ExternalListingResponseSchema, LocaleSchema, type ExternalListing, type Locale, type StaffMe } from '@hd/contracts/admin';
+import { SourceReportLink } from '../../shared/ui/source-report-link';
 import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels, platformName } from './external-labels';
 import { formatExternalFact, type FactField } from './fact-override-input';
 import { ListingOverrideEditor } from './listing-override-editor';
@@ -34,6 +35,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         <span className={styles.reason}>站内车源 ID {listing.id}</span>
         <span>来源版本 {listing.sourceRevision}</span>
         <span>管理版本 {listing.version}</span>
+        <SourceReportLink url={listing.report?.url} />
         <Button onClick={reload} disabled={editing}>重新读取</Button>
         {listing.state !== 'withdrawn' && staff.permissions.includes('vehicles:write') &&
           <Button type="primary" onClick={() => setEditing(true)}>人工修订</Button>}

@@ -1,0 +1,27 @@
+.groups { min-width: 0; border-color: #e8e2d5; background: #fbfaf7; }
+.groups :global(.ant-collapse-header-text), .groups :global(.ant-collapse-body) { min-width: 0; }
+.groups :global(.ant-collapse-header-text) { overflow-wrap: anywhere; }
+.groupLabel { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; color: #39352c; font-weight: 600; }
+.count { color: #89671a; font-size: 12px; font-weight: 400; white-space: nowrap; }
+.fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.field { min-width: 0; padding: 16px; border: 1px solid #e8e2d5; border-radius: 10px; background: #fff; }
+.fieldHeading:global(.ant-typography) { margin: 0 0 14px; color: #39352c; overflow-wrap: anywhere; }
+.source { margin-bottom: 16px; padding: 12px; border-radius: 8px; background: #f6f5f1; min-width: 0; }
+.source :global(.ant-form-item) { margin-bottom: 0; }
+.source :global(textarea) { background: #fffdf8; border-color: #e8e2d5; color: #39352c; }
+.targets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.target { min-width: 0; }
+.target :global(.ant-form-item) { margin-bottom: 8px; }
+.field :global(.ant-form-item-label > label) { height: auto; white-space: normal; overflow-wrap: anywhere; }
+.field :global(textarea) { overflow-wrap: anywhere; }
+.provenance { color: #716b5f; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.notice:global(.ant-typography) { color: #89671a; font-size: 12px; }
+.empty:global(.ant-typography) { margin-bottom: 0; color: #716b5f; }
+@media (max-width: 760px) {
+  .targets { grid-template-columns: minmax(0, 1fr); }
+  .field { padding: 12px; }
+}
+@media (max-width: 380px) {
+  .groups :global(.ant-collapse-body) { padding: 12px; }
+  .source { padding: 10px; }
+}

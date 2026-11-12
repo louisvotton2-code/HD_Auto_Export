@@ -1,0 +1,14 @@
+.card { min-width: 0; }
+.instructions { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.instructions p { margin: 0; max-width: 64ch; }
+.instructions button { flex-shrink: 0; }
+.input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.errors { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.valid { margin: 0 0 16px; }
+.details { min-width: 0; }
+.example { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.details :global(.ant-table-cell) { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .instructions { flex-direction: column; gap: 12px; }
+  .instructions button { width: 100%; }
+}

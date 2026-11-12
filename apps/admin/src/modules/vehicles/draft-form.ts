@@ -1,5 +1,6 @@
 import { VehicleDraftInputSchema, type PartialDate, type VehicleDraftInput } from '@hd/contracts/admin';
 import { sourceForKind } from './vehicle-editor-helpers';
+import { configurationFromText, configurationToText } from './configuration-form';
 
 export const publicationLabels = { draft: '草稿', published: '已发布', archived: '已下架' };
 export const availabilityLabels = { available: '可售', reserved: '已预订', sold: '已售', unknown: '待核验' };
@@ -8,8 +9,8 @@ export const powertrainLabels = { petrol: '汽油', diesel: '柴油', hev: '油�
 export function emptyDraft(): VehicleDraftInput {
   const text = () => ({ sourceLanguage: 'zh', sourceText: null, sourceVersion: 1, translations: { zh: null, en: null, ru: null } });
   return {
-    source: { kind: 'manual' },
-    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'unknown', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, body: null, transmission: null, location: null },
+    source: { kind: 'manual' }, configuration: null,
+    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'registered', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, body: null, transmission: null, location: null },
     price: { kind: 'on_request', money: null, includes: [] },
     content: { title: text(), description: text() }, media: [],
     internal: { purchaseCost: null, notes: null, supplierContact: null, vin: null },
@@ -28,6 +29,7 @@ export function draftToForm(draft: VehicleDraftInput) {
     makeId: facts.make?.id ?? '', makeName: facts.make?.name ?? '',
     modelId: facts.model?.id ?? '', modelName: facts.model?.name ?? '',
     trimId: facts.trim?.id ?? '', trimName: facts.trim?.name ?? '',
+    configuration: configurationToText(draft.configuration),
     modelYear: facts.modelYear?.toString() ?? '', mileageKm: facts.mileageKm?.toString() ?? '',
     engineCc: facts.engineCc?.toString() ?? '', powerKw: facts.powerKw?.toString() ?? '',
     manufacturedAt: facts.manufacturedAt?.value ?? '', manufacturedPrecision: facts.manufacturedAt?.precision ?? 'month',
@@ -85,6 +87,7 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
   for (const key of ['notes', 'supplierContact', 'vin'] as const) if (unchanged(key)) result.internal[key] = base.internal[key];
   if (unchanged('purchaseAmount', 'purchaseCurrency')) result.internal.purchaseCost = structuredClone(base.internal.purchaseCost);
   if (base.source.kind === 'external') result.source = sourceForKind('external', form, base.source);
+  if (!unchanged('configuration')) result.configuration = configurationFromText(form.configuration);
   return VehicleDraftInputSchema.parse(result);
 }
 
@@ -92,6 +95,7 @@ export const fieldLabels: Record<keyof DraftForm, string> = {
   sourcePlatformId: '来源平台标识', sourcePlatformName: '来源平台名称', sourceListingUrl: '原始挂牌链接',
   sourceExternalId: '原始挂牌编号', sourceCollectedAt: '资料采集时间（UTC）', sourceUpdatedAt: '来源更新时间（UTC）',
   makeId: '品牌标识', makeName: '品牌名称', modelId: '车型标识', modelName: '车型名称', trimId: '配置标识', trimName: '配置名称',
+  configuration: '车辆详细配置',
   modelYear: '年款', mileageKm: '里程（公里）', engineCc: '排量（cc）', powerKw: '功率（kW）',
   manufacturedAt: '制造日期', manufacturedPrecision: '制造日期精度', firstRegistration: '首次登记日期', registrationPrecision: '首次登记日期精度',
   registrationStatus: '登记状态', powertrain: '动力类型', body: '车身形式', transmission: '变速箱',
@@ -109,6 +113,7 @@ const pathFields: Record<string, keyof DraftForm> = {
   'facts.engineCc': 'engineCc', 'facts.powerKw': 'powerKw', 'facts.manufacturedAt': 'manufacturedAt', 'facts.firstRegistration': 'firstRegistration',
   'facts.location.country': 'country', 'facts.location.city': 'city', 'facts.location.displayName': 'locationName',
   'facts.make': 'makeName', 'facts.model': 'modelName', 'facts.trim': 'trimName',
+  'configuration': 'configuration',
   'facts.powertrain': 'powertrain', 'facts.registrationStatus': 'registrationStatus',
   'price.kind': 'priceKind', 'price.money.amount': 'amount', 'price.money.currency': 'currency', 'price.includes': 'includes', 'price.money': 'amount',
   'content.title.sourceLanguage': 'titleLanguage', 'content.title.sourceText': 'title',
