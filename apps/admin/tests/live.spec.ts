@@ -17,9 +17,9 @@ function observeRateWindow(page: Page, response: { url(): string; headers(): Rec
   const next = extendRateDeadline(state.deadline, response.headers(), Date.now());
   if (next !== state.deadline) { state.deadline = next; state.observations++; }
 }
-async function waitForServerWindow(waitMs: number, reason: 'afterEach' | 'login-429') {
+async function waitForServerWindow(waitMs: number, reason: 'afterEach' | 'login-429' | 'external-published-to-deletion') {
   if (!waitMs) return;
-  // Applied only when the body is over, or for the one explicitly observed login 429 wait.
+  // Used at teardown, the one observed login 429, or an explicit completed business-stage boundary.
   // Existing test failures and all UI/action timeouts remain unchanged.
   const info = test.info();
   info.setTimeout(info.timeout + waitMs);
@@ -666,7 +666,11 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
     expect(Object.values(field.translations).every(text => text?.reviewStatus === 'approved')).toBe(true);
   }
   await completeDisplayTranslations(page, reviewed, true);
-  expect((await operation(page, initial.id, '发布车辆', 'publish')).status()).toBe(200);
+  const publishedResponse = await operation(page, initial.id, '发布车辆', 'publish');
+  expect(publishedResponse.status()).toBe(200);
+  const publishedBeforeDeletion = AdminVehicleResponseSchema.parse(await publishedResponse.json()).data;
+  expect(publishedBeforeDeletion.id).toBe(initial.id);
+  expect(publishedBeforeDeletion.publicationState).toBe('published');
   for (const locale of ['zh', 'en', 'ru']) {
     const response = await readRespectingRateLimit(page, `/api/v1/vehicles/${initial.id}?locale=${locale}`);
     expect(response.status()).toBe(200);
@@ -681,6 +685,12 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   }
   await mkdir('/private/tmp/hd-ad-del-evidence', { recursive: true });
   await page.screenshot({ path: '/private/tmp/hd-ad-del-evidence/external-published.png', fullPage: true, animations: 'disabled' });
+  // R3 consumed 98/120 admin requests here. Stop background preview traffic before the deletion lifecycle.
+  // Keep this page's context/session and the saved vehicle; no mutation is retried or test data replaced.
+  await page.goto('about:blank');
+  const publishedRateWindow = rateWindows.get(page);
+  expect(publishedRateWindow?.observations, 'The phase boundary must use a real observed server window').toBeGreaterThan(0);
+  await waitForServerWindow(rateCooldownMs(publishedRateWindow!.deadline, Date.now()), 'external-published-to-deletion');
   // Select through the real home editor so deletion must remove an actual persisted reference.
   await page.goto('/admin/home-sections');
   await page.getByRole('button', { name: /选择车辆$/ }).first().click();
@@ -701,6 +711,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   const deletedResult = await deletedResponse; expect(deletedResult.status()).toBe(200);
   const deleted = AdminVehicleResponseSchema.parse(await deletedResult.json()).data;
   expect(deleted.deletedAt).not.toBeNull();
+  expect(deleted.draft).toEqual(publishedBeforeDeletion.draft);
   const ordinary = AdminVehicleListSchema.parse(await (await readRespectingRateLimit(page, `/api/v1/admin/vehicles?q=${initial.stockCode}`)).json()).data;
   expect(ordinary.items).toEqual([]);
   expect((await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`)).status()).toBe(404);
@@ -721,7 +732,8 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   const restoredResult = await restoreResponse; expect(restoredResult.status()).toBe(200);
   const restored = AdminVehicleResponseSchema.parse(await restoredResult.json()).data;
   expect(restored).toMatchObject({ version: deleted.version + 1, deletedAt: null, publicationState: 'draft', availability: 'unknown', availabilityCheckedAt: null, publishedAt: null, publishedRevisionId: null });
-  expect(restored.draft).toEqual(ready.draft);
+  // The original `ready` predates required facts and language review; restore must preserve the draft actually deleted.
+  expect(restored.draft).toEqual(publishedBeforeDeletion.draft);
   for (const media of restored.draft.media) {
     expect(MediaAssetResponseSchema.parse(await (await readRespectingRateLimit(page, `/api/v1/admin/media/${media.id}`)).json()).data.status).toBe('ready');
     expect((await readRespectingRateLimit(page, `/api/v1/admin/media/${media.id}/preview`)).status()).toBe(200);
