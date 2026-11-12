@@ -10,6 +10,8 @@
 
 自测：Node 24.22.1、pnpm 11.25.0；hooks:check 通过，contracts check 50/50，API typecheck 通过。独立合同审查在提交前完成并另行绑定 SHA。未推送、迁移运行库或部署；没有新增供应商／翻译请求。
 
+合同提交 `138edd67ea64503db0053642d1d51ce688e09455` 已由独立 Reviewer 绑定 PASS，交付 AD／FE。后续补充 FE 冻结的 iframe 协议 v1，统一消息 schema／类型及两项测试，contracts check 更新为 52/52；协议约束不等于浏览器联调已完成。
+
 ## 已确认范围
 
 - 车况说明复用 `draft.content.description`；新人工录入只默认中国、城市空、已上牌和公开报价类型，不补造金额或日期。
