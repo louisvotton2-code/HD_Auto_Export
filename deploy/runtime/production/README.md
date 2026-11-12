@@ -16,6 +16,8 @@
 - SSR key 仅 Web/API 文件共享，原始 Web peer 使用固定 WEB_IP/32（现网只读盘点为172.30.94.3/32）；入口清除浏览器伪造的同名头并拒绝 `/internal`。数据回源30/s、burst40、不排队；version 仍执行可信访客 IP 的120/min。不要增加转发头白名单替代原始 peer 校验。
 - 外部目录来源 disabled、读取 combined、同步 off。50000字符/滚动小时额度保存在 DB，不能清除预算表或靠重启重置。真实 Ali 仅在员工明确确认未知费用后使用，不做付费上线测试。
 
+管理员域还须同源提供 `/staff/vehicles/<UUID>/publication-preview/` 的 GET/HEAD 给后台 iframe，HTML 强制 private/no-store/noindex，保留 Next 的同源 frame/CSP/referrer 保护；其 JS/CSS 由管理员域 `/_next/static/` 提供（仅成功状态长缓存），仅两个实际根布局字体 `/fonts/inter-latin.woff2`、`/fonts/inter-cyrillic.woff2` 作为无 Cookie/Auth 的普通 no-store 资源提供。不能把 iframe 改成官网跨域来绕过同源消息和账号要求；官网域明确拒绝 `/staff`。私有预览 JSON/图片仍须走管理员域现有鉴权 `/api`，不能缓存为公开 DTO。
+
 ## 停写备份、恢复与清空展示
 
 1. 从获准 SHA 的干净独立 checkout 在 Linux/amd64 构建全部应用，核对镜像、admin 静态文件、Web BUILD、contract 与18项迁移。准备原版应用回退材料、维护页和新私有 env。先渲染五层配置，核对仅80/443公开、数据库/Redis不映射宿主，以及原物理 PG、原认证/TLS、新逻辑库/新秘密/新媒体挂载。保持正式入口维护，停止全部写入并验证连接排空。

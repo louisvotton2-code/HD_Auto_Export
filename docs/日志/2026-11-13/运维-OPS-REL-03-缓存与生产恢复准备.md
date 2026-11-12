@@ -69,3 +69,12 @@
 - 远端main已fetch核对为 `409529c75ac02a660a8b6d8de04bcc517f23a582`，是本分支祖先。当前尚未最终verify:push/PR/CI/main或PM最终发布核准，生产仍原02b817e。
 
 - Reviewer已独立重算100个原始样本数量与nearest-rank P95，并核对HTTP观察/队列/清理文件；《组合性能最终独立核对.json》PASS（SHA256 9a2401da8044b373ec334e6f72515034fc5f5a210ad15785e08e6354077e1243），未重跑资源或样本。
+
+## 双域后台预览接线补修与门禁中断
+
+- 对 `e1b9c5f90ac15f27edc108659d478c61690318fd` 的首轮正式verify:push已通过check与build、进入浏览器阶段；根集成审查随后发现真实P1：AD iframe使用当前admin域的/staff/vehicles/<UUID>/publication-preview/，正式代理此前仅开放/admin和/api，预览HTML及其_next静态资源会404。同源postMessage/cookie规则不能通过改用cars域规避。原单入口七例和本次公开SSR矩阵没有覆盖该双域私有接线，不能拿原通过冒充已验此项。Reviewer独立确认，e1全量报告记blocked，不登记pass。
+- 只中止自有该轮门禁和17个精确归属子进程；Popen启动器从bash exec到pnpm Node保持同PID/原启动时间/原参数/原工作目录，核清后才停止。一次性纯合成PG容器/volume已退场，3100/3327/3319/55432测试端口全部释放；原验证锁的owner PID已不存在且没有其他validator后，按规则清理遗留锁。该轮exit -15，不记verify通过，不用它推送。原3363与生产不变。
+- 最小配置修复：admin仅UUID窄预览路径GET/HEAD转Web，HTML private/no-store/noindex并保留Next CSP/frame/referrer；同源_next构建资源仅成功200/206/304长缓存；仅根布局实际使用的latin/cyrillic两个固定woff2字体代理Web、清除Cookie/Auth且no-store，不泛开其他官网页面。cars域/staff明确404，私有JSON/媒体仍走admin鉴权API。
+- 真实Nginx定向检查首轮原3项通过、新增预览项在HEAD时因测试客户端仍读响应体而错误；修正HTTPResponse的method后只复查新增项通过，保留首错。它覆盖preview GET/HEAD、POST拒绝、非法UUID/其他私有路径拒绝、cars HTTP+HTTPS拒绝、静态成功/缺失缓存及两个字体去敏头。不是伪造首轮4/4。
+- 另一次真实冻结Next成品的最小双域私有路由检查通过：BUILD Gn2-2DAG9GD61KdnWEi5R 的匿名预览壳HTML、13个初始JS/CSS和两个实际wOF2字体在admin域可达，同源frame/CSP/referrer及private/no-store保持，cars域拒绝。使用私有Unix/TLS，没有公开TCP入口、账号登录或发布；不扩大为重跑完整真实员工发布流程。证据私有 `docs/private/ops-rel03/preview-routing-b94b92fddbb6cd0f`，临时Next/Nginx/目录均由finally退场。
+- 该补丁不改应用、契约、数据缓存、预算、队列和被测公开API路径；不重跑七例或20性能。待Reviewer闭合此P1、保存新最终SHA后，按保护对新SHA重新执行唯一有效verify:push，首轮中断记录保留。生产写入/PR合并仍未执行。

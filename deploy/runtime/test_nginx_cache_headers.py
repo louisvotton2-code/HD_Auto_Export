@@ -8,8 +8,11 @@ class Origin(http.server.BaseHTTPRequestHandler):
         status=known.get(self.path,404 if self.path.startswith('/_next/static/') else 200)
         body=json.dumps({'headers':dict(self.headers.items()),'path':self.path}).encode() if not self.path.startswith('/_next/static/') else b'code'
         self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Cache-Control','public, max-age=600' if self.path=='/zh/guide/' else 'no-store')
+        if self.path.startswith('/staff/'):
+            self.send_header('X-Frame-Options','SAMEORIGIN');self.send_header('Content-Security-Policy',"frame-ancestors 'self'");self.send_header('Referrer-Policy','same-origin')
         self.send_header('Content-Length',str(len(body) if status!=304 else 0));self.end_headers()
-        if status!=304:self.wfile.write(body)
+        if status!=304 and self.command!='HEAD':self.wfile.write(body)
+    do_HEAD=do_GET
     def log_message(self,*args):pass
 class UnixHttp(socketserver.ThreadingMixIn,socketserver.UnixStreamServer):daemon_threads=True
 @unittest.skipUnless(NGINX and shutil.which('openssl'),'native nginx and openssl are required for the real header test')
@@ -41,11 +44,11 @@ class DomainCacheHeaders(unittest.TestCase):
             if (r/'tls.sock').is_socket():break
             time.sleep(.05)
         else:raise RuntimeError('Isolated nginx socket did not start')
-    def request(self,host,path,headers=None,tls=True):
+    def request(self,host,path,headers=None,tls=True,method='GET'):
         r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(r/('tls.sock' if tls else 'http.sock')))
         if tls:s=ssl.create_default_context(cafile=str(r/'cert.pem')).wrap_socket(s,server_hostname=host)
         with s:
-            values={'Host':host,'Connection':'close',**(headers or {})};s.sendall(('GET '+path+' HTTP/1.1\r\n'+''.join(k+': '+v+'\r\n' for k,v in values.items())+'\r\n').encode());res=http.client.HTTPResponse(s);res.begin();return res.status,dict((k.lower(),v) for k,v in res.getheaders()),res.read()
+            values={'Host':host,'Connection':'close',**(headers or {})};s.sendall((method+' '+path+' HTTP/1.1\r\n'+''.join(k+': '+v+'\r\n' for k,v in values.items())+'\r\n').encode());res=http.client.HTTPResponse(s,method=method);res.begin();return res.status,dict((k.lower(),v) for k,v in res.getheaders()),res.read()
     def test_build_assets_only_have_long_cache_and_missing_assets_never_do(self):
         for path,status in [('/_next/static/chunks/chunk-12345678.js',200),('/_next/static/chunks/partial-12345678.js',206),('/_next/static/build-12345678/_buildManifest.js',304)]:
             actual,headers,_=self.request('cars.hongdingauto.com',path);self.assertEqual(actual,status);self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
@@ -57,6 +60,24 @@ class DomainCacheHeaders(unittest.TestCase):
             for tls in [False,True]:
                 for path in ['/internal','/internal/public-catalog/version','/internal/public-catalog/vehicles']:
                     self.assertEqual(self.request(host,path,tls=tls)[0],404)
+    def test_admin_staff_preview_and_its_build_assets_share_the_admin_origin(self):
+        path='/staff/vehicles/11111111-1111-4111-8111-111111111111/publication-preview/?locale=zh&loadId=22222222-2222-4222-8222-222222222222'
+        status,headers,body=self.request('admin.hongdingauto.com',path,{'Cookie':'synthetic-session=private'})
+        self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'private, no-store');self.assertEqual(headers['x-robots-tag'],'noindex, nofollow')
+        self.assertEqual(headers['x-frame-options'],'SAMEORIGIN');self.assertEqual(headers['content-security-policy'],"frame-ancestors 'self'");self.assertEqual(headers['referrer-policy'],'same-origin')
+        self.assertEqual(json.loads(body)['headers']['Cookie'],'synthetic-session=private')
+        self.assertEqual(self.request('admin.hongdingauto.com',path,method='HEAD')[0],200)
+        self.assertEqual(self.request('admin.hongdingauto.com',path,method='POST')[0],403)
+        for tls in [False,True]:self.assertEqual(self.request('cars.hongdingauto.com',path,tls=tls)[0],404)
+        for blocked in ['/staff/','/staff/vehicles/not-a-uuid/publication-preview/','/staff/vehicles/11111111-1111-4111-8111-111111111111/other','/fonts/other.woff2']:
+            self.assertEqual(self.request('admin.hongdingauto.com',blocked)[0],404)
+        status,headers,_=self.request('admin.hongdingauto.com','/_next/static/chunks/chunk-12345678.js',{'Cookie':'synthetic-session=private','Authorization':'synthetic-auth'})
+        self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
+        self.assertEqual(self.request('admin.hongdingauto.com','/_next/static/missing.js')[1]['cache-control'],'no-store')
+        for name in ['latin','cyrillic']:
+            status,headers,body=self.request('admin.hongdingauto.com','/fonts/inter-'+name+'.woff2',{'Cookie':'synthetic-session=private','Authorization':'synthetic-auth'})
+            self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');upstream=json.loads(body)['headers']
+            self.assertFalse(any(k.lower() in ['cookie','authorization','x-hd-ssr-key'] for k in upstream))
     def test_visitor_service_identity_is_removed_and_html_policy_preserved(self):
         for path in ['/api/v1/vehicles','/zh/cars/']:
             status,headers,body=self.request('cars.hongdingauto.com',path,{'X-HD-SSR-Key':'synthetic-forgery','X-Forwarded-For':'203.0.113.55'});self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');origin=json.loads(body)['headers'];self.assertFalse(any(k.lower()=='x-hd-ssr-key' for k in origin));self.assertNotEqual(origin.get('X-Forwarded-For'),'203.0.113.55')
