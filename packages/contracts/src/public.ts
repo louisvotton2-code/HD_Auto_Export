@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { ConfigurationDisplaySchema } from './configuration-display.js';
+import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from './catalog-cache.js';
+export * from './catalog-cache.js';
 export * from './configuration-display.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
-  PublicPriceSchema, RequestMetaSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
+  PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
   VehicleFactsSchema, CurrencySchema, MoneySchema, NamedValueSchema, responseSchema,
 } from './common.js';
 import {DrivetrainSchema,VehicleDisplaySchema} from './localization.js';
@@ -110,7 +112,7 @@ export const PublicVehicleSchema = z.strictObject({
   }
 });
 export type PublicVehicle = z.infer<typeof PublicVehicleSchema>;
-export const PublicVehicleResponseSchema = responseSchema(PublicVehicleSchema);
+export const PublicVehicleResponseSchema = responseSchema(PublicVehicleSchema).extend({ meta: PublicCatalogResponseMetaSchema });
 export type PublicVehicleResponse = z.infer<typeof PublicVehicleResponseSchema>;
 
 /** HTTP adapters convert query integers explicitly before parsing this logical query. */
@@ -144,6 +146,8 @@ export const PublicVehicleQuerySchema = z.strictObject({...catalogQueryFields,
   page:z.number().int().min(1).max(1_000_000).default(1),pageSize:z.number().int().min(1).max(48).default(24),
 }).superRefine((value,ctx)=>{
   validateCatalogQuery(value,ctx);
+  if (!value.cursor && !isPublicCatalogOffsetAllowed(value.page, value.pageSize))
+    ctx.addIssue({code:'custom',path:['page'],message:'Offset exceeds 10000; use cursor pagination'});
   if((value.cursor||value.pagination) && (value.page!==1 || value.view!=='localized')) ctx.addIssue({code:'custom',path:['cursor'],message:'Cursor requires localized view and page 1 (or omitted page)'});
 });
 export type PublicVehicleQuery = z.infer<typeof PublicVehicleQuerySchema>;
@@ -153,7 +157,7 @@ export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.def
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicFilterQuerySchema = z.strictObject(catalogQueryFields).superRefine(validateCatalogQuery);
 export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
-export const CatalogMetaSchema = RequestMetaSchema.extend({
+export const CatalogMetaSchema = PublicCatalogResponseMetaSchema.extend({
   catalog: z.literal('curated'),
   total: z.number().int().nonnegative().nullable(),
   totalKind: z.enum(['exact', 'provider_reported', 'unknown']),
@@ -182,7 +186,7 @@ export const PublicHomeSectionSchema = z.strictObject({
   id: IdSchema, title: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'), vehicles: z.array(PublicVehicleSchema).min(1).max(30),
 });
 export type PublicHomeSection = z.infer<typeof PublicHomeSectionSchema>;
-export const PublicHomeSectionsSchema = responseSchema(z.strictObject({ sections: z.array(PublicHomeSectionSchema).max(2) }));
+export const PublicHomeSectionsSchema = responseSchema(z.strictObject({ sections: z.array(PublicHomeSectionSchema).max(2) })).extend({meta:PublicCatalogResponseMetaSchema});
 export type PublicHomeSections = z.infer<typeof PublicHomeSectionsSchema>;
 
 const FilterOptionSchema = z.strictObject({ id: IdSchema, name: z.string().min(1).max(120), count: z.number().int().nonnegative() });
@@ -197,5 +201,5 @@ export const PublicVehicleFiltersSchema = responseSchema(z.strictObject({
   drivetrains:z.array(z.strictObject({id:DrivetrainSchema,count:z.number().int().nonnegative()})).optional(),
   modelYears:z.array(z.strictObject({year:z.number().int().min(1886).max(9999),count:z.number().int().nonnegative()})).optional(),
   priceCurrencies:z.array(z.strictObject({id:CurrencySchema,count:z.number().int().nonnegative()})).optional(),
-}));
+})).extend({meta:PublicCatalogResponseMetaSchema});
 export type PublicVehicleFilters = z.infer<typeof PublicVehicleFiltersSchema>;
