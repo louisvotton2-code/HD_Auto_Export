@@ -34,6 +34,7 @@ export function PublicationPreviewPanel(props: Props) {
   const [height, setHeight] = useState(850);
   const frame = useRef<HTMLIFrameElement>(null);
   const invalidated = useRef(false);
+  const cancelDeadline = useRef<() => void>(() => {});
   const current = useRef(props);
   current.current = props;
   const loadId = useMemo(() => crypto.randomUUID(), [vehicleId, version, locale, reload]);
@@ -41,9 +42,30 @@ export function PublicationPreviewPanel(props: Props) {
   const src = `/staff/vehicles/${encodeURIComponent(vehicleId)}/publication-preview/?${query}`;
 
   useEffect(() => {
-    let rendered = false;
-    invalidated.current = false;
-    setStatus('loading'); setError(''); setHeight(850);
+    let active = true;
+    let deadline: number | undefined;
+    let phase = 0;
+    function clearDeadline() {
+      phase += 1;
+      window.clearTimeout(deadline);
+      deadline = undefined;
+    }
+    function startDeadline() {
+      // Duplicate loading messages cannot extend an already pending render phase.
+      if (deadline !== undefined) return;
+      clearDeadline();
+      const expectedPhase = phase;
+      deadline = window.setTimeout(() => {
+        if (!active || phase !== expectedPhase || invalidated.current || current.current.hasUnsavedChanges) return;
+        clearDeadline();
+        invalidated.current = true; setStatus('error');
+        setError('预览尚未完整显示。请重新载入，显示完成后才能确认。');
+        current.current.onRendered(null);
+      }, 40_000);
+    }
+    cancelDeadline.current = clearDeadline;
+    invalidated.current = current.current.hasUnsavedChanges;
+    setStatus(invalidated.current ? 'stale' : 'loading'); setError(''); setHeight(850);
     current.current.onRendered(null);
     function receive(event: MessageEvent) {
       if (event.origin !== window.location.origin || event.source !== frame.current?.contentWindow) return;
@@ -52,40 +74,46 @@ export function PublicationPreviewPanel(props: Props) {
       const message = parsed.data;
       if (message.loadId !== loadId || message.vehicleId !== vehicleId || message.locale !== locale) return;
       if (message.event === 'resize') { setHeight(message.height); return; }
+      if (invalidated.current) return;
+      if (current.current.hasUnsavedChanges) {
+        clearDeadline(); invalidated.current = true; setStatus('stale'); current.current.onRendered(null); return;
+      }
       if (message.event === 'ready') {
-        if (invalidated.current) return;
+        clearDeadline();
         const preview = message.preview;
         if (preview.vehicleId !== vehicleId || preview.locale !== locale || preview.vehicleVersion !== version) {
-          rendered = false; invalidated.current = true; setStatus('error'); setError(errors.conflict); current.current.onRendered(null); return;
+          invalidated.current = true; setStatus('error'); setError(errors.conflict); current.current.onRendered(null); return;
         }
-        if (current.current.hasUnsavedChanges) return;
-        rendered = true; setStatus('ready'); setError('');
+        setStatus('ready'); setError('');
         current.current.onRendered({ version: preview.vehicleVersion, publicContentRevision: preview.publicContentRevision,
           fingerprint: preview.fingerprint, locale: preview.locale });
         return;
       }
-      rendered = false;
       current.current.onRendered(null);
       if (message.event === 'error') {
+        clearDeadline();
         invalidated.current = true;
         setStatus('error'); setError(errors[message.error.code]);
         if (message.error.code === 'unauthenticated') window.dispatchEvent(new Event('admin:unauthorized'));
       } else if (message.event === 'disposed') {
+        clearDeadline();
         invalidated.current = true; setStatus('error'); setError('预览已关闭，请重新载入。');
-      } else if (!invalidated.current) { setStatus('loading'); setError(''); }
+      } else {
+        // Image changes may start another render after a completed preview.
+        // Only ready -> loading starts a new deadline; pending loading cannot renew it.
+        startDeadline(); setStatus('loading'); setError('');
+      }
     }
     window.addEventListener('message', receive);
-    const timeout = window.setTimeout(() => {
-      if (!rendered) { invalidated.current = true; setStatus('error'); setError('预览尚未完整显示。请重新载入，显示完成后才能确认。'); current.current.onRendered(null); }
-    }, 40_000);
-    return () => { window.clearTimeout(timeout); window.removeEventListener('message', receive); current.current.onRendered(null); };
+    if (!invalidated.current) startDeadline();
+    return () => { active = false; clearDeadline(); window.removeEventListener('message', receive); current.current.onRendered(null); };
   }, [loadId, vehicleId, version, locale]);
 
   useEffect(() => {
-    if (hasUnsavedChanges) { invalidated.current = true; setStatus('stale'); current.current.onRendered(null); }
+    if (hasUnsavedChanges) { cancelDeadline.current(); invalidated.current = true; setStatus('stale'); current.current.onRendered(null); }
   }, [hasUnsavedChanges]);
 
-  function reloadPreview() { current.current.onRendered(null); setReload(value => value + 1); }
+  function reloadPreview() { cancelDeadline.current(); invalidated.current = true; current.current.onRendered(null); setReload(value => value + 1); }
 
   return <Card className={styles.panel} title={<Space><EyeOutlined />发布预览</Space>} extra={
     <Tag color={status === 'ready' ? 'success' : status === 'error' ? 'error' : 'warning'}>

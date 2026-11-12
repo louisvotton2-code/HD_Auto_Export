@@ -90,7 +90,7 @@ ADMIN_LIVE_EXTERNAL=synthetic-only ADMIN_LIVE_TRANSLATION_PROVIDER=disabled \
 
 年款、制造／登记日期和来源采集时间使用日期组件；年份与年月保持实际精度，提高精度需重新选择。标明 UTC 的选择器按所选墙钟时间保存 UTC，避免本机时区换算造成偏移。
 
-“发布预览”从同源 `/staff/vehicles/:id/publication-preview/` 嵌入 FE 车辆展示，使用员工鉴权的白名单草稿投影。浏览器以正式 frame schema 加同源、来源窗口、loadId、车辆、语言和版本核对实际呈现回执；只有 height 消息不构成就绪。旧实例、终态错误后的回包不能解锁确认。预览不发送内部数据、不自动确认、不替代译文人审。
+“发布预览”从同源 `/staff/vehicles/:id/publication-preview/` 嵌入 FE 车辆展示，使用员工鉴权的白名单草稿投影。浏览器以正式 frame schema 加同源、来源窗口、loadId、车辆、语言和版本核对实际呈现回执；只有 height 消息不构成就绪。旧实例、终态错误后的回包不能解锁确认。ready 会清初载期限，后续切图 loading 另起 40 秒；同一 pending 阶段重复 loading 或 resize 不延长期限。预览不发送内部数据、不自动确认、不替代译文人审。
 
 右上角发布按钮以服务端 `publish-readiness` 为准，未完整时红色禁用，并提供独立可点击的缺项导航。公开字段多语与显式预览确认都必需；确认请求发送实际已呈现的 revision／fingerprint／locale／version，有效期最多 10 分钟。公开修改、切换内容版本或过期需要重核；私有修改是否保留确认由服务端决定。确认之后仍需明确发布，原有幂等重试与结果未知保护保留。
 
