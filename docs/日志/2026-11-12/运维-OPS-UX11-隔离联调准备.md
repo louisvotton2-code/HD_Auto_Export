@@ -74,3 +74,11 @@ BE来源`0540d6bcc40ec26048a31e2eb9cdac6becd37132`，仅该37文件API补丁挑�
 受控fake seam参考BE translation-workspace.test.ts的buildApp/VehicleTranslator注入；真实Ali配置不注入。小时字符/两并发仅单API进程边界，仍须隔离核持久预算/receipt与重启恢复，不宣称分布式额度。受控归档补标记仅在隔离副本按明确归档行/版本/hash/有效actor执行，前后保留原事实，不重导20+200、不外呼；本轮未执行补齐，41/20/19仍只是PA盘点口径。不得套用旧AD审核选择器，等AD本版live适配。
 
 私有交接：docs/private/ops-ux11/FE候选核验.json、BE候选核验.json与ops-ux11-candidate/candidate-state.json；独立release分别为fe-634f007和be-0540d6b，索引/审查证据副本与hash保留。组合合同树确认位保持null，expected57e不代替三端齐套证明；AD待交、readyToStart=false。当前3363/原账号/数据/disabled翻译未改，未建库/端口/服务、未真实调用、未推送或部署。候选登记与精确补丁接入交独立Reviewer核对后再保存文档提交。
+
+## BE0540最终资格撤回与组合矩阵修订
+
+PM将工作区可编辑generation/drivetrain但BE0540以错误facts不变guard拒绝409列为阻塞P2，AD模拟fixture错误允许。撤销0540最终候选资格；原接入cb64与06b89记录、对应独立文件审查仅证明当时准确内容，不代表此行为验收通过。私有组合清单清空API最终候选/迁移/OpenAPI/fake seam确认位，将原登记移至历史，仍readyToStart=false；FE634保持候选，待接口影响确认，无无关重构。
+
+BE/AD协调方向为现有bundle事务支持事实变更，不拆正文与展示保存、不预期改schema。必须继续校验vehicle/localization双版本及incoming字段来源绑定；generation变更由服务端sync创建/失效展示ref，返回权威bundle后再翻译，新英俄可缺失、旧文stale。此为修复预期，尚非OPS已验证实现。
+
+组合验收新增：真实SQL/HTTP的facts新增/重命名/删除后保存及重读；双版本并发冲突和故障注入下facts/localization整体回滚；新refs返回且旧译文正确失效，保存后的后续翻译使用新权威bundle。等待新准确API SHA、受影响真实回归与独立review及AD最终review，不复用0540为该项通过依据。OPS本轮只改门禁与矩阵、未改代码/合同、未跑服务/SQL/HTTP/迁移或真实enrichment；未启动候选、未切3363、未改Ali disabled、未推送/部署。hooks与docs差异空白核验通过，独立审查另附私有报告。
