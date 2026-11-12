@@ -118,7 +118,7 @@ before(async () => {
   const actor = { id: adminId, requestId: 'isolated-external-staff-fixture' };
   const draft = makeVehicleDraftFixture();
   draft.media = [];
-  draft.facts = { ...draft.facts, make: { id: 'toyota', name: 'Toyota' }, model: { id: 'synthetic-r1', name: 'Example R1' }, powertrain: 'hev' };
+  draft.facts = { ...draft.facts, make: { id: 'toyota', name: 'Toyota' }, model: { id: 'synthetic-r1', name: 'Example R1' }, trim: { id: 'test-trim', name: 'Test trim' }, powertrain: 'hev' };
   draft.price = { kind: 'asking', money: { amount: '128000.50', currency: 'CNY' }, includes: [] };
   let vehicle = await runtime.inventory.create(draft, actor, randomUUID());
   const png = await sharp({ create: { width: 30, height: 20, channels: 3, background: '#223344' } }).png().toBuffer();
@@ -129,6 +129,16 @@ before(async () => {
   vehicle.draft.media = [{ id: photo.id, alt: 'Fixture', isCover: true, sortOrder: 0 }];
   vehicle = await runtime.inventory.save(vehicle.id, vehicle.version, vehicle.draft, actor);
   vehicle = await runtime.inventory.availability(vehicle.id, { version: vehicle.version, availability: 'available', checkedAt: new Date().toISOString() }, actor);
+  const localization = await runtime.inventory.getLocalization(vehicle.id);
+  for (const field of localization.data.fields) for (const locale of ['zh', 'en', 'ru'] as const) {
+    field.translations[locale] = { text: field.sourceText, kind: 'human', reviewStatus: 'approved',
+      sourceVersion: field.sourceVersion, humanEditVersion: 0, engineVersion: null };
+  }
+  await runtime.inventory.saveLocalization(vehicle.id, { vehicleVersion: vehicle.version, revision: localization.revision, data: localization.data }, actor);
+  vehicle = await runtime.inventory.getAdmin(vehicle.id);
+  const preview = await runtime.inventory.publicationPreview(vehicle.id, 'zh', actor);
+  await runtime.inventory.confirmPublicationPreview(vehicle.id, { version: preview.vehicleVersion,
+    publicContentRevision: preview.publicContentRevision, fingerprint: preview.fingerprint, locale: preview.locale }, actor);
   vehicle = await runtime.inventory.publish(vehicle.id, vehicle.version, actor, randomUUID());
   manualId = vehicle.id;
 });

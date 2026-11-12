@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResult } from 'pg';
 import { AdminVehicleSchema, VehicleDraftInputSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
-  type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery,
+  type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery, type ConfirmPublicationPreviewRequest,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
@@ -10,13 +10,15 @@ import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { locales, normalizeContent } from './content.js';
 import type { VehicleTranslator } from './translation.js';
-import {emptyLocalization,syncLocalization,applyLocalizationInput,validateLocalizationPublication,projectDisplay,type StoredLocalization,type PublishedLocalization,type DisplayProjection} from './localization.js';
+import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type PublishedLocalization,type DisplayProjection} from './localization.js';
+import type { LocalMediaStore } from '../media/storage.js';
+import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
 import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 
 export type Actor = { id: string; requestId: string };
 type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'content'> & { price: PublicVehicle['price']; images: PublicMedia[] };
 type Row = {
-  id: string; stock_number: string; version: number; publication_state: AdminVehicle['publicationState'];
+  id: string; stock_number: string; version: number; public_content_revision: number; publication_state: AdminVehicle['publicationState'];
   availability: AdminVehicle['availability']; availability_checked_at: Date|null; published_revision_id: string|null;
   published_at: Date|null; deleted_at: Date|null; created_at: Date; updated_at: Date; data: VehicleDraftInput;
   publication_data?: Snapshot;
@@ -92,7 +94,10 @@ export async function idempotent<T>(tx: PoolClient, actor: Actor, operation: str
   return result;
 }
 async function lockVehicle(tx: PoolClient, id: string, version?: number, includeDeleted=false): Promise<Row> {
-  const result = await tx.query<Row>(`${adminSelect} WHERE v.id=$1 FOR UPDATE OF v`,[id]);
+  // Acquire the parent first, then take a fresh statement snapshot of its children.
+  // A join taken before waiting for the lock can otherwise contain an older draft.
+  await tx.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[id]);
+  const result = await tx.query<Row>(`${adminSelect} WHERE v.id=$1`,[id]);
   const row = result.rows[0]; if (!row || (row.deleted_at && !includeDeleted)) throw notFound();
   if (version !== undefined && row.version !== version) throw conflict();
   return row;
@@ -244,7 +249,39 @@ function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:str
   return item;
 }
 export class InventoryService {
-  constructor(private db: Database, private externalCatalog=false) {}
+  constructor(private db: Database, private externalCatalog=false, private mediaStore?: Pick<LocalMediaStore, 'prepareDelivery'>) {}
+
+  async publicationPreview(id:string,locale:Locale,actor:Actor) {
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      const row=await lockVehicle(tx,id);
+      return (await preparePublication(tx,row,syncLocalization(id,row.data,storedLocalization(row)),locale,this.mediaStore)).preview;
+    });
+  }
+  async publishReadiness(id:string,locale:Locale,actor:Actor) {
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      const row=await lockVehicle(tx,id);
+      const prepared=await preparePublication(tx,row,syncLocalization(id,row.data,storedLocalization(row)),locale,this.mediaStore);
+      return publicationReadiness(prepared,await currentConfirmation(tx,id,actor.id));
+    });
+  }
+  async confirmPublicationPreview(id:string,input:ConfirmPublicationPreviewRequest,actor:Actor) {
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      const row=await lockVehicle(tx,id,input.version);
+      const prepared=await preparePublication(tx,row,syncLocalization(id,row.data,storedLocalization(row)),input.locale,this.mediaStore);
+      checkPreviewProof(prepared.preview,input);
+      requirePublicationReady(publicationReadiness(prepared),false);
+      await tx.query(`INSERT INTO publication_preview_confirmations(vehicle_id,actor_id,public_revision,fingerprint,locale,confirmed_at,expires_at)
+        SELECT $1,$2,$3,$4,$5,t,t+interval '10 minutes' FROM (SELECT clock_timestamp() AS t) clock
+        ON CONFLICT(vehicle_id,actor_id) DO UPDATE SET public_revision=excluded.public_revision,fingerprint=excluded.fingerprint,
+          locale=excluded.locale,confirmed_at=excluded.confirmed_at,expires_at=excluded.expires_at`,
+        [id,actor.id,input.publicContentRevision,input.fingerprint,input.locale]);
+      await audit(tx,actor,'vehicle.preview.confirm',id,row.version,row.version);
+      return publicationReadiness(prepared,await currentConfirmation(tx,id,actor.id));
+    });
+  }
   async getLocalization(id:string){
     const result=await this.db.pool.query<Row>(`${adminSelect} WHERE v.id=$1 AND v.deleted_at IS NULL`,[id]);
     if(!result.rows[0])throw notFound();return localizationResponse(result.rows[0]);
@@ -351,43 +388,19 @@ export class InventoryService {
     });
   }
   async publish(id:string,version:number,actor:Actor,key:string) {
-    return this.db.transaction(tx=>idempotent(tx,actor,`vehicle.publish:${id}`,key,{id,version},async()=>{
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      return idempotent(tx,actor,`vehicle.publish:${id}`,key,{id,version},async()=>{
       const row=await lockVehicle(tx,id,version);const draft=row.data;
-      // No publication mutation or audit is needed for an already current snapshot.
+      const confirmation=await currentConfirmation(tx,id,actor.id);
+      const localization=syncLocalization(id,draft,storedLocalization(row));
+      const prepared=await preparePublication(tx,row,localization,confirmation?.locale??'zh',this.mediaStore);
+      requirePublicationReady(publicationReadiness(prepared,await currentConfirmation(tx,id,actor.id)));
+      // A fresh request still crosses every gate; historical receipts replay above.
       if(row.publication_state==='published' && !hasUnpublishedChanges(draft,row.publication_data,row.localization_data,row.published_localization)) return toAdmin(row);
-      const localization=row.localization_data?syncLocalization(id,draft,storedLocalization(row)):undefined;
-      if(localization)validateLocalizationPublication(localization.data,draft.source.kind==='manual');
-      const fields:Array<{path:string;code:string;message:string}>=[];
-      const missing=(path:string,message:string)=>fields.push({path,code:'REQUIRED_FOR_PUBLICATION',message});
-      if (!draft.facts.make) missing('draft.facts.make','Make is required.');
-      if (!draft.facts.model) missing('draft.facts.model','Model is required.');
-      if (draft.source.kind==='manual' && !draft.facts.location) missing('draft.facts.location','Location country is required.');
-      if (!draft.content.title.sourceText?.trim()) missing('draft.content.title.sourceText','Original title is required.');
-      if(draft.source.kind!=='manual') {
-        if(row.availability!=='unknown'||row.availability_checked_at!==null) missing('availability','Display examples must remain unverified, non-inventory records.');
-        const valid=VehicleDraftInputSchema.safeParse(draft);
-        if(!valid.success) for(const issue of valid.error.issues) missing(`draft.${issue.path.join('.')}`,'Source metadata or reference-record facts are invalid.');
-      } else if (row.availability==='unknown' || !row.availability_checked_at) missing('availability','Verify availability before publishing.');
-      for (const locale of locales) for (const name of ['title','description'] as const) {
-        const field=draft.content[name]; const translated=field.translations[locale];
-        if (name==='description' && field.sourceText===null && locales.every(l=>field.translations[l]===null)) continue;
-        if (!translated?.text.trim() || (draft.source.kind==='manual'?translated.reviewStatus!=='approved':translated.reviewStatus==='stale') || translated.sourceVersion!==field.sourceVersion)
-          missing(`draft.content.${name}.translations.${locale}`,draft.source.kind==='manual'?'A reviewed translation of the current source is required.':'Current, non-stale reference text is required.');
-        if(translated?.kind==='original' && (locale!==field.sourceLanguage.split('-')[0] || translated.text!==field.sourceText))
-          missing(`draft.content.${name}.translations.${locale}.kind`,'Original text must match the source text and base language.');
-      }
-      if (draft.media.filter(m=>m.isCover).length!==1) missing('draft.media','One ready cover is required.');
-      const media=await tx.query('SELECT * FROM media_assets WHERE vehicle_id=$1 AND state=\'ready\' AND id=ANY($2::uuid[]) FOR UPDATE',[id,draft.media.map(m=>m.id)]);
-      if (media.rowCount!==draft.media.length) missing('draft.media','Every referenced image must be processed and ready.');
-      if(draft.source.kind==='external') for(const stored of media.rows) {
-        if(!stored.rights?.source || stored.rights.source.listingUrl!==draft.source.listingUrl)
-          missing(`draft.media.${stored.id}`,'External photos require provenance for this same listing.');
-      }
-      else if(media.rows.some(stored=>stored.rights?.basis==='unverified'))
-        missing('draft.media','Manual inventory and display examples require declared image ownership or permission.');
-      if (fields.length) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Vehicle is not ready to publish.',fields);
+      const media={rows:prepared.media};
       const images=draft.media.map(m=>{
-        const stored=media.rows.find(r=>r.id===m.id)!;
+        const stored=media.rows.find(r=>r.id===m.id.toLowerCase())!;
         return {id:m.id,url:`/api/v1/media/${m.id}`,alt:m.alt,sortOrder:m.sortOrder,isCover:m.isCover,width:stored.width,height:stored.height};
       }).sort((a,b)=>a.sortOrder-b.sortOrder);
       const snapshot:Snapshot={source:draft.source,facts:draft.facts,price:PublicPriceSchema.parse(draft.price),content:draft.content,images};
@@ -401,7 +414,8 @@ export class InventoryService {
       await tx.query(`UPDATE vehicles SET published_revision_id=$2,publication_state='published',published_at=now(),version=version+1,updated_at=now() WHERE id=$1`,[id,publicationId]);
       await audit(tx,actor,'vehicle.publish',id,version,version+1);
       return toAdmin(await lockVehicle(tx,id));
-    }));
+    });
+    });
   }
   async availability(id:string,input:AvailabilityRequest,actor:Actor) {
     if (Date.parse(input.checkedAt)>Date.now()+60_000) throw new ApiError(400,'INVALID_REQUEST','Availability check cannot be in the future.');

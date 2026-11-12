@@ -56,8 +56,13 @@ export function parseProviderFx(value: unknown, now: Date): QuoteInput {
   return { source: 'exchange_rate_api', asOf: new Date(asOf).toISOString(), expiresAt: new Date(expires).toISOString(), rates: normalizeFxRates(body.rates) };
 }
 
-export async function readFxQuote(tx: FxQueryable): Promise<FxQuote | null> {
-  const result = await tx.query<QuoteRow>(`SELECT f.* FROM public_fx_quote f WHERE ${ACTIVE_FX_SQL}`);
+export async function readFxQuote(tx: FxQueryable, clock: 'transaction' | 'wall' = 'transaction'): Promise<FxQuote | null> {
+  // Public read snapshots keep transaction time. Publication gates may have waited
+  // on vehicle/media/FX locks and must use one actual database clock reading.
+  const result = await tx.query<QuoteRow>(clock === 'wall'
+    ? `WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
+       SELECT f.* FROM public_fx_quote f,clock WHERE f.id=1 AND f.as_of<=clock.now AND f.expires_at>clock.now`
+    : `SELECT f.* FROM public_fx_quote f WHERE ${ACTIVE_FX_SQL}`);
   return result.rows[0] ? mapQuote(result.rows[0]) : null;
 }
 export type FxHealth = { status: 'missing' | 'fresh' | 'retained' | 'expired'; version: string | null;

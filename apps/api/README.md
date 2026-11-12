@@ -60,6 +60,12 @@ pnpm --filter @hd/api start
 
 迁移位于 `migrations/`，SQL 是数据库结构的维护入口；Better Auth 的 Drizzle 映射在 `src/db/schema.ts`。通过 Drizzle migrator 和 advisory lock 显式应用已审 SQL，不在应用启动或构建时改库。不要对已有环境使用 schema push，也不要修改已发布迁移；下一变更追加 SQL 与 journal。生产应分别配置迁移身份和最小权限运行身份，本地 Compose 不代表生产权限验证。
 
+BE-ADUX10 增加迁移 0014：员工车辆公开草稿版本与按员工保存的十分钟预览确认。先备份并显式应用迁移，再切换 API；新版就绪检查要求该列／表存在。草稿 asking 金额和采购成本可空，发布时仍须完整业务资料、三语审核及当前预览确认。GET `publish-readiness`／`publication-preview` 与 POST `publication-preview/confirm` 的精确 schema、iframe 协议及 source 区别见[车辆接口第17节](../../docs/开发/车辆接口.md#17-be-adux10-发布检查与私有预览)。API 与 AD／FE 必须配套升级；旧成功发布回执可重放，新发布请求不能绕过确认。旧公开快照不会被迁移改写。
+
+本轮隔离集成测试 `integration.test.ts`、`publication-preview.test.ts`、`publication-preview-revision.test.ts` 支持可选 `API_TEST_DATABASE_SOCKET`，但仍先验证本机 `API_TEST_DATABASE_URL` 和随机测试库；此变量仅测试读取，不改变生产配置校验。迁移维护 SQL 须保持车辆父行先于草稿、侧表、媒体与确认的锁顺序，或者停写执行。运行环境与新接口是否已切换以本轮日志为准。
+
+回退须考虑新草稿数据：旧 API 不识别新保存的 asking 空金额，不能只回退二进制并继续连接已产生此类写入的库。切换前保存库／媒体快照；切换后如已有编辑，先评估兼容数据或前滚修复，不能无条件恢复旧快照丢弃新写入。公开快照的严格金额形状保持原样。
+
 ### 外部目录隔离验证
 
 0004 增加外部批次、挂牌、媒体、覆盖和试译账本。`EXTERNAL_CATALOG_MODE=synthetic` 仅接受 `HOST=127.0.0.1`、无连接选项的本机 `127.0.0.1/hd_ext_*` 测试库、非生产环境及 `TRANSLATION_PROVIDER=disabled`。默认关闭。先显式迁移新库，再使用独立端口与媒体根启动。导入需要管理员会话，可用 `@hd/contracts/fixtures.makeExternalImportFixture(200)` 作为 `/api/v1/admin/external/batches` 请求体。回归 `pnpm --filter @hd/api test:integration` 会创建并清理自己的随机库。接口、角色和后续依赖见[车辆接口第15节](../../docs/开发/车辆接口.md#15-be-ext-01-外部挂牌与试译干跑)。
