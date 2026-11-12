@@ -294,7 +294,9 @@ export class InventoryService {
       await requirePublicationActor(tx,actor.id);
       const row=await lockVehicle(tx,id,input.version);
       const current=syncLocalization(id,row.data,storedLocalization(row));
-      if(current.revision!==input.localizationRevision||canonical(input.localization.facts)!==canonical(current.data.facts))throw conflict();
+      if(current.revision!==input.localizationRevision)throw conflict();
+      // Editable generation/drivetrain travel with this transaction. applyLocalizationInput
+      // validates the old field bindings before deriving new/stale generation translations.
       const required=new Set(translationBundle(row).sourceLanguageConfirmationRequired);
       const confirmations=new Set(input.sourceLanguageConfirmations);
       if([...confirmations].some(ref=>!required.has(ref)))throw conflict();

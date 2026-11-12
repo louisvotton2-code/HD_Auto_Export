@@ -9,7 +9,7 @@ import type { InjectOptions } from 'fastify';
 import sharp from 'sharp';
 import { makeDemoVehicleDraftFixture, makeExternalVehicleDraftFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { AdminVehicleResponseSchema, PublicationPreviewResponseSchema, PublishReadinessResponseSchema,
-  VehicleLocalizationSchema, type AdminVehicle, type PublicationPreview, type PublicationPreviewText, type VehicleDraftInput } from '@hd/contracts/admin';
+  VehicleLocalizationSchema, VehicleTranslationBundleResponseSchema, type AdminVehicle, type PublicationPreview, type PublicationPreviewText, type VehicleDraftInput } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, type Locale } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
@@ -348,6 +348,36 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.equal(replay.statusCode, 200, replay.body); assert.deepEqual(replay.json().data, receipt);
       assert.equal((await publish({ ...vehicle, version: originalVersion })).statusCode, 409);
       assert.equal((await app.db.pool.query('SELECT count(*)::int AS n FROM vehicle_publications WHERE vehicle_id=$1', [vehicle.id])).rows[0].n, 1);
+    });
+
+    await t.test('bundle generation and drivetrain edits preserve the old public snapshot until current translations and a new preview are published', async () => {
+      let vehicle=await published(await ready());const oldPreview=await preview(vehicle.id);
+      const locales=['zh','en','ru'] as const;
+      const original=new Map(await Promise.all(locales.map(async locale=>[locale,await publicDetail(vehicle.id,locale)] as const)));
+      const fetched=await call({url:endpoint(vehicle.id,'/translation-bundle'),headers:headers()});assert.equal(fetched.statusCode,200,fetched.body);
+      let bundle=VehicleTranslationBundleResponseSchema.parse(fetched.json()).data;
+      const payload=()=>({version:bundle.vehicle.version,localizationRevision:bundle.localization.revision,content:bundle.vehicle.draft.content,
+        localization:bundle.localization.data,sourceLanguageConfirmations:[]});
+      bundle.localization.data.facts={generation:{id:'generation-one',name:'第一代'},drivetrain:'awd'};
+      bundle.vehicle.draft.content.title.translations.en={...bundle.vehicle.draft.content.title.translations.en!,text:'Updated title and generation',kind:'human',reviewStatus:'pending',engineVersion:null};
+      const saved=await call({method:'PUT',url:endpoint(vehicle.id,'/translation-bundle'),headers:headers(),payload:payload()});assert.equal(saved.statusCode,200,saved.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(saved.json()).data;vehicle=bundle.vehicle;
+      assert.equal(vehicle.hasUnpublishedChanges,true);assert.ok((await preview(vehicle.id)).publicContentRevision>oldPreview.publicContentRevision);
+      assert.equal((await confirm(vehicle.id,oldPreview)).statusCode,409);
+      const state=await readiness(vehicle.id);assert.equal(state.localizationReady,false);
+      assert.ok(state.issues.some(issue=>issue.path==='localization.generation.en'));
+      assert.equal((await publish(vehicle)).statusCode,422);
+      for(const locale of locales)assert.deepEqual(await publicDetail(vehicle.id,locale),original.get(locale));
+      const generation=bundle.localization.data.fields.find(field=>field.ref==='generation')!;
+      for(const locale of ['en','ru'] as const)generation.translations[locale]={text:locale==='en'?'First generation':'Первое поколение',kind:'human',reviewStatus:'pending',sourceVersion:generation.sourceVersion,humanEditVersion:0,engineVersion:null};
+      const completed=await call({method:'PUT',url:endpoint(vehicle.id,'/translation-bundle'),headers:headers(),payload:payload()});assert.equal(completed.statusCode,200,completed.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(completed.json()).data;vehicle=bundle.vehicle;
+      const views=await Promise.all(locales.map(locale=>preview(vehicle.id,locale)));
+      vehicle=await published(vehicle);await assertPublishedMatchesPreview(views);
+      for(const locale of locales){const detail=await publicDetail(vehicle.id,locale);
+        assert.equal(detail.facts.drivetrain,'awd');assert.equal(detail.facts.generation?.id,'generation-one');
+        assert.equal(detail.facts.generation?.name,locale==='zh'?'第一代':locale==='en'?'First generation':'Первое поколение');}
+      assert.equal((await publicDetail(vehicle.id,'en')).content.title?.text,'Updated title and generation');
     });
 
     await t.test('configuration uses the confirmed three-language snapshot while numeric values remain original and lists stay compact', async () => {

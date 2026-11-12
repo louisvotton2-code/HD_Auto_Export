@@ -88,6 +88,8 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
         localization:(await app.db.pool.query('SELECT * FROM vehicle_localizations WHERE vehicle_id=$1',[id])).rows[0],
         vehicle:(await app.db.pool.query('SELECT * FROM vehicles WHERE id=$1',[id])).rows[0]});
       const before=await stored();
+      const outOfScope=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:{...input,localization:{...input.localization,facts:{...input.localization.facts,mileageKm:0}}}});
+      assert.equal(outOfScope.statusCode,400,outOfScope.body);assert.deepEqual(await stored(),before);
       await app.db.pool.query("CREATE FUNCTION ux11_fail_bundle_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operation='vehicle.translationBundle.save' THEN RAISE EXCEPTION 'synthetic bundle rollback'; END IF; RETURN NEW; END $$");
       await app.db.pool.query('CREATE TRIGGER ux11_bundle_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION ux11_fail_bundle_audit()');
       try {
@@ -99,6 +101,67 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
       assert.equal(bundle.vehicle.draft.content.title.sourceText,title);assert.equal(bundle.vehicle.draft.content.title.translations.en?.kind,'machine');assert.equal(bundle.vehicle.draft.content.title.translations.en?.reviewStatus,'pending');
       const readiness=await call({method:'GET',url:`${route}/publish-readiness`,headers});assert.equal(readiness.json().data.localizationReady,true,readiness.body);
       const stale=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:input});assert.equal(stale.statusCode,409,stale.body);
+    });
+    await t.test('bundle facts and text save atomically while generation translations follow the returned source identity',async()=>{
+      let bundle=await getBundle();assert.equal(bundle.localization.data.facts.generation,null);
+      const input=saveInput(bundle);input.localization.facts={generation:{id:'generation_one',name:'第一代'},drivetrain:'awd'};
+      input.content.title.translations.en={...input.content.title.translations.en!,text:'Human title edited with generation',kind:'human',reviewStatus:'pending',engineVersion:null};
+      const stored=async()=>({draft:(await app.db.pool.query('SELECT * FROM vehicle_drafts WHERE vehicle_id=$1',[id])).rows[0],
+        localization:(await app.db.pool.query('SELECT * FROM vehicle_localizations WHERE vehicle_id=$1',[id])).rows[0],
+        vehicle:(await app.db.pool.query('SELECT * FROM vehicles WHERE id=$1',[id])).rows[0]});
+      const before=await stored();
+      const staleRevision=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:{...input,localizationRevision:input.localizationRevision-1}});
+      assert.equal(staleRevision.statusCode,409,staleRevision.body);assert.deepEqual(await stored(),before);
+      const forged=structuredClone(input);forged.localization.fields.push({...forged.localization.fields[0]!,ref:'generation',sourceText:'第一代'});
+      const extra=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:forged});assert.equal(extra.statusCode,409,extra.body);assert.deepEqual(await stored(),before);
+      const estimate=await call({method:'POST',url:`${route}/translation-plans`,headers,payload:{version:bundle.vehicle.version}});
+      assert.equal(estimate.statusCode,200,estimate.body);const oldPlan=estimate.json().data,used=calls;
+      await app.db.pool.query("CREATE FUNCTION ux11_fail_facts_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operation='vehicle.translationBundle.save' THEN RAISE EXCEPTION 'synthetic facts rollback'; END IF; RETURN NEW; END $$");
+      await app.db.pool.query('CREATE TRIGGER ux11_facts_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION ux11_fail_facts_audit()');
+      try {
+        const failed=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:input});assert.equal(failed.statusCode,500,failed.body);
+        assert.deepEqual(await stored(),before);
+      } finally {await app.db.pool.query('DROP TRIGGER ux11_facts_failure ON audit_events');await app.db.pool.query('DROP FUNCTION ux11_fail_facts_audit()');}
+      const saved=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:input});assert.equal(saved.statusCode,200,saved.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(saved.json()).data;
+      assert.deepEqual(bundle.localization.data.facts,input.localization.facts);assert.equal(bundle.vehicle.version,input.version+1);assert.equal(bundle.localization.revision,input.localizationRevision+1);
+      assert.equal(bundle.vehicle.draft.content.title.translations.en?.text,input.content.title.translations.en.text);
+      assert.equal(bundle.vehicle.draft.content.title.sourceText,input.content.title.sourceText);
+      let generation=bundle.localization.data.fields.find(field=>field.ref==='generation')!;
+      assert.equal(generation.sourceText,'第一代');assert.equal(generation.sourceLanguage,'zh');assert.equal(generation.sourceVersion,1);
+      assert.equal(generation.translations.zh?.text,'第一代');assert.equal(generation.translations.zh?.kind,'original');
+      assert.equal(generation.translations.en,null);assert.equal(generation.translations.ru,null);
+      const state=await call({method:'GET',url:`${route}/publish-readiness`,headers});assert.equal(state.json().data.localizationReady,false);
+      assert.ok(state.json().data.issues.some((issue:{path:string})=>issue.path==='localization.generation.en'));
+      const old=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:input});assert.equal(old.statusCode,409,old.body);
+      const invalidPlan=await call({method:'POST',url:`${route}/translation-plans/${oldPlan.id}/generate`,headers:{...headers,'idempotency-key':randomUUID()},payload:{confirmed:true,sourceFingerprint:oldPlan.sourceFingerprint,maximumCharacters:oldPlan.estimate.maximumCharacters,acceptUnknownCost:true}});
+      assert.equal(invalidPlan.statusCode,409,invalidPlan.body);assert.equal(calls,used);
+      const nextPlan=await call({method:'POST',url:`${route}/translation-plans`,headers,payload:{version:bundle.vehicle.version}});assert.equal(nextPlan.statusCode,200,nextPlan.body);
+      assert.ok(nextPlan.json().data.fields.some((field:{ref:string;sourceText:string})=>field.ref==='generation'&&field.sourceText==='第一代'));
+
+      for(const locale of ['en','ru'] as const) generation.translations[locale]={text:locale==='en'?'First generation':'Первое поколение',kind:'human',reviewStatus:'pending',sourceVersion:generation.sourceVersion,humanEditVersion:0,engineVersion:null};
+      const translated=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:saveInput(bundle)});assert.equal(translated.statusCode,200,translated.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(translated.json()).data;generation=bundle.localization.data.fields.find(field=>field.ref==='generation')!;
+      const currentGeneration=structuredClone(generation),drive=saveInput(bundle);drive.localization.facts.drivetrain='fwd';
+      const driveSaved=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:drive});assert.equal(driveSaved.statusCode,200,driveSaved.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(driveSaved.json()).data;assert.equal(bundle.localization.data.facts.drivetrain,'fwd');
+      assert.deepEqual(bundle.localization.data.fields.find(field=>field.ref==='generation'),currentGeneration,'drivetrain alone must not retranslate generation');
+
+      const renamed=saveInput(bundle);renamed.localization.facts.generation={id:'generation_two',name:'第二代'};
+      const renamedSaved=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:renamed});assert.equal(renamedSaved.statusCode,200,renamedSaved.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(renamedSaved.json()).data;generation=bundle.localization.data.fields.find(field=>field.ref==='generation')!;
+      assert.equal(generation.sourceVersion,currentGeneration.sourceVersion+1);assert.notEqual(generation.sourceHash,currentGeneration.sourceHash);
+      assert.equal(generation.translations.zh?.text,'第二代');assert.equal(generation.translations.en?.text,'First generation');assert.equal(generation.translations.en?.reviewStatus,'stale');
+      assert.equal(generation.translations.ru?.text,'Первое поколение');assert.equal(generation.translations.ru?.reviewStatus,'stale');
+      const removed=saveInput(bundle),retired=bundle.localization.retiredFieldCount;removed.localization.facts={generation:null,drivetrain:null};
+      const removedSaved=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:removed});assert.equal(removedSaved.statusCode,200,removedSaved.body);
+      bundle=VehicleTranslationBundleResponseSchema.parse(removedSaved.json()).data;assert.deepEqual(bundle.localization.data.facts,{generation:null,drivetrain:null});
+      assert.equal(bundle.localization.data.fields.some(field=>field.ref==='generation'),false);assert.equal(bundle.localization.retiredFieldCount,retired+1);assert.equal(calls,used);
+      const contenders=(['fwd','rwd'] as const).map(drivetrain=>({...structuredClone(saveInput(bundle)),localization:{...structuredClone(bundle.localization.data),facts:{generation:null,drivetrain}}}));
+      const raced=await Promise.all(contenders.map(payload=>call({method:'PUT',url:`${route}/translation-bundle`,headers,payload})));
+      assert.deepEqual(raced.map(response=>response.statusCode).sort(),[200,409]);
+      const winner=VehicleTranslationBundleResponseSchema.parse(raced.find(response=>response.statusCode===200)!.json()).data;
+      assert.deepEqual((await getBundle()).localization.data.facts,winner.localization.data.facts);assert.equal(winner.vehicle.version,bundle.vehicle.version+1);
     });
     await t.test('source changes invalidate unexecuted estimates before any paid work',async()=>{
       const bundle=await getBundle(),estimate=await call({method:'POST',url:`${route}/translation-plans`,headers,payload:{version:bundle.vehicle.version}});
