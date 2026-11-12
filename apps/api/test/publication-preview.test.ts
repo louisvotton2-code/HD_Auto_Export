@@ -123,6 +123,36 @@ test('publication preview gates use current persisted data and an actor-specific
       }
       return saveLocalization(value);
     }
+    async function approveContent(vehicle: AdminVehicle) {
+      const response = await call({ url: endpoint(vehicle.id), headers: headers() });
+      assert.equal(response.statusCode, 200, response.body);
+      const before = AdminVehicleResponseSchema.parse(response.json()).data;
+      assert.deepEqual(before, vehicle);
+      const edited = structuredClone(before);
+      for (const field of Object.values(edited.draft.content)) for (const locale of ['zh', 'en', 'ru'] as const) {
+        assert.equal(field.translations[locale]!.reviewStatus, 'pending');
+        field.translations[locale]!.reviewStatus = 'approved';
+      }
+      // This explicit authenticated PATCH represents staff review of saved content;
+      // keep the original/machine provenance and engine metadata intact.
+      const saved = await save(edited);
+      const readback = await call({ url: endpoint(vehicle.id), headers: headers() });
+      assert.equal(readback.statusCode, 200, readback.body);
+      const current = AdminVehicleResponseSchema.parse(readback.json()).data;
+      assert.deepEqual(current, saved);
+      for (const name of ['title', 'description'] as const) {
+        const previous = before.draft.content[name], reviewed = current.draft.content[name];
+        assert.equal(reviewed.sourceLanguage, previous.sourceLanguage); assert.equal(reviewed.sourceText, previous.sourceText);
+        assert.equal(reviewed.sourceVersion, previous.sourceVersion);
+        for (const locale of ['zh', 'en', 'ru'] as const) {
+          const { reviewStatus: _pending, humanEditVersion: beforeEdit, ...original } = previous.translations[locale]!;
+          const { reviewStatus, humanEditVersion, ...retained } = reviewed.translations[locale]!;
+          assert.equal(reviewStatus, 'approved'); assert.ok(humanEditVersion > beforeEdit);
+          assert.deepEqual(retained, original);
+        }
+      }
+      return current;
+    }
     async function upload(vehicle: AdminVehicle) {
       const png = await sharp({ create: { width: 16, height: 12, channels: 3, background: '#234567' } }).png().toBuffer();
       const source = vehicle.draft.source;
@@ -145,9 +175,6 @@ test('publication preview gates use current persisted data and an actor-specific
         value.facts.trim = { id: 'test_trim', name: 'Synthetic configuration' };
         value.facts.mileageKm = 0;
         value.internal = { purchaseCost: { amount: '12345.67', currency: 'USD' }, notes: 'PRIVATE_PREVIEW_NOTE', supplierContact: 'PRIVATE_PREVIEW_CONTACT', vin: 'LTEST123456789012' };
-        for (const field of Object.values(value.content)) for (const locale of ['zh', 'en', 'ru'] as const) {
-          field.translations[locale]!.reviewStatus = 'approved';
-        }
       }
       return value;
     }
@@ -161,6 +188,18 @@ test('publication preview gates use current persisted data and an actor-specific
         const response = await call({ method: 'POST', url: endpoint(vehicle.id, '/availability'), headers: headers(),
           payload: { version: vehicle.version, availability: 'available', checkedAt: new Date().toISOString() } });
         assert.equal(response.statusCode, 200, response.body); vehicle = AdminVehicleResponseSchema.parse(response.json()).data;
+      }
+      if (kind === 'external') {
+        const pending = await readiness(vehicle.id);
+        assert.equal(pending.requiredFieldsReady, true); assert.equal(pending.localizationReady, false);
+        const rejected = await rejectedPublish(vehicle);
+        for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
+          assert.equal(vehicle.draft.content[field].translations[locale]!.reviewStatus, 'pending');
+          const issuePath = `draft.content.${field}.translations.${locale}`;
+          assert.ok(pending.issues.some(issue => issue.path === issuePath));
+          assert.ok(rejected.json().error.fields.some((issue: { path: string }) => issue.path === issuePath));
+        }
+        vehicle = await approveContent(vehicle);
       }
       return approveDisplay(vehicle.id);
     }
