@@ -6,11 +6,58 @@ import { acknowledgePublicationPreview, chooseYear, chooseUtcDateTime } from './
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
 import { makeExternalImportFixture } from '@hd/contracts/fixtures';
+import { extendRateDeadline, rateCooldownMs, rateLimitSeconds } from './live-rate-window';
+
+const rateWindows = new WeakMap<Page, { deadline: number; observations: number }>();
+function observeRateWindow(page: Page, response: { url(): string; headers(): Record<string, string> }) {
+  const url = new URL(response.url());
+  if (url.origin !== 'http://127.0.0.1:3319' || !(url.pathname.startsWith('/api/v1/admin/') || url.pathname.startsWith('/api/auth/'))) return;
+  const state = rateWindows.get(page);
+  if (!state) return;
+  const next = extendRateDeadline(state.deadline, response.headers(), Date.now());
+  if (next !== state.deadline) { state.deadline = next; state.observations++; }
+}
+async function waitForServerWindow(waitMs: number, reason: 'afterEach' | 'login-429') {
+  if (!waitMs) return;
+  // Applied only when the body is over, or for the one explicitly observed login 429 wait.
+  // Existing test failures and all UI/action timeouts remain unchanged.
+  const info = test.info();
+  info.setTimeout(info.timeout + waitMs);
+  await test.step(`等待服务端限流窗口：${reason}（${waitMs}ms）`, async () => {
+    console.log(JSON.stringify({ event: 'live-server-rate-window', reason, waitMs }));
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  });
+}
+test.beforeEach(async ({ page }) => {
+  rateWindows.set(page, { deadline: 0, observations: 0 });
+  page.on('response', response => observeRateWindow(page, response));
+});
+test.afterEach(async ({ page }) => {
+  // Stop iframe/readiness traffic before measuring the final window, including after a failed body.
+  await page.close();
+  const state = rateWindows.get(page);
+  await waitForServerWindow(rateCooldownMs(state?.deadline ?? 0, Date.now()), 'afterEach');
+  rateWindows.delete(page);
+});
 
 async function login(page: Page, path = '/admin/vehicles') {
   const allowedDatabase = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only' ? /^hd_ext_ad_[a-f0-9]{16}$/ : /^hd_admin_test_[a-f0-9]{16}$/;
   if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !allowedDatabase.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
-  await page.goto(path);
+  const isIdentityResponse = (response: import('@playwright/test').Response) => response.request().method() === 'GET'
+    && response.url() === 'http://127.0.0.1:3319/api/v1/admin/me';
+  const [initialIdentity] = await Promise.all([page.waitForResponse(isIdentityResponse, { timeout: 15_000 }), page.goto(path)]);
+  let identity = initialIdentity;
+  if (identity.status() === 429) {
+    const seconds = rateLimitSeconds(identity.headers()['retry-after']);
+    expect(seconds, 'Login 429 must provide a relative Retry-After between 1 and 60 seconds').not.toBeNull();
+    await waitForServerWindow(rateCooldownMs(Date.now() + seconds! * 1000, Date.now()), 'login-429');
+    [identity] = await Promise.all([
+      page.waitForResponse(isIdentityResponse, { timeout: 15_000 }),
+      page.getByRole('button', { name: /重新连接$/ }).click(),
+    ]);
+  }
+  // A second 429 or any unexpected response fails here, before waiting for a missing login field.
+  expect(identity.status(), 'A fresh isolated browser must reach the unauthenticated login form').toBe(401);
   await page.getByLabel('账号或工作邮箱').fill('browser-test@example.invalid');
   await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TEST_PASSWORD);
   await page.getByRole('button', { name: /登录工作台$/ }).click();
@@ -51,6 +98,22 @@ async function selectPetrolFromUnknown(page: Page) {
   await expect(input).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('.ant-select').filter({ has: input }).getByTitle('汽油', { exact: true })).toBeVisible();
 }
+async function selectCurrency(page: Page, label: '公开价格币种' | '采购成本币种', currency: 'USD' | 'CNY') {
+  const input = page.getByRole('combobox', { name: label, exact: true });
+  await input.click();
+  await expect(input).toHaveAttribute('aria-expanded', 'true');
+  await expect(input).toHaveAttribute('aria-controls', /\S+/);
+  const controls = await input.getAttribute('aria-controls');
+  const list = page.locator(`[id=${JSON.stringify(controls)}]`);
+  const popup = page.locator('.ant-select-dropdown:visible').filter({ has: list });
+  await expect(popup).toHaveCount(1);
+  // Currency labels also appear in the hidden accessibility list; click the rendered option only.
+  const option = popup.locator('.ant-select-item-option-content:visible').filter({ hasText: new RegExp(`^${currency}$`) });
+  await expect(option).toHaveCount(1);
+  await option.click();
+  await expect(input).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.ant-select').filter({ has: input }).getByTitle(currency, { exact: true })).toBeVisible();
+}
 async function contentAndImage(page: Page, vehicle: AdminVehicle, approve: boolean) {
   if (vehicle.draft.source.kind === 'manual') {
     await tab(page, '基础资料');
@@ -61,12 +124,14 @@ async function contentAndImage(page: Page, vehicle: AdminVehicle, approve: boole
     await tab(page, '价格与内部信息');
     await select(page, '公开价格口径', '公开报价');
     await page.getByLabel('公开价格金额', { exact: true }).fill('20000');
-    await select(page, '公开价格币种', 'USD');
+    await selectCurrency(page, '公开价格币种', 'USD');
     await page.getByLabel('内部采购成本', { exact: true }).fill('15000');
-    await select(page, '采购成本币种', 'USD');
+    await selectCurrency(page, '采购成本币种', 'USD');
     await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
     vehicle = await save(page, vehicle.id);
     expect(vehicle.draft.facts.powertrain).toBe('petrol');
+    expect(vehicle.draft.price.money?.currency).toBe('USD');
+    expect(vehicle.draft.internal.purchaseCost?.currency).toBe('USD');
   }
   await tab(page, '公开字段多语');
   for (const [locale, text] of [['中文', vehicle.draft.content.title.sourceText!], ['英文', 'Synthetic test vehicle'], ['俄文', 'Тестовый автомобиль']]) {
@@ -166,6 +231,7 @@ async function fitsViewport(page: Page) {
 async function readRespectingRateLimit(page: Page, url: string) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const response = await page.request.get(url);
+    observeRateWindow(page, response);
     if (response.status() !== 429 || attempt === 4) return response;
     const seconds = Number(response.headers()['retry-after']);
     const minimumMs = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1000) : 60_000;
@@ -511,11 +577,11 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await tab(page, '价格与内部信息');
   await select(page, '公开价格口径', '来源参考价格');
   await page.getByLabel('公开价格金额', { exact: true }).fill('123456.78');
-  await page.getByRole('combobox', { name: '公开价格币种', exact: true }).click();
-  await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').filter({ hasText: /^CNY$/ }).click();
+  await selectCurrency(page, '公开价格币种', 'CNY');
   await (await notes(page)).fill('PRIVATE_EXTERNAL_LIFECYCLE_ONLY');
   const initial = await save(page);
   expect(initial.draft.source).toMatchObject({ kind: 'external', listingUrl, externalId, collectedAt });
+  expect(initial.draft.price.money?.currency).toBe('CNY');
   expect(initial.draft.facts.mileageKm).toBe(12345);
   expect(initial.availability).toBe('unknown'); expect(initial.availabilityCheckedAt).toBeNull();
   await expect(page.getByLabel('来源平台标识', { exact: true })).toBeDisabled();
@@ -583,7 +649,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await selectPetrolFromUnknown(page);
   await tab(page, '价格与内部信息');
   await page.getByLabel('内部采购成本', { exact: true }).fill('100000');
-  await select(page, '采购成本币种', 'CNY');
+  await selectCurrency(page, '采购成本币种', 'CNY');
   const condition = '仅用于隔离测试的外部挂牌车况，不代表真实车辆或库存。';
   await page.getByLabel('车况描述', { exact: true }).fill(condition);
   await save(page, initial.id);
@@ -595,6 +661,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   }
   const reviewed = await save(page, initial.id);
   expect(reviewed.draft.facts.powertrain).toBe('petrol');
+  expect(reviewed.draft.internal.purchaseCost?.currency).toBe('CNY');
   for (const field of [reviewed.draft.content.title, reviewed.draft.content.description]) {
     expect(Object.values(field.translations).every(text => text?.reviewStatus === 'approved')).toBe(true);
   }
