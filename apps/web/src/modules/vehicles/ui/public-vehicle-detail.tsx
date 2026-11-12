@@ -7,6 +7,7 @@ import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
+import { externalDetailCopy } from '../external-detail-copy';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
   publicAvailabilityLabel,
@@ -122,7 +123,7 @@ export function PublicVehicleDetail({
             />
 
             <section className={styles.card}>
-              <details className={styles.information}>
+              <details className={styles.information} open>
                 <summary>
                   {copy.basicInformation}
                   <span aria-hidden="true">⌄</span>
@@ -218,6 +219,15 @@ export function PublicVehicleDetail({
                 <p>{copy.consultBody}</p>
                 <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" />
                 <p className={styles.smallNote}>{t.contactNote}</p>
+                {reportId && (
+                  <section className={styles.reportRequest} data-vehicle-report-request>
+                    <h3>
+                      <Icon name="document" size={17} />
+                      {externalDetailCopy[locale].requestReport}
+                    </h3>
+                    <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" purpose="inspection" />
+                  </section>
+                )}
               </div>
             </section>
             {reportId && <VehicleReportLink reportId={reportId} locale={locale} />}

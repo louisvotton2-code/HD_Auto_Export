@@ -9,6 +9,7 @@ import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
 import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
 import { VehicleFavorites } from '@/modules/vehicles';
+import { EnquiryProvider, EnquiryTrigger } from '@/modules/enquiries';
 import { getShellMessages } from '@/i18n/client-messages';
 import '../globals.css';
 import '@/shared/ui/brand.css';
@@ -55,6 +56,7 @@ export default async function LocaleLayout({
     <html lang={locale === 'zh' ? 'zh-Hans' : locale} data-scroll-behavior="smooth">
       <body>
         <NextIntlClientProvider messages={messages}>
+          <EnquiryProvider locale={locale}>
           <div className="site-navigation-progress" aria-hidden="true" />
           <a href="#main" className="skip-link">
             {locale === 'zh'
@@ -63,11 +65,12 @@ export default async function LocaleLayout({
                 ? 'К основному содержимому'
                 : 'Skip to content'}
           </a>
-          <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} />
+          <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} enquiryAction={<EnquiryTrigger />} />
           {children}
           <SiteFooter />
           <InteractionMotion />
           <PublicNavigationFreshness />
+          </EnquiryProvider>
         </NextIntlClientProvider>
       </body>
     </html>

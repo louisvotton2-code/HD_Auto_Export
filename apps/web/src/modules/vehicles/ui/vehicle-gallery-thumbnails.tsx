@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { Icon } from '@/shared/ui/icon';
 import { detailContent } from '../detail-content';
+import type { VehicleGalleryImage } from './vehicle-gallery-image';
 import styles from './vehicle-gallery.module.css';
 
 function ThumbnailImage({ src }: { src: string }) {
@@ -36,11 +36,13 @@ export function VehicleGalleryThumbnails({
   index,
   locale,
   onSelect,
+  disabled = false,
 }: {
-  images: PublicMedia[];
+  images: VehicleGalleryImage[];
   index: number;
   locale: Locale;
   onSelect?: (index: number) => void;
+  disabled?: boolean;
 }) {
   const rail = useRef<HTMLElement>(null);
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
@@ -94,12 +96,17 @@ export function VehicleGalleryThumbnails({
             rel="noopener noreferrer"
             aria-label={t.showImage(imageIndex + 1)}
             aria-current={imageIndex === index ? 'true' : undefined}
+            aria-disabled={disabled || undefined}
             data-remote-thumb={local ? undefined : image.id}
-            onClick={onSelect && ((event) => {
+            onClick={(onSelect || disabled) ? ((event) => {
+              if (disabled) {
+                event.preventDefault();
+                return;
+              }
               if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
-              onSelect(imageIndex);
-            })}
+              onSelect?.(imageIndex);
+            }) : undefined}
           >
             {load
               ? <ThumbnailImage key={`${src}:${image.remote?.revision ?? 0}`} src={src} />

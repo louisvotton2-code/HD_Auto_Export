@@ -12,7 +12,6 @@ import {
   type MouseEvent,
   type TouchEvent,
 } from 'react';
-import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
@@ -20,11 +19,13 @@ import { reportExternalPhotoFailure } from '../application/report-external-photo
 import { detailContent } from '../detail-content';
 import { VehiclePhotoFallback } from './vehicle-photo';
 import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
+import type { VehicleGalleryImage, VehicleGalleryImageStatus } from './vehicle-gallery-image';
+import { useActiveImageStatus } from './use-active-image-status';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
-export type VehicleDestination = { slug: string; label: string };
-const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
+export type VehicleDestination = { slug: string; label: string; flag?: string };
+const imageResourceKey = (image: VehicleGalleryImage) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
 const tapTravel = 10;
 
 /** Full-size viewing stays on the active photo and retains one previous photo for the slide. */
@@ -32,10 +33,12 @@ export function VehicleGallery({
   images,
   title,
   locale,
+  onActiveImageStatus,
 }: {
-  images: PublicMedia[];
+  images: VehicleGalleryImage[];
   title: string;
   locale: Locale;
+  onActiveImageStatus?: (status: VehicleGalleryImageStatus) => void;
 }) {
   const t = detailContent[locale];
   const ordered = useMemo(
@@ -53,12 +56,16 @@ export function VehicleGallery({
   const [retry, setRetry] = useState(0);
   const [direction, setDirection] = useState(1);
   const [previousId, setPreviousId] = useState<string | null>(null);
+  const [firstImageDecoded, setFirstImageDecoded] = useState<string | null>(null);
+  const [staffFailed, setStaffFailed] = useState(false);
+  const staffTerminated = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const pageOverflow = useRef<string | null>(null);
   const mainPhotoLink = useRef<HTMLAnchorElement>(null);
   const emptyPhoto = useRef<HTMLDivElement>(null);
   const selectedImage = useRef<HTMLImageElement>(null);
+  const viewerImage = useRef<HTMLImageElement>(null);
   const touch = useRef<{
     id: number;
     x: number;
@@ -76,6 +83,28 @@ export function VehicleGallery({
   const selected = ordered[index];
   const hasPhoto = Boolean(selected);
   const previous = ordered.find((image) => image.id === previousId && image.id !== selected?.id);
+  const firstImageId = ordered[0]?.id ?? null;
+  const staffLocked = Boolean(onActiveImageStatus) && (
+    staffFailed || !firstImageId || firstImageDecoded !== firstImageId
+  );
+  const handleActiveImageStatus = useCallback((status: VehicleGalleryImageStatus) => {
+    if (staffTerminated.current) return;
+    if (status.status === 'error') {
+      staffTerminated.current = true;
+      setStaffFailed(true);
+    }
+    if (status.status === 'ready' && status.imageId === firstImageId) {
+      setFirstImageDecoded(status.imageId);
+    }
+    onActiveImageStatus?.(status);
+  }, [firstImageId, onActiveImageStatus]);
+
+  useActiveImageStatus({
+    imageRef: opened ? viewerImage : selectedImage,
+    imageId: selected?.id ?? null,
+    imageKey: selected ? `${imageResourceKey(selected)}:${retry}:${opened ? 'viewer' : 'main'}` : null,
+    onStatus: onActiveImageStatus ? handleActiveImageStatus : undefined,
+  });
 
   const restorePageScroll = useCallback(() => {
     if (pageOverflow.current === null) return;
@@ -103,13 +132,14 @@ export function VehicleGallery({
   useEffect(() => {
     const image = selectedImage.current;
     if (!selected || !image?.complete) return;
+    if (!acceptsImageEvent(selected, image)) return;
     // An SSR image may finish before hydration, or remain mounted during a quick return.
     if (image.naturalWidth > 0) loaded(selected);
     else failed(selected);
   }, [selected?.id, selected?.url, selected?.remote?.revision, retry]);
 
   function choose(nextIndex: number) {
-    if (!ordered.length) return;
+    if (!ordered.length || staffLocked) return;
     const targetIndex = (nextIndex + ordered.length) % ordered.length;
     const image = ordered[targetIndex]!;
     if (image.id === selected?.id) return;
@@ -122,7 +152,7 @@ export function VehicleGallery({
   }
   function showViewer(trigger: HTMLAnchorElement) {
     const viewer = dialog.current;
-    if (!viewer || viewer.open) return;
+    if (!viewer || viewer.open || staffLocked) return;
     viewer.showModal();
     opener.current = trigger;
     pageOverflow.current ??= document.body.style.overflow;
@@ -130,6 +160,10 @@ export function VehicleGallery({
     setOpened(true);
   }
   function openViewer(event: MouseEvent<HTMLAnchorElement>) {
+    if (staffLocked) {
+      event.preventDefault();
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     showViewer(event.currentTarget);
@@ -212,14 +246,21 @@ export function VehicleGallery({
     event.preventDefault();
     showViewer(start.photoLink);
   }
-  function loaded(image: PublicMedia) {
+  function loaded(image: VehicleGalleryImage) {
     const key = imageResourceKey(image);
     loadedImages.current.add(key);
     failedImages.current.delete(key);
     setLoadingId((current) => (current === key ? null : current));
     setFailedId((current) => (current === key ? null : current));
   }
-  function failed(image: PublicMedia) {
+  function acceptsImageEvent(image: VehicleGalleryImage, element: HTMLImageElement) {
+    return !onActiveImageStatus || (
+      element === (opened ? viewerImage.current : selectedImage.current)
+      && element.isConnected
+      && element.dataset.galleryActiveImage === image.id
+    );
+  }
+  function failed(image: VehicleGalleryImage) {
     reportExternalPhotoFailure(image);
     const key = imageResourceKey(image);
     loadedImages.current.delete(key);
@@ -228,7 +269,7 @@ export function VehicleGallery({
     if (selected && imageResourceKey(selected) === key) setFailedId(key);
   }
   function retrySelected() {
-    if (!selected) return;
+    if (!selected || onActiveImageStatus) return;
     const key = imageResourceKey(selected);
     failedImages.current.delete(key);
     loadedImages.current.delete(key);
@@ -271,9 +312,10 @@ export function VehicleGallery({
           href={publicMediaUrl(selected.url)}
           target="_blank"
           rel="noopener noreferrer"
-          onClick={enhanced ? openViewer : undefined}
+          onClick={enhanced || onActiveImageStatus ? openViewer : undefined}
           aria-label={`${t.openGallery} — ${t.imagePosition(index + 1, ordered.length)}`}
           aria-haspopup={enhanced ? 'dialog' : undefined}
+          aria-disabled={staffLocked || undefined}
         >
           {[...(previous ? [previous] : []), selected].map((image) => (
             <img
@@ -285,6 +327,7 @@ export function VehicleGallery({
               data-direction={direction}
               data-transition={Boolean(previous)}
               data-outgoing={image.id !== selected.id}
+              data-gallery-active-image={!opened && image.id === selected.id ? image.id : undefined}
               src={publicMediaUrl(image.url)}
               alt={image.id === selected.id ? image.alt || title : ''}
               aria-hidden={image.id !== selected.id ? true : undefined}
@@ -292,8 +335,8 @@ export function VehicleGallery({
               height={image.height ?? undefined}
               referrerPolicy={image.url.startsWith('https:') ? 'no-referrer' : undefined}
               fetchPriority="high"
-              onLoad={() => loaded(image)}
-              onError={() => failed(image)}
+              onLoad={(event) => { if (acceptsImageEvent(image, event.currentTarget)) loaded(image); }}
+              onError={(event) => { if (acceptsImageEvent(image, event.currentTarget)) failed(image); }}
             />
           ))}
         </a>
@@ -303,6 +346,7 @@ export function VehicleGallery({
               type="button"
               className={`${styles.arrow} ${styles.previous}`}
               aria-label={t.previousImage}
+              disabled={staffLocked}
               onClick={() => choose(index - 1)}
             >
               ‹
@@ -311,6 +355,7 @@ export function VehicleGallery({
               type="button"
               className={`${styles.arrow} ${styles.next}`}
               aria-label={t.nextImage}
+              disabled={staffLocked}
               onClick={() => choose(index + 1)}
             >
               ›
@@ -326,11 +371,11 @@ export function VehicleGallery({
           </span>
         )}
         {failedId === selectedKey && (
-          <div className={styles.imageError} role="status">
+          <div className={styles.imageError} role="status" data-gallery-image-error={!opened ? selected.id : undefined}>
             <p>{t.imageUnavailable}</p>
-            <button type="button" onClick={retrySelected}>
+            {!onActiveImageStatus && <button type="button" onClick={retrySelected}>
               {t.retryImage}
-            </button>
+            </button>}
           </div>
         )}
       </div>
@@ -339,6 +384,7 @@ export function VehicleGallery({
         index={index}
         locale={locale}
         onSelect={enhanced ? choose : undefined}
+        disabled={staffLocked}
       />
       <span className={styles.srOnly} role="status">
         {t.imagePosition(index + 1, ordered.length)}
@@ -380,13 +426,15 @@ export function VehicleGallery({
             {opened && (
               <img
                 key={`${selectedKey}:${retry}`}
+                ref={viewerImage}
+                data-gallery-active-image={selected.id}
                 src={publicMediaUrl(selected.url)}
                 referrerPolicy={selected.url.startsWith('https:') ? 'no-referrer' : undefined}
                 alt={selected.alt || title}
                 width={selected.width ?? undefined}
                 height={selected.height ?? undefined}
-                onLoad={() => loaded(selected)}
-                onError={() => failed(selected)}
+                onLoad={(event) => { if (acceptsImageEvent(selected, event.currentTarget)) loaded(selected); }}
+                onError={(event) => { if (acceptsImageEvent(selected, event.currentTarget)) failed(selected); }}
               />
             )}
             {ordered.length > 1 && (
@@ -395,6 +443,7 @@ export function VehicleGallery({
                   type="button"
                   className={`${styles.arrow} ${styles.previous}`}
                   aria-label={t.previousImage}
+                  disabled={staffLocked}
                   onClick={() => choose(index - 1)}
                 >
                   ‹
@@ -403,6 +452,7 @@ export function VehicleGallery({
                   type="button"
                   className={`${styles.arrow} ${styles.next}`}
                   aria-label={t.nextImage}
+                  disabled={staffLocked}
                   onClick={() => choose(index + 1)}
                 >
                   ›
@@ -415,11 +465,11 @@ export function VehicleGallery({
               </span>
             )}
             {failedId === selectedKey && (
-              <div className={styles.imageError} role="status">
+              <div className={styles.imageError} role="status" data-gallery-image-error={opened ? selected.id : undefined}>
                 <p>{t.imageUnavailable}</p>
-                <button type="button" onClick={retrySelected}>
+                {!onActiveImageStatus && <button type="button" onClick={retrySelected}>
                   {t.retryImage}
-                </button>
+                </button>}
               </div>
             )}
           </div>
@@ -496,7 +546,7 @@ export function VehicleBudgetPanel({
           <select value={current} onChange={(event) => setSelected(event.target.value)}>
             {choices.map((item) => (
               <option key={item.slug} value={item.slug}>
-                {item.label}
+                {item.flag} {item.label}
               </option>
             ))}
           </select>
@@ -505,7 +555,7 @@ export function VehicleBudgetPanel({
         <nav className={styles.destinationLinks} aria-label={t.destination}>
           {choices.map((item) => (
             <a key={item.slug} href={`/${locale}/calculator/${item.slug}/`}>
-              {item.label}
+              <span aria-hidden="true">{item.flag}</span> {item.label}
             </a>
           ))}
         </nav>

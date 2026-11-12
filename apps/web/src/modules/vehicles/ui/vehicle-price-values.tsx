@@ -4,11 +4,20 @@ import { formatPublicVehiclePrice, formatPublicVehicleUsdApproximation } from '.
 import styles from './vehicle-price-values.module.css';
 
 export function VehiclePriceValues({ vehicle, locale }: { vehicle: PublicVehicle; locale: Locale }) {
-  const converted = formatPublicVehicleUsdApproximation(vehicle, locale);
+  return <VehiclePriceAmounts
+    original={formatPublicVehiclePrice(vehicle, locale)}
+    approximation={formatPublicVehicleUsdApproximation(vehicle, locale)}
+  />;
+}
+
+export function VehiclePriceAmounts({ original, approximation }: {
+  original: string;
+  approximation: string | null;
+}) {
   return (
     <>
-      <strong data-vehicle-original-price>{formatPublicVehiclePrice(vehicle, locale)}</strong>
-      {converted && <small className={styles.approximation} data-vehicle-usd-approx>{converted}</small>}
+      <strong data-vehicle-original-price>{original}</strong>
+      {approximation && <small className={styles.approximation} data-vehicle-usd-approx>{approximation}</small>}
     </>
   );
 }

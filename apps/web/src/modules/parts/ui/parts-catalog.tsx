@@ -12,9 +12,10 @@ import {
   catalogPageCount,
   catalogRecordCount,
   filterParts,
-  partCategories,
   partsHref,
+  selectedFilterValues,
 } from '../query';
+import { catalogBrandFilters, catalogCategoryFilters, catalogSubcategoryFilters } from '../mock/parts-filters';
 import type { Part, PartsQuery } from '../types';
 import { usePartFavorites } from '../use-part-favorites';
 import { PartCard } from './part-card';
@@ -154,8 +155,9 @@ export function PartsCatalog({
   const { ids } = usePartFavorites(knownIds);
   const savedParts = parts.filter((part) => ids.includes(part.slug));
   const visible = savedOnly ? savedParts : filterParts(parts, query, locale);
-  const brands = [...new Set(parts.map((part) => part.brand))];
-  const stats = [partCategories.length, catalogRecordCount, parts.length];
+  const selectedBrands = selectedFilterValues(query.brand);
+  const selectedCategories = selectedFilterValues(query.category);
+  const stats = [catalogCategoryFilters.length, catalogRecordCount, parts.length];
   const referenceCount = t.referenceCount(catalogRecordCount.toLocaleString(locale));
   const key = JSON.stringify(query);
   const catalogUrl = partsHref(locale) + catalogAnchor;
@@ -205,38 +207,75 @@ export function PartsCatalog({
             <PartsSearchFields locale={locale} value={query.q} form={filtersId} />
           </div>
           <div className={styles.layout}>
-            <form id={filtersId} key={`filters-${key}`} className={styles.filters} method="get" action={catalogUrl}>
-              <h3>{t.filters}</h3>
-              <fieldset>
-                <legend>{t.brand}</legend>
-                <label><input type="radio" name="brand" value="" defaultChecked={!query.brand} />{t.all}</label>
-                {brands.map((brand) => (
-                  <label key={brand}>
-                    <input type="radio" name="brand" value={brand} defaultChecked={query.brand === brand} />
-                    {brand}<small>{parts.filter((part) => part.brand === brand).length}</small>
-                  </label>
-                ))}
-              </fieldset>
-              <fieldset>
-                <legend>{t.category}</legend>
-                <label><input type="radio" name="category" value="" defaultChecked={!query.category} />{t.all}</label>
-                {partCategories.map((category) => (
-                  <label key={category}>
-                    <input type="radio" name="category" value={category} defaultChecked={query.category === category} />
-                    {t.categories[category]}<small>{parts.filter((part) => part.category === category).length}</small>
-                  </label>
-                ))}
-              </fieldset>
-              <fieldset>
-                <legend>{t.price}</legend>
-                <div className={styles.priceRange}>
-                  <input name="min" inputMode="decimal" defaultValue={query.min} placeholder="0" aria-label={t.min} />
-                  <input name="max" inputMode="decimal" defaultValue={query.max} placeholder="∞" aria-label={t.max} />
-                </div>
-              </fieldset>
-              <button className={styles.primary} type="submit">{t.apply}</button>
-              <a href={catalogUrl}>{t.reset}</a>
-            </form>
+            <aside className={styles.sidebar} aria-label={t.filters}>
+              <form id={filtersId} key={`filters-${key}`} className={styles.filters} method="get" action={catalogUrl}>
+                <h3>{t.filters}</h3>
+                {query.subcategory && <input type="hidden" name="subcategory" value={query.subcategory} />}
+                <details className={styles.filterGroup} open>
+                  <summary>{t.brand}<span aria-hidden="true">⌃</span></summary>
+                  <fieldset aria-label={t.brand}>
+                    {catalogBrandFilters.map((brand) => (
+                      <label key={brand.id}>
+                        <input type="checkbox" name="brand" value={brand.id} defaultChecked={selectedBrands.includes(brand.id)} />
+                        {brand.label}<small>{brand.count}</small>
+                      </label>
+                    ))}
+                  </fieldset>
+                </details>
+                <details className={styles.filterGroup} open>
+                  <summary>{t.category}<span aria-hidden="true">⌃</span></summary>
+                  <fieldset aria-label={t.category}>
+                    {catalogCategoryFilters.map((category) => (
+                      <label key={category.id} aria-disabled={category.count === 0 ? true : undefined}>
+                        <input
+                          type="checkbox"
+                          name="category"
+                          value={category.id}
+                          defaultChecked={selectedCategories.includes(category.id)}
+                          disabled={category.count === 0}
+                        />
+                        {category.label[locale]}<small>{category.count}</small>
+                      </label>
+                    ))}
+                  </fieldset>
+                </details>
+                <details className={styles.filterGroup} open>
+                  <summary>{t.price}<span aria-hidden="true">⌃</span></summary>
+                  <fieldset aria-label={t.price}>
+                    <div className={styles.priceRange}>
+                      <input name="min" inputMode="decimal" defaultValue={query.min} placeholder="0" aria-label={t.min} />
+                      <span aria-hidden="true">—</span>
+                      <input name="max" inputMode="decimal" defaultValue={query.max} placeholder="∞" aria-label={t.max} />
+                    </div>
+                  </fieldset>
+                </details>
+                <button className={styles.primary} type="submit">{t.apply}</button>
+                <a href={catalogUrl}>{t.reset}</a>
+              </form>
+              <nav className={styles.categoryBrowse} aria-label={t.partsByCategory}>
+                <h3>{t.partsByCategory}</h3>
+                {catalogCategoryFilters.map((category) => {
+                  const subcategories = catalogSubcategoryFilters.filter((item) => item.category === category.id);
+                  if (!subcategories.length) return null;
+                  return (
+                    <div key={category.id}>
+                      <h4>{category.label[locale]}</h4>
+                      <div className={styles.subcategoryLinks}>
+                        {subcategories.map((subcategory) => (
+                          <a
+                            key={subcategory.id}
+                            href={partsHref(locale, { ...query, q: '', category: '', subcategory: subcategory.id }) + catalogAnchor}
+                            aria-current={query.subcategory === subcategory.id ? 'true' : undefined}
+                          >
+                            {subcategory.label[locale]}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </nav>
+            </aside>
             <div className={styles.results}>
               {ready && (
                 <div className={styles.savedTabs}>

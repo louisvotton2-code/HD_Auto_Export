@@ -196,7 +196,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         <label htmlFor={`${prefix}-country`}>{t('destination')}</label>
         <select id={`${prefix}-country`} name="country" value={country.code}
           onChange={(event) => changeCountry(event.target.value as CountryCode)}>
-          {countries.map((item) => <option key={item.code} value={item.code}>{tc(item.code)}</option>)}
+          {countries.map((item) => <option key={item.code} value={item.code}>{item.flag} {tc(item.code)}</option>)}
         </select>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>

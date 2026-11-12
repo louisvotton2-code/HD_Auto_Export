@@ -32,7 +32,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     expect(navigation.status()).toBe(200);
     expect(new URL(navigation.url()).searchParams.get('category')).toBe('chassis');
     expect(new URL(navigation.url()).searchParams.get('q')).toBe('52910K2200');
-    await expect(page.locator('input[type=radio][name=category][value=chassis]')).toBeChecked();
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
     await expect(records).toHaveCount(1);
     expect(await ids()).toEqual(['52910k2200']);
     const [pageResponse] = await Promise.all([
@@ -53,7 +53,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.goForward();
     await expect(currentPage).toHaveText('2');
     await expect(search.locator('[name="q"]')).toHaveValue('52910K2200');
-    await expect(page.locator('input[type=radio][name=category][value=chassis]')).toBeChecked();
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
     await expect(page.locator('main')).not.toContainText(/演示|示例|例子|\bdemo\b|\bsample\b|демо|пример/i);
     for (const input of await page.locator('main input[name="q"]').all()) {
       await expect(input).not.toHaveAttribute('placeholder', /例如|示例|e\.g\.|например/i);
@@ -103,7 +103,7 @@ test('Russian 320px without JavaScript retains search, quantity update, images a
     await expect(page).toHaveURL(/q=52910K2200/);
     await expect(pagination.locator('[aria-current="page"]')).toHaveText('1');
     expect(new URL(page.url()).searchParams.has('page')).toBe(false);
-    await expect(page.locator('input[type=radio][name=category][value=chassis]')).toBeChecked();
+    await expect(page.locator('input[type=checkbox][name=category][value=chassis]')).toBeChecked();
     await expect(page.locator('main [data-part]')).toHaveCount(1);
     await page.locator('main [data-part="52910k2200"] h3 a').click();
     await page.locator('input[name="quantity"]').fill('2');
@@ -190,4 +190,34 @@ test('parts remain readable with corrupt preferences and storage denial falls ba
       await expect(page.locator('main [data-part]')).toHaveCount(1);
     } finally { await context.close(); }
   }
+});
+
+
+test('reference filter counts support native multi-selects over the real local records', async ({ page }) => {
+  await page.goto('/en/parts/');
+  const filters = page.locator('#parts-filters');
+  await expect(filters.locator('input[name="brand"]')).toHaveCount(3);
+  await expect(filters.locator('input[name="category"]')).toHaveCount(6);
+  await expect(filters.locator('input[name="category"][value="hardware"]')).toBeDisabled();
+  await expect(filters.locator('label').filter({ hasText: 'Hyundai' })).toContainText('48655');
+  await expect(filters.locator('label').filter({ hasText: 'Interior' })).toContainText('19814');
+  await filters.locator('[name="brand"][value="Hyundai"]').check();
+  await filters.locator('[name="brand"][value="Kia"]').check();
+  await filters.locator('[name="category"][value="chassis"]').check();
+  await filters.locator('[name="category"][value="transmission"]').check();
+  await filters.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  const url = new URL(page.url());
+  expect(url.searchParams.getAll('brand')).toEqual(['Hyundai', 'Kia']);
+  expect(url.searchParams.getAll('category')).toEqual(['transmission', 'chassis']);
+  await expect(filters.locator('[name="brand"][value="Kia"]')).toBeChecked();
+  await expect(filters.locator('[name="category"][value="chassis"]')).toBeChecked();
+  await page.getByRole('navigation', { name: 'Parts catalog pagination' }).getByText('2', { exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  await page.getByRole('navigation', { name: 'Parts by category', exact: true }).getByRole('link', { name: 'Clutch', exact: true }).click();
+  await expect(page.locator('main [data-part]')).toHaveCount(0);
+  expect(new URL(page.url()).searchParams.get('subcategory')).toBe('clutch');
+  await page.goBack();
+  await expect(page.locator('main [data-part]')).toHaveCount(17);
+  await expect(filters.locator('[name="brand"][value="Kia"]')).toBeChecked();
 });

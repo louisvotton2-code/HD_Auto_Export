@@ -15,8 +15,10 @@ export interface Part {
 }
 export interface PartsQuery {
   q: string;
+  /** Comma-separated selected IDs, also accepted as repeated native GET fields. */
   brand: string;
-  category: PartCategory | '';
+  category: string;
+  subcategory?: string;
   min: string;
   max: string;
   sort: 'default' | 'price-asc' | 'price-desc' | 'name';

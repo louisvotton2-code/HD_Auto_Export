@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 
 // Node 20 cannot import TS directly. Compile only the dependency-free pacing helper in memory.
 const source = await readFile(new URL('./live-rate-window.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-const { rateLimitSeconds, extendRateDeadline, rateCooldownMs } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const helperExports = {};
+runInNewContext(compiled, { exports: helperExports }, { filename: 'live-rate-window.ts', timeout: 1000 });
+const { rateLimitSeconds, extendRateDeadline, rateCooldownMs } = helperExports;
 
 test('accepts only bounded relative seconds, not dates or an unbounded server value', () => {
   assert.equal(rateLimitSeconds('1'), 1);

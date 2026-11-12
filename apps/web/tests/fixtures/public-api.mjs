@@ -2,7 +2,8 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import { makeImportedPublicVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture } from '@hd/contracts/fixtures';
+import { PublicationPreviewQuerySchema, PublicationPreviewResponseSchema } from '@hd/contracts/admin';
 import {
   ApiErrorSchema,
   ExternalMediaFailureRequestSchema,
@@ -193,7 +194,59 @@ const resetState = () => ({
   longTitles: false,
   richCatalog: false,
   usdRateAvailable: true,
+  previewMode: 'ready',
+  previewPrice: 'normal',
+  previewVersion: 4,
+  previewDelayMs: 0,
+  previewSlowLocale: '',
+  previewImageCount: 1,
 });
+
+// Deliberately synthetic employee sessions, draft content and image bytes. These endpoints
+// belong only to the isolated fixture server and never authenticate a real account.
+const previewVehicleIds = [
+  '00000000-0000-4000-8000-000000000001',
+  '00000000-0000-4000-8000-000000000003',
+];
+const previewMediaIds = Array.from({ length: 12 }, (_, index) =>
+  `00000000-0000-4000-8000-${(index === 0 ? 2 : index + 3).toString(16).padStart(12, '0')}`);
+const previewModes = [
+  'ready', 'incomplete', 'stale', 'machine', 'unauthenticated', 'forbidden', 'not_found',
+  'conflict', 'unavailable', 'malformed', 'wrong_id', 'wrong_locale', 'private_field',
+];
+const previewStaff = (req) => /(?:^|;\s*)hd-preview-staff=authorized(?:;|$)/.test(req.headers.cookie ?? '');
+
+function previewResponse(state, id, requestedLocale) {
+  const locale = state.previewMode === 'wrong_locale' ? (requestedLocale === 'ru' ? 'en' : 'ru') : requestedLocale;
+  const scenario = ['incomplete', 'stale', 'machine'].includes(state.previewMode) ? state.previewMode : 'ready';
+  const preview = makePublicationPreviewFixture(locale, scenario);
+  preview.vehicle.id = state.previewMode === 'wrong_id' ? previewVehicleIds[1] : id;
+  preview.vehicle.stockCode = id === previewVehicleIds[0] ? 'FIXTURE-0001' : 'FIXTURE-0002';
+  preview.vehicleVersion = state.previewVersion;
+  preview.publicContentRevision = state.previewVersion - 1;
+  preview.fingerprint = state.previewVersion.toString(16).padStart(64, '0');
+  // Synthetic private gallery only; ordinary public fixtures and the real API are unchanged.
+  if (preview.vehicle.images.length && state.previewImageCount > 1) {
+    const cover = preview.vehicle.images[0];
+    preview.vehicle.images = previewMediaIds.slice(0, state.previewImageCount).map((mediaId, index) => ({
+      ...cover, id: mediaId, url: `/api/v1/admin/media/${mediaId}/preview`,
+      sortOrder: index, isCover: index === 0,
+    }));
+  }
+  if (state.previewPrice === 'on_request') {
+    preview.vehicle.price = { kind: 'on_request', money: null, includes: [], status: 'on_request',
+      displayPrice: { status: 'on_request', money: null, conversion: null } };
+  } else if (state.previewPrice === 'zero') {
+    preview.vehicle.price = { kind: 'asking', money: { amount: '0', currency: 'USD' }, includes: [], status: 'ready',
+      displayPrice: { status: 'ready', kind: 'asking', money: { amount: '0', currency: 'USD' }, conversion: null } };
+  } else if (state.previewPrice === 'unavailable') {
+    preview.vehicle.price = { kind: 'asking', money: { amount: '128000.50', currency: 'CNY' }, includes: [], status: 'ready',
+      displayPrice: { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' } };
+  }
+  const response = PublicationPreviewResponseSchema.parse({ data: preview, meta: { requestId: 'fixture-publication-preview' } });
+  if (state.previewMode === 'private_field') response.data.vehicle.internal = { purchaseCost: 'PRIVATE_COST_SENTINEL', notes: 'PRIVATE_NOTES_SENTINEL' };
+  return response;
+}
 function visibleVehicles(state, locale) {
   if (state.mode === 'empty') return [];
   const rows = [
@@ -413,6 +466,12 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
           usdRateAvailable: (v) => typeof v === 'boolean',
+          previewMode: (v) => previewModes.includes(v),
+          previewPrice: (v) => ['normal', 'on_request', 'zero', 'unavailable'].includes(v),
+          previewVersion: (v) => Number.isInteger(v) && v >= 2 && v <= 100,
+          previewDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
+          previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
+          previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
         };
         if (
           !patch ||
@@ -437,6 +496,35 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           authorization: req.headers.authorization ?? null,
         });
         if (requests.length > 1000) requests.shift();
+      }
+      const previewMatch = /^\/api\/v1\/admin\/vehicles\/([A-Za-z0-9_-]+)\/publication-preview\/?$/.exec(url.pathname);
+      const previewMedia = /^\/api\/v1\/admin\/media\/([A-Za-z0-9_-]+)\/preview\/?$/.exec(url.pathname);
+      if (previewMatch || previewMedia) {
+        if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
+        if (!previewStaff(req) || state.previewMode === 'unauthenticated')
+          return send(res, 401, error('UNAUTHENTICATED'));
+        if (state.previewMode === 'forbidden') return send(res, 403, error('FORBIDDEN'));
+        if (previewMedia) {
+          if (!previewMediaIds.includes(previewMedia[1])) return send(res, 404, error('NOT_FOUND'));
+          const png = imageBytes(previewMedia[1], false);
+          res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length, 'cache-control': 'no-store' });
+          return res.end(png);
+        }
+        const requested = PublicationPreviewQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+        if (!requested.success) return send(res, 400, error('INVALID_REQUEST'));
+        const snapshot = { ...state };
+        const locale = requested.data.locale;
+        if (snapshot.previewDelayMs && (!snapshot.previewSlowLocale || snapshot.previewSlowLocale === locale))
+          await new Promise((resolve) => setTimeout(resolve, snapshot.previewDelayMs));
+        if (!previewVehicleIds.includes(previewMatch[1]) || snapshot.previewMode === 'not_found') return send(res, 404, error('NOT_FOUND'));
+        if (snapshot.previewMode === 'conflict') return send(res, 409, error('VERSION_CONFLICT'));
+        if (snapshot.previewMode === 'unavailable') {
+          const failure = error('SERVICE_UNAVAILABLE', true);
+          failure.error.message = 'PRIVATE_UPSTREAM_ERROR_SENTINEL';
+          return send(res, 503, failure);
+        }
+        if (snapshot.previewMode === 'malformed') return send(res, 200, { data: { internal: 'PRIVATE_PAYLOAD_SENTINEL' } });
+        return send(res, 200, previewResponse(snapshot, previewMatch[1], locale));
       }
       const mediaFailure = /^\/api\/v1\/external-media\/(ximg-[a-f0-9-]+)\/failure$/.exec(url.pathname);
       if (mediaFailure && req.method === 'POST') {
