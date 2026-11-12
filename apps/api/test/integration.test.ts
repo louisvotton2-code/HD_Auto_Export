@@ -683,14 +683,35 @@ test('legacy idempotent receipts survive added deletion fields without resurrect
   const replay=await call(request);assert.equal(replay.statusCode,201,replay.body);assert.equal(replay.json().data.deletedAt,null);assert.equal(replay.json().data.hasUnpublishedChanges,null);assert.equal(replay.json().data.version,1);
   assert.equal((await runtime.inventory.getAdmin(vehicle.id,true)).version,removed.version);await assert.rejects(runtime.inventory.getAdmin(vehicle.id));
 });
-test('staff external listing keeps reference facts and machine provenance after internal review and immutable publication',async()=>{
+test('staff external listing requires explicit staff review before confirmed publication and keeps reference facts and machine provenance',async()=>{
   const input=makeExternalVehicleDraftFixture();input.media=[];if(input.source.kind!=='external') throw new Error('external fixture required');
   input.facts.trim={id:'external_fixture_trim',name:'Synthetic external configuration'};input.internal.purchaseCost={amount:'18000',currency:'USD'};
-  for(const field of Object.values(input.content))for(const language of ['zh','en','ru'] as const)field.translations[language]!.reviewStatus='approved';
   input.source.externalId=randomUUID();input.source.listingUrl='https://listing.example.invalid/item/'+input.source.externalId;input.facts.make={id:`external_${randomBytes(4).toString('hex')}`,name:'External listing fixture'};
   let vehicle=await create(input);assert.equal(vehicle.availability,'unknown');assert.equal(vehicle.availabilityCheckedAt,null);
   const photo=await upload(vehicle,{listingUrl:input.source.listingUrl,imageUrl:'https://images.example.invalid/original.png',collectedAt:input.source.collectedAt});
-  vehicle.draft.media=[{id:photo.id,sortOrder:0,isCover:true,alt:'Observed source photo'}];vehicle=await publish(await save(vehicle));
+  vehicle.draft.media=[{id:photo.id,sortOrder:0,isCover:true,alt:'Observed source photo'}];vehicle=await save(vehicle);
+  const pendingContent=structuredClone(vehicle.draft.content);
+  const pending=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  for(const field of ['title','description'] as const)for(const language of ['zh','en','ru'] as const){
+    assert.equal(pendingContent[field].translations[language]!.reviewStatus,'pending');
+    rejectedPublication(pending,`draft.content.${field}.translations.${language}`);
+  }
+  assert.equal((await runtime.db.pool.query('SELECT count(*)::int AS count FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].count,0);
+  const reviewedDraft=structuredClone(vehicle.draft);
+  for(const field of Object.values(reviewedDraft.content))for(const language of ['zh','en','ru'] as const)field.translations[language]!.reviewStatus='approved';
+  // Explicit staff PATCH changes only review status; the source, text, provenance and supplied versions stay intact.
+  const reviewed=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:headers(),payload:{version:vehicle.version,draft:reviewedDraft}});
+  assert.equal(reviewed.statusCode,200,reviewed.body);vehicle=reviewed.json().data;
+  for(const field of ['title','description'] as const){
+    assert.equal(vehicle.draft.content[field].sourceVersion,pendingContent[field].sourceVersion);
+    for(const language of ['zh','en','ru'] as const){
+      const prior=pendingContent[field].translations[language]!;
+      assert.deepEqual(vehicle.draft.content[field].translations[language],{...prior,reviewStatus:'approved',humanEditVersion:prior.humanEditVersion+1});
+    }
+  }
+  vehicle=await confirmReady(vehicle);
+  const publication=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  assert.equal(publication.statusCode,200,publication.body);vehicle=publication.json().data;
   for(const locale of ['zh','en','ru']) {
     const response=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}`});assert.equal(response.statusCode,200,response.body);
     const published=PublicVehicleResponseSchema.parse(response.json()).data;assert.equal(published.source.kind,'external');assert.equal(published.price.kind,'reference');assert.equal(published.availability,'unknown');assert.equal(published.availabilityCheckedAt,null);assert.equal(published.content.title.reviewed,false);assert.equal(published.content.description?.reviewed,false);assert.equal(published.content.title.kind,locale==='zh'?'original':'machine');assert.equal(published.fetchedAt,input.source.collectedAt);assert.deepEqual(published.facts,vehicle.draft.facts);
