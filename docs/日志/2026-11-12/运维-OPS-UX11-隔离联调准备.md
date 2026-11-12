@@ -82,3 +82,9 @@ PM将工作区可编辑generation/drivetrain但BE0540以错误facts不变guard�
 BE/AD协调方向为现有bundle事务支持事实变更，不拆正文与展示保存、不预期改schema。必须继续校验vehicle/localization双版本及incoming字段来源绑定；generation变更由服务端sync创建/失效展示ref，返回权威bundle后再翻译，新英俄可缺失、旧文stale。此为修复预期，尚非OPS已验证实现。
 
 组合验收新增：真实SQL/HTTP的facts新增/重命名/删除后保存及重读；双版本并发冲突和故障注入下facts/localization整体回滚；新refs返回且旧译文正确失效，保存后的后续翻译使用新权威bundle。等待新准确API SHA、受影响真实回归与独立review及AD最终review，不复用0540为该项通过依据。OPS本轮只改门禁与矩阵、未改代码/合同、未跑服务/SQL/HTTP/迁移或真实enrichment；未启动候选、未切3363、未改Ali disabled、未推送/部署。hooks与docs差异空白核验通过，独立审查另附私有报告。
+
+## 七例执行归属与准备索引
+
+AD交接docs/private/ad-ux11/live-case-handoff.md已读取并绑定SHA256，OPS承接六项真实API流程及同版真实FE私图故障第七项；逐例入口、完整预期与实际方法/API/浏览器/零调用观察/清理证据空位已录入docs/private/ops-ux11/七例执行矩阵.json。补充报告链接仅核href/target/rel和同车身份、权限与晚回包，不点击/探测；公开与preview无私有URL。历史local/Ali suggestions两个专用case明确不跑、不记通过。
+
+OPS将另记实际执行方法，不能冒称原run-live guarded命令通过；原端口/随机库/付费/限流守卫不改，遵守429窗口、不自动重试业务写入。执行参数索引为docs/private/ops-ux11/AD真实联调参数.json，明确OPS私有UDS组合为选定方法，AD不用数据库凭据或自行启动runner。全部七例not_run，SHA/最终manifest/review和实际方法待交付后绑定；原P2尚未关闭，ready=false，无脚本/服务/迁移执行。Ali恢复时另核实际预算与整车plan，不把500测试限额当业务默认，费用/免费余额未知。
