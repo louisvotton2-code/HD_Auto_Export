@@ -60,3 +60,17 @@ completed/partial均可finishedAt:null，表示租约中断后只读重建结果
 PublicVehicle/PublicationPreviewVehicle.report严格仅hasReport，拒任何url；AdminVehicle/ExternalListing.report允许true+url:null，非空URL必需true，后台不拼缺失URL。公开旧inspection.reportUrl固定null，reportAccess仅unknown且url/时间null，内部证据四态不接公共DTO。列表/home实际投影需省略report；公开API/SSR/鉴权preview零源URL与后台同车/权限/安全新窗口、无URL无按钮都待候选实际回归，不能由schema测试替代。
 
 稳定共同7d、根dirty/main及当前3363/账号/数据/翻译disabled均保持。OPS只完成合同和隔离准备，尚无三端完整候选、API新迁移或fake seam冻结，不开库/端口/服务、不提前切换、不付费smoke。当前准备文件与非可运行模板在docs/private/ops-ux11，旧15库为未来冻结源，旧14只是历史；新写入后先维护停写排空、完整备份新数据再修复。
+
+## FE与BE最终候选登记（AD尚待交付）
+
+FE来源HEAD `634f0076d402e9de394a8ecbb77d7fa269d2ff8b`，自有提交仅`4b47ba6e0c4aba85a26e8545ed1a296510545209`及该HEAD；BUILD `QNy1Vuio-IAGcY8SyY6TP`，合同树57e403827125c491aca57d5d36afdee2293f3f3a。OPS核441份最终源码与Git对象、准确SHA独立报告和全部清单；standalone1836项（1807文件、29相对内部链接）、static35文件、public69文件逐项hash/尺寸/链接与聚合hash均匹配。完整standalone保留链接复制至独立release，附带static/public再次核对；未重建、未启动。只用于本机darwin/arm64 Node24，不作Linux成品。
+
+构建源码与最终源码仅vehicle-inspection.ts移除一个多余末尾LF；补回LF可重建构建时hash。记录同时保留构建/最终源码聚合指纹与差异，不能声称产物由最终源码逐字节构建。862单元/7边界、最新report-policy78 Chrome及12截图为FE交付证据，OPS本轮未重跑；旧119/123不是此版报告政策计数。FE源码自有提交尚未挑入OPS分支，本轮只保存成品和来源。
+
+BE来源`0540d6bcc40ec26048a31e2eb9cdac6becd37132`，仅该37文件API补丁挑至本地`cb64caa61448562a0ea68f2fabfa44020a73e06c`，不重放共同基线/合同旧链。原/本地binary patch逐字节一致，122验证文件、40受审文件均与准确来源Git对象相符；37变更全部被审查覆盖，合同树仍57e4038。BE报告准确SHA独立PASS、188单元/167数据库（全15文件、0skip/0cancel、随机库0→0）、contracts78、类型/build/OpenAPI/workspace通过；OPS本轮未重复这些单端测试。
+
+迁移journal SHA256 `536c0a2de725960d68cf0c8f0d6d244c9f85ec557003d67824eef5368faa7bd3`，目标17条，前15项不变；0015/0016分别匹配`3edfb835ac8c20be39c5fe112bc4c5d90d5a044053448ee4e4abbddcd9587a9a`、`57f91f71d654a82ab8c777532535cc383ce1ae2336f5ad34bc0afc6a3886a0d8`。两份均为ready依赖，即使external关闭；此处仅文件核验，未迁移。OpenAPI是忽略的生成产物，另存副本/hash，尚非Git对象或OPS重生成相等证明。
+
+受控fake seam参考BE translation-workspace.test.ts的buildApp/VehicleTranslator注入；真实Ali配置不注入。小时字符/两并发仅单API进程边界，仍须隔离核持久预算/receipt与重启恢复，不宣称分布式额度。受控归档补标记仅在隔离副本按明确归档行/版本/hash/有效actor执行，前后保留原事实，不重导20+200、不外呼；本轮未执行补齐，41/20/19仍只是PA盘点口径。不得套用旧AD审核选择器，等AD本版live适配。
+
+私有交接：docs/private/ops-ux11/FE候选核验.json、BE候选核验.json与ops-ux11-candidate/candidate-state.json；独立release分别为fe-634f007和be-0540d6b，索引/审查证据副本与hash保留。组合合同树确认位保持null，expected57e不代替三端齐套证明；AD待交、readyToStart=false。当前3363/原账号/数据/disabled翻译未改，未建库/端口/服务、未真实调用、未推送或部署。候选登记与精确补丁接入交独立Reviewer核对后再保存文档提交。
