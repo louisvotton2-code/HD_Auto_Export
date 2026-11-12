@@ -24,6 +24,7 @@ import { PublicVehicleCard } from './public-vehicle-card';
 import { PublicVehicleFiltersForm } from './public-vehicle-filters';
 import { PublicResourceStatus } from './public-resource-status';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
+import { CatalogPagination } from './catalog-pagination';
 import styles from './public-vehicles.module.css';
 
 export function PublicVehicleList({
@@ -170,33 +171,8 @@ export function PublicVehicleList({
                         ? `${data.meta.total.toLocaleString(locale)} ${t.results}`
                         : `${t.totalUnknown}: ${data.data.items.length.toLocaleString(locale)}`}
                     </p>
-                    <span>
-                      {t.currentPage} {data.data.page}
-                    </span>
                   </div>
-                  <nav className={styles.pagination} aria-label={t.pagination}>
-                    {data.data.page > 1 && (
-                      <a
-                        href={publicCatalogHref(locale, selected, data.data.page - 1)}
-                        rel="prev"
-                        onClick={pageClick}
-                      >
-                        ← {t.previous}
-                      </a>
-                    )}
-                    <span aria-current="page">
-                      {t.currentPage} {data.data.page.toLocaleString(locale)}
-                    </span>
-                    {data.data.hasMore && (
-                      <a
-                        href={publicCatalogHref(locale, selected, data.data.page + 1)}
-                        rel="next"
-                        onClick={pageClick}
-                      >
-                        {t.next} →
-                      </a>
-                    )}
-                  </nav>
+                  <CatalogPagination result={data} query={selected} locale={locale} onPageClick={pageClick} />
                 </>
               )}
             </section>

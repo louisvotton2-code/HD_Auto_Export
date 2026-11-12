@@ -34,7 +34,7 @@ test('localized catalog pages preserve API priority, original currency and safe 
   await expect(page.getByTestId('hero-stat-catalog').locator('[data-counter-value]')).toHaveText('31');
 });
 
-test('a direct photo error is reported once and detail shows grouped specifications, history and reports', async ({ page, request }) => {
+test('a direct photo error is reported once and detail shows real specifications and inspection entries', async ({ page, request }) => {
   const sample = makeImportedPublicVehicleFixture('en', 'supplier', true);
   const photo = sample.images[0]!;
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410, body: 'Synthetic expired image' }));
@@ -52,8 +52,8 @@ test('a direct photo error is reported once and detail shows grouped specificati
   const main = page.locator('main');
   await expect(main.locator('h1')).toHaveText('Example R1 Hybrid');
   await expect(main.getByText('Compare original and displayed text')).toHaveCount(0);
-  await expect(main.locator('[data-vehicle-history]')).toContainText('2024-08');
-  await expect(main.locator('[data-vehicle-history]')).not.toContainText('Ownership transfers');
+  // Manufacturing / first-registration dates alone do not invent an accident or ownership history.
+  await expect(main.locator('[data-vehicle-history]')).toHaveCount(0);
   await expect(main.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
   const group = main.locator('[data-equipment-group="other"]');
   await group.locator('summary').click();
@@ -62,17 +62,17 @@ test('a direct photo error is reported once and detail shows grouped specificati
   await expect(main.getByText('Listing platform', { exact: true })).toHaveCount(0);
   await expect(main.getByText('Synthetic Market', { exact: true })).toHaveCount(0);
   await expect(main.getByRole('heading', { name: 'HD Auto Export consultation' })).toHaveCount(0);
-  const reportSection = main.getByRole('region', { name: 'Vehicle inspection report' });
+  const reportSection = main.getByRole('region', { name: 'Vehicle inspection details' });
   await expect(reportSection.getByText('合成测试项')).toBeVisible();
-  const reportButton = main.getByRole('link', { name: 'View vehicle report' });
+  const reportButton = main.getByRole('link', { name: 'View inspection details' });
   const anchor = `#vehicle-report-${sample.id}`;
   await expect(reportButton).toHaveAttribute('href', anchor);
   await reportButton.press('Enter');
   expect(new URL(page.url()).hash).toBe(anchor);
   await expect(reportSection).toBeFocused();
   const inspection = reportSection.getByRole('link', { name: 'Open the original inspection report' });
-  await expect(inspection).toHaveAttribute('href', 'https://reports.example.invalid/synthetic-0001');
-  await expect(inspection).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(inspection).toHaveCount(0);
+  await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
   await expect(main.getByText('Related listings')).toHaveCount(0);
   await expect(main.locator('a[href^="https://listings.example.invalid/"]')).toHaveCount(0);
   await expect(main.locator('[data-vehicle-gallery] [data-loading]').getByText('This photo is temporarily unavailable.')).toBeVisible();
@@ -95,8 +95,8 @@ test('original-language fallback, missing media and disputed facts are readable 
   await expect(year).toHaveText('—');
   await page.goto(`/en/cars/${externalFixtureId(4)}/`);
   await expect(page.locator('main [data-vehicle-photo-unavailable]')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Vehicle inspection report' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'View vehicle report' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Vehicle inspection details' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'View inspection details' })).toHaveCount(0);
   await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
   await expect(page.locator('main').getByText('Price on request', { exact: true }).filter({ visible: true }).first()).toBeVisible();
   await setPublicFixtureState(request, { importedWithdrawn: true });

@@ -188,6 +188,8 @@ const resetState = () => ({
   importedPublished: false,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
+  catalogSampleCount: null,
+  historyScenario: 'default',
   responseDelayMs: 0,
   publicRateLimited: false,
   filtersRateLimited: false,
@@ -249,7 +251,10 @@ function previewResponse(state, id, requestedLocale) {
 }
 function visibleVehicles(state, locale) {
   if (state.mode === 'empty') return [];
-  const rows = [
+  // Extra unique records exist only inside this health-marked fixture, never operating inventory.
+  const rows = state.catalogSampleCount !== null
+    ? Array.from({ length: state.catalogSampleCount }, (_, index) => vehicle(`fixture_car_${index + 1}`, locale))
+    : [
     vehicle('fixture_demo', locale),
     ...Array.from({ length: 24 }, (_, i) => vehicle(`fixture_car_${i + 1}`, locale)),
     vehicle('fixture_reserved', locale),
@@ -460,6 +465,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
+          catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 120,
+          historyScenario: (v) => ['default', 'complete', 'empty', 'conflict'].includes(v),
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
@@ -594,6 +601,24 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         : [];
       const makeImport = (kind, detail = false) => {
         const item = makeImportedPublicVehicleFixture(locale, kind, detail);
+        if (detail && kind === 'supplier' && state.historyScenario !== 'default') {
+          // Deliberately synthetic history records exercise public rendering only. The default
+          // supplier projection and its unverified report URL keep their previous behavior.
+          const entry = (name, value) => ({ name: { text: name, contentLocale: 'en' }, value: { text: value, contentLocale: 'en' } });
+          const specs = item.external.detail.specifications;
+          const inspection = item.external.detail.inspection;
+          if (state.historyScenario === 'complete') {
+            specs.push(entry('accidentCount', '0'), entry('Ownership transfers', '2'), entry('ownerCount', '3'), entry('plateChangeCount', '0'));
+            inspection.entries.push(entry('theft', 'false'), entry('floodCount', '0'), entry('waterDamage', 'false'), entry('fire damage', 'false'), entry('total loss', 'false'),
+              entry('Accident items', '9 / 24'), entry('Flood items', '0 / 18'));
+          } else if (state.historyScenario === 'empty') {
+            specs.push(entry('Ownership transfers', 'unknown'), entry('accidentCount', '—'));
+            inspection.entries.push(entry('theft history', 'not provided'), entry('Accident items', '0 / 24'), entry('Flood items', '0 / 18'));
+          } else {
+            specs.push(entry('Ownership transfers', '0'), entry('accidentCount', '0'));
+            inspection.entries.push(entry('owner changes', '2'), entry('number of accidents', '1'), entry('waterDamage', 'unknown'));
+          }
+        }
         if (state.importedPhotosRemoved && kind === 'supplier') {
           item.images = [];
           item.display.mediaAlt = [];

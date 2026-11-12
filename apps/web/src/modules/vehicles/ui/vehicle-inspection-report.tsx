@@ -27,6 +27,7 @@ export function VehicleInspectionReport({ id, inspection, locale }: {
   locale: Locale;
 }) {
   const copy = externalDetailCopy[locale];
+  if (!inspection.entries.length) return null;
   return (
     <section id={id} className={`${styles.card} ${styles.reportCard}`} aria-labelledby={`${id}-title`} tabIndex={-1}>
       <h2 id={`${id}-title`} className={styles.cardHeading}>
@@ -40,12 +41,8 @@ export function VehicleInspectionReport({ id, inspection, locale }: {
           <ReportEntries entries={inspection.entries.slice(visibleInspectionItems)} />
         </details>
       )}
-      {inspection.reportUrl && (
-        <a className={styles.reportLink} href={inspection.reportUrl} target="_blank" rel="noopener noreferrer">
-          <Icon name="diagonal" size={16} />
-          {copy.originalReport}
-        </a>
-      )}
+      {/* reportUrl currently proves URL syntax/source eligibility only, not anonymous availability.
+          A direct report action requires a BE-owned verified document availability contract. */}
     </section>
   );
 }

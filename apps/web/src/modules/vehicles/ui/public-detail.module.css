@@ -286,6 +286,8 @@
   border-radius: 18px;
   background: #1e1e1e;
   font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 .historyPills dt {
   color: #ababab;
@@ -293,6 +295,8 @@
 .historyPills dd {
   margin: 0;
   font-weight: 700;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .equipmentTitle {
   display: flex;

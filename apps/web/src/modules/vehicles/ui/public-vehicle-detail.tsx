@@ -54,7 +54,7 @@ export function PublicVehicleDetail({
   const knownDate = vehicle.facts.manufacturedAt?.value;
   const contactId = `vehicle-contact-${vehicle.id}`;
   const inspection = vehicle.external?.detail?.inspection;
-  const reportId = inspection && (inspection.reportUrl || inspection.entries.length > 0)
+  const reportId = inspection && inspection.entries.length > 0
     ? `vehicle-report-${vehicle.id}`
     : undefined;
 

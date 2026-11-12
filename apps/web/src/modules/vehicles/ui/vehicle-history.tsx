@@ -2,8 +2,7 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import { detailContent } from '../detail-content';
-import { publicVehicleMessages } from '../public-messages';
-import { ownershipTransfers } from '../vehicle-equipment';
+import { vehicleHistory } from '../vehicle-history-data';
 import styles from './public-detail.module.css';
 
 export function VehicleHistory({ vehicle, locale }: {
@@ -11,13 +10,7 @@ export function VehicleHistory({ vehicle, locale }: {
   locale: Locale;
 }) {
   const copy = detailContent[locale];
-  const t = publicVehicleMessages(locale);
-  const entries = vehicle.external?.detail?.specifications ?? [];
-  const history = [
-    { label: t.manufactureLabel, value: vehicle.facts.manufacturedAt?.value },
-    { label: t.registrationLabel, value: vehicle.facts.firstRegistration?.value },
-    { label: copy.transfers, value: ownershipTransfers(entries) },
-  ].filter(({ value }) => value !== undefined);
+  const history = vehicleHistory(vehicle, locale);
   if (!history.length) return null;
   return (
     <section className={styles.card} data-vehicle-history>
@@ -26,8 +19,8 @@ export function VehicleHistory({ vehicle, locale }: {
         {copy.history}
       </h2>
       <dl className={styles.historyPills}>
-        {history.map(({ label, value }) => (
-          <div key={label}><dt>{label}</dt><dd><bdi>{value}</bdi></dd></div>
+        {history.map(({ kind, label, value, lang }) => (
+          <div key={kind} data-history-kind={kind}><dt>{label}</dt><dd lang={lang} dir="auto"><bdi>{value}</bdi></dd></div>
         ))}
       </dl>
     </section>
