@@ -12,7 +12,6 @@ import {
   type MouseEvent,
   type TouchEvent,
 } from 'react';
-import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
@@ -20,11 +19,12 @@ import { reportExternalPhotoFailure } from '../application/report-external-photo
 import { detailContent } from '../detail-content';
 import { VehiclePhotoFallback } from './vehicle-photo';
 import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
+import type { VehicleGalleryImage } from './vehicle-gallery-image';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string; flag?: string };
-const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
+const imageResourceKey = (image: VehicleGalleryImage) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
 const tapTravel = 10;
 
 /** Full-size viewing stays on the active photo and retains one previous photo for the slide. */
@@ -33,7 +33,7 @@ export function VehicleGallery({
   title,
   locale,
 }: {
-  images: PublicMedia[];
+  images: VehicleGalleryImage[];
   title: string;
   locale: Locale;
 }) {
@@ -212,14 +212,14 @@ export function VehicleGallery({
     event.preventDefault();
     showViewer(start.photoLink);
   }
-  function loaded(image: PublicMedia) {
+  function loaded(image: VehicleGalleryImage) {
     const key = imageResourceKey(image);
     loadedImages.current.add(key);
     failedImages.current.delete(key);
     setLoadingId((current) => (current === key ? null : current));
     setFailedId((current) => (current === key ? null : current));
   }
-  function failed(image: PublicMedia) {
+  function failed(image: VehicleGalleryImage) {
     reportExternalPhotoFailure(image);
     const key = imageResourceKey(image);
     loadedImages.current.delete(key);

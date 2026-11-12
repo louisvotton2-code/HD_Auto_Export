@@ -1,4 +1,4 @@
-import type { PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contracts/public';
+import type { Money, PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
@@ -15,12 +15,15 @@ export function formatPublicAmount(amount: string, locale: Locale): string {
   const significantFraction = fraction.replace(/0+$/, '');
   return `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
 }
-export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
-  const { money } = vehicle.price;
-  if (!money) return publicVehicleMessages(locale).priceLabels.on_request;
+export function formatVehicleMoney(money: Money, locale: Locale): string {
   if (money.currency === 'USD') return `${new Intl.NumberFormat(locale).format(roundedUsd(money.amount))} USD`;
   const amount = formatPublicAmount(money.amount, locale);
   return money.currency === 'CNY' ? `¥ ${amount}` : `${amount} ${money.currency}`;
+}
+
+export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
+  const { money } = vehicle.price;
+  return money ? formatVehicleMoney(money, locale) : publicVehicleMessages(locale).priceLabels.on_request;
 }
 
 export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicle, locale: Locale) {
@@ -43,7 +46,13 @@ export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia | null {
 
 /** Unknown facts remain explicit; model year never substitutes for manufacturing date. */
 export function publicVehicleFacts(
-  vehicle: PublicVehicle,
+  vehicle: {
+    facts: PublicVehicle['facts'];
+    display?: {
+      city: { contentLocale: string | null };
+      location: { contentLocale: string | null };
+    };
+  },
   locale: Locale,
 ): { label: string; value: string; lang?: string }[] {
   const t = publicVehicleMessages(locale);

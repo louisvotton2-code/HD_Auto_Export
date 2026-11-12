@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { Icon } from '@/shared/ui/icon';
 import { detailContent } from '../detail-content';
+import type { VehicleGalleryImage } from './vehicle-gallery-image';
 import styles from './vehicle-gallery.module.css';
 
 function ThumbnailImage({ src }: { src: string }) {
@@ -37,7 +37,7 @@ export function VehicleGalleryThumbnails({
   locale,
   onSelect,
 }: {
-  images: PublicMedia[];
+  images: VehicleGalleryImage[];
   index: number;
   locale: Locale;
   onSelect?: (index: number) => void;

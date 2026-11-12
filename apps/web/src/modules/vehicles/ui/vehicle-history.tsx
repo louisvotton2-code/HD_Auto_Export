@@ -6,7 +6,10 @@ import { publicVehicleMessages } from '../public-messages';
 import { ownershipTransfers } from '../vehicle-equipment';
 import styles from './public-detail.module.css';
 
-export function VehicleHistory({ vehicle, locale }: { vehicle: PublicVehicle; locale: Locale }) {
+export function VehicleHistory({ vehicle, locale }: {
+  vehicle: Pick<PublicVehicle, 'facts' | 'external'>;
+  locale: Locale;
+}) {
   const copy = detailContent[locale];
   const t = publicVehicleMessages(locale);
   const entries = vehicle.external?.detail?.specifications ?? [];
