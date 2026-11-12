@@ -7,6 +7,8 @@ type Copy = {
   specifications: string;
   inspection: string;
   report: string;
+  requestReport: string;
+  requestReportMessage: string;
   originalReport: string;
   moreInspection: string;
   needsConfirmation: string;
@@ -20,6 +22,8 @@ export const externalDetailCopy = {
     specifications: '车辆配置',
     inspection: '车辆检测报告',
     report: '查看车辆报告',
+    requestReport: '联系获取车辆检测报告',
+    requestReportMessage: '你好，请提供这辆车的车辆检测报告。',
     originalReport: '打开原始检测报告',
     moreInspection: '更多检测项目',
     needsConfirmation: '以下资料需进一步确认',
@@ -31,6 +35,8 @@ export const externalDetailCopy = {
     specifications: 'Equipment and specifications',
     inspection: 'Vehicle inspection report',
     report: 'View vehicle report',
+    requestReport: 'Contact us for the vehicle inspection report',
+    requestReportMessage: 'Hello, please send me the inspection report for this vehicle.',
     originalReport: 'Open the original inspection report',
     moreInspection: 'More inspection items',
     needsConfirmation: 'Information to confirm',
@@ -42,6 +48,8 @@ export const externalDetailCopy = {
     specifications: 'Комплектация и характеристики',
     inspection: 'Отчёт об осмотре автомобиля',
     report: 'Посмотреть отчёт об автомобиле',
+    requestReport: 'Запросить отчёт об осмотре автомобиля',
+    requestReportMessage: 'Здравствуйте! Пожалуйста, пришлите отчёт об осмотре этого автомобиля.',
     originalReport: 'Открыть оригинал отчёта об осмотре',
     moreInspection: 'Другие пункты осмотра',
     needsConfirmation: 'Данные для уточнения',

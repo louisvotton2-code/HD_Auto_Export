@@ -74,7 +74,7 @@ export default async function CarPage({ params }: Props) {
         initialRetryAfter={retryAfter}
         initialDate={getClearanceDate(new Date())}
         initialRates={createReferenceSnapshot()}
-        destinations={countries.map((country) => ({ slug: country.slug, label: t(country.code) }))}
+        destinations={countries.map((country) => ({ slug: country.slug, label: t(country.code), flag: country.flag }))}
       />
     </ScopedMessagesProvider>
   );

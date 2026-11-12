@@ -23,7 +23,7 @@ import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
-export type VehicleDestination = { slug: string; label: string };
+export type VehicleDestination = { slug: string; label: string; flag?: string };
 const imageResourceKey = (image: PublicMedia) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
 const tapTravel = 10;
 
@@ -496,7 +496,7 @@ export function VehicleBudgetPanel({
           <select value={current} onChange={(event) => setSelected(event.target.value)}>
             {choices.map((item) => (
               <option key={item.slug} value={item.slug}>
-                {item.label}
+                {item.flag} {item.label}
               </option>
             ))}
           </select>
@@ -505,7 +505,7 @@ export function VehicleBudgetPanel({
         <nav className={styles.destinationLinks} aria-label={t.destination}>
           {choices.map((item) => (
             <a key={item.slug} href={`/${locale}/calculator/${item.slug}/`}>
-              {item.label}
+              <span aria-hidden="true">{item.flag}</span> {item.label}
             </a>
           ))}
         </nav>

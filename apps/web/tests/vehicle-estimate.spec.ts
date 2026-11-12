@@ -178,7 +178,7 @@ test('the import calculator stays usable on both sides of the two-column breakpo
   await expect(calculator.getByTestId('inline-estimate-total')).toContainText('KZT');
 
   const summary = page.locator('main summary').filter({ hasText: 'Detailed vehicle information' });
-  await summary.click();
+  await expect(summary.locator('..')).toHaveAttribute('open', '');
   const location = summary.locator('..').locator('dt').filter({ hasText: /^Location$/ }).locator('..');
   await expect(location.locator('dd')).toHaveText('China');
   await expect(location.locator('dd')).toHaveAttribute('lang', 'en');

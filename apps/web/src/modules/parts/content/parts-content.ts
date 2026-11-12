@@ -4,7 +4,7 @@ import type { PartCategory } from '../types';
 type PartsCopy = {
   title: string; titleAccent: string; subtitle: string; kicker: string; metaDescription: string;
   search: string; searchHint: string; catalog: string; catalogBody: string; filters: string;
-  brand: string; category: string; all: string; price: string; min: string; max: string;
+  brand: string; category: string; all: string; price: string; min: string; max: string; partsByCategory: string;
   apply: string; reset: string; sort: string; defaultSort: string; ascending: string; descending: string; byName: string;
   count: (value: number) => string; empty: string; invalidPrice: string; details: string;
   shownRange: (count: number) => string; referenceCount: (formattedCount: string) => string;
@@ -30,7 +30,7 @@ export const partsContent = {
     subtitle: '浏览配件号和参考价格，与我们沟通适配车型、采购数量和运输需求。',
     metaDescription: '浏览 HD Auto Export 的汽车配件资料、配件号和参考价格，联系我们确认适配及运输。',
     search: '搜索配件', searchHint: '输入配件号或名称', catalog: '汽车配件目录',
-    catalogBody: '按配件号选择，逐项确认规格与适配。', filters: '筛选配件', brand: '品牌目录', category: '配件类别', all: '全部',
+    catalogBody: '按配件号选择，逐项确认规格与适配。', filters: '筛选配件', brand: '品牌', category: '配件类别', all: '全部', partsByCategory: '按类别浏览配件',
     price: '参考价格 · USD', min: '最低参考价', max: '最高参考价', apply: '应用筛选', reset: '清除筛选',
     sort: '排序', defaultSort: '默认顺序', ascending: '参考价从低到高', descending: '参考价从高到低', byName: '配件名称',
     count: (n) => `显示 ${n} 条配件资料`, empty: '没有符合条件的配件。请调整筛选，或联系我们按配件号咨询。',
@@ -64,7 +64,7 @@ export const partsContent = {
     subtitle: 'Browse part numbers and reference prices. Discuss vehicle fitment, quantities and delivery with us.',
     metaDescription: 'View part numbers and reference prices in the HD Auto Export catalog. Contact us about fitment, quantities and delivery.',
     search: 'Search parts', searchHint: 'Part number or name', catalog: 'Auto parts catalog',
-    catalogBody: 'Start with the part number, then confirm specifications and fitment.', filters: 'Filters', brand: 'Brand catalog', category: 'Category', all: 'All',
+    catalogBody: 'Start with the part number, then confirm specifications and fitment.', filters: 'Filters', brand: 'Brand', category: 'Category', all: 'All', partsByCategory: 'Parts by category',
     price: 'Reference price · USD', min: 'Minimum reference price', max: 'Maximum reference price', apply: 'Apply filters', reset: 'Clear filters',
     sort: 'Sort', defaultSort: 'Default order', ascending: 'Reference price: low to high', descending: 'Reference price: high to low', byName: 'Part name',
     count: (n) => `Showing ${n} ${n === 1 ? 'part record' : 'part records'}`, empty: 'No parts match these filters. Try another selection or contact us with the part number.',
@@ -98,7 +98,7 @@ export const partsContent = {
     subtitle: 'Посмотрите номера деталей и ориентировочные цены. Уточните совместимость, количество и доставку.',
     metaDescription: 'Каталог запчастей HD Auto Export с номерами и ориентировочными ценами. Свяжитесь с нами, чтобы уточнить совместимость и доставку.',
     search: 'Найти запчасти', searchHint: 'Номер или название', catalog: 'Каталог запчастей',
-    catalogBody: 'Начните с номера детали, затем уточните характеристики и совместимость.', filters: 'Фильтры', brand: 'Каталог марки', category: 'Категория', all: 'Все',
+    catalogBody: 'Начните с номера детали, затем уточните характеристики и совместимость.', filters: 'Фильтры', brand: 'Марка', category: 'Категория', all: 'Все', partsByCategory: 'Запчасти по категориям',
     price: 'Ориентировочная цена · USD', min: 'Минимальная цена', max: 'Максимальная цена', apply: 'Применить фильтры', reset: 'Сбросить фильтры',
     sort: 'Сортировка', defaultSort: 'По умолчанию', ascending: 'Цена по возрастанию', descending: 'Цена по убыванию', byName: 'Название детали',
     count: (n) => `Показано позиций — ${n}`, empty: 'По этим условиям ничего не найдено. Измените фильтры или сообщите номер детали.',

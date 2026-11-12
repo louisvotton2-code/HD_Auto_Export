@@ -54,7 +54,7 @@ test('a direct photo error is reported once and detail shows grouped specificati
   await expect(main.getByText('Compare original and displayed text')).toHaveCount(0);
   await expect(main.locator('[data-vehicle-history]')).toContainText('2024-08');
   await expect(main.locator('[data-vehicle-history]')).not.toContainText('Ownership transfers');
-  await main.locator('summary').filter({ hasText: 'Equipment and specifications' }).click();
+  await expect(main.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
   const group = main.locator('[data-equipment-group="other"]');
   await group.locator('summary').click();
   await expect(group.locator('summary svg')).toHaveCount(2);
@@ -90,18 +90,49 @@ test('original-language fallback, missing media and disputed facts are readable 
   await expect(issue).toContainText('Model year');
   await expect(issue).toContainText('Powertrain');
   await expect(page.locator('main h1')).toBeVisible();
-  await page.locator('main summary').filter({ hasText: 'Detailed vehicle information' }).click();
+  await expect(page.locator('main summary').filter({ hasText: 'Detailed vehicle information' }).locator('..')).toHaveAttribute('open', '');
   const year = page.locator('main dt').filter({ hasText: /^Model year$/ }).locator('..').locator('dd');
   await expect(year).toHaveText('—');
   await page.goto(`/en/cars/${externalFixtureId(4)}/`);
   await expect(page.locator('main [data-vehicle-photo-unavailable]')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Vehicle inspection report' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'View vehicle report' })).toHaveCount(0);
+  await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
   await expect(page.locator('main').getByText('Price on request', { exact: true }).filter({ visible: true }).first()).toBeVisible();
   await setPublicFixtureState(request, { importedWithdrawn: true });
   expect((await request.get(`/en/cars/${externalFixtureId(1)}/`)).status()).toBe(404);
   const list = await (await request.get('/api/v1/vehicles/?locale=en&view=localized&q=EXT-000001')).json();
   expect(list.data.items).toEqual([]);
+});
+
+test('report enquiries keep their vehicle identity and destination flags in all three languages', async ({ page, request }) => {
+  const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
+  await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ contentType: 'image/png', body: image }));
+  const id = externalFixtureId(1);
+  for (const locale of ['zh', 'en', 'ru'] as const) {
+    await page.goto(`/${locale}/cars/${id}/`);
+    const title = await page.locator('main h1').innerText();
+    const reportRequest = page.locator('[data-vehicle-report-request]');
+    await expect(reportRequest).toBeVisible();
+    const links = reportRequest.locator(`[data-vehicle-report-contacts="${id}"] a`);
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      const url = new URL((await link.getAttribute('href'))!);
+      expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
+      const draft = url.searchParams.get('text')!;
+      expect(draft).toContain(title);
+      expect(draft).toContain('EXT-000001');
+      expect(draft).toContain(`/${locale}/cars/${id}/`);
+      expect(draft).toMatch({ zh: /请提供这辆车的车辆检测报告/, en: /send me the inspection report/, ru: /пришлите отчёт об осмотре/ }[locale]);
+    }
+    const destination = page.getByTestId('vehicle-import-estimate').locator('[name="country"]');
+    await expect(destination.locator('option:checked')).toContainText('🇷🇺');
+    await expect(destination.locator('option')).toHaveCount(7);
+    await destination.selectOption('KZ');
+    await expect(destination.locator('option:checked')).toContainText('🇰🇿');
+    await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
+    await expect(page.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
+  }
 });
 
 test('removing all photos from an open gallery restores scrolling and keyboard focus', async ({ page, request }) => {

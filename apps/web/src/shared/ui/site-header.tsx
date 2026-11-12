@@ -10,7 +10,7 @@ import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
-export function SiteHeader({ favoriteAction }: { favoriteAction?: ReactNode }) {
+export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?: ReactNode; enquiryAction?: ReactNode }) {
   const locale = useLocale();
   const t = useTranslations();
   const pathname = usePathname();
@@ -150,7 +150,7 @@ export function SiteHeader({ favoriteAction }: { favoriteAction?: ReactNode }) {
               </div>
             </details>
           </nav>
-          <a
+          {enquiryAction ?? <a
             className={styles.contactButton}
             href={siteConfig.contacts.whatsapp.href}
             target="_blank"
@@ -172,7 +172,7 @@ export function SiteHeader({ favoriteAction }: { favoriteAction?: ReactNode }) {
                 strokeLinejoin="round"
               />
             </svg>
-          </a>
+          </a>}
           <details
             ref={mobileMenu}
             className={styles.mobileMenu}
