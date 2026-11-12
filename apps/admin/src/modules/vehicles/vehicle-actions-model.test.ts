@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel } from './vehicle-actions-model';
+import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, publicationReadinessIssueLabel } from './vehicle-actions-model';
 
 describe('publication recovery', () => {
   it('captures the version and payload from the original publication intent', () => {
@@ -80,5 +80,15 @@ describe('server-confirmed pending publication state', () => {
   });
   it('never opens a new publication for a deleted record', () => {
     expect(publicationControlState({ ...published, deletedAt: '2026-11-08T08:00:00Z', hasUnpublishedChanges: true })).toMatchObject({ blocked: true, needsRefresh: false });
+  });
+});
+
+
+describe('后台发布缺项中文提示', () => {
+  it('不把服务端英文诊断或内部值直接显示给操作员', () => {
+    expect(publicationReadinessIssueLabel({ stage: 'preview', path: 'publicationPreview', code: 'PREVIEW_CONFIRMATION_REQUIRED', message: 'Confirm the current publication preview before publishing.' })).toBe('发布预览：请检查并确认当前内容');
+    expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.internal.purchaseCost.amount', code: 'REQUIRED_FOR_PUBLICATION', message: 'PRIVATE_DIAGNOSTIC_VALUE' })).toBe('采购成本：请填写正数金额并核对币种');
+    expect(publicationReadinessIssueLabel({ stage: 'localization', path: 'draft.content.title.translations.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'A reviewed translation is required.' })).toBe('英文标题：请填写并审核当前原文版本');
+    expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.facts.trim', code: 'REQUIRED_FOR_PUBLICATION', message: 'Trim is required.' })).toBe('配置：请填写车辆配置');
   });
 });

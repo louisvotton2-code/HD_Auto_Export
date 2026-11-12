@@ -55,8 +55,8 @@ async function frameMessage(page: Page, ready: PublishReadiness, event: 'loading
 }
 
 for (const scenario of [
-  { stage: 'required_fields' as const, path: 'draft.price.money.amount', message: '请填写公开价格', target: '价格与内部信息' },
-  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '请完善英文标题', target: '公开字段多语' },
+  { stage: 'required_fields' as const, path: 'draft.price.money.amount', message: '公开价格：请检查价格口径、金额和币种', target: '价格与内部信息' },
+  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '英文标题：请填写并审核当前原文版本', target: '公开字段多语' },
 ]) {
   test(`publication readiness reports and navigates server ${scenario.stage} issues`, async ({ page }) => {
     const item = record();

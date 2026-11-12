@@ -282,7 +282,7 @@ test('localization changes alone unlock an explicit new publication after a side
   await tab(page, '基础资料');
   await page.getByRole('button', { name: '查看发布缺项', exact: true }).click();
   const missing = page.getByRole('dialog', { name: '发布缺项', exact: true });
-  const action = missing.getByRole('button', { name: '请核对当前发布预览并确认。', exact: true });
+  const action = missing.getByRole('button', { name: '发布预览：请检查并确认当前内容', exact: true });
   await expect(action).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await action.focus(); await expect(action).toBeFocused();

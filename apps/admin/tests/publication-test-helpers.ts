@@ -8,10 +8,13 @@ export async function acknowledgePublicationPreview(page: Page) {
   const checkbox = page.getByRole('checkbox', { name: '我已检查当前预览，确认图片、价格和文字正确', exact: true });
   await expect(checkbox).toBeEnabled();
   await checkbox.check();
+  // Ant's retained loading icon can prefix the accessible name after an earlier confirmation.
+  const confirm = page.getByRole('button', { name: /确认当前预览$/ });
+  await expect(confirm).toBeEnabled();
   const [response] = await Promise.all([
     page.waitForResponse(response => response.request().method() === 'POST'
       && new URL(response.url()).pathname.endsWith('/publication-preview/confirm')),
-    page.getByRole('button', { name: '确认当前预览', exact: true }).click(),
+    confirm.click(),
   ]);
   expect(response.ok()).toBe(true);
   const ready = PublishReadinessResponseSchema.parse(await response.json()).data;

@@ -35,12 +35,28 @@ async function create(page: Page, kind: 'manual' | 'demo', title: string) {
   await (await notes(page)).fill('PRIVATE_AD_UX_ONLY');
   return save(page);
 }
+async function selectPetrolFromUnknown(page: Page) {
+  const input = page.getByRole('combobox', { name: '动力类型', exact: true });
+  await input.click();
+  await expect(input).toHaveAttribute('aria-expanded', 'true');
+  const activeLabel = async () => {
+    const activeId = await input.getAttribute('aria-activedescendant');
+    return activeId ? page.locator(`[id="${activeId}"]`).getAttribute('aria-label') : null;
+  };
+  // The selected last option scrolls Ant's virtual list past petrol; keyboard navigation renders it.
+  await expect.poll(activeLabel).toBe('未知');
+  await input.press('ArrowDown');
+  await expect.poll(activeLabel).toBe('汽油');
+  await input.press('Enter');
+  await expect(input).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.ant-select').filter({ has: input }).getByTitle('汽油', { exact: true })).toBeVisible();
+}
 async function contentAndImage(page: Page, vehicle: AdminVehicle, approve: boolean) {
   if (vehicle.draft.source.kind === 'manual') {
     await tab(page, '基础资料');
     await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
     await chooseYear(page, '年款', 2024);
-    await select(page, '动力类型', '汽油');
+    await selectPetrolFromUnknown(page);
     await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
     await tab(page, '价格与内部信息');
     await select(page, '公开价格口径', '公开报价');
@@ -50,6 +66,7 @@ async function contentAndImage(page: Page, vehicle: AdminVehicle, approve: boole
     await select(page, '采购成本币种', 'USD');
     await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
     vehicle = await save(page, vehicle.id);
+    expect(vehicle.draft.facts.powertrain).toBe('petrol');
   }
   await tab(page, '公开字段多语');
   for (const [locale, text] of [['中文', vehicle.draft.content.title.sourceText!], ['英文', 'Synthetic test vehicle'], ['俄文', 'Тестовый автомобиль']]) {
@@ -317,7 +334,7 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
   expect((await page.context().cookies()).some(c => c.httpOnly && c.path === '/api' && c.sameSite === 'Lax')).toBe(true);
   const initial = await create(page, 'manual', '隔离草稿车辆');
-  expect(initial.draft.price.money).toBeNull();
+  expect(initial.draft.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'USD' }, includes: [] });
   expect(initial.draft.facts.manufacturedAt).toBeNull();
   await (await notes(page)).fill('PRIVATE_UPDATED');
   await save(page, initial.id);
@@ -482,7 +499,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await newName(page, '车型', '八图生命周期测试车型');
   const externalId = `synthetic-lifecycle-${Date.now()}`;
   const listingUrl = `https://example.invalid/listings/${externalId}`;
-  const collectedAt = '2026-11-08T08:00:00Z';
+  const collectedAt = '2026-11-08T08:00:00.000Z';
   await page.getByLabel('来源平台标识', { exact: true }).fill('synthetic-lifecycle-market');
   await page.getByLabel('来源平台名称', { exact: true }).fill('合成挂牌平台（隔离测试）');
   await page.getByLabel('原始挂牌链接', { exact: true }).fill(listingUrl);
@@ -532,7 +549,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await expect(page.locator('.ant-alert').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
   expect(uploads).toHaveLength(8);
   expect(uploads.map(upload => upload.rights.source?.imageUrl)).toEqual(imageUrls);
-  for (const upload of uploads) expect(upload.rights).toMatchObject({ basis: 'unverified', source: { listingUrl, collectedAt: '2026-11-08T08:00:00.000Z' } });
+  for (const upload of uploads) expect(upload.rights).toMatchObject({ basis: 'unverified', source: { listingUrl, collectedAt } });
   for (let i = 1; i <= 8; i++) await page.getByRole('textbox', { name: `图片 ${i} 说明`, exact: true }).fill(`合成图 ${i}`);
   await page.locator('ol > li').filter({ has: page.getByRole('textbox', { name: '图片 8 说明', exact: true }) }).getByRole('button', { name: /设为封面$/ }).click();
   await page.getByRole('button', { name: '上移图片 8', exact: true }).click();
@@ -563,7 +580,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await tab(page, '基础资料');
   await page.getByLabel('配置名称', { exact: true }).fill('员工挂牌隔离合成配置');
   await chooseYear(page, '年款', 2024);
-  await select(page, '动力类型', '汽油');
+  await selectPetrolFromUnknown(page);
   await tab(page, '价格与内部信息');
   await page.getByLabel('内部采购成本', { exact: true }).fill('100000');
   await select(page, '采购成本币种', 'CNY');
@@ -577,6 +594,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
     await page.getByRole('checkbox', { name: `${language}描述已审核`, exact: true }).check();
   }
   const reviewed = await save(page, initial.id);
+  expect(reviewed.draft.facts.powertrain).toBe('petrol');
   for (const field of [reviewed.draft.content.title, reviewed.draft.content.description]) {
     expect(Object.values(field.translations).every(text => text?.reviewStatus === 'approved')).toBe(true);
   }
@@ -793,4 +811,181 @@ test('real Aliyun international Chinese suggestion persistence', async ({ page }
   await expect(page.locator('.ant-alert').filter({ hasText: /已填入\d+项语言内容，请核对并保存草稿|译文已填入当前草稿，请核对并保存/ })).toHaveCount(0);
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-saved.png', fullPage: true, animations: 'disabled' });
+});
+
+test('real publication preview rejects private image failures until a new load succeeds', async ({ page }, testInfo) => {
+  // Requires the reviewed FE image-decode fix; the older FE build must fail this regression.
+  test.setTimeout(240_000);
+  expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
+  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
+  const { PublishReadinessResponseSchema, ConfirmPublicationPreviewRequestSchema } = await import('@hd/contracts/admin');
+  await login(page);
+  const initial = await create(page, 'manual', '私图失败发布预览隔离样例');
+  const firstImage = await contentAndImage(page, initial, true);
+  await tab(page, '图片管理');
+  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('第二张本地生成合成图片，仅供隔离预览故障验收。');
+  const png = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#4a376d'; context.fillRect(0, 0, 96, 64);
+    return canvas.toDataURL('image/png').split(',')[1]!;
+  }), 'base64');
+  await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-second.png', mimeType: 'image/png', buffer: png });
+  await expect(page.getByRole('textbox', { name: '图片 2 说明', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: '图片 2 说明', exact: true }).fill('合成测试第二张图片');
+  const withImages = await save(page, initial.id);
+  expect(withImages.draft.media).toHaveLength(2);
+  expect(withImages.draft.media[0]!.id).toBe(firstImage.draft.media[0]!.id);
+  await completeDisplayTranslations(page, withImages, true);
+  await tab(page, '发布预览');
+  await select(page, '核验后的库存状态', '可售');
+  const availability = await operation(page, initial.id, '核验并更新库存', 'availability');
+  expect(availability.status()).toBe(200);
+  expect(AdminVehicleResponseSchema.parse(await availability.json()).data.availability).toBe('available');
+
+  const vehiclePath = `/api/v1/admin/vehicles/${initial.id}`;
+  const readinessResponse = await readRespectingRateLimit(page, `${vehiclePath}/publish-readiness?locale=zh`);
+  expect(readinessResponse.status()).toBe(200);
+  const readiness = PublishReadinessResponseSchema.parse(await readinessResponse.json()).data;
+  expect(readiness).toMatchObject({ requiredFieldsReady: true, localizationReady: true, previewConfirmed: false, canPublish: false, confirmation: null });
+  expect(readiness.issues.every(issue => issue.stage === 'preview')).toBe(true);
+  const cover = withImages.draft.media.find(image => image.isCover)!;
+  const second = withImages.draft.media.find(image => !image.isCover)!;
+  expect(cover).toBeTruthy(); expect(second).toBeTruthy();
+  const paths = new Map([cover, second].map(image => [`/api/v1/admin/media/${image.id}/preview`, image.id]));
+  const origin = new URL(page.url()).origin;
+  const matchesImage = (url: URL) => url.origin === origin && paths.has(url.pathname);
+  let stage = 'initial';
+  let fault: { mediaId: string; result: 401 | 403 | 500 | 'abort' } | null = null;
+  const writes = { confirm: 0, publish: 0, translation: 0 };
+  const confirmationBodies: ReturnType<typeof ConfirmPublicationPreviewRequestSchema.parse>[] = [];
+  const imageOutcomes: Array<{ stage: string; loadId: string | null; mediaId: string; result: number | 'failed' }> = [];
+  const loads: Array<{ stage: string; previousLoadId: string; loadId: string }> = [];
+  function recordImageOutcome(request: import('@playwright/test').Request, result: number | 'failed') {
+    const mediaId = paths.get(new URL(request.url()).pathname);
+    if (!mediaId) return;
+    let loadId: string | null = null;
+    try { loadId = new URL(request.frame().url()).searchParams.get('loadId'); } catch { /* Detached frame; no private request details are recorded. */ }
+    imageOutcomes.push({ stage, loadId, mediaId, result });
+  }
+  page.on('response', response => recordImageOutcome(response.request(), response.status()));
+  page.on('requestfailed', request => recordImageOutcome(request, 'failed'));
+  page.on('request', request => {
+    if (request.method() !== 'POST') return;
+    const path = new URL(request.url()).pathname;
+    if (path === `${vehiclePath}/publication-preview/confirm`) {
+      writes.confirm++;
+      confirmationBodies.push(ConfirmPublicationPreviewRequestSchema.parse(request.postDataJSON()));
+    }
+    if (path === `${vehiclePath}/publish`) writes.publish++;
+    if (path.endsWith('/translation-suggestions')) writes.translation++;
+  });
+  const intercept = async (route: import('@playwright/test').Route) => {
+    const mediaId = paths.get(new URL(route.request().url()).pathname);
+    if (!fault || fault.mediaId !== mediaId) { await route.continue(); return; }
+    if (fault.result === 'abort') { await route.abort('failed'); return; }
+    await route.fulfill({ status: fault.result, contentType: 'text/plain', headers: { 'Cache-Control': 'no-store' }, body: 'Isolated private image failure' });
+  };
+  // Only this synthetic vehicle's image bytes are intercepted. FE, preview DTOs, proof and mutations remain real.
+  await page.route(matchesImage, intercept);
+  const iframe = page.locator('iframe[title="中文车辆发布预览"]');
+  const frame = page.frameLocator('iframe[title="中文车辆发布预览"]');
+  const checkbox = page.getByRole('checkbox', { name: '我已检查当前预览，确认图片、价格和文字正确', exact: true });
+  const confirm = page.getByRole('button', { name: /确认当前预览$/ });
+  async function loadId() {
+    const src = await iframe.getAttribute('src');
+    expect(src).toBeTruthy();
+    const id = new URL(src!, origin).searchParams.get('loadId');
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    return id!;
+  }
+  async function reloadPreview(nextStage: string) {
+    stage = nextStage;
+    const previousLoadId = await loadId();
+    await page.getByRole('button', { name: /重新载入预览$/ }).click();
+    await expect.poll(loadId).not.toBe(previousLoadId);
+    const nextLoadId = await loadId();
+    loads.push({ stage, previousLoadId, loadId: nextLoadId });
+    return nextLoadId;
+  }
+  async function expectNoWrites() {
+    expect(writes).toEqual({ confirm: 0, publish: 0, translation: 0 });
+    await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
+  }
+  async function expectFailed() {
+    await expect(frame.getByTestId('publication-preview-media-error')).toBeVisible();
+    await expect(checkbox).toBeDisabled();
+    await expect(confirm).toBeDisabled();
+    await expectNoWrites();
+  }
+  async function expectDecoded(mediaId: string) {
+    const body = frame.getByTestId('publication-preview-body');
+    await expect(body).toHaveAttribute('data-vehicle-version', String(readiness.vehicleVersion));
+    await expect(body).toHaveAttribute('data-public-content-revision', String(readiness.publicContentRevision));
+    await expect(body).toHaveAttribute('data-fingerprint', readiness.fingerprint);
+    const image = frame.locator(`img[data-gallery-active-image="${mediaId}"]`);
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate(node => {
+      const current = node as HTMLImageElement;
+      return current.complete && current.naturalWidth > 0;
+    })).toBe(true);
+    await expect(frame.getByTestId('publication-preview-media-error')).toHaveCount(0);
+    await expect(checkbox).toBeEnabled();
+    await expectNoWrites();
+  }
+  async function removeFaultWithoutReload(failedLoadId: string) {
+    fault = null;
+    // Drain render callbacks without changing src, dispatching image events or manufacturing a frame proof.
+    await frame.getByTestId('publication-preview-body').evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    expect(await loadId()).toBe(failedLoadId);
+    await expectFailed();
+  }
+  try {
+    for (const result of [401, 403, 500, 'abort'] as const) {
+      fault = { mediaId: cover.id, result };
+      const failedLoadId = await reloadPreview(`cover-${result}`);
+      await expect.poll(() => imageOutcomes.some(outcome => outcome.loadId === failedLoadId && outcome.mediaId === cover.id
+        && outcome.result === (result === 'abort' ? 'failed' : result))).toBe(true);
+      await expectFailed();
+      await removeFaultWithoutReload(failedLoadId);
+      await reloadPreview(`cover-${result}-recovered`);
+      await expectDecoded(cover.id);
+    }
+
+    // Fault the second URL before a new cover load, so a previously decoded thumbnail cannot mask the failure.
+    fault = { mediaId: second.id, result: 500 };
+    const selectionLoadId = await reloadPreview('second-image-ready-cover');
+    await expectDecoded(cover.id);
+    stage = 'second-image-failed';
+    await frame.getByRole('link', { name: /查看第 2 张照片$/ }).click();
+    await expect.poll(() => imageOutcomes.some(outcome => outcome.loadId === selectionLoadId && outcome.mediaId === second.id && outcome.result === 500)).toBe(true);
+    await expect(frame.locator(`[data-selected-image="${second.id}"]`)).toBeVisible();
+    await expectFailed();
+    await removeFaultWithoutReload(selectionLoadId);
+    await reloadPreview('second-image-recovered');
+    await expectDecoded(cover.id);
+    await frame.getByRole('link', { name: /查看第 2 张照片$/ }).click();
+    await expectDecoded(second.id);
+
+    const beforeConfirmation = await readRespectingRateLimit(page, `${vehiclePath}/publish-readiness?locale=zh`);
+    expect(beforeConfirmation.status()).toBe(200);
+    expect(PublishReadinessResponseSchema.parse(await beforeConfirmation.json()).data).toMatchObject({
+      requiredFieldsReady: true, localizationReady: true, previewConfirmed: false, canPublish: false, confirmation: null,
+    });
+    stage = 'explicit-confirm-and-publish';
+    const publishedResponse = await operation(page, initial.id, '发布车辆', 'publish');
+    expect(publishedResponse.status()).toBe(200);
+    expect(AdminVehicleResponseSchema.parse(await publishedResponse.json()).data).toMatchObject({ publicationState: 'published', hasUnpublishedChanges: false });
+    expect(writes).toEqual({ confirm: 1, publish: 1, translation: 0 });
+    expect(confirmationBodies).toEqual([{ version: readiness.vehicleVersion, publicContentRevision: readiness.publicContentRevision, fingerprint: readiness.fingerprint, locale: 'zh' }]);
+  } finally {
+    await page.unroute(matchesImage, intercept);
+    await mkdir(testInfo.outputDir, { recursive: true });
+    await writeFile(testInfo.outputPath('private-image-preview-summary.json'), JSON.stringify({
+      sampleKind: 'Real isolated API and FE; only this synthetic vehicle image responses faulted; no provider calls',
+      vehicleId: initial.id, coverId: cover.id, secondImageId: second.id, loads, imageOutcomes, writes,
+    }, null, 2));
+  }
 });

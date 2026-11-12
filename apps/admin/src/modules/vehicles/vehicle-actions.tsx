@@ -8,7 +8,7 @@ import { PublicVehicleResponseSchema, type Locale, type PublicVehicle } from '@h
 import { ApiClientError, request } from '../../shared/api/client';
 import { readVehicleLifecycle } from '../../shared/api/vehicle-lifecycle';
 import { availabilityLabels, formatTime, publicationLabels } from './draft-form';
-import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, type PublishIntent } from './vehicle-actions-model';
+import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, publicationReadinessIssueLabel, type PublishIntent } from './vehicle-actions-model';
 import styles from './vehicle-actions.module.css';
 import { publicationConfirmationIsCurrent, publicationReceiptMatches, usePublicationReadiness } from './use-publication-readiness';
 
@@ -280,8 +280,8 @@ export function VehicleActions({ publishTarget, previewLocale, previewReceipt, v
       {ready && <ul className={styles.serverIssues}>{ready.issues.map((issue, index) => <li key={`${issue.stage}:${issue.path}:${issue.code}:${index}`}>
         <Tag>{issue.stage === 'required_fields' ? '车辆资料' : issue.stage === 'localization' ? '公开多语' : '发布预览'}</Tag>
         {onIssue || (issue.stage === 'localization' && onLocalizationIssue)
-          ? <Button type="link" disabled={busy || confirming || readiness.confirming || locked} onClick={() => navigateIssue(issue)}>{issue.message}</Button>
-          : <Typography.Text>{issue.message}</Typography.Text>}
+          ? <Button type="link" disabled={busy || confirming || readiness.confirming || locked} onClick={() => navigateIssue(issue)}>{publicationReadinessIssueLabel(issue)}</Button>
+          : <Typography.Text>{publicationReadinessIssueLabel(issue)}</Typography.Text>}
       </li>)}</ul>}
       {ready && !readiness.loading && !readiness.error && !readiness.expired && ready.issues.length === 0
         && <Typography.Paragraph>服务端未报告发布缺项。{publicationStatus.blocked ? publicationStatus.title : '请核对当前预览确认状态，再明确发布。'}</Typography.Paragraph>}
