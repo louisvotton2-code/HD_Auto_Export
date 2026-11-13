@@ -6,7 +6,10 @@
 
 `FULL_SYNC_DATA_ROOT` 必须为新盘 `/srv/hd-auto/data/full-sync`，容器固定 `/private/full-sync`；宿主先创建并赋应用UID/GID。全局Docker缺挂载保护须继续有效，不能改回系统盘临时目录。大任务暂停期间仍应处理撤回和查询。
 
-容量基线和首1万充分三语/报告样本由OPS使用 `storage-measure.py` 读实际DB、索引、WAL、暂存、归档、媒体、备份和整盘占用；DB压缩原文必须选择 `--archives-in-database`，CSV目录作为staging。`storage-budget.py` 按实际distinct处理来源数和完整CSV target估算剩余空间。索引已含DB，不重复相加；DB内原文无法分拆时以整库预留一历史版本，另预留两未来备份的验证组件+密文及至少2GiB额外WAL。60%告警、70%当前或预测峰值暂停重任务；不足样本不自动放行，不采购或删除业务资料。显式预算只在实测后设置，不能绕过BE样本门槛。
+首万固定样本的容量闭环见 `capacity-controller.md`。BE产出稳定evidenceHash、样本充分性和实测组件，OPS的 `capacity-measure.py` 为唯一峰值模型；原storage-budget CLI只保留旧测量回归，不负责自动放行。每分钟decision服务原子写入 `/srv/hd-auto/data/full-sync-capacity/decision.json`，worker只读挂载，10分钟过期，错快照/样本绑定/缺证据均等待；70%及人工暂停仍独立生效。不得用APPROVED标量绕过。
+
+私有root配置 `/etc/hd-auto/capacity.json` 包含database、filesystemUuid、mediaRoots、controlRoots及dumpNetwork/dumpHost/dumpUser/dumpPgpassFile，全部使用实际生产值。dump客户端复用当前PG精确镜像，内部网络、.25CPU/256MiB、只读0600凭据挂载，600秒/2GiB输出上限，超限清理客户端；长probe由独立service执行，不阻塞55秒分钟控制器，证据变化/24小时后重测。模型分别计算全量business、额外原文历史、最多三代SQL/CSV、自有媒体、WAL及保护占用；恢复点大小依据受限压缩dump实测，保留两点和新点生成峰值7.3P，发布保护点单列。目录缩量不削减现存资料成本。实际预测超70%停止，不采购或删业务资料。
+
 
 每日备份由 `hd-auto-ext07-backup.timer` 调用 `routine-backup.py`，上海时间04:20左右，单锁、.5CPU/512MiB、低IO优先级。私有root 0600配置 `/srv/hd-auto/secrets/ext07/backup.json` 记实际compose/runtime参数数组、库名、新盘UUID、公钥证书、自有媒体路径及配置文件根；不写密码值。当前源码指针 `/srv/hd-auto/staging/ext07/current-source` 只在已批准发布后更新。
 
