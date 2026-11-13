@@ -42,6 +42,7 @@ class IngestionProfile(unittest.TestCase):
         self.assertEqual(float(worker['cpus']), .5)
         self.assertEqual(int(worker['mem_limit']), 512 * 1024 * 1024)
         self.assertTrue(worker['read_only'])
+        self.assertEqual(worker['tmpfs'], ['/tmp:mode=1777,size=134217728'])
         self.assertEqual(worker['cap_drop'], ['ALL'])
         self.assertEqual(worker['restart'], 'no')
         self.assertEqual(worker['environment']['DB_POOL_MAX'], '2')
