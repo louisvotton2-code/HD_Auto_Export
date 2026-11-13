@@ -26,3 +26,21 @@ OPS唯一集成并串行维护公共依赖/锁；按准确最终SHA独立review�
 新增分段正式接线：Nginx公网allowlist仅增加gallery/configuration两个GET/HEAD子路径，尾斜杠规范保持；员工activity/raw原档仍不公开。独立审查发现新路径没有归入原public-api入口桶，已同步窄扩分类，原12r/s/burst24与连接限额保持。首次路由6项通过；新增限流轮7项有1项夹具混入其他状态，修正合成Unix上游backlog5为64（生产限额未改），单项复查与最终完整7项均通过，最终14.198秒。fixture专用响应头观察真实family/limit状态，16并发80请求命中429 public-api/REJECTED，伪造XFF不分桶；无公网监听且测试随fixture退场。
 
 加密工具14项最终版本已独立复核PASS（报告encryption-pre-review.json）；另在目标Linux OpenSSL3.0仅加密合成材料，严格SSH传回Mac，用未上传的私钥实际认证解密，6文件内容与权限/UID/GID核对成功。cross-platform-crypto-proof.json明确syntheticOnly，无真实备份转移或生产DB/服务变更；正式最新快照仍待发布时执行。
+
+## 实际组合演练与修复
+
+四段公共契约、BE44bbcdd、FE10017、AD6e8019精确接入组合d8ce134。API/后台在本树构建，FE使用完整已审F2oZEwFquf3va88wtZF_成品的独立运行副本，不复用旧严格schema成品。真实PA冻结包只进入新建隔离PG/私网mock，未连接生产或真实变更接口。512MiB/0.5CPU worker首次68.665秒，峰值201457664 bytes，raw/canonical/public均300、待核验0、continuous=false。25次是空增量夹具请求，不计入PA真实69次或生产请求。
+
+首次重放触发INGESTION_RESOURCE_PRESSURE，原阈值保持；第二次完成且六项业务指纹前后完全相等。另新任务200条时按max-batches退出2，独立新进程续跑至300/complete，峰值62541824 bytes；不重置任务或放宽保护。真实包两来源各150，首屏/完整多语原档按PAhash保留。
+
+三语各300目录、实际详情与SSR、相册18条分3页/配置41条分6页通过，revision稳定且no-store；员工原档完整读取、hash一致、跨车文档404、公开无员工信息及后台实际计数通过。再定向选择真实51图车辆，详情首屏30、mediaTotal51、3页全部51个稳定ID通过。检查脚本的健康地址/列表DTO两次夹具错误均保留原日志，按实际契约修正后通过，未修改应用或验收条件。角色自测与本轮组合证据分开登记。
+
+双员工真实UI首轮在同版本两事件定位处失败，AD6e8019改按event.id；第二轮在相同标题出现在多个字段的定位处失败，原截图/trace均保留并交AD按字段范围修正，尚未记整项通过。组合独立审查另发现旧delta耗尽hydration后新快照恢复可能卡进度，已交BE补独立身份回归，修后再核准确版本与最终门禁。
+
+## 本机3363已采纳计算器修复
+
+实际旧API不兼容main/EXT06完整官网，因此按现用123f源码仅加已审b236八行CSS重建，新BUILD pA_WTBGXyltZZcJTG-m4k。独立审查核880 tracked源仅此差异、1760成品文件/29内链；预检生成191路由缓存仅在候选停后清理，发布使用独立COW运行副本，冻结成品保持。实际仅替换Web进程并更新start.py路径、身份及active-web记录；原API72751、PG桥25562、后台、数据库、媒体及3363代理均未改。三语×1440/390/320共9组原生select均flex/居中、无横溢；三语目录220/首页20/旧报告详情200，已在实际3363核验。旧Web成品与入口备份保留；未演练失败回退分支。宿主已轮换旧PG桥的缓存Node映射，现用进程保持原启动身份；旧start.py对仍运行桥的幂等检查存在历史路径限制，本轮未宣称整组重启通过。
+
+实际证据：local-css-candidate-review.json、local-css-switch-review.json、local-css-live/switch-result.json；此本机复合Web版本不冒称EXT06生产成品。
+
+修复补记：AD测试5e18d17按event.id→item→精确字段path→前后侧定位，保留唯一性及精确值断言；第三轮在42f5f1b组合通过完整真实双员工链路（142秒），随机库/3319/3322由runner清理，trace与320截图另存，原两轮失败未覆盖。BE53bbe53恢复补片接入87dd1cf，独立身份回归先在旧代码复现、修后21项定向通过；本轮API在组合树重新构建，最终硬门禁包含该新源码。PA最终c9dce44逐字段对照日志已接入。生产仍未执行EXT06操作，后续准确SHA审查、门禁与正式备份离机/部署证据另记。
