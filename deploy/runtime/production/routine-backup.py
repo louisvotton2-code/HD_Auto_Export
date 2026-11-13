@@ -184,6 +184,8 @@ def main():
         if args.kind == 'daily':
             spec = importlib.util.spec_from_file_location('capacity_measure', Path(__file__).with_name('capacity-measure.py'))
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            if module.config()['database'] != config['database']:
+                raise ValueError('Capacity and recovery database bindings differ')
             measured = module.measure()
             if measured is None or not measured.get('sampleEvidenceSufficient'):
                 raise ValueError('Fresh measured capacity evidence required before daily backup')
