@@ -24,7 +24,6 @@ class Peak(unittest.TestCase):
     def test_incomplete_fails_closed(self):
         e=self.data();e['sampleEvidenceSufficient']=False
         with self.assertRaises(ValueError):self.calculate(e)
-if __name__=='__main__':unittest.main()
 
 class DumpBoundary(unittest.TestCase):
     def test_client_limits_private_network_and_readonly_credentials(self):
@@ -38,3 +37,18 @@ class DumpBoundary(unittest.TestCase):
         self.assertFalse(any('PGPASSWORD=' in x for x in args))
         self.assertTrue(any('statement_timeout=600000' in x and 'default_transaction_read_only=on' in x for x in args))
         self.assertNotIn('-p',args)
+
+class ProducerConsumer(unittest.TestCase):
+    def test_shrinking_target_accepts_fixed_historical_sample(self):
+        import datetime as dt
+        spec=importlib.util.spec_from_file_location('controller',Path(__file__).parent/'production/capacity-decision.py')
+        controller=importlib.util.module_from_spec(spec);spec.loader.exec_module(controller)
+        e=Peak().data();e['targetRows']=5000
+        value=Peak().calculate(e)
+        measured={**e,**value,'snapshotId':'snapshot-1','sampleRows':10000,'evidenceHash':'a'*64}
+        result=controller.decision(measured,dt.datetime(2026,11,14,tzinfo=dt.timezone.utc))
+        self.assertEqual(result['decision'],'allow')
+        self.assertEqual(result['sampleRows'],10000)
+        self.assertEqual(result['targetRows'],5000)
+
+if __name__=='__main__':unittest.main()

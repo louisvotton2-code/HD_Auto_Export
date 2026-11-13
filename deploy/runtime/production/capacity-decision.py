@@ -50,7 +50,7 @@ def decision(measurement, now):
         result['reason'] = 'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'
         return result
     peak = integer(measurement['projectedPeakBytes'])
-    if peak < result['currentUsedBytes'] or result['sampleRows'] > result['targetRows']:
+    if peak < result['currentUsedBytes']:
         raise ValueError('Inconsistent measurement')
     result['projectedPeakBytes'] = peak
     blocked = max(peak, result['currentUsedBytes']) * 10 >= result['diskTotalBytes'] * 7
