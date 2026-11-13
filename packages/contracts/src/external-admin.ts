@@ -258,3 +258,16 @@ export const ExternalProviderStatusSchema = z.strictObject({
 });
 export type ExternalProviderStatus = z.infer<typeof ExternalProviderStatusSchema>;
 export const ExternalProviderStatusResponseSchema = responseSchema(ExternalProviderStatusSchema);
+
+/** Read-only one-shot importer status. No request can enable scheduling or import scope. */
+export const ExternalIngestionStatusSchema = z.strictObject({
+  mode:z.literal('fixed_once'),continuous:z.literal(false),
+  latestJob:z.strictObject({id:z.uuid(),state:z.enum(['awaiting_snapshot','ready','complete','paused']),
+    createdAt:TimestampSchema,generatedAt:TimestampSchema,completedAt:TimestampSchema.nullable(),
+    triggeredByStaffId:IdSchema,receivedEvents:CountSchema,appliedEvents:CountSchema,
+    rawIdentityCount:CountSchema,canonicalVehicleCount:CountSchema,publicVehicleCount:CountSchema,
+    networkRequests:CountSchema,failures:CountSchema,recoveryCount:CountSchema,
+  }).nullable(),
+});
+export type ExternalIngestionStatus=z.infer<typeof ExternalIngestionStatusSchema>;
+export const ExternalIngestionStatusResponseSchema=responseSchema(ExternalIngestionStatusSchema);

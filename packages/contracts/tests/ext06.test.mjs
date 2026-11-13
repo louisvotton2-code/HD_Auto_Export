@@ -35,3 +35,9 @@ test('gallery pages keep absolute positions beyond the initial thirty photos',()
  assert.equal(pub.PublicMediaSchema.parse(photo).sortOrder,75);
  assert.equal(pub.PublicMediaSchema.safeParse({...photo,url:'javascript:alert(1)'}).success,false);
 });
+test('formal importer status cannot imply continuous scheduling or expose a raw manifest',()=>{
+ const data={mode:'fixed_once',continuous:false,latestJob:null};
+ assert.deepEqual(admin.ExternalIngestionStatusSchema.parse(data),data);
+ assert.equal(admin.ExternalIngestionStatusSchema.safeParse({...data,continuous:true}).success,false);
+ assert.equal(admin.ExternalIngestionStatusSchema.safeParse({...data,manifest:{}}).success,false);
+});
