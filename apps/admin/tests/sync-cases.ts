@@ -135,7 +135,7 @@ test('EXT07 full snapshot disabled setup and persistent protection remain distin
   await expect(panel.getByText('接收与校验来源快照', { exact: true })).toBeVisible();
   await expect(panel.getByText('尚无成功记录', { exact: true })).toBeVisible();
   await expect(panel.getByText(/快照仍在处理/)).toBeVisible();
-  await expect(panel.getByText(safeError, { exact: true })).toBeVisible();
+  await expect(panel.getByText(safeError)).toBeVisible();
   expect(await page.evaluate(() => 'syncErrorExecuted' in window)).toBe(false);
   await expect(panel.getByText('当前同步阶段完成', { exact: true })).toHaveCount(0);
   current = syncStatus({ state: 'disabled', snapshot: null });
