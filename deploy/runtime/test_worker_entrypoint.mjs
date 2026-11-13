@@ -23,7 +23,7 @@ test('root and caller-provided database URLs cannot bypass the deployment bindin
   }
 });
 
-test('worker cannot activate continuous sync or translation', () => {
+test('worker cannot activate legacy synthetic sync or translation', () => {
   for (const override of [{EXTERNAL_SYNC_MODE: 'on'}, {TRANSLATION_PROVIDER: 'aliyun'}, {TRANSLATION_PROVIDER: undefined}]) {
     assert.throws(() => workerEnvironment({...approved, ...override}, 'synthetic', 15001));
   }
@@ -49,4 +49,15 @@ test('FX is a separate exact operation; ingestion cannot inherit a network refre
   const env = workerEnvironment({...approved, EXTERNAL_FX_NETWORK: 'enabled', EXTERNAL_FX_FORMAL_DATABASE: 'other'}, 'synthetic', 15001);
   assert.equal(env.EXTERNAL_FX_NETWORK, undefined);
   assert.equal(env.EXTERNAL_FX_FORMAL_DATABASE, undefined);
+});
+
+test('formal full sync has an explicit CLI and cannot select another program', () => {
+  for (const command of ['configure', 'run', 'serve', 'status', 'control', 'archive-pin', 'archive-release']) {
+    assert.deepEqual(workerInvocation(['full-sync', command]), {
+      argv: ['dist/external/full-sync/cli.js', command], formalFx: false, fullSync: true,
+    });
+  }
+  for (const args of [['full-sync'], ['full-sync', 'dist/main.js'], ['full-sync', '--seed']]) {
+    assert.throws(() => workerInvocation(args));
+  }
 });

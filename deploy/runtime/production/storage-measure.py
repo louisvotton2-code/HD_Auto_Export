@@ -44,6 +44,10 @@ def measure(*, database, expected_uuid, archives, staging):
         raise ValueError('Unexpected production PostgreSQL mount')
     query = "SELECT json_build_object('databaseBytes',pg_database_size(current_database()),'indexBytes',coalesce((SELECT sum(pg_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='i' AND n.nspname NOT IN ('pg_catalog','information_schema')),0));"
     sizes = json.loads(checked_output(['docker', 'exec', '-u', 'postgres', 'hd-auto-postgres-1', 'psql', '-X', '-U', 'postgres', '-d', database, '-Atq', '-v', 'ON_ERROR_STOP=1', '-c', query]))
+    api = json.loads(checked_output(['docker', 'inspect', 'hd-auto-api-1']))[0]
+    media = [m['Source'] for m in api['Mounts'] if m['Destination'] == '/data/media']
+    if len(media) != 1:
+        raise ValueError('Unexpected API media mount')
     stats = os.statvfs(ROOT/'data')
     return {
         'diskTotalBytes': stats.f_blocks*stats.f_frsize,
@@ -54,6 +58,7 @@ def measure(*, database, expected_uuid, archives, staging):
         'archivesInDatabase': not archives,
         'stagingBytes': allocated_bytes(durable_path(staging)),
         'backupBytes': allocated_bytes(durable_path(ROOT/'backups')),
+        'mediaBytes': allocated_bytes(durable_path(media[0])),
     }
 
 

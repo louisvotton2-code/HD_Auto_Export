@@ -1,0 +1,11 @@
+[Unit]
+Description=HD Auto daily recovery point schedule
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=300
+Unit=hd-auto-ext07-backup.service
+
+[Install]
+WantedBy=timers.target

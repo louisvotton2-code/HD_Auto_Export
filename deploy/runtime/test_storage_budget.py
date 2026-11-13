@@ -20,7 +20,7 @@ class StorageBudgetTests(unittest.TestCase):
         now = sample(diskUsedBytes=4*G, databaseBytes=G, indexBytes=G//2, archiveBytes=G)
         result = budget.estimate(before, now, processed=10000, target=20000)
         self.assertAlmostEqual(result['remainingGrowthBytes'], 1.625*G, delta=1)
-        self.assertAlmostEqual(result['futureRecoveryReserveBytes'], 11*G, delta=2)
+        self.assertAlmostEqual(result['futureRecoveryReserveBytes'], 22*G, delta=2)
         self.assertFalse(result['pauseHeavyWork'])
 
     def test_projected_exhaustion_pauses_before_current_usage_is_high(self):

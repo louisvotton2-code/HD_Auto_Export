@@ -38,9 +38,11 @@ def estimate(baseline, current, *, processed, target):
     archive_history_reserve = sum(current[field] + math.ceil(per_source[field] * remaining) for field in history_fields)
     active = current['databaseBytes'] + current['archiveBytes'] + growth + archive_history_reserve
     # Current filesystem usage already includes staging, old backups and WAL.
-    # Reserve two future *uncompressed* full recovery points plus one additional
+    # Reserve two future full recovery points, each with retained verified components
+    # and a ciphertext copy, plus one additional
     # observed WAL window. Existing release-point backups remain accounted for.
-    recovery_reserve = 2 * active
+    media = nonnegative(current.get('mediaBytes', 0), 'mediaBytes')
+    recovery_reserve = 4 * (active + media)
     wal_reserve = max(current['walBytes'], baseline['walBytes'], 2 * 1024**3)
     projected = current['diskUsedBytes'] + growth + archive_history_reserve + recovery_reserve + wal_reserve
     used_ratio = current['diskUsedBytes'] / current['diskTotalBytes']
@@ -54,7 +56,7 @@ def estimate(baseline, current, *, processed, target):
         'warning': used_ratio >= .60 or projected_ratio >= .60,
         'pauseHeavyWork': used_ratio >= .70 or projected_ratio >= .70,
         'reason': 'capacity_limit' if used_ratio >= .70 or projected_ratio >= .70 else 'within_budget',
-        'assumptions': 'linear database/archive growth; one extra archive version (whole DB reserved if archives are embedded); two uncompressed future backups; WAL reserve at least 2 GiB; indexes not double counted; staging and existing backups already in disk usage',
+        'assumptions': 'linear database/archive growth; one extra archive version (whole DB reserved if archives are embedded); two future backups with verified components and ciphertext copies; WAL reserve at least 2 GiB; indexes not double counted; staging and existing backups already in disk usage',
     }
 
 
