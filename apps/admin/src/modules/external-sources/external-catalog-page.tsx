@@ -89,7 +89,7 @@ export function ExternalCatalogPage() {
         key={`${q}:${searchReset}`}
         defaultValue={q}
         aria-label="搜索三方车源"
-        placeholder="输入站内 ID、原平台 ID、原始 URL 或车型标题"
+        placeholder="输入询价短编号、原平台 ID、原始 URL、旧站内 ID 或车型标题"
         maxLength={2048}
         enterButton="搜索"
         allowClear
@@ -129,7 +129,7 @@ export function ExternalCatalogPage() {
               <Link className={styles.listingTitle} to={`/external-sources/listings/${encodeURIComponent(listing.id)}`} state={{ catalogSearch: location.search }}>
                 {listing.title ?? listing.facts?.model?.name ?? listing.id}
               </Link>
-              <div><Typography.Text type="secondary">{listing.id}</Typography.Text></div>
+              <div><Typography.Text type="secondary">{listing.inquiryCode ? `询价编号：${listing.inquiryCode}` : `旧站内编号：${listing.id}`}</Typography.Text></div>
             </div> },
             { title: '入库参数', width: 155, render: (_, { facts }) => facts
               ? <div>{facts.modelYear ? `${facts.modelYear} 款` : '年款未知'} · {powertrainLabels[facts.powertrain]}

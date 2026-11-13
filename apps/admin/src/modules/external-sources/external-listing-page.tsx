@@ -35,7 +35,8 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
     <Card title={publicCopy.title?.text ?? source?.copy.title?.original.text ?? '当前挂牌'}>
       <Space wrap>
         <Tag>{listingLabels[listing.state]}</Tag>
-        <span className={styles.reason}>站内车源 ID {listing.id}</span>
+        {listing.inquiryCode && <Typography.Text className={styles.reason} copyable={{ text: listing.inquiryCode }}>询价编号：{listing.inquiryCode}</Typography.Text>}
+        <span className={styles.reason}>旧站内车源 ID {listing.id}</span>
         <span>来源版本 {listing.sourceRevision}</span>
         <span>管理版本 {listing.version}</span>
         <SourceReportLink url={listing.report?.url} />
