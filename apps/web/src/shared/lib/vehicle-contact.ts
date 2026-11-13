@@ -192,7 +192,7 @@ const publicCopy = {
     reference: string;
     onRequest: string;
     status: string;
-    statuses: Record<Exclude<PublicVehicle['availability'], 'unknown'>, string>;
+    statuses: Record<Exclude<PublicVehicleSummary['availability'], 'unknown'>, string>;
     details: string;
   }
 >;

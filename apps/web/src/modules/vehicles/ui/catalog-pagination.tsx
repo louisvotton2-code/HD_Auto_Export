@@ -1,5 +1,5 @@
 import type { MouseEvent } from 'react';
-import type { PublicVehicleList, PublicVehicleQuery } from '@hd/contracts/public';
+import type { PublicVehicleCardList, PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { catalogPagination } from '../catalog-pagination';
 import { publicCatalogHref } from '../public-presentation';
@@ -34,7 +34,10 @@ const copy = {
 }>;
 
 export function CatalogPagination({ result, query, locale, onPageClick }: {
-  result: PublicVehicleList;
+  result: {
+    data: Pick<PublicVehicleCardList['data'], 'page' | 'pageSize' | 'hasMore'>;
+    meta: PublicVehicleCardList['meta'];
+  };
   query: PublicVehicleQuery;
   locale: Locale;
   onPageClick: (event: MouseEvent<HTMLAnchorElement>) => void;

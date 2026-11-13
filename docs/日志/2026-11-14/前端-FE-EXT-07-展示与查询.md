@@ -21,3 +21,7 @@
 OPS服务器针对准确提交串行执行既有门禁；以下是受影响检查定位，不要求先定向跑一遍后再重复完整门禁：官网类型／边界，calculator的manufacture-range、vehicle-estimate、estimate-seed、draft、inline SSR，vehicles的ext07-public、public-query、public-segments、localized-projection、public-presentation、equipment及公共contact相邻单元；Linux官网build；浏览器`catalog-navigation.spec.ts`、`vehicle-records.spec.ts`、`vehicle-segments.spec.ts`和`vehicle-estimate.spec.ts`（direct hp／range／RU深链及两列断点）。配置／报告既有相关断言已同步迁移，保留完整gallery和private preview保护。
 
 完成源码SHA由共享`docs/private/pm-ext07/FE-handoff.md`登记；服务器真实结果与失败修正追加本记录，不新建重复证据包。独审／联合验收／PR／CI／部署／全量同步由PM／OPS统一安排，当前均未在本前端交付中记为通过或已完成。
+
+### 首轮服务器类型失败修正
+
+OPS对联合候选`ad948fc7b3b9ccf20af3974ff54f39faddde45c0`执行门禁，API／AD检查已过，官网类型检查实际失败两处：分页组件仍要求完整详情列表DTO、联系草稿的状态映射残留旧`PublicVehicle`类型名。分页改为只依赖轻量列表的分页／meta结构，仍兼容相同元信息的旧详情响应；草稿状态改从现有`PublicVehicleSummary`取类型。不添加cast或降低schema校验。尚未执行官网unit／build／browser，补片仅做本机hooks及diff核验，交OPS续跑官网类型及后续未执行检查，不要求重跑已过的API／AD。
