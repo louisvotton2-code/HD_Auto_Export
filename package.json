@@ -19,7 +19,7 @@
     "dev:api": "pnpm --filter @hd/contracts build && pnpm --filter @hd/api dev",
     "db:up": "docker compose -p hd-auto-be -f apps/api/compose.yaml up -d --wait",
     "db:down": "docker compose -p hd-auto-be -f apps/api/compose.yaml down",
-    "check:git-workflow": "node --test scripts/git-workflow.test.mjs",
+    "check:git-workflow": "node --test scripts/git-workflow.test.mjs scripts/verification-plan.test.mjs",
     "hooks:install": "node scripts/git-workflow.mjs hooks-install",
     "hooks:check": "node scripts/git-workflow.mjs hooks-check",
     "verify:push": "node scripts/git-workflow.mjs verify",
