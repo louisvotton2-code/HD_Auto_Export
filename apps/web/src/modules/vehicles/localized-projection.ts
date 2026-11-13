@@ -33,6 +33,7 @@ function validateVehicle(vehicle: PublicVehicle, locale: Locale, priceView?: 'us
     ...Object.values(fields),
     ...priceIncludes.map((x) => x.value),
     ...mediaAlt.map((x) => x.value),
+    ...vehicle.images.flatMap(image => image.altText === undefined ? [] : [image.altText]),
     ...(vehicle.configuration?.items.flatMap((item) => [item.name, item.value]) ?? []),
   ])
     if (field.requestedLocale !== locale) throw new Error('Localized vehicle projection mismatch');

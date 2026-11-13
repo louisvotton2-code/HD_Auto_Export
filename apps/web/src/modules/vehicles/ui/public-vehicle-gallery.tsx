@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { usePublicVehicleSegment } from '../application/use-public-vehicle-segment';
 import { VehicleGallery } from './vehicle-gallery';
+import { withImageAltText } from '../vehicle-image-text';
 import styles from './public-vehicle-gallery.module.css';
 
 type GalleryCopy = {
@@ -58,7 +59,8 @@ export function PublicVehicleGallery({ vehicle, title, locale }: { vehicle: Publ
   const t = copy[locale];
   const number = (value: number) => value.toLocaleString(locale);
   // The first segment is a fresh complete page, not an extension of the SSR preview.
-  const images = resource.started ? resource.items : vehicle.images;
+  const rawImages = resource.started ? resource.items : vehicle.images;
+  const images = useMemo(() => rawImages.map(image => withImageAltText(image, vehicle.display?.mediaAlt)), [rawImages, vehicle.display?.mediaAlt]);
   const total = resource.started ? resource.total : (vehicle.mediaTotal ?? null);
   const loading = resource.phase === 'loading';
   const changed = resource.phase === 'changed';

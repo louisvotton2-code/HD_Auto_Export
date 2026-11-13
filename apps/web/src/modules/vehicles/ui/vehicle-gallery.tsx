@@ -18,6 +18,7 @@ import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
+import { imageAltAttributes } from '../vehicle-image-text';
 import { VehiclePhotoFallback } from './vehicle-photo';
 import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
 import type { VehicleGalleryImage, VehicleGalleryImageStatus } from './vehicle-gallery-image';
@@ -338,7 +339,7 @@ export function VehicleGallery({
               data-outgoing={image.id !== selected.id}
               data-gallery-active-image={!opened && image.id === selected.id ? image.id : undefined}
               src={publicMediaUrl(image.url)}
-              alt={image.id === selected.id ? image.alt || title : ''}
+              {...imageAltAttributes(image, image.id === selected.id ? image.alt || title : '')}
               aria-hidden={image.id !== selected.id ? true : undefined}
               width={image.width ?? undefined}
               height={image.height ?? undefined}
@@ -439,7 +440,7 @@ export function VehicleGallery({
                 data-gallery-active-image={selected.id}
                 src={publicMediaUrl(selected.url)}
                 referrerPolicy={selected.url.startsWith('https:') ? 'no-referrer' : undefined}
-                alt={selected.alt || title}
+                {...imageAltAttributes(selected, selected.alt || title)}
                 width={selected.width ?? undefined}
                 height={selected.height ?? undefined}
                 onLoad={(event) => { if (acceptsImageEvent(selected, event.currentTarget)) loaded(selected); }}

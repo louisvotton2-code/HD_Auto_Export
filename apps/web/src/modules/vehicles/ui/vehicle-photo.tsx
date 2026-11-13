@@ -6,9 +6,10 @@ import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
+import { imageAltAttributes } from '../vehicle-image-text';
 import styles from './vehicle-photo.module.css';
 
-type Photo = Pick<PublicMedia, 'id' | 'url' | 'width' | 'height' | 'remote'>;
+type Photo = Pick<PublicMedia, 'id' | 'url' | 'width' | 'height' | 'remote' | 'altText'>;
 
 export function VehiclePhotoFallback({ locale, compact = false }: { locale: Locale; compact?: boolean }) {
   return (
@@ -58,7 +59,7 @@ function PhotoResource({
         if (node?.complete && node.naturalWidth === 0) fail();
       }}
       src={image.url}
-      alt={alt}
+      {...imageAltAttributes(image, alt)}
       loading="lazy"
       width={image.width ?? undefined}
       height={image.height ?? undefined}

@@ -21,7 +21,7 @@ async function reads(request: APIRequestContext, kind: 'gallery' | 'configuratio
 const loadedConfiguration = async (page: Page) => Number(await configuration(page).locator('[data-configuration-loaded]').getAttribute('data-configuration-loaded'));
 
 test('full gallery replaces the old 30-photo preview, then reads the bounded final page', async ({ page, request }) => {
-  await setPublicFixtureState(request, { segmentGalleryCount: 65 });
+  await setPublicFixtureState(request, { segmentGalleryCount: 65, segmentFallback: true });
   await page.goto(path);
   await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(30);
   expect(await reads(request, 'gallery')).toHaveLength(0);
@@ -39,6 +39,17 @@ test('full gallery replaces the old 30-photo preview, then reads the bounded fin
   await page.keyboard.press('Escape');
   await expect(gallery(page).locator('dialog[open]')).toHaveCount(0);
   await expect(gallery(page).locator('[data-vehicle-photo-opener]')).toBeFocused();
+  await gallery(page).locator('[data-vehicle-thumbnails] a').nth(30).click();
+  const activePhoto = gallery(page).locator('img[data-gallery-active-image]');
+  await expect(activePhoto).toHaveAttribute('alt', '图片说明 31');
+  await expect(activePhoto).toHaveAttribute('lang', 'zh');
+  await expect(activePhoto).toHaveAttribute('data-provenance', 'supplier');
+  await expect(activePhoto).toHaveAttribute('data-reviewed', 'false');
+  await gallery(page).locator('[data-vehicle-photo-opener]').click();
+  await expect(gallery(page).locator('dialog[open] img[data-gallery-active-image]')).toHaveAttribute('lang', 'zh');
+  await expect(gallery(page).locator('dialog[open] img[data-gallery-active-image]')).toHaveAttribute('alt', '图片说明 31');
+  expect(await reads(request, 'gallery')).toHaveLength(2);
+  await page.keyboard.press('Escape');
 });
 
 test('configuration exceeds the old 500-item projection without duplicate rows or altered source values', async ({ page, request }) => {

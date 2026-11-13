@@ -38,3 +38,11 @@
 
 - 准确自有提交、依赖合同、冻结源／成品清单、独立报告及剩余限制统一写`docs/private/pm-ext06/FE-handoff.md`和`docs/private/fe-ext06-evidence/delivery.json`；正式300名单／raw与public计数以PA／OPS实际结果为准。
 - 中途只协助／阻塞／完成时沟通，OPS唯一集成、最终verify:push／PR／CI／main及上线；FE不自行推送／合并／部署或读取供应商密钥。固定300验证后持续同步关闭，不触发全量。
+
+## 第四合同补片：每图实际语言兼容
+
+- 后续采用BE受审第四切片`757f18484561205b276c1c1239d5466e36ff4d7c`（本地等效`d0ea20d`），新增每图可选`altText: DisplayText`，未引入无关第二／第三管理切片。合同测试因上游上下文包含管理切片而冲突，只保留原第一切片测试并追加第四切片原样用例；本地第一＋第四组合 **87／87**，上游含管理切片的89不可记作本地结果。
+- `vehicle-image-text.ts`集中优先每图字段；缺字段时回退旧display映射／旧字符串，显式missing不被旧approved覆盖，未知不造语言或审核。首屏／分页检查requestedLocale；保留contentLocale实际语言。主图／查看器／封面使用同一属性映射，缩略装饰alt保持空；不改图片资源key、网络、解码或私有预览DTO。
+- 初次46定向单元通过，但两条仅有id的旧图测试在类型检查暴露弱类型返回问题；将helper返回准确声明为`T & ImageText`后类型与46定向单元复查通过，旧失败log保留。新同合同standalone **BUILD `-F2oZEwFquf3va88wtZF_`** 构建成功。
+- 仅复查3项受影响浏览器场景，**3／3真实通过**：65图分段、31号图及放大图实际中文alt/lang/supplier/未人审、重开不多取页；员工预览离屏图不整批下载及查看器独立解码。旧payload无每图字段仍通过私有预览路径。原14浏览器／73单元与原冻结成品及报告保留，不相加冒称新全量；本轮证据另放`docs/private/fe-ext06-alt-evidence`。
+- 无新路由、缓存或分页参数；未调用供应商／FX／翻译／源报告，不改3363，3100／3327临时监听结束已释放。真实300及新BE同版组合、Linux与生产仍由OPS完成。独立补片审查、最终SHA与源／成品manifest在该新增证据目录及共享FE-handoff登记后交OPS集成。

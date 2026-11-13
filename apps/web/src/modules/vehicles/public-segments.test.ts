@@ -13,6 +13,13 @@ const gallery = (ids: string[], total: number, nextCursor: string | null): Publi
 const envelope = (data: unknown) => ({ data, meta: { requestId: 'segment-test' } });
 
 describe('public segment identity, privacy and complete page merging', () => {
+  it('keeps gallery alt provenance beyond the preview and rejects another requested locale', () => {
+    const data = gallery(['image-31'], 1, null);
+    data.items[0].altText = { status: 'ready', text: '正面', requestedLocale: 'ru', contentLocale: 'zh', provenance: 'supplier', reviewed: false };
+    expect(parseVehicleSegment('gallery', envelope(data), vehicle.id, 'ru').data.items[0].altText).toMatchObject({ contentLocale: 'zh', reviewed: false });
+    data.items[0].altText.requestedLocale = 'en';
+    expect(() => parseVehicleSegment('gallery', envelope(data), vehicle.id, 'ru')).toThrow();
+  });
   it('accepts absolute positions beyond the preview but retains the 30-image preview bound', () => {
     const parsed = parseVehicleSegment('gallery', envelope(gallery(['a'], 1, null)), vehicle.id, 'ru');
     expect(parsed.data.items[0].sortOrder).toBe(35);

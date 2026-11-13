@@ -22,6 +22,8 @@ export function parseVehicleSegment<K extends VehicleSegmentKind>(kind: K, value
     for (const item of (parsed as PublicVehicleConfigurationResponse).data.items)
       if (item.name.requestedLocale !== locale || item.value.requestedLocale !== locale) throw new VehicleSegmentError(503);
   }
+  if (kind === 'gallery') for (const item of (parsed as PublicVehicleGalleryResponse).data.items)
+    if (item.altText !== undefined && item.altText.requestedLocale !== locale) throw new VehicleSegmentError(503);
   if (new Set(parsed.data.items.map(item => item.id)).size !== parsed.data.items.length) throw new VehicleSegmentError(503);
   return parsed as K extends 'gallery' ? PublicVehicleGalleryResponse : PublicVehicleConfigurationResponse;
 }

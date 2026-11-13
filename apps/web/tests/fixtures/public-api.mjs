@@ -236,16 +236,17 @@ function segmentGallery(state, row, locale) {
   if (state.segmentGalleryCount === null) return row.images;
   return Array.from({ length: state.segmentGalleryCount }, (_, index) => {
     const id = `media_segment_${row.id}_v${state.segmentRevision}_${index + 1}`;
+    const altText = { ...segmentDisplay(`图片说明 ${index + 1}`, locale, state.segmentFallback ? 'zh' : locale), provenance: 'supplier' };
     if (row.source.kind === 'external') {
       const hex = createHash('sha256').update(id).digest('hex');
       return {
         id: `ximg-${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
         url: `https://photos.example.invalid/segment-${row.id}-v${state.segmentRevision}-${index + 1}.webp`,
-        alt: `Source photo ${index + 1}`, width: null, height: null, sortOrder: index, isCover: index === 0,
+        alt: `Source photo ${index + 1}`, altText, width: null, height: null, sortOrder: index, isCover: index === 0,
         remote: row.images[0]?.remote ?? { revision: state.segmentRevision, refreshedAt: timestamp, expiresAt: null },
       };
     }
-    return { id, url: `/api/v1/media/${id}`, alt: `Photo ${index + 1}`, width: 640, height: 420, sortOrder: index, isCover: index === 0 };
+    return { id, url: `/api/v1/media/${id}`, alt: `Photo ${index + 1}`, altText, width: 640, height: 420, sortOrder: index, isCover: index === 0 };
   });
 }
 function segmentConfiguration(state, row, locale) {
