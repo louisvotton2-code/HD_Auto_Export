@@ -16,6 +16,7 @@ class RoutineBackupTests(unittest.TestCase):
             with self.assertRaises(ValueError): routine.reserve_bytes(invalid, 0)
         with self.assertRaises(ValueError): routine.control_root(Path('/'))
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/data'))
+        with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/secrets/../../../../etc/passwd'))
         self.assertEqual(routine.control_root(Path('/etc/fstab')), Path('/etc/fstab'))
 
     def test_retention_only_two_successful_daily_points(self):

@@ -107,6 +107,8 @@ def reserve_bytes(database, files):
 
 def control_root(path):
     path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('Control root must be canonical and absolute')
     directories = [ROOT/'secrets', ROOT/'data/current/secrets', ROOT/'data/current/tls', ROOT/'data/current/acme', Path('/etc/hd-auto'), Path('/etc/letsencrypt')]
     exact = [Path('/etc/fstab'), Path('/etc/systemd/system/docker.service.d/hd-auto-storage.conf'), Path('/usr/local/sbin/hd-auto-storage-check')]
     if path in exact or any(path == root or root in path.parents for root in directories):
@@ -172,14 +174,14 @@ def main():
         measured_roots = [archive_root, *controls]
         for media in media_roots:
             path = Path(media)
-            if ROOT/'data' not in path.parents or path.is_symlink() or not path.is_dir():
+            if not path.is_absolute() or '..' in path.parts or ROOT/'data' not in path.parents or path.is_symlink() or not path.is_dir():
                 raise ValueError('Media must use an existing stable data directory')
             measured_roots.append(path)
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
         fs = os.statvfs(backup_root)
         total, used = fs.f_blocks*fs.f_frsize, (fs.f_blocks-fs.f_bfree)*fs.f_frsize
         reserve = reserve_bytes(database_bytes, file_bytes)
-        if used + reserve > total * .70:
+        if used + reserve >= total * .70:
             raise ValueError('Recovery point transient peak would exceed 70% disk budget')
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
         paused = [name for name in ('full-worker', 'web') if name in running]
