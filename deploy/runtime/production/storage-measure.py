@@ -42,7 +42,7 @@ def measure(*, database, expected_uuid, archives, staging):
     info = json.loads(checked_output(['docker', 'inspect', 'hd-auto-postgres-1']))[0]
     if not info['State']['Running'] or not any(m['Source'] == '/srv/hd-auto/data/current/postgres' and m['Destination'] == '/var/lib/postgresql' for m in info['Mounts']):
         raise ValueError('Unexpected production PostgreSQL mount')
-    query = "SELECT json_build_object('databaseBytes',pg_database_size(current_database()),'indexBytes',coalesce((SELECT sum(pg_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='i' AND n.nspname NOT IN ('pg_catalog','information_schema')),0));"
+    query = "SELECT json_build_object('databaseBytes',pg_database_size(current_database()),'sqlStagingBytes',coalesce(pg_total_relation_size(to_regclass('public.external_full_stage')),0),'indexBytes',coalesce((SELECT sum(pg_relation_size(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='i' AND n.nspname NOT IN ('pg_catalog','information_schema')),0));"
     sizes = json.loads(checked_output(['docker', 'exec', '-u', 'postgres', 'hd-auto-postgres-1', 'psql', '-X', '-U', 'postgres', '-d', database, '-Atq', '-v', 'ON_ERROR_STOP=1', '-c', query]))
     api = json.loads(checked_output(['docker', 'inspect', 'hd-auto-api-1']))[0]
     media = [m['Source'] for m in api['Mounts'] if m['Destination'] == '/data/media']

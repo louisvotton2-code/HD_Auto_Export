@@ -17,3 +17,5 @@
 资源紧张、断网、账户限额或接口错误均保留真实状态及断点。PR合并/代码上线/全量进行中/全量完成分别记录，不能用启动serve代替最终完成。
 
 双域公网入口仅为 gallery/configuration/inspection/price-history 四类有界GET/HEAD开放车辆子路径，并统一归入既有public-api直接对端限流；管理员私有路径和多余层级仍404，写方法不转发。发布前用真实Nginx隔离Unix TLS核验路径、尾斜杠、头清理与同一限流桶。
+
+每分钟 `hd-auto-ext07-storage.timer` 检查新盘稳定入口及UUID，60%写本机journal warning、70%写error并持久化 `staging/ext07/storage-alert.json`，回落恢复也记录；使用available口径含文件系统保留空间，与worker一致。此监控只读容量，不杀查询进程、不删资料、不采购、不向外部账号发消息；正式worker自己的70%重任务守卫继续独立生效。全量预测将完整SQL暂存表/索引/TOAST从每详情外推剔除，作为整份快照固定成本计账，并为新旧快照及恢复点保留峰值，避免把已全量暂存重复放大。

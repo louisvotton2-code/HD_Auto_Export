@@ -1,0 +1,13 @@
+[Unit]
+Description=HD Auto data disk threshold alert
+RequiresMountsFor=/srv/hd-auto/data /srv/hd-auto/staging /srv/hd-auto/secrets
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/hd-auto/staging/ext07/current-source/deploy/runtime/production/storage-alert.py --config /srv/hd-auto/secrets/ext07/backup.json
+User=root
+UMask=0077
+CPUQuota=5%
+MemoryMax=64M
+TasksMax=16
+TimeoutStartSec=30
