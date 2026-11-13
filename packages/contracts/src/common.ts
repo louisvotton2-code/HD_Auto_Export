@@ -74,6 +74,7 @@ export const VehicleFactsSchema = z.strictObject({
   powertrain: PowertrainSchema,
   engineCc: z.number().int().min(0).max(100_000).nullable(),
   powerKw: z.number().min(0).max(100_000).nullable(),
+  powerHp: z.number().min(0).max(100_000).nullable().optional(),
   body: BodySchema.nullable(),
   transmission: TransmissionSchema.nullable(),
   location: LocationSchema.nullable(),

@@ -1,0 +1,10 @@
+import {z} from 'zod';
+import {PartialDateSchema,TimestampSchema,MoneySchema} from './common.js';
+import {DisplayTextSchema} from './localization.js';
+export const ExportStatusSchema=z.enum(['eligible','restricted','unknown']);
+export const VehicleIdentifiersSchema=z.strictObject({sourceId:z.string().min(1).max(300).nullable(),source:z.string().min(1).max(80).nullable(),inquiryCode:z.string().min(1).max(400),vin:z.string().regex(/^[A-HJ-NPR-Z0-9]{17}$/).nullable()});
+export type VehicleIdentifiers=z.infer<typeof VehicleIdentifiersSchema>;
+export const ManufactureEvidenceSchema=z.strictObject({date:PartialDateSchema.nullable(),range:z.strictObject({earliest:PartialDateSchema,latest:PartialDateSchema}).nullable(),source:z.string().max(100).nullable(),basis:DisplayTextSchema.nullable()});
+export type ManufactureEvidence=z.infer<typeof ManufactureEvidenceSchema>;
+export const PublicInspectionEntrySchema=z.strictObject({id:z.string().min(1).max(450),category:DisplayTextSchema.nullable(),part:DisplayTextSchema.nullable(),name:DisplayTextSchema,value:DisplayTextSchema,outcome:z.enum(['ok','defect','unknown'])});
+export const PublicPriceHistoryEntrySchema=z.strictObject({id:z.string().min(1).max(450),at:TimestampSchema.nullable(),money:MoneySchema,kind:z.enum(['asking','seller','unknown'])});
