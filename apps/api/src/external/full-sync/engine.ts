@@ -55,7 +55,8 @@ export class FullSyncWorker{
  async state(){return (await this.db.pool.query('SELECT * FROM external_full_sync WHERE id=1')).rows[0]!;}
  async space(){const disk=await statfs(this.directory);const used=1-disk.bavail/disk.blocks;if(!Number.isFinite(used))throw new FullSyncError('SYNC_SPACE_UNKNOWN');
   await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1',[used>=.70]);return {used,available:disk.bavail*disk.bsize,total:disk.blocks*disk.bsize};}
- async heavy(){await this.alive();const s=await this.state(),disk=await this.space();if(s.capacity_pending)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(!s.enabled||s.paused||disk.used>=.70)throw new FullSyncError('SYNC_HEAVY_PAUSED');}
+ // Only work restricted to existing sampled members (and its required account refresh) may request sampleRepair.
+ async heavy(sampleRepair=false){await this.alive();const s=await this.state(),disk=await this.space();if(s.capacity_pending&&!sampleRepair)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(!s.enabled||s.paused||disk.used>=.70)throw new FullSyncError('SYNC_HEAVY_PAUSED');}
  /** 2000-event page staged in 100-event transactions. Cursor advances only after every chunk and raw evidence is durable. */
  async receiveDelta(){
   await this.alive();const s=await this.state();if(!s.since_at)return false;
@@ -193,17 +194,18 @@ export class FullSyncWorker{
    return rows.length;
   });
  }
- async details(){
-  await this.heavy();const remaining=await this.sampleRemaining();
+ async details(sampleOnly=false){
+  sampleOnly=sampleOnly||(await this.state()).capacity_pending;
+  await this.heavy(sampleOnly);const remaining=await this.sampleRemaining(),restrictToSample=sampleOnly||remaining===0;
   // At the boundary only refresh existing sample members invalidated by newer events; never fetch a new identity.
-  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1`,[remaining===0])).rows[0];
+  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample])).rows[0];
   if(!selected)return 0;const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[remaining===0?500:Math.min(500,remaining),remaining===0,selected.source])).rows;
+   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source])).rows;
   if(!jobs.length)return 0;
   for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
    const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale));if(!wanted.length)continue;
    try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale)){
-    await this.heavy();await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
+    await this.heavy(sampleOnly);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
     for(const payload of response.results){const job=wanted.find(j=>j.external_id===payload.id)!;
      await this.transaction(async tx=>{
       const current=(await tx.query("SELECT * FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' FOR UPDATE",[source,payload.id])).rows[0];
@@ -240,8 +242,10 @@ export class FullSyncWorker{
   });}catch(error){await this.failWork(job.source,job.external_id,'detail',errorCode(error));}}return applied;
  }
  private async failWork(source:Source,id:string,kind:string,code:string){await this.db.pool.query(`UPDATE external_full_work SET attempts=attempts+1,last_error_code=$4,due_at=now()+least(3600,power(2,attempts+1)*30)*interval '1 second' WHERE source=$1 AND external_id=$2 AND kind=$3`,[source,id,kind,code]);}
- async report(){
-  await this.heavy();const job=(await this.db.pool.query("SELECT * FROM external_full_work WHERE kind='report' AND attempts<5 AND due_at<=now() ORDER BY priority DESC,due_at LIMIT 1")).rows[0];if(!job)return 0;
+ async report(sampleOnly=false){
+  sampleOnly=sampleOnly||(await this.state()).capacity_pending;
+  await this.heavy(sampleOnly);const job=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+   WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now() AND ($1=false OR (m.sampled AND m.state<>'withdrawn')) ORDER BY w.priority DESC,w.due_at LIMIT 1`,[sampleOnly])).rows[0];if(!job)return 0;
   try{const response=await this.client.report(job.source,job.external_id);await this.transaction(async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');const m=await ensureMember(tx,job.source,job.external_id);
    if(String(m.desired_generation)!==String(job.generation)||m.state==='withdrawn'){await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'report'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='report'",[job.source,job.external_id]);return;}
@@ -265,8 +269,9 @@ export class FullSyncWorker{
    return rows.length;
   });
  }
- async daily(){
-  await this.heavy();for(const kind of ['account','dictionary'] as const){
+ async daily(sampleRepair=false){
+  await this.heavy(sampleRepair);for(const kind of ['account','dictionary'] as const){
+   if(sampleRepair&&kind!=='account')continue;
    if((await this.db.pool.query("SELECT 1 FROM external_full_daily WHERE kind=$1 AND day=(now() AT TIME ZONE 'UTC')::date",[kind])).rowCount)continue;
    const result=await this.client.daily(kind);await this.transaction(async tx=>{await persistSourceResponse(tx,result.rawResponse);
     await protectSourceBlob(tx,result.rawResponse.hash,{kind:'pending',reference:`full-daily:${kind}:${new Date().toISOString().slice(0,10)}`});
@@ -276,6 +281,8 @@ export class FullSyncWorker{
     }
    });
   }
+  // Sample repair still needs a current account/quota snapshot; defer dictionary and ordinary maintenance.
+  if(sampleRepair)return;
   await this.transaction(async tx=>{const old=(await tx.query("SELECT kind,to_char(day,'YYYY-MM-DD') AS day FROM external_full_daily d WHERE day<current_date-7 OR (SELECT count(*) FROM external_full_daily newer WHERE newer.kind=d.kind AND newer.day>d.day)>=2 LIMIT 100")).rows;for(const row of old){await releaseSourceReferences(tx,'pending',`full-daily:${row.kind}:${row.day}`);await tx.query('DELETE FROM external_full_daily WHERE kind=$1 AND day=$2',[row.kind,row.day]);}});
   await this.pruneStaging();
   await this.db.pool.query("UPDATE external_full_sync SET next_maintenance_at=(date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' WHERE id=1");
@@ -323,7 +330,13 @@ export class FullSyncWorker{
    await this.applyEvents(true);
    if(s.since_at&&new Date(s.next_delta_at).getTime()<=Date.now())try{await this.receiveDelta();}catch(e){if(e instanceof FullSyncError&&e.code==='SYNC_CURSOR_EXPIRED')await this.recover();else throw e;}
    await this.applyEvents(true);const disk=await this.space();if(s.paused||disk.used>=.70)return;
-   await this.applyEvents();await runSourceMaintenance(this.db);if(s.capacity_pending){await this.capacityGate();if((await this.state()).capacity_pending)return;}
+   await this.applyEvents();await runSourceMaintenance(this.db);
+   if(s.capacity_pending){
+    // New events may invalidate the sample after a failed estimate. Repair only that sample before rechecking.
+    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily(true);
+    await this.details(true);for(let reports=0;reports<20;reports++){if(!await this.report(true))break;}
+    await this.capacityGate();return; // New identities/snapshots resume on a later tick only after the gate passes.
+   }
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const initialPending=(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;

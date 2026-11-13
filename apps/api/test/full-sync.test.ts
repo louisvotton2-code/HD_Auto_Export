@@ -102,7 +102,49 @@ test('formal full synchronization has durable independent receipt/application an
    await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_ESTIMATE/);
    assert.equal((await worker!.state()).capacity_estimate.allowed,false,'70% remains a hard limit despite an approved budget');
    worker!.space=async()=>({used:0,available:1024**4,total:1024**4});
-   await worker!.capacityGate();assert.equal(await worker!.sampleRemaining(),500);
+   process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES='1';
+   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_ESTIMATE/);
+   // A source update now invalidates the sample while capacity_pending is already true.
+   feed.push({id:6,source:'dongchedi',vehicleId:'100001',type:'price',at:'2026-11-14T00:00:05.000Z'});
+   await worker!.receiveDelta();
+   await database.pool.query("INSERT INTO external_full_members(source,external_id,canonical_id,state) VALUES('dongchedi','200001','sample:unsampled','pending')");
+   await database.pool.query("INSERT INTO external_full_work(source,external_id,kind,generation,priority) VALUES('dongchedi','200001','detail',1,1000),('dongchedi','200001','report',1,1000)");
+   const repairs:string[]=[],reportRepairs:string[]=[];
+   (client as unknown as {bulk:Function}).bulk=async function*(source:string,ids:string[],locale:string){
+    assert.equal(source,'dongchedi');assert.deepEqual(ids,['100001']);
+    assert.equal((await worker!.state()).capacity_pending,true);
+    repairs.push(locale);const payload={results:[{source,id:'100001',status:'active',hasInspectionReport:true}],notFound:[]};
+    yield {...payload,rawResponse:raw(payload)};
+   };
+   (client as unknown as {report:Function}).report=async(source:string,id:string)=>{
+    assert.equal(source,'dongchedi');assert.equal(id,'100001');
+    assert.equal((await worker!.state()).capacity_pending,true);reportRepairs.push(id);
+    return {payload:{hasReport:false},rawResponse:raw({hasReport:false})};
+   };
+   await database.pool.query('UPDATE external_full_sync SET paused=true WHERE id=1');
+   await assert.rejects(worker!.details(true),/SYNC_HEAVY_PAUSED/);await assert.rejects(worker!.report(true),/SYNC_HEAVY_PAUSED/);
+   await database.pool.query('UPDATE external_full_sync SET paused=false WHERE id=1');
+   worker!.space=async()=>({used:.70,available:.30*1024**4,total:1024**4});
+   await assert.rejects(worker!.details(true),/SYNC_HEAVY_PAUSED/);await assert.rejects(worker!.report(true),/SYNC_HEAVY_PAUSED/);
+   worker!.space=async()=>({used:0,available:1024**4,total:1024**4});
+   const dailyKinds:string[]=[];
+   (client as unknown as {daily:Function}).daily=async(kind:string)=>{
+    assert.equal(kind,'account');dailyKinds.push(kind);
+    const payload={product:'chinacarapi',plan:'starter',sources:['che168','dongchedi'],expiresAt:'2099-01-01T00:00:00.000Z',dailyLimit:100000,remainingToday:100000};
+    return {payload,rawResponse:raw(payload)};
+   };
+   await database.pool.query("UPDATE external_full_sync SET next_maintenance_at=now()-interval '1 day' WHERE id=1");
+   // No approved override: the next estimate may pass only after actual sample repair and ample measured headroom.
+   delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
+   await worker!.tick();
+   assert.deepEqual(repairs,['zh','en','ru']);assert.deepEqual(reportRepairs,['100001']);
+   assert.deepEqual(dailyKinds,['account']);
+   const repaired=(await database.pool.query("SELECT cardinality(locales) AS locales,report_state,applied_generation,desired_generation FROM external_full_members WHERE source='dongchedi' AND external_id='100001'")).rows[0];
+   assert.equal(repaired.locales,3);assert.equal(repaired.report_state,'no_report');assert.equal(repaired.applied_generation,repaired.desired_generation);
+   assert.equal((await worker!.state()).capacity_pending,false);assert.equal(await worker!.sampleRemaining(),500);
+   assert.equal((await database.pool.query("SELECT count(*)::integer AS n FROM external_full_work WHERE source='dongchedi' AND external_id='200001'")).rows[0].n,2);
+   assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0].apply_cursor,'10000');
+   await worker!.heavy();
    }finally{
     worker!.space=originalSpace;if(originalBudget===undefined)delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;else process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=originalBudget;
     await database.pool.query('UPDATE external_full_sync SET capacity_pending=false,last_capacity_sample=0 WHERE id=1');
@@ -148,7 +190,7 @@ test('formal full synchronization has durable independent receipt/application an
    const count=(await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n;
    await worker!.recover();await worker!.recover();await assert.rejects(worker!.recover(),/SYNC_RECOVERY_LIMIT/);
    assert.equal((await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n,count);
-   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,5);
+   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,6);
   });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });
