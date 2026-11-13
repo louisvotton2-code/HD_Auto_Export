@@ -41,3 +41,12 @@ test('formal importer status cannot imply continuous scheduling or expose a raw 
  assert.equal(admin.ExternalIngestionStatusSchema.safeParse({...data,continuous:true}).success,false);
  assert.equal(admin.ExternalIngestionStatusSchema.safeParse({...data,manifest:{}}).success,false);
 });
+test('private source documents expose a single identity body and only reference shared bulk archives',()=>{
+ const data={id:'11111111-1111-4111-8111-111111111111',kind:'detail',locale:'en',hash:'b'.repeat(64),firstObservedAt:at,lastObservedAt:at,sourceUpdatedAt:null,
+  payload:{id:'1001',unknownField:'kept'},rawText:null,response:{hash:'c'.repeat(64),shared:true}};
+ const value={data,meta:{requestId:'request-1'}};
+ assert.equal(admin.ExternalSourceDocumentResponseSchema.safeParse(value).success,true);
+ assert.equal(admin.ExternalSourceDocumentResponseSchema.safeParse({...value,data:{...data,response:{...data.response,payload:{results:['another identity']}}}}).success,false);
+ assert.equal(pub.ExternalSourceDocumentResponseSchema,undefined);
+ assert.equal(admin.ExternalProviderStatusSchema.shape.worker.safeParse('fixed_once').success,true);
+});

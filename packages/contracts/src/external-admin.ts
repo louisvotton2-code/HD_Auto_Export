@@ -249,7 +249,7 @@ export const ExternalProviderAccountSchema = z.strictObject({
 export type ExternalProviderAccount = z.infer<typeof ExternalProviderAccountSchema>;
 export const ExternalProviderStatusSchema = z.strictObject({
   provider: z.literal('chinacarapi'),
-  worker: z.literal('not_configured'),
+  worker: z.enum(['not_configured','fixed_once']),
   lastBatch: ExternalBatchSchema.nullable(),
   lastImportAt: TimestampSchema.nullable(),
   lastFetchedAt: TimestampSchema.nullable(),
@@ -271,3 +271,13 @@ export const ExternalIngestionStatusSchema = z.strictObject({
 });
 export type ExternalIngestionStatus=z.infer<typeof ExternalIngestionStatusSchema>;
 export const ExternalIngestionStatusResponseSchema=responseSchema(ExternalIngestionStatusSchema);
+
+export const ExternalSourceDocumentSummarySchema=z.strictObject({
+ id:z.uuid(),kind:z.enum(['csv','detail','specs','report','event']),locale:z.enum(['zh','en','ru','und']),
+ hash:SourceHashSchema,firstObservedAt:TimestampSchema,lastObservedAt:TimestampSchema,sourceUpdatedAt:TimestampSchema.nullable(),
+});
+export const ExternalSourceDocumentsResponseSchema=responseSchema(z.strictObject({items:z.array(ExternalSourceDocumentSummarySchema).max(100),nextCursor:z.string().max(2000).nullable()}));
+export const ExternalSourceDocumentResponseSchema=responseSchema(ExternalSourceDocumentSummarySchema.extend({
+ payload:z.json(),rawText:z.string().nullable(),response:z.strictObject({hash:SourceHashSchema,shared:z.literal(true)}).nullable(),
+}));
+export type ExternalSourceDocumentSummary=z.infer<typeof ExternalSourceDocumentSummarySchema>;
