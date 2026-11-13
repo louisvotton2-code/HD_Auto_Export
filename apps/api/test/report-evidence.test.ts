@@ -247,7 +247,9 @@ test('offline report evidence and archived enrichment use only an isolated synth
       assert.deepEqual((await inventory.getPublic(created.id, 'en')).report, { hasReport: true });
       const listed = await inventory.listPublic({ locale: 'en', catalog: 'curated', page: 1, pageSize: 24 }, 'report-test');
       const listedVehicle = listed.data.items.find(item => item.id === created.id);
-      assert.ok(listedVehicle); assert.equal(listedVehicle.report, undefined);
+      assert.ok(listedVehicle);
+      // Lists/home remain lightweight; public report entries are read through the separate paged endpoint.
+      assert.equal(Object.hasOwn(listedVehicle, 'report'), false);
       await inventory.saveHome({ version: (await inventory.getHome()).version, sections: [{ id: 'report-fixture', title: { zh: '合成报告样例', en: 'Synthetic report fixture', ru: 'Синтетический пример' }, vehicleIds: [created.id] }] }, actor);
       const home = await inventory.publicHome('en');
       assert.equal(home.sections[0]!.vehicles[0]!.id, created.id);
