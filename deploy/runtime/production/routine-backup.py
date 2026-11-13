@@ -5,6 +5,7 @@ arrays and public encryption certificate. No password values belong in this file
 Off-host transfer is explicitly pending until separately verified by OPS.
 """
 import argparse
+import importlib.util
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -180,7 +181,19 @@ def main():
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
         fs = os.statvfs(backup_root)
         total, used = fs.f_blocks*fs.f_frsize, (fs.f_blocks-fs.f_bfree)*fs.f_frsize
-        reserve = reserve_bytes(database_bytes, file_bytes)
+        if args.kind == 'daily':
+            spec = importlib.util.spec_from_file_location('capacity_measure', Path(__file__).with_name('capacity-measure.py'))
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            measured = module.measure()
+            if measured is None or not measured.get('sampleEvidenceSufficient'):
+                raise ValueError('Fresh measured capacity evidence required before daily backup')
+            if measured['diskTotalBytes'] != total:
+                raise ValueError('Backup filesystem changed')
+            reserve = max(0, measured['projectedPeakBytes'] - measured['currentUsedBytes'])
+        else:
+            # Initial release recovery point precedes the first detail sample.
+            # Conservative current-size preflight does not authorize full import.
+            reserve = reserve_bytes(database_bytes, file_bytes)
         if used + reserve >= total * .70:
             raise ValueError('Recovery point transient peak would exceed 70% disk budget')
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
