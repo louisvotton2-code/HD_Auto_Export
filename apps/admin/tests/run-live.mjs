@@ -7,6 +7,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { traceMode } from './trace-live-guard.mjs';
 
 const adminRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(adminRoot, '../..');
@@ -14,6 +15,7 @@ const translationProvider = process.env.ADMIN_LIVE_TRANSLATION_PROVIDER ?? 'disa
 const aliyunCase = '(?:^| )real Aliyun international Chinese suggestion persistence$';
 const externalCase = '(?:^| )real external catalog supports admin import, trial and override$';
 const playwrightArgs = process.argv.slice(2);
+const trace = traceMode(process.env, playwrightArgs, translationProvider);
 const external = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only';
 if (process.env.ADMIN_LIVE_EXTERNAL && (!external || translationProvider !== 'disabled' ||
   playwrightArgs.length !== 2 || playwrightArgs[0] !== '--grep' || playwrightArgs[1] !== externalCase)) {
@@ -58,6 +60,13 @@ const env = {
   EXTERNAL_CATALOG_MODE: external ? 'synthetic' : 'disabled',
   ADMIN_TEST_PASSWORD: randomBytes(24).toString('base64url'),
 };
+if (trace) {
+  env.ADMIN_TRACE_SECOND_EMAIL = 'browser-trace-second@example.invalid';
+  env.ADMIN_TRACE_SECOND_PASSWORD = randomBytes(24).toString('base64url');
+} else {
+  delete env.ADMIN_TRACE_SECOND_EMAIL;
+  delete env.ADMIN_TRACE_SECOND_PASSWORD;
+}
 // Generic credential aliases and local-service API keys never enter a test child process.
 for (const key of ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN', 'LIBRETRANSLATE_API_KEY']) delete env[key];
 if (translationProvider !== 'aliyun') {
@@ -113,7 +122,8 @@ try {
   await database('create');
   created = true;
   await command(['--filter', '@hd/api', 'db:migrate']);
-  await command(['--filter', '@hd/api', 'staff', 'create', 'browser-test@example.invalid', '浏览器测试员工', external ? 'admin' : 'editor'], env.ADMIN_TEST_PASSWORD);
+  await command(['--filter', '@hd/api', 'staff', 'create', 'browser-test@example.invalid', trace ? '隔离追溯员工甲' : '浏览器测试员工', external || trace ? 'admin' : 'editor'], env.ADMIN_TEST_PASSWORD);
+  if (trace) await command(['--filter', '@hd/api', 'staff', 'create', env.ADMIN_TRACE_SECOND_EMAIL, '隔离追溯员工乙', 'editor'], env.ADMIN_TRACE_SECOND_PASSWORD);
   api = spawn('pnpm', ['--filter', '@hd/api', 'exec', 'node', 'dist/main.js'], {
     cwd: repositoryRoot, env, stdio: 'inherit', detached: process.platform !== 'win32',
   });
@@ -126,7 +136,7 @@ try {
   }
   if (!ready) throw new Error('Isolated API did not become ready');
   await command(['--filter', '@hd/admin', 'exec', 'playwright', 'test', ...playwrightArgs,
-    ...(translationProvider === 'aliyun' ? ['--workers=1', '--retries=0', '--repeat-each=1', '--max-failures=1'] : []),
+    ...(translationProvider === 'aliyun' || trace ? ['--workers=1', '--retries=0', '--repeat-each=1', '--max-failures=1'] : []),
   ]);
 } finally {
   if (api && api.exitCode === null) {

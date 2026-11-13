@@ -1,5 +1,6 @@
+import { traceCase, traceCaseTitle, traceMode } from './trace-live-guard.mjs';
 import { expect, test, type Page } from '@playwright/test';
-import { AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
+import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
 import { acknowledgePublicationPreview, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
@@ -18,7 +19,7 @@ function observeRateWindow(page: Page, response: { url(): string; headers(): Rec
   const next = extendRateDeadline(state.deadline, response.headers(), Date.now());
   if (next !== state.deadline) { state.deadline = next; state.observations++; }
 }
-async function waitForServerWindow(waitMs: number, reason: 'afterEach' | 'login-429' | 'external-published-to-deletion') {
+async function waitForServerWindow(waitMs: number, reason: 'afterEach' | 'login-429' | 'external-published-to-deletion' | 'trace-before-publish') {
   if (!waitMs) return;
   // Used at teardown, the one observed login 429, or an explicit completed business-stage boundary.
   // Existing test failures and all UI/action timeouts remain unchanged.
@@ -1076,4 +1077,110 @@ test('real publication preview rejects private image failures until a new load s
       vehicleId: initial.id, coverId: cover.id, secondImageId: second.id, loads, imageOutcomes, writes,
     }, null, 2));
   }
+});
+
+test(traceCaseTitle, async ({ page }, testInfo) => {
+  test.skip(process.env.ADMIN_LIVE_TRACE !== 'synthetic-only', 'Use the explicitly selected owned two-staff runner.');
+  test.setTimeout(240_000);
+  expect(traceMode(process.env, ['--grep', traceCase], process.env.TRANSLATION_PROVIDER ?? '')).toBe(true);
+  if (process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' ||
+    !/^hd_admin_test_[a-f0-9]{16}$/.test(process.env.ADMIN_TEST_DB_NAME ?? '') ||
+    !process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_TRACE_SECOND_EMAIL !== 'browser-trace-second@example.invalid' || !process.env.ADMIN_TRACE_SECOND_PASSWORD) {
+    throw new Error('Use the owned disposable 3319/3322 two-staff runner only.');
+  }
+  const read = (path: string) => readRespectingRateLimit(page, path);
+  const me = async () => {
+    const response = await read('/api/v1/admin/me');
+    expect(response.status()).toBe(200);
+    return StaffMeResponseSchema.parse(await response.json()).data;
+  };
+  let translationExecutions = 0;
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && (path.endsWith('/translation-suggestions') || /\/translation-plans\/[^/]+\/generate$/.test(path))) translationExecutions++;
+  });
+  await login(page);
+  const creator = await me();
+  expect(creator).toMatchObject({ name: '隔离追溯员工甲', role: 'admin' });
+  const originalTitle = '双员工隔离车源';
+  const revisedTitle = '双员工隔离车源修改后';
+  const initial = await create(page, 'manual', originalTitle);
+  await page.getByRole('button', { name: /退出登录$/ }).click();
+  await expect(page.getByRole('heading', { name: '登录员工工作台' })).toBeVisible();
+  await page.getByLabel('账号或工作邮箱').fill(process.env.ADMIN_TRACE_SECOND_EMAIL);
+  await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TRACE_SECOND_PASSWORD);
+  await page.getByRole('button', { name: /登录工作台$/ }).click();
+  await expect(page.getByRole('heading', { name: '登录员工工作台' })).toHaveCount(0);
+  await expect(page.getByRole('banner')).toContainText('隔离追溯员工乙');
+  const editor = await me();
+  expect(editor).toMatchObject({ name: '隔离追溯员工乙', role: 'editor' });
+  expect(editor.id).not.toBe(creator.id);
+  await page.goto(`/admin/vehicles/${initial.id}`);
+  await expect(page.getByLabel('标题原文', { exact: true })).toHaveValue(originalTitle);
+  await page.getByLabel('标题原文', { exact: true }).fill(revisedTitle);
+  await (await notes(page)).fill('PRIVATE_TWO_STAFF_TRACE');
+  const edited = await save(page, initial.id);
+  const ready = await contentAndImage(page, edited);
+  // A completed upload/binding is a business-stage boundary; respect the actual server window.
+  await waitForServerWindow(rateCooldownMs(rateWindows.get(page)?.deadline ?? 0, Date.now()), 'trace-before-publish');
+  const translated = await completeLiveTranslations(page, ready, read);
+  await tab(page, '发布预览');
+  await select(page, '核验后的库存状态', '可售');
+  expect((await operation(page, initial.id, '核验并更新库存', 'availability')).status()).toBe(200);
+  const publication = await operation(page, initial.id, '发布车辆', 'publish');
+  expect(publication.status()).toBe(200);
+  const published = AdminVehicleResponseSchema.parse(await publication.json()).data;
+  expect(published.publicationState).toBe('published');
+  await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
+  await expect(page.getByTestId('vehicle-publish')).toHaveText('已发布，暂无待发布修改');
+
+  const historyResponse = await read(`/api/v1/admin/vehicles/${initial.id}/activity?limit=20`);
+  expect(historyResponse.status()).toBe(200);
+  expect(historyResponse.headers()['cache-control']).toContain('no-store');
+  const events = ActivityResponseSchema.parse(await historyResponse.json()).data.items;
+  const creation = events.find(event => event.action === 'vehicle.create');
+  const saved = events.find(event => event.action === 'vehicle.save' && event.changes?.some(change => change.path === 'draft.content.title.sourceText' && change.after === revisedTitle));
+  const released = events.find(event => event.action === 'vehicle.publish');
+  const staffActor = (staff: typeof creator) => ({ kind: 'staff' as const, staffId: staff.id, name: staff.name });
+  expect(creation?.actor).toEqual(staffActor(creator));
+  expect(saved?.actor).toEqual(staffActor(editor));
+  expect(released?.actor).toEqual(staffActor(editor));
+  expect(saved?.changes).toContainEqual({ path: 'draft.content.title.sourceText', beforePresent: true, afterPresent: true, before: originalTitle, after: revisedTitle });
+  expect(events.filter(event => event.action === 'vehicle.publish')).toHaveLength(1);
+  const currentResponse = await read(`/api/v1/admin/vehicles/${initial.id}`);
+  expect(currentResponse.status()).toBe(200);
+  const current = AdminVehicleResponseSchema.parse(await currentResponse.json()).data;
+  expect(current.activity?.created).toEqual({ at: creation!.at, actor: staffActor(creator) });
+  expect(current.activity?.lastModified).toEqual({ at: released!.at, actor: staffActor(editor) });
+  await page.reload();
+  const summary = page.locator('dl[aria-label="员工与系统操作摘要"]');
+  for (const value of [creator.name, creator.id, editor.name, editor.id]) await expect(summary).toContainText(value);
+  await page.getByRole('button', { name: '操作记录', exact: true }).click();
+  const drawer = page.getByRole('dialog', { name: '车辆操作记录' });
+  await expect(drawer.getByText(`${creator.name} · 员工 ID ${creator.id}`, { exact: true })).toHaveCount(1);
+  await expect(drawer.getByText(`${editor.name} · 员工 ID ${editor.id}`, { exact: true })).toHaveCount(events.filter(event => event.actor.staffId === editor.id).length);
+  await drawer.getByText(`版本 ${saved!.oldVersion} → ${saved!.newVersion}`, { exact: true }).click();
+  await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源"$/ })).toHaveCount(1);
+  await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源修改后"$/ })).toHaveCount(1);
+  await page.setViewportSize({ width: 320, height: 850 });
+  await fitsViewport(page);
+  await page.screenshot({ path: testInfo.outputPath('two-staff-history-320.png'), animations: 'disabled' });
+  await drawer.getByRole('button', { name: '关闭' }).click();
+  await expect(await notes(page)).toHaveValue('PRIVATE_TWO_STAFF_TRACE');
+  for (const locale of ['zh', 'en', 'ru'] as const) {
+    const response = await read(`/api/v1/vehicles/${initial.id}?locale=${locale}&view=localized`);
+    expect(response.status()).toBe(200);
+    const raw = await response.text();
+    for (const secret of ['PRIVATE_TWO_STAFF_TRACE', 'purchaseCost', 'staffId', creator.id, editor.id, creator.name, editor.name]) expect(raw).not.toContain(secret);
+    const vehicle = PublicVehicleResponseSchema.parse(JSON.parse(raw)).data;
+    expect(vehicle.content.title).toMatchObject({ requestedLocale: locale, contentLocale: locale, kind: locale === 'zh' ? 'original' : 'human', reviewed: false });
+    expect(vehicle.content.title.text).toBe(translated.vehicle.draft.content.title.translations[locale]?.text);
+  }
+  expect(translationExecutions).toBe(0);
+  await testInfo.attach('two-staff-trace-summary', { contentType: 'application/json', body: JSON.stringify({
+    scope: 'Owned disposable DB; two synthetic employees; actual UI and HTTP; no provider calls',
+    creator: { id: creator.id, name: creator.name }, editor: { id: editor.id, name: editor.name },
+    vehicleId: initial.id, publishedVersion: published.version, historyEvents: events.length, titleChangeVersion: saved!.newVersion,
+    publicationEvents: 1, languages: ['zh', 'en', 'ru'], translationExecutions,
+  }, null, 2) });
 });

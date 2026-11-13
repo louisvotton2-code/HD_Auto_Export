@@ -135,3 +135,16 @@ manual 和员工维护的 external 副本发布前需要品牌、车型、中文
 ## 历史流程说明
 
 AD-I18N-01／02 曾使用独立建议及 localization 保存、1–10 字段勾选和逐字段人审；AD-UX-10 曾采用五个录入分组。上述交付事实和当时验证保留在[AD-I18N-02 日志](../../docs/日志/2026-11-08/后台-AD-I18N-02-展示字段多语言.md)及[AD-UX-10 日志](../../docs/日志/2026-11-12/后台-AD-UX-10-直接修订排序与发布预览.md)，当前操作以本页 UX11 统一工作区和发布预览流程为准。存量翻译覆盖、历史生产部署及本轮功能验证分别登记，不自动翻译、审核或重新发布旧资料。
+
+
+## EXT06 双员工隔离界面测试
+
+专用case `real two-staff creation editing publication and history` 仅通过原生owned disposable runner运行。OPS私有环境必须显式提供 `API_TEST_DATABASE_URL`（127.0.0.1的维护/postgres，无URL选项）和 `ADMIN_WEB_TARGET`（独占FE预览，指向本轮3322 API，独立loopback端口，禁止3363／3319／3322作为FE目标）。设置 `ADMIN_LIVE_TRACE=synthetic-only`、`ADMIN_LIVE_TRANSLATION_PROVIDER=disabled`，只允许以下单项选择：
+
+```sh
+pnpm --filter @hd/admin test:e2e:live --grep '(?:^| )real two-staff creation editing publication and history$'
+```
+
+runner先校验再建立任何临时资料，固定3319／3322并检查空闲，随机hd_admin_test_*库和两个合成员工分别为admin/editor，随机密码仅stdin/env传递，结束finally销毁API／随机库／临时媒体。原Ali／external单项守卫不放宽；trace不接受外部origin、非disabled翻译、扩大选择或重复参数，不新增常驻服务。
+
+case通过UI切换两员工、创建／修改／填齐资料、合成图片、手工三语、真实FE预览确认和发布，核对BE历史动作／姓名ID／实际标题diff与摘要，检查三语公开响应不含员工／内部资料。上传阶段后只按真实服务端限流窗口等待，不重试写入，不伪造预览。6项preflight守卫测试加入应用test脚本。静态类型／用例发现及守卫单测不等于真实case已通过；真实执行证据由OPS在最终组合登记。
