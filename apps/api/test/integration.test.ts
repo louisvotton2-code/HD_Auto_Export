@@ -378,6 +378,7 @@ test('current pending demo and manual text can publish without human-review clai
 });
 test('bulk reports independent results, preserves unselected records and replays exact requests without duplicate writes',async()=>{
   const good=await publish(await ready()),stale=await create(),untouched=await create(),demo=await readyDemo(),missing=randomUUID();
+  stale.draft.internal.notes='A real concurrent edit invalidates the earlier version';
   await save(stale);
   const key=randomUUID();const input={operation:'availability',availability:'sold',checkedAt:new Date().toISOString(),items:[{id:demo.id,expectedVersion:demo.version},{id:good.id.toUpperCase(),expectedVersion:good.version},{id:missing,expectedVersion:1},{id:stale.id,expectedVersion:stale.version}]};
   const options:InjectOptions={method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':key},payload:input};
@@ -726,6 +727,7 @@ test('delete and restore roll back home, state and idempotency when audit fails;
     await assert.rejects(runtime.inventory.remove(vehicle.id,vehicle.version,actor,randomUUID()));
     assert.equal((await runtime.inventory.getAdmin(vehicle.id)).version,vehicle.version);assert.deepEqual(await runtime.inventory.getHome(),home);
   } finally {await runtime.db.pool.query('DROP TRIGGER reject_recycle_audit ON audit_events; DROP FUNCTION reject_recycle_audit()');}
+  vehicle.draft.internal.notes='A real competing edit must conflict with deletion';
   const race=await Promise.allSettled([runtime.inventory.remove(vehicle.id,vehicle.version,actor,randomUUID()),runtime.inventory.save(vehicle.id,vehicle.version,vehicle.draft,actor)]);
   assert.equal(race.filter(item=>item.status==='fulfilled').length,1);
   const current=await runtime.inventory.getAdmin(vehicle.id,true);const removed=current.deletedAt?current:await runtime.inventory.remove(current.id,current.version,actor,randomUUID());

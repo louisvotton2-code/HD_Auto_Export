@@ -1,3 +1,5 @@
+import { recordOverride, externalActivitySummary } from '../activity/service.js';
+import { activityChanges, overrideActivity } from '../activity/changes.js';
 import { getExternalReport } from './reports.js';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
@@ -11,7 +13,7 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { idempotent, type Actor } from '../vehicles/service.js';
 import { getExternalPublic, listingUuid, publicListingId } from './catalog.js';
 import { buildProjection, canonicalJson, emptyOverrides, isDatabaseJson, isPublicText, jsonHash, sha256, sourceHashes, textSourceIdentity, type ExternalProjection, type TextSourceIdentities } from './normalize.js';
-import { chinaCarSampleProfile, getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
+import { chinaCarProfile, chinaCarSampleProfile, getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
 
 type ListingRow = {
   id: string; provider: string; platform_id: string; external_id: string; source_revision: string; source_hash: string;
@@ -56,7 +58,8 @@ async function findListing(tx: PoolClient, id: string) {
 }
 
 async function saveProjection(tx: PoolClient, row: ListingRow, projection: ExternalProjection | null) {
-  if (upstreamState(row) !== 'published' || !projection) {
+  const primary = (await tx.query('SELECT formal_primary FROM external_listings WHERE id=$1',[row.id])).rows[0]?.formal_primary;
+  if (primary === false || upstreamState(row) !== 'published' || !projection) {
     return !!(await tx.query('DELETE FROM external_catalog WHERE listing_id=$1', [row.id])).rowCount;
   }
   await tx.query(`INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
@@ -154,13 +157,28 @@ async function writeOverrides(tx: PoolClient, row: ListingRow, overrides: Extern
     ON CONFLICT(listing_id) DO UPDATE SET data=excluded.data,text_source_identities=excluded.text_source_identities`,
     [row.id, data, JSON.stringify(bindings)]);
   await tx.query('UPDATE external_listings SET version=$2 WHERE id=$1', [row.id, version]);
-  await tx.query('INSERT INTO external_override_events(id,listing_id,actor_id,request_id,version,data) VALUES($1,$2,$3,$4,$5,$6)',
-    [randomUUID(), row.id, actor.id, actor.requestId, version, data]);
+  await recordOverride(tx,actor,row.id,version,overrides,activityChanges(overrideActivity(row.overrides??emptyOverrides()),overrideActivity(overrides),'overrides'));
   row.overrides = overrides;
   row.text_source_identities = bindings;
   const projection = row.upstream_state === 'active' ? projectListing(row, overrides) : null;
   const publicChanged = await saveProjection(tx, row, projection);
   return { result: { id: publicListingId(row.id), state: upstreamState(row), version }, changed: true, publicChanged };
+}
+
+/** Only the fixed-list worker calls this inside its leased, scope-checked transaction. */
+export async function applyFormalCandidate(tx:PoolClient,candidate:ExternalCandidate,actor:Actor,batchId:string,
+  canonical:{id:string;primary:boolean}) {
+  await lockExternalWrites(tx);
+  const identity=[chinaCarProfile.id,candidate.platformId,candidate.externalId];
+  const before=(await tx.query('SELECT id,formal_canonical_id FROM external_listings WHERE provider=$1 AND platform_id=$2 AND external_id=$3',identity)).rows[0];
+  if(before?.formal_canonical_id && before.formal_canonical_id!==canonical.id)throw new ApiError(409,'VERSION_CONFLICT','A formal source association requires review before changing.');
+  const result=await applyCandidate(tx,chinaCarProfile,ExternalCandidateSchema.parse(candidate));
+  if(result.status==='rejected'||result.status==='ignored'||!result.listing_id)throw new ApiError(422,'INVALID_REQUEST','Formal source projection was rejected.');
+  await tx.query('UPDATE external_listings SET formal_primary=$2,formal_canonical_id=$3 WHERE id=$1',[result.listing_id,canonical.primary,canonical.id]);
+  if(!before)await tx.query('UPDATE external_listings SET first_imported_at=clock_timestamp(),first_import_batch_id=$2 WHERE id=$1',[result.listing_id,batchId]);
+  if(!canonical.primary)await tx.query('DELETE FROM external_catalog WHERE listing_id=$1',[result.listing_id]);
+  if(result.publicChanged)await advanceRevision(tx);
+  return {listingId:result.listing_id,status:result.status,systemActor:actor.id};
 }
 
 export class ExternalStore {
@@ -244,7 +262,7 @@ export class ExternalStore {
       if (!row) throw notFound();
       const overrides = row.overrides ?? emptyOverrides();
       const hashes = projectListing(row, overrides)?.sourceHashes ?? sourceHashes(null);
-      return { id, version: row.version, state: upstreamState(row),
+      return { activity:await externalActivitySummary(tx,row.id),id, version: row.version, state: upstreamState(row),
         identity: { provider: row.provider, platformId: row.platform_id, externalId: row.external_id },
         sourceRevision: Number(row.source_revision), sourceUpdatedAt: iso(row.source_updated_at), fetchedAt: row.fetched_at.toISOString(),
         source: row.source_data, overrides, sourceHashes: hashes, report: await getExternalReport(tx, row.id), vehicle: await getExternalPublic(tx, row.id, locale) };
@@ -287,23 +305,22 @@ export class ExternalStore {
   }
 
   async providerStatus() {
-    const provider = chinaCarSampleProfile.id;
+    const providers = [chinaCarSampleProfile.id,chinaCarProfile.id];
     return this.db.transaction(async tx => {
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const latestBatch = (await tx.query<BatchRow>(
-        `SELECT ${batchColumns} FROM external_import_batches WHERE provider=$1 ORDER BY imported_at DESC,id LIMIT 1`, [provider],
+        `SELECT ${batchColumns} FROM external_import_batches WHERE provider=ANY($1::text[]) ORDER BY imported_at DESC,id LIMIT 1`, [providers],
       )).rows[0];
       const { rows: [times] } = await tx.query<{
         imported_at: Date | null; fetched_at: Date | null; source_updated_at: Date | null;
       }>(`SELECT
-        (SELECT imported_at FROM external_import_batches WHERE provider=$1 AND (counts->>'applied')::bigint>0
-          ORDER BY imported_at DESC,id LIMIT 1) AS imported_at,
-        (SELECT fetched_at FROM external_listings WHERE provider=$1 ORDER BY fetched_at DESC LIMIT 1) AS fetched_at,
-        (SELECT source_updated_at FROM external_listings WHERE provider=$1
-          ORDER BY source_updated_at DESC NULLS LAST LIMIT 1) AS source_updated_at`, [provider]);
+        greatest((SELECT max(imported_at) FROM external_import_batches WHERE provider=ANY($1::text[]) AND (counts->>'applied')::bigint>0),(SELECT max(first_imported_at) FROM external_listings WHERE provider=ANY($1::text[]))) AS imported_at,
+        (SELECT fetched_at FROM external_listings WHERE provider=ANY($1::text[]) ORDER BY fetched_at DESC LIMIT 1) AS fetched_at,
+        (SELECT source_updated_at FROM external_listings WHERE provider=ANY($1::text[])
+          ORDER BY source_updated_at DESC NULLS LAST LIMIT 1) AS source_updated_at`, [providers]);
       return {
         provider: 'chinacarapi' as const,
-        worker: 'not_configured' as const,
+        worker: (await tx.query('SELECT 1 FROM external_ingestion_jobs LIMIT 1')).rowCount ? 'fixed_once' as const : 'not_configured' as const,
         lastBatch: latestBatch ? batchView(latestBatch) : null,
         lastImportAt: iso(times!.imported_at),
         lastFetchedAt: iso(times!.fetched_at),

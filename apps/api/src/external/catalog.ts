@@ -16,6 +16,7 @@ export const publicMediaId = (id: string) => `ximg-${id}`;
 const stockCode = (id: string) => `EXT-${id.toUpperCase()}`;
 type Queryable = Pick<Database['pool'] | PoolClient, 'query'>;
 type CatalogRow = {
+  configuration_total?:number;
   listing_id: string; platform_id: string; platform_name: string; listing_url: string;
   facts: ExternalProjection['facts']; price_cny: string | null; issues: ExternalIssue[];
   localized: ExternalProjection['localized'][Locale]; details?: ExternalProjection['details'];
@@ -42,13 +43,13 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   const issues = [...row.issues];
   const available = photos.filter(photo => !photo.expires_at || photo.expires_at.getTime() > time);
   if (available.length !== photos.length && !issues.some(issue => issue.field === 'images')) issues.push({ field: 'images', code: 'expired' });
-  const images: PublicMedia[] = available.map((photo, i) => ({
-    id: publicMediaId(photo.id), url: photo.url, alt: photo.alt?.text ?? '', width: photo.width, height: photo.height,
+  const images: PublicMedia[] = available.slice(0,30).map((photo, i) => ({
+    id: publicMediaId(photo.id), url: photo.url, alt: photo.alt?.text ?? '', altText:displayText(locale,photo.alt), width: photo.width, height: photo.height,
     sortOrder: photo.position, isCover: i === 0,
     remote: { revision: photo.revision, refreshedAt: photo.refreshed_at.toISOString(), expiresAt: iso(photo.expires_at) },
   }));
   const { title, description } = row.localized;
-  const display = { ...row.localized.display, mediaAlt: available.map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
+  const display = { ...row.localized.display, mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
   const id = publicListingId(row.listing_id);
   const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id,
     external_id: row.external_id!, source_revision: row.source_revision!, source_hash: row.source_hash!, source_data: row.source_data ?? null,
@@ -70,7 +71,7 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     source: { kind: 'external', platform: { id: row.platform_id, name: row.platform_name }, listingUrl: row.listing_url },
     facts: localizedFacts(row.facts, display), display,
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
-    content: { title, description }, images,
+    content: { title, description }, images, mediaTotal:available.length, ...(row.configuration_total!==undefined?{configurationTotal:row.configuration_total}:{}),
     ...(report ? { report: { hasReport: report.hasReport } } : {}),
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: iso(row.source_updated_at),
     fetchedAt: row.fetched_at.toISOString(), publishedAt: row.published_at.toISOString(),
@@ -149,13 +150,15 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
   if (!rows.length) return [];
   const photos = await tx.query<ImageRow>(`SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at
     FROM external_media WHERE active AND listing_id=ANY($1::uuid[]) ORDER BY listing_id,position,id`, [rows.map(row => row.listing_id)]);
+  const totals=await tx.query<{listing_id:string;total:number}>("SELECT listing_id,total FROM external_source_segment_sets WHERE listing_id=ANY($1::uuid[]) AND locale=$2 AND kind='configuration'",[rows.map(row=>row.listing_id),locale]);
+  const configurationTotals=new Map(totals.rows.map(row=>[row.listing_id,row.total]));
   const images = new Map<string, ImageRow[]>();
   for (const photo of photos.rows) {
     const listingImages = images.get(photo.listing_id) ?? [];
     listingImages.push(photo);
     images.set(photo.listing_id, listingImages);
   }
-  return rows.map(row => toPublic(row, images.get(row.listing_id) ?? [], locale, time,priceView,quote));
+  return rows.map(row => toPublic({...row,configuration_total:configurationTotals.get(row.listing_id)}, images.get(row.listing_id) ?? [], locale, time,priceView,quote));
 }
 
 export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null) {

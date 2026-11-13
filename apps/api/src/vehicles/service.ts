@@ -1,3 +1,7 @@
+import { recordAudit as audit, staffActivitySql } from '../activity/service.js';
+export { recordAudit as audit } from '../activity/service.js';
+import { activityChanges, draftChanges, localizationActivity, sameValue } from '../activity/changes.js';
+import type { AdminActivitySummary } from '@hd/contracts/admin';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResult } from 'pg';
 import { AdminVehicleSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
@@ -23,19 +27,20 @@ type Row = {
   id: string; stock_number: string; version: number; public_content_revision: number; publication_state: AdminVehicle['publicationState'];
   availability: AdminVehicle['availability']; availability_checked_at: Date|null; published_revision_id: string|null;
   published_at: Date|null; deleted_at: Date|null; created_at: Date; updated_at: Date; data: VehicleDraftInput;
+  activity?:AdminActivitySummary;
   publication_data?: Snapshot;
   localization_revision?:number;localization_data?:LocalizationData;localization_bindings?:Record<string,string>;retired_fields?:StoredLocalization['retiredFields'];
   published_localization?:LocalizationData;published_bindings?:Record<string,string>;projections?:Record<Locale,DisplayProjection>;
 };
 const iso = (date: Date|null) => date?.toISOString() ?? null;
-const adminSelect = 'SELECT v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,l.data AS localization_data,l.bindings AS localization_bindings,l.retired_fields,pl.data AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
+const adminSelect = `SELECT ${staffActivitySql()} AS activity,v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,l.data AS localization_data,l.bindings AS localization_bindings,l.retired_fields,pl.data AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id`;
 const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
 const publicSelect = `SELECT v.*,p.data AS publication_data,pl.data AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
 const catalogVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved')) OR ${unverifiedVisible})`;
 const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability='available') OR ${unverifiedVisible})`;
 export function toAdmin(row: Row): AdminVehicle {
-  return AdminVehicleSchema.parse({ id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`, version:row.version,
+  return AdminVehicleSchema.parse({ activity:row.activity,id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`, version:row.version,
     publicationState:row.publication_state, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
     deletedAt:iso(row.deleted_at), hasUnpublishedChanges:hasUnpublishedChanges(row.data,row.publication_data,row.localization_data,row.published_localization), draft:row.data, publishedRevisionId:row.published_revision_id, publishedAt:iso(row.published_at), createdAt:iso(row.created_at), updatedAt:iso(row.updated_at) });
 }
@@ -70,10 +75,6 @@ export function hasUnpublishedChanges(draft:VehicleDraftInput,snapshot?:Snapshot
   const media=(items:VehicleDraftInput['media'])=>items.map(({id,alt,sortOrder,isCover})=>({id,alt,sortOrder,isCover})).sort((a,b)=>a.sortOrder-b.sortOrder);
   return canonical({source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,configuration:draft.configuration??null,media:media(draft.media)}) !==
     canonical({source:snapshot.source,facts:snapshot.facts,price:snapshot.price,content:snapshot.content,configuration:snapshot.configuration??null,media:media(snapshot.images)});
-}
-export async function audit(tx: PoolClient, actor: Actor, operation: string, vehicleId: string|null, oldVersion: number|null, newVersion: number|null) {
-  await tx.query('INSERT INTO audit_events(id,actor_id,operation,vehicle_id,old_version,new_version,request_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
-    [randomUUID(),actor.id,operation,vehicleId,oldVersion,newVersion,actor.requestId]);
 }
 export async function idempotent<T>(tx: PoolClient, actor: Actor, operation: string, key: string, input: unknown, work:()=>Promise<T>):Promise<T> {
   const hash = createHash('sha256').update(canonical(input)).digest('hex');
@@ -140,13 +141,15 @@ function requireInventory(row:Row) {
 }
 async function updateAvailability(tx:PoolClient,row:Row,input:AvailabilityRequest,actor:Actor) {
   requireInventory(row);
+  if(row.availability===input.availability && (await tx.query('SELECT availability_checked_at=$2::timestamptz AS unchanged FROM vehicles WHERE id=$1',[row.id,input.checkedAt])).rows[0]?.unchanged)return row;
   await tx.query('UPDATE vehicles SET availability=$2,availability_checked_at=$3,version=version+1,updated_at=now() WHERE id=$1',[row.id,input.availability,input.checkedAt]);
-  await audit(tx,actor,'vehicle.availability',row.id,row.version,row.version+1);
+  await audit(tx,actor,'vehicle.availability',row.id,row.version,row.version+1,activityChanges({availability:row.availability,availabilityCheckedAt:iso(row.availability_checked_at)},{availability:input.availability,availabilityCheckedAt:input.checkedAt}));
   return lockVehicle(tx,row.id);
 }
 async function archiveVehicle(tx:PoolClient,row:Row,actor:Actor) {
+  if(row.publication_state==='archived')return row;
   await tx.query("UPDATE vehicles SET publication_state='archived',version=version+1,updated_at=now() WHERE id=$1",[row.id]);
-  await audit(tx,actor,'vehicle.archive',row.id,row.version,row.version+1);
+  await audit(tx,actor,'vehicle.archive',row.id,row.version,row.version+1,activityChanges(row.publication_state,'archived','publicationState'));
   return lockVehicle(tx,row.id);
 }
 function vehicleOptions(factsRows:VehicleDraftInput['facts'][],selectedMake?:string,staffCount=factsRows.length) {
@@ -318,10 +321,11 @@ export class InventoryService {
       }
       const normalized=normalizeContent({...row.data,content},row.data);
       const localization=applyLocalizationInput(id,normalized,current,incoming);
+      if(sameValue(normalized,row.data)&&sameValue(localization.data,current.data)) { const bundle=translationBundle(row);bundle.vehicle.report=await getStaffReport(tx,row.data.source);return bundle; }
       await tx.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[id,JSON.stringify(normalized)]);
       await persistLocalization(tx,id,localization,current.revision+1);
       await tx.query('UPDATE vehicles SET version=version+1,updated_at=now() WHERE id=$1',[id]);
-      await audit(tx,actor,'vehicle.translationBundle.save',id,row.version,row.version+1);
+      await audit(tx,actor,'vehicle.translationBundle.save',id,row.version,row.version+1,[...draftChanges(row.data,normalized),...activityChanges(localizationActivity(current.data),localizationActivity(localization.data),'localization')]);
       const bundle=translationBundle(await lockVehicle(tx,id));
       bundle.vehicle.report=await getStaffReport(tx,bundle.vehicle.draft.source);
       return bundle;
@@ -355,7 +359,7 @@ export class InventoryService {
         ON CONFLICT(vehicle_id,actor_id) DO UPDATE SET public_revision=excluded.public_revision,fingerprint=excluded.fingerprint,
           locale=excluded.locale,confirmed_at=excluded.confirmed_at,expires_at=excluded.expires_at`,
         [id,actor.id,input.publicContentRevision,input.fingerprint,input.locale]);
-      await audit(tx,actor,'vehicle.preview.confirm',id,row.version,row.version);
+      await audit(tx,actor,'vehicle.preview.confirm',id,row.version,row.version,[]);
       return publicationReadiness(prepared,await currentConfirmation(tx,id,actor.id));
     });
   }
@@ -373,9 +377,10 @@ export class InventoryService {
         if(prior&&field.sourceLanguage!==prior.sourceLanguage)throw conflict();
       }
       const next=applyLocalizationInput(id,row.data,current,input.data);
+      if(sameValue(next.data,current.data))return localizationResponse(row);
       await persistLocalization(tx,id,next,current.revision+1);
       await tx.query('UPDATE vehicles SET version=version+1,updated_at=now() WHERE id=$1',[id]);
-      await audit(tx,actor,'vehicle.localization.save',id,row.version,row.version+1);
+      await audit(tx,actor,'vehicle.localization.save',id,row.version,row.version+1,activityChanges(localizationActivity(current.data),localizationActivity(next.data),'localization'));
       return localizationResponse(await lockVehicle(tx,id));
     });
   }
@@ -440,7 +445,7 @@ export class InventoryService {
       await tx.query('INSERT INTO vehicles(id) VALUES($1)',[id]);
       await tx.query('INSERT INTO vehicle_drafts(vehicle_id,data) VALUES($1,$2)',[id,JSON.stringify(normalized)]);
       await persistLocalization(tx,id,syncLocalization(id,normalized,emptyLocalization(),'zh'),1);
-      await audit(tx,actor,'vehicle.create',id,null,1);
+      await audit(tx,actor,'vehicle.create',id,null,1,draftChanges(null,normalized));
       return toAdmin(await lockVehicle(tx,id));
     }));
   }
@@ -457,10 +462,11 @@ export class InventoryService {
         if(draft.content[name].sourceLanguage!==row.data.content[name].sourceLanguage)throw conflict();
       const normalized=normalizeContent(draft,row.data);
       const previousLocalization=syncLocalization(id,row.data,storedLocalization(row));
+      if(sameValue(normalized,row.data))return toAdmin(row);
       await tx.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[id,JSON.stringify(normalized)]);
       await persistLocalization(tx,id,syncLocalization(id,normalized,previousLocalization,'zh'),(row.localization_revision??0)+1);
       await tx.query('UPDATE vehicles SET version=version+1,updated_at=now() WHERE id=$1',[id]);
-      await audit(tx,actor,'vehicle.save',id,version,version+1);
+      await audit(tx,actor,'vehicle.save',id,version,version+1,draftChanges(row.data,normalized));
       return toAdmin(await lockVehicle(tx,id));
     });
   }
@@ -489,7 +495,7 @@ export class InventoryService {
       }
       for (const m of images) await tx.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publicationId,m.id]);
       await tx.query(`UPDATE vehicles SET published_revision_id=$2,publication_state='published',published_at=now(),version=version+1,updated_at=now() WHERE id=$1`,[id,publicationId]);
-      await audit(tx,actor,'vehicle.publish',id,version,version+1);
+      await audit(tx,actor,'vehicle.publish',id,version,version+1,activityChanges({publicationState:row.publication_state,publishedRevisionId:row.published_revision_id},{publicationState:'published',publishedRevisionId:publicationId}));
       return toAdmin(await lockVehicle(tx,id));
     });
     });
@@ -516,10 +522,10 @@ export class InventoryService {
       const sections=home.sections.map(section=>({...section,vehicleIds:section.vehicleIds.filter(value=>value.toLowerCase()!==id)}));
       if(sections.some((section,index)=>section.vehicleIds.length!==home.sections[index]!.vehicleIds.length)) {
         await tx.query('UPDATE home_config SET sections=$1,version=version+1 WHERE id=1',[JSON.stringify(sections)]);
-        await audit(tx,actor,'home.removeDeletedVehicle',null,home.version,home.version+1);
+        await audit(tx,actor,'home.removeDeletedVehicle',null,home.version,home.version+1,activityChanges(home.sections,sections,'sections'));
       }
       await tx.query('UPDATE vehicles SET deleted_at=now(),deleted_by=$2,version=version+1,updated_at=now() WHERE id=$1',[id,actor.id]);
-      await audit(tx,actor,'vehicle.delete',id,row.version,row.version+1);
+      await audit(tx,actor,'vehicle.delete',id,row.version,row.version+1,[{path:'deleted',beforePresent:true,afterPresent:true,before:false,after:true}]);
       return toAdmin(await lockVehicle(tx,id,undefined,true));
     }));
   }
@@ -531,7 +537,7 @@ export class InventoryService {
       await tx.query(`UPDATE vehicles SET deleted_at=NULL,deleted_by=NULL,publication_state='draft',
         published_revision_id=NULL,published_at=NULL,availability='unknown',availability_checked_at=NULL,
         version=version+1,updated_at=now() WHERE id=$1`,[id]);
-      await audit(tx,actor,'vehicle.restore',id,row.version,row.version+1);
+      await audit(tx,actor,'vehicle.restore',id,row.version,row.version+1,activityChanges({deleted:true,publicationState:row.publication_state,availability:row.availability,publishedRevisionId:row.published_revision_id},{deleted:false,publicationState:'draft',availability:'unknown',publishedRevisionId:null}));
       return toAdmin(await lockVehicle(tx,id));
     }));
   }

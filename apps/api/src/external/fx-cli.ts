@@ -4,13 +4,27 @@ import { assertFxRefreshAuthorization, readFxHealth, refreshFxQuote, seedSynthet
 
 async function run() {
   const [action, fixture, ...rest] = process.argv.slice(2);
-  if (rest.length || !['--health', '--refresh', '--seed'].includes(action ?? '') ||
+  if (rest.length || !['--health', '--refresh', '--seed', '--formal-health', '--formal-refresh'].includes(action ?? '') ||
       (action === '--seed' ? !['a', 'b', 'expired'].includes(fixture ?? '') : fixture !== undefined)) throw new Error('Invalid FX command.');
   const env = readDatabaseEnvironment();
   const databaseUrl = env.DATABASE_URL ?? '';
   let url: URL;
   try { url = new URL(databaseUrl); } catch { throw new Error('Invalid FX configuration.'); }
   const mode = env.EXTERNAL_CATALOG_MODE;
+  if (action === '--formal-health' || action === '--formal-refresh') {
+    const auth = { networkEnabled: env.EXTERNAL_FX_NETWORK === 'enabled', mode: mode ?? '', nodeEnv: env.NODE_ENV ?? '', databaseUrl,
+      formalDatabase: env.EXTERNAL_FX_FORMAL_DATABASE ?? '', releaseId: env.HD_RELEASE_ID };
+    assertFxRefreshAuthorization(auth);
+    const db = createDatabase(databaseUrl, 2);
+    try {
+      const current = (await db.pool.query('SELECT current_database() AS name')).rows[0]?.name;
+      if (current !== auth.formalDatabase) throw new Error('Formal FX database mismatch.');
+      const result = action === '--formal-refresh' ? await refreshFxQuote(db, auth) : { health: await readFxHealth(db.pool) };
+      console.log(JSON.stringify(result));
+      if (('attempted' in result && result.attempted && result.health.lastOutcome === 'failed') || !['fresh', 'retained'].includes(result.health.status) || result.health.source !== 'exchange_rate_api') process.exitCode = 1;
+    } finally { await db.close(); }
+    return;
+  }
   const scale = mode === 'synthetic-scale' && /^\/hd_ext_scale_[a-z0-9_]+$/.test(url.pathname) &&
     (url.hostname === '127.0.0.1' || (url.hostname === 'postgres-scale' && url.port === '5432'));
   const preview = mode === 'synthetic' && /^\/hd_ext_fx_preview_[a-z0-9_]+$/.test(url.pathname) && url.hostname === '127.0.0.1';

@@ -6,7 +6,8 @@ import type { Database } from '../db/index.js';
 export type FxQuote = { version: string; asOf: string; expiresAt: string;
   source: 'exchange_rate_api' | 'synthetic'; rates: Partial<Record<Currency, string>> };
 export type FxQueryable = Pick<PoolClient, 'query'>;
-export const ACTIVE_FX_SQL = 'f.id=1 AND f.as_of<=CURRENT_TIMESTAMP AND f.expires_at>CURRENT_TIMESTAMP';
+const formalFxOnly = process.env.NODE_ENV === 'production' ? " AND f.source='exchange_rate_api'" : '';
+export const ACTIVE_FX_SQL = 'f.id=1 AND f.as_of<=CURRENT_TIMESTAMP AND f.expires_at>CURRENT_TIMESTAMP' + formalFxOnly;
 const week = 168 * 60 * 60 * 1000;
 const endpoint = 'https://open.er-api.com/v6/latest/USD';
 const limits: Record<Currency, readonly [number, number]> = {
@@ -61,7 +62,7 @@ export async function readFxQuote(tx: FxQueryable, clock: 'transaction' | 'wall'
   // on vehicle/media/FX locks and must use one actual database clock reading.
   const result = await tx.query<QuoteRow>(clock === 'wall'
     ? `WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
-       SELECT f.* FROM public_fx_quote f,clock WHERE f.id=1 AND f.as_of<=clock.now AND f.expires_at>clock.now`
+       SELECT f.* FROM public_fx_quote f,clock WHERE f.id=1 AND f.as_of<=clock.now AND f.expires_at>clock.now${formalFxOnly}`
     : `SELECT f.* FROM public_fx_quote f WHERE ${ACTIVE_FX_SQL}`);
   return result.rows[0] ? mapQuote(result.rows[0]) : null;
 }
@@ -113,10 +114,18 @@ export async function seedSyntheticFx(db: Database, fixture: 'a' | 'b' | 'expire
   });
 }
 
-export type FxRefreshAuthorization = { networkEnabled: boolean; mode: string; nodeEnv: string; databaseUrl: string };
+export type FxRefreshAuthorization = { networkEnabled: boolean; mode: string; nodeEnv: string; databaseUrl: string;
+  formalDatabase?: string; releaseId?: string };
 export function assertFxRefreshAuthorization(auth: FxRefreshAuthorization) {
   let url: URL;
   try { url = new URL(auth.databaseUrl); } catch { throw new Error('FX network gate rejected.'); }
+  if (auth.formalDatabase !== undefined) {
+    if (!auth.networkEnabled || auth.nodeEnv !== 'production' || auth.mode !== 'disabled' ||
+        !/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(auth.formalDatabase) || url.pathname !== `/${auth.formalDatabase}` ||
+        !['postgres:', 'postgresql:'].includes(url.protocol) || url.search || url.hash ||
+        !/^(?:[a-f0-9]{40,64}|sha256:[a-f0-9]{64})$/.test(auth.releaseId ?? '')) throw new Error('Formal FX network gate rejected.');
+    return auth.formalDatabase;
+  }
   if (!auth.networkEnabled || auth.nodeEnv !== 'test' || auth.mode !== 'synthetic' ||
       !['postgres:', 'postgresql:'].includes(url.protocol) || url.hostname !== '127.0.0.1' ||
       !/^\/hd_ext_fx_preview_[a-z0-9_]+$/.test(url.pathname) || url.search || url.hash) throw new Error('FX network gate rejected.');
@@ -147,7 +156,7 @@ async function fetchSnapshot(fetcher: typeof fetch): Promise<unknown> {
 export async function refreshFxQuote(db: Database, authorization: FxRefreshAuthorization, fetcher: typeof fetch = fetch):
 Promise<{ attempted: boolean; health: FxHealth }> {
   const expected = assertFxRefreshAuthorization(authorization);
-  await assertDatabase(db.pool, /^hd_ext_fx_preview_[a-z0-9_]+$/, expected);
+  await assertDatabase(db.pool, authorization.formalDatabase === undefined ? /^hd_ext_fx_preview_[a-z0-9_]+$/ : /^[A-Za-z_][A-Za-z0-9_]{0,62}$/, expected);
   const attempt = randomUUID();
   const claim = await db.pool.query(`WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
     UPDATE fx_refresh_state SET attempt_id=$1,last_attempt_at=clock.now,next_attempt_at=clock.now+interval '24 hours',outcome='pending'
@@ -157,7 +166,9 @@ Promise<{ attempted: boolean; health: FxHealth }> {
     const response = await fetchSnapshot(fetcher);
     await db.transaction(async tx => {
       const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
-      await saveQuote(tx, parseProviderFx(response, now));
+      const quote = parseProviderFx(response, now);
+      if (authorization.formalDatabase !== undefined && !quote.rates.CNY) throw invalid();
+      await saveQuote(tx, quote);
       const finished = await tx.query("UPDATE fx_refresh_state SET outcome='success' WHERE id=1 AND attempt_id=$1 RETURNING id", [attempt]);
       if (finished.rowCount !== 1) throw new Error('FX claim changed.');
     });
