@@ -18,3 +18,16 @@ class Peak(unittest.TestCase):
         e=self.data();e['sampleEvidenceSufficient']=False
         with self.assertRaises(ValueError):self.calculate(e)
 if __name__=='__main__':unittest.main()
+
+class DumpBoundary(unittest.TestCase):
+    def test_client_limits_private_network_and_readonly_credentials(self):
+        c=dict(dumpNetwork='hd-auto-data',dumpHost='postgres',dumpUser='capacity_reader',database='hd_release_0123456789abcdef',dumpPgpassFile='/srv/hd-auto/secrets/capacity.pgpass')
+        args=m.dump_command(c,'sha256:'+'a'*64,'probe-test',[])
+        self.assertEqual(args[args.index('--cpus')+1],'0.25')
+        self.assertEqual(args[args.index('--memory')+1],'256m')
+        self.assertEqual(args[args.index('--network')+1],'hd-auto-data')
+        self.assertIn('--read-only',args)
+        self.assertIn('type=bind,src=/srv/hd-auto/secrets/capacity.pgpass,dst=/run/pgpass,readonly',args)
+        self.assertFalse(any('PGPASSWORD=' in x for x in args))
+        self.assertTrue(any('statement_timeout=600000' in x and 'default_transaction_read_only=on' in x for x in args))
+        self.assertNotIn('-p',args)

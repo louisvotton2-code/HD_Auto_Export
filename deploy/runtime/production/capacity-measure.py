@@ -11,6 +11,7 @@ import signal
 import stat
 import subprocess
 import time
+import uuid
 
 ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
@@ -121,15 +122,59 @@ def measure():
     return {**e,**result}
 
 
+def dump_command(c, image, name, extra):
+    return ['docker','run','--rm','--name',name,'--network',c['dumpNetwork'],
+            '--cpus','0.25','--memory','256m','--memory-swap','256m','--pids-limit','64',
+            '--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
+            '--tmpfs','/tmp:rw,noexec,nosuid,size=16m',
+            '--mount',f"type=bind,src={c['dumpPgpassFile']},dst=/run/pgpass,readonly",
+            '--env','PGPASSFILE=/run/pgpass','--env','PGCONNECT_TIMEOUT=10',
+            '--env','PGOPTIONS=-c statement_timeout=600000 -c lock_timeout=5000 -c default_transaction_read_only=on',
+            '--entrypoint','pg_dump',image,'-h',c['dumpHost'],'-U',c['dumpUser'],
+            '-d',c['database'],'-Fc','-Z','6','--no-owner','--no-acl','--lock-wait-timeout=5000',*extra]
+
+
+def dump_target(c):
+    # The existing password file is mounted read-only, never read into argv/logs.
+    path=Path(c['dumpPgpassFile'])
+    if not path.is_absolute() or '..' in path.parts or ROOT/'secrets' not in path.parents:
+        raise ValueError('Probe credential must be in the private secrets directory')
+    info=path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o077:
+        raise ValueError('Probe credential must be root-owned 0600')
+    if any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}',c[key]) for key in ('dumpNetwork','dumpHost','dumpUser')):
+        raise ValueError('Invalid internal dump target')
+    network=json.loads(subprocess.check_output(['docker','network','inspect',c['dumpNetwork']],text=True,timeout=10))[0]
+    pg=json.loads(subprocess.check_output(['docker','inspect','hd-auto-postgres-1'],text=True,timeout=10))[0]
+    attachment=pg['NetworkSettings']['Networks'].get(c['dumpNetwork'])
+    if network.get('Internal') is not True or not attachment or c['dumpHost'] not in attachment.get('Aliases',[]):
+        raise ValueError('Probe must use the existing internal PostgreSQL network alias')
+    if not pg['State']['Running'] or not re.fullmatch(r'sha256:[a-f0-9]{64}',pg['Image']):
+        raise ValueError('Expected running pinned PostgreSQL image')
+    # Client quotas do not cap database-server computation. Defer during host pressure.
+    if os.getloadavg()[0] >= max(1,(os.cpu_count() or 1)*0.75):
+        raise ValueError('Host pressure defers the read-only probe')
+    return pg['Image']
+
+
+def compressed_dump(c, image, extra):
+    name='hd-auto-capacity-probe-'+uuid.uuid4().hex
+    try:
+        return stream_size(dump_command(c,image,name,extra))
+    finally:
+        # Cancel the actual dump container too, including client timeout/disconnect.
+        subprocess.run(['docker','rm','-f',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+
+
 def probe():
     os.umask(0o077)
     with (STATE/'probe.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         c=config(); e=evidence(c)
         if not e or not e.get('sampleEvidenceSufficient'): return
-        base=['docker','exec','-u','postgres','hd-auto-postgres-1','nice','-n','15','timeout','600','pg_dump','-U','postgres','-d',c['database'],'-Fc','-Z','6','--no-owner','--no-acl','--lock-wait-timeout=5000']
-        business=stream_size(base+['--exclude-table=public.external_full_stage'])
-        raw=stream_size(base+['--table=public.external_source_blobs','--table=public.external_source_documents'])
+        image=dump_target(c)
+        business=compressed_dump(c,image,['--exclude-table=public.external_full_stage'])
+        raw=compressed_dump(c,image,['--table=public.external_source_blobs','--table=public.external_source_documents'])
         if evidence(c).get('evidenceHash')!=e['evidenceHash']: return
         data=dict(processedRows=e['distinctProcessed'],measuredEpoch=time.time(),model=MODEL,snapshotId=e['snapshotId'],evidenceHash=e['evidenceHash'],businessDumpBytes=business,rawDumpBytes=raw,measuredAt=dt.datetime.now(dt.timezone.utc).isoformat())
         temp=STATE/'probe.json.tmp'
