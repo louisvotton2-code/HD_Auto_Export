@@ -6,6 +6,7 @@ import {
   ExternalBatchResponseSchema, ExternalRawRecordResponseSchema, ExternalStatusResponseSchema,
   type ExternalBatch, type StaffMe,
 } from '@hd/contracts/admin';
+import { IngestionStatusCard } from './ingestion-status-card';
 import { BatchTrial } from './batch-trial';
 import { BulkVisibility } from './bulk-visibility';
 import { ExternalImport } from './external-import';
@@ -40,9 +41,10 @@ function BatchCounts({ counts }: Pick<ExternalBatch, 'counts'>) {
 export function ExternalBatchHistoryPage() {
   const staff = useOutletContext<StaffMe>();
   const [page, setPage] = useState(1);
+  const [refreshKey, setRefreshKey] = useState(0);
   const status = useExternalResource(`${externalRoot}/status`, ExternalStatusResponseSchema);
   const batches = useExternalResource(`${externalRoot}/batches?page=${page}&pageSize=${pageSize}`, ExternalBatchListResponseSchema);
-  const refresh = () => { status.reload(); batches.reload(); };
+  const refresh = () => { status.reload(); batches.reload(); setRefreshKey(value => value + 1); };
   return <section className={styles.stack}>
     <header className={styles.heading}>
       <div>
@@ -51,9 +53,10 @@ export function ExternalBatchHistoryPage() {
       </div>
       <Button onClick={refresh}>重新读取</Button>
     </header>
-    <Card title="同步与试译状态">
+    <IngestionStatusCard key={refreshKey} />
+    <Card title="手动样本批次与试译">
       <ResourceContent {...status} retry={status.reload}>{status.data && <Descriptions column={{ xs: 1, md: 2 }} items={[
-        { key: 'sync', label: '同步方式', children: '手动导入' },
+        { key: 'sync', label: '历史批次方式', children: '手动导入' },
         { key: 'translation', label: '翻译方式', children: '试译用量测算' },
         { key: 'limit', label: '单批字符上限', children: status.data.data.batchCharacterLimit.toLocaleString('zh-CN') },
         { key: 'quota', label: '账号剩余免费额度', children: '待核实' },

@@ -25,6 +25,7 @@ async function setup(page: Page, role: 'admin' | 'editor' = 'editor') {
   await installApi(page);
   await page.route('**/api/v1/admin/me', route => reply(route, envelope({ ...staff, role })));
   await page.route(`**${root}/provider-status`, route => reply(route, envelope(providerStatus)));
+  await page.route(`**${root}/ingestion-status`, route => reply(route, envelope({ mode: 'fixed_once', continuous: false, latestJob: null })));
   await page.route(`**${root}/listings/overview*`, route => reply(route, envelope({
     total: 200, published: 170, hidden: 20, withdrawn: 10, platforms: ['dongchedi', 'che168'],
     makes: [{ id: 'toyota', name: '丰田' }], models: new URL(route.request().url()).searchParams.has('make')
@@ -60,13 +61,13 @@ test('external provider status keeps account probe, local import and supplier ti
   for (const time of ['11/11 10:00', '11/30 14:00', '11/10 13:00', '11/9 11:00', '11/8 09:00']) {
     await expect(page.getByText(new RegExp(time))).toBeVisible();
   }
-  await expect(page.getByText('未配置', { exact: true })).toBeVisible();
+  await expect(page.getByText('持续调度关闭', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '导入批次' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '测算试译用量' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: '历史导入批次' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await page.getByRole('button', { name: '刷新状态' }).click();
-  await expect(page.getByText('未配置', { exact: true })).toHaveCount(2);
+  await expect(page.getByText('未配置', { exact: true })).toHaveCount(1);
   await expect(page.getByText('尚未记录', { exact: true })).toHaveCount(2);
   await expect(page.getByText('Fixture Starter', { exact: true })).toHaveCount(0);
   await expect(page.getByText('本机尚未配置账户探测', { exact: true })).toBeVisible();

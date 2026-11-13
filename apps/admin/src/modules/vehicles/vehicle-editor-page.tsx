@@ -9,6 +9,7 @@ import 'dayjs/locale/zh-cn';
 import { PartialDateField } from '../../shared/ui/partial-date-field';
 import { UtcDateTimeField } from '../../shared/ui/utc-date-time-field';
 import { SourceReportLink } from '../../shared/ui/source-report-link';
+import { ActivityHistory, ActivitySummary } from '../activity';
 import { request, ApiClientError } from '../../shared/api/client';
 import { useVehicleDictionary } from '../../shared/api/vehicle-dictionary';
 import { availabilityLabels, changedFields, draftToForm, emptyDraft, fieldForPath, fieldLabels, formatTime, formToDraft, powertrainLabels, publicationLabels, type DraftForm } from './draft-form';
@@ -54,6 +55,7 @@ function issueForPath(path: string): FieldIssue {
 }
 
 export function VehicleEditorPage() {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const { id } = useParams();
   const navigate = useNavigate();
   const { modal, message } = App.useApp();
@@ -342,6 +344,8 @@ export function VehicleEditorPage() {
     <Breadcrumb items={[{ title: <Link to="/recycle-bin">车辆回收站</Link> }, { title: record.stockCode }]} />
     <header className={styles.heading}><div><Typography.Text type="secondary">回收站只读档案</Typography.Text><h1>车辆已移入回收站</h1><Typography.Paragraph type="secondary" className={styles.noMargin}>这辆车已停止公开，草稿与历史资料保留。恢复后仅回到未发布草稿，不会自动发布或加回首页。</Typography.Paragraph></div><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/recycle-bin')}>返回回收站</Button></header>
     <Alert type="warning" showIcon title="已删除记录只读" description="当前不能编辑、上传图片、核验库存或发布。先恢复草稿，再重新核对资料与发布条件。" className={styles.feedback} />
+    <Card title="操作追溯" extra={<Button onClick={() => setHistoryOpen(true)}>操作记录</Button>}><ActivitySummary activity={record.activity} external={record.draft.source.kind === 'external'} /></Card>
+    <ActivityHistory target={historyOpen ? { kind: 'vehicle', id: record.id, label: record.stockCode } : null} onClose={() => setHistoryOpen(false)} />
     <Card title="档案摘要" className={styles.card}><Descriptions column={{ xs: 1, sm: 2 }} items={[
       { key: 'stock', label: '稳定车号', children: record.stockCode },
       { key: 'source', label: '资料类型', children: record.draft.source.kind === 'external' ? '外部来源资料，非自有库存' : record.draft.source.kind === 'demo' ? '展示样例，非实际库存' : '真实车源录入' },
@@ -454,6 +458,8 @@ export function VehicleEditorPage() {
   return <section className={styles.page}>
     <Breadcrumb items={[{ title: <Link to="/vehicles">车辆工作台</Link> }, { title: record?.stockCode ?? '新建车辆' }]} />
     <header className={styles.heading}><div><Typography.Text type="secondary">车辆资料</Typography.Text><h1>{id ? '编辑车辆草稿' : '新建车辆'}</h1><Typography.Paragraph type="secondary" className={styles.noMargin}>资料先存草稿，核对后单独发布。随时切换下方分组继续录入。</Typography.Paragraph></div><Space wrap><Tag color={isDemo ? 'gold' : isExternal ? 'blue' : undefined}>{isDemo ? '展示样例，非实际库存' : isExternal ? '外部来源资料，非自有库存' : sourceKind === 'manual' ? '真实车源录入' : '待选择类型'}</Tag>{record && <><Tag color={record.publicationState === 'published' ? 'green' : undefined}>{publicationLabels[record.publicationState]}</Tag><Tag>{isDemo ? '非实际库存' : isExternal ? '外部库存未知' : availabilityLabels[record.availability]}</Tag></>}<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/vehicles')}>返回车辆列表</Button><div ref={setPublishTarget}>{activeTab !== 'review' && <Button onClick={() => { setPreviewOpened(true); setActiveTab('review'); }}>进入发布预览</Button>}{!record && activeTab === 'review' && <Space orientation="vertical" size={4}><Button className={styles.publishIncomplete} disabled>请完善信息</Button><Button size="small" onClick={() => { setActiveTab("basics"); void message.info("可先保存草稿，再添加图片、完善多语并检查发布预览。"); }}>查看发布要求</Button></Space>}</div></Space></header>
+    {record && <Card size="small" title="操作追溯" extra={<Button onClick={() => setHistoryOpen(true)}>操作记录</Button>}><ActivitySummary activity={record.activity} external={record.draft.source.kind === 'external'} /></Card>}
+    <ActivityHistory target={historyOpen && record ? { kind: 'vehicle', id: record.id, label: record.stockCode } : null} onClose={() => setHistoryOpen(false)} />
     {record && <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} className={styles.metadata} items={[{ key: 'version', label: '草稿版本', children: record.version }, { key: 'updated', label: '最近修改', children: formatTime(record.updatedAt) }, { key: 'checked', label: '库存核验', children: isDemo ? '不适用（展示样例）' : isExternal ? '不适用（外部来源）' : formatTime(record.availabilityCheckedAt) }, ...(sourceReportUrl ? [{ key: 'report', label: '来源报告', children: <SourceReportLink url={sourceReportUrl} /> }] : [])]} />}
     {error && <Alert role="alert" type="error" showIcon title="草稿尚未保存" description={<><p>{error}</p>{issues.length > 0 && <Space wrap>{issues.map((issue, index) => <Button size="small" key={index} onClick={() => focusIssue(issue)}>{issue.label}：检查内容</Button>)}</Space>}</>} className={styles.feedback} />}
     {success && <Alert role="status" type="success" showIcon title={success} className={styles.feedback} />}

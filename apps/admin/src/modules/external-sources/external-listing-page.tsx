@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { Link, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Select, Space, Tag, Typography } from 'antd';
 import { ExternalListingResponseSchema, LocaleSchema, type ExternalListing, type Locale, type StaffMe } from '@hd/contracts/admin';
+import { ActivityHistory, ActivitySummary } from '../activity';
 import { SourceReportLink } from '../../shared/ui/source-report-link';
 import { externalRoot, fieldLabels, issueLabels, languageLabels, listingLabels, platformName } from './external-labels';
 import { formatExternalFact, type FactField } from './fact-override-input';
 import { ListingOverrideEditor } from './listing-override-editor';
 import { ResourceContent } from './resource-content';
 import { SourceRecordDetails } from './source-record-details';
+import { SourceDocuments } from './source-documents';
 import { useExternalResource } from './use-external-resource';
 import styles from './external-sources.module.css';
 
@@ -20,6 +22,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
 }) {
   const staff = useOutletContext<StaffMe>();
   const [editing, setEditing] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const vehicle = listing.vehicle;
   const source = listing.source;
   const facts = vehicle?.facts ?? { ...source?.facts, ...listing.overrides.facts };
@@ -37,6 +40,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         <span>管理版本 {listing.version}</span>
         <SourceReportLink url={listing.report?.url} />
         <Button onClick={reload} disabled={editing}>重新读取</Button>
+        <Button onClick={() => setHistoryOpen(true)}>操作记录</Button>
         {listing.state !== 'withdrawn' && staff.permissions.includes('vehicles:write') &&
           <Button type="primary" onClick={() => setEditing(true)}>人工修订</Button>}
       </Space>
@@ -49,6 +53,8 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         }))} />
       <Typography.Text type="secondary">公开展示优先采用符合来源规则的人工修订。</Typography.Text>
     </Card>
+    <Card title="操作追溯"><ActivitySummary activity={listing.activity} external showCreated={false} /></Card>
+    <ActivityHistory target={historyOpen ? { kind: 'external', id: listing.id, label: `${platformName(listing.identity.platformId)} · ${listing.identity.externalId}` } : null} onClose={() => setHistoryOpen(false)} />
     <SourceRecordDetails
       source={platformName(listing.identity.platformId)}
       identity={listing.identity.externalId}
@@ -83,6 +89,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
         })),
       ]}
     />
+    <SourceDocuments key={listing.id} listingId={listing.id} />
     <Card title="公开展示核对" extra={<Select aria-label="公开展示语言" value={locale} onChange={changeLocale} disabled={editing}
       options={Object.entries(languageLabels).map(([value, label]) => ({ value, label }))} />}>
       {vehicle ? <Descriptions size="small" column={1} items={[
