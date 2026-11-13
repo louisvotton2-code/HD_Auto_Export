@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AdminActivitySummarySchema } from './activity.js';
 import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
@@ -144,6 +145,7 @@ export const ExternalListingSchema = z.strictObject({
   sourceHashes: z.strictObject({ title: SourceHashSchema.nullable(), model: SourceHashSchema.nullable(), description: SourceHashSchema.nullable() }),
   vehicle: PublicVehicleSchema.nullable(),
   report: AdminReportSchema.optional(),
+  activity: AdminActivitySummarySchema.optional(),
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);
@@ -187,6 +189,7 @@ export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
   sourceUpdatedAt: TimestampSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   hasOverrides: z.boolean(),
+  activity: AdminActivitySummarySchema.optional(),
   facts: ExternalListingListFactsSchema.nullable().optional(),
 });
 export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
