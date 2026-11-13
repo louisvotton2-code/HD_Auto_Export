@@ -164,6 +164,7 @@ test('EXT07 short inquiry codes preserve source URL and old identifier search an
   listing.inquiryCode = 'che168-000123';
   listing.identity.platformId = 'che168';
   if (listing.source) listing.source.platformId = 'che168';
+  if (listing.vehicle) { listing.vehicle.facts.powerHp = 0; listing.vehicle.facts.powerKw = 150; }
   const originalUrl = 'https://example.invalid/listing/000123?lang=ru&x=1';
   const summary = { ...listing.identity, id: listing.id, version: listing.version, listingUrl: originalUrl, title: '短编号测试车辆', state: listing.state, fetchedAt: listing.fetchedAt, sourceUpdatedAt: listing.sourceUpdatedAt, publishedAt: null, hasOverrides: false, inquiryCode: listing.inquiryCode, facts: null };
   await page.route(`**${root}/listings/overview*`, route => reply(route, envelope({ total: 1, published: 1, hidden: 0, withdrawn: 0, platforms: ['che168'], makes: [], models: [], years: [] })));
@@ -189,6 +190,7 @@ test('EXT07 short inquiry codes preserve source URL and old identifier search an
   await expect(page).toHaveURL(new RegExp(`/external-sources/listings/${listing.id}`));
   await expect(page.getByText('询价编号：che168-000123', { exact: true })).toBeVisible();
   await expect(page.getByText(`旧站内车源 ID ${listing.id}`, { exact: true })).toBeVisible();
+  await expect(page.getByText('0 hp', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看供应商原档', exact: true })).toBeVisible();
   expect(rawReads).toBe(0);
 });

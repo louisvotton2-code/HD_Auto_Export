@@ -15,7 +15,7 @@ import styles from './external-sources.module.css';
 
 const fields = ['title', 'model', 'description'] as const;
 const locales = ['zh', 'en', 'ru'] as const;
-const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'firstRegistration'];
+const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'powerHp', 'firstRegistration'];
 
 function ListingContent({ listing, locale, changeLocale, reload }: {
   listing: ExternalListing; locale: Locale; changeLocale: (locale: Locale) => void; reload: () => void;
@@ -48,7 +48,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
       <Descriptions title={vehicle ? '公开车辆参数' : '入库车辆参数'} className={styles.listingFacts} column={{ xs: 1, sm: 2, xl: 3 }} size="small"
         items={summaryFields.map(field => ({
           key: field, label: fieldLabels[field],
-          children: !vehicle && source?.disputes.includes(field) && !Object.hasOwn(listing.overrides.facts, field)
+          children: !vehicle && source?.disputes.some(dispute => dispute === field) && !Object.hasOwn(listing.overrides.facts, field)
             ? '来源有冲突，待核对'
             : field === 'model' && publicCopy.model?.text ? publicCopy.model.text : formatExternalFact(field, facts[field]),
         }))} />

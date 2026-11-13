@@ -130,6 +130,8 @@ manual 和员工维护的 external 副本发布前需要品牌、车型、中文
 
 EXT07本机只编辑／提交，应用检查、构建与浏览器模拟由OPS在准确SHA的服务器隔离环境执行，真实接口权限、暂停期间撤回及查询连续性须同版联调；未执行前不声称通过。`tests/sync-cases.ts` 覆盖计数分离、员工只读、管理员确认、防重、结果未知的原请求恢复、409／403、保护暂停和短编号搜索；fixture通过不替代真实API或正式全量完成。
 
+原始马力 `powerHp` 与 `powerKw` 独立：员工草稿可填写直接给出的hp，空值／0／旧记录省略分别保留，修改kW不会推算或覆盖hp。三方详情只展示契约给出的hp和单位；当前人工覆盖契约未开放hp，不添加无法保存的三方修订控件。
+
 ## 来源报告入口
 
 员工车辆详情（含有真实来源关联的 external 副本）与第三方挂牌详情只读取正式鉴权字段 `report.url`。有合法安全 HTTPS 原始地址才显示“打开来源报告”，使用普通 `<a target="_blank" rel="noopener noreferrer">`，保留完整原始 href，不拼接、不归一化、不自动 fetch／prefetch。它不表示正文或链接可用性已核验，也不依赖公开 `reportAccess.available`。`hasReport:true` 但 `url:null` 合法，此时没有打开按钮；公开详情及鉴权预览只消费 `report.hasReport` 并提示联系销售，不暴露地址。

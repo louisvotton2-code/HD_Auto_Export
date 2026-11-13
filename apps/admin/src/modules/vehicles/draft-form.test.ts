@@ -66,6 +66,29 @@ describe('草稿表单与统一契约', () => {
     expect(result.facts.mileageKm).toBe(0);
     expect(result.facts.engineCc).toBeNull();
   });
+  it('原始hp与kW独立保存，保留零、未知和旧字段省略，不做换算', () => {
+    const draft = makeVehicleDraftFixture();
+    draft.facts.powerKw = 150;
+    draft.facts.powerHp = 204.5;
+    const form = draftToForm(draft);
+    expect(form.powerHp).toBe('204.5');
+    expect(formToDraft(draft, { ...form, notes: '只改备注' }).facts.powerHp).toBe(204.5);
+    const changedKw = formToDraft(draft, { ...form, powerKw: '300' });
+    expect(changedKw.facts.powerKw).toBe(300);
+    expect(changedKw.facts.powerHp).toBe(204.5);
+    const zeroHp = formToDraft(draft, { ...form, powerHp: '0' });
+    expect(zeroHp.facts.powerHp).toBe(0);
+    expect(zeroHp.facts.powerKw).toBe(150);
+    expect(formToDraft(draft, { ...form, powerHp: '' }).facts.powerHp).toBeNull();
+    expect(() => formToDraft(draft, { ...form, powerHp: '-1' })).toThrow();
+    expect(() => formToDraft(draft, { ...form, powerHp: '1e2' })).toThrow();
+    delete draft.facts.powerHp;
+    const legacy = formToDraft(draft, { ...draftToForm(draft), notes: '保留旧字段省略' });
+    expect(Object.hasOwn(legacy.facts, 'powerHp')).toBe(false);
+    expect(legacy.facts.powerKw).toBe(150);
+    expect(fieldForPath('draft.facts.powerHp')).toBe('powerHp');
+    expect(changedFields(draftToForm(draft), { ...draftToForm(draft), powerHp: '204.5' })).toEqual(['powerHp']);
+  });
   it('缺少金额的报价草稿保留报价意图及两项已选币种', () => {
     const base = emptyDraft();
     const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', currency: 'CNY', purchaseAmount: '', purchaseCurrency: 'EUR' });

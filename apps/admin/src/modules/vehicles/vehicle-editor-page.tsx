@@ -405,6 +405,7 @@ export function VehicleEditorPage() {
         <Col xs={24} md={8}>{selectField('registrationStatus', { unknown: '未知', never_registered: '从未登记', registered: '已登记' })}</Col>
         <Col xs={24} md={8}>{textField('engineCc', { inputMode: 'numeric' })}</Col>
         <Col xs={24} md={8}>{textField('powerKw', { inputMode: 'decimal' })}</Col>
+        <Col xs={24} md={8}>{textField('powerHp', { inputMode: 'decimal', hint: '仅填写资料直接给出的 hp。未知留空，不按 kW 换算。' })}</Col>
         <Col xs={24} md={8}>{selectField('transmission', { '': '未填写', manual: '手动', automatic: '自动', cvt: '无级变速', dct: '双离合', other: '其他', unknown: '未知' })}</Col>
         <Col xs={24} md={8}>{selectField('body', { '': '未填写', hatchback: '掀背', suv: 'SUV', sedan: '轿车', wagon: '旅行车', coupe: '轿跑', convertible: '敞篷', van: '厢式车', pickup: '皮卡', other: '其他', unknown: '未知' })}</Col>
         <Col xs={24} md={12}><Form.Item label="制造日期" htmlFor="manufacturedAt" extra="按已知精度选择，未知可留空。">
