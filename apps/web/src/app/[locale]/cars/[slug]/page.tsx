@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import { connection } from 'next/server';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
@@ -6,7 +7,7 @@ import { getMessages, getTranslations } from 'next-intl/server';
 import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
 import { DetailScrollTop } from '@/shared/ui/detail-scroll-top';
-import { publicVehicleMessages } from '@/modules/vehicles';
+import { publicVehicleMessages, VehicleRouteLoading } from '@/modules/vehicles';
 import { countries } from '@/modules/calculator/config/countries';
 import { getPublicVehicleById, PublicApiError } from '@/modules/vehicles/server';
 import { localizedAlternates, siteConfig } from '@/shared/config/site';
@@ -59,13 +60,26 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 export default async function CarPage({ params }: Props) {
-  const { locale, slug, vehicle, retryAfter } = await load(params);
+  const loaded = await load(params);
+  const { locale, slug } = loaded;
   setRequestLocale(locale);
+  // Keep existence checks above Suspense: the gateway relies on genuine upstream 404 responses.
+  return (
+    <>
+      <DetailScrollTop path={`${locale}:${slug}`} />
+      <Suspense fallback={<VehicleRouteLoading locale={locale} kind="detail" />}>
+        <DetailContents loaded={loaded} />
+      </Suspense>
+    </>
+  );
+}
+
+async function DetailContents({ loaded }: { loaded: Awaited<ReturnType<typeof load>> }) {
+  const { locale, slug, vehicle, retryAfter } = loaded;
   const t = await getTranslations({ locale, namespace: 'Countries' });
   const calculatorMessages = getVehicleCalculatorMessages(await getMessages());
   return (
     <ScopedMessagesProvider messages={calculatorMessages}>
-      <DetailScrollTop path={`${locale}:${slug}`} />
       <VehicleDetailPage
         key={`${locale}:${slug}`}
         locale={locale}

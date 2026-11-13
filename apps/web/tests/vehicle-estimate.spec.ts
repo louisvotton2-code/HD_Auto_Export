@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
-import { resetPublicFixture } from './helpers/public-fixture';
+import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Requires isolated public data fixtures.');
 test.beforeEach(async ({ request }) => {
@@ -37,7 +37,7 @@ async function complete(scope: Locator, code: string) {
 }
 
 for (const locale of ['zh', 'en', 'ru']) {
-  test(`${locale}: detail budget uses known facts, marks the model-year estimate and highlights missing inputs`, async ({
+  test(`${locale}: detail budget uses direct hp and leaves an unknown manufacture month for the user`, async ({
     page,
   }) => {
     const errors: string[] = [];
@@ -45,14 +45,15 @@ for (const locale of ['zh', 'en', 'ru']) {
     await page.goto(`/${locale}/cars/fixture_car_1/`);
     const budget = page.getByTestId('vehicle-import-estimate');
     const manufacture = budget.locator('[name="manufactureDate"]');
-    await expect(manufacture).toHaveValue('2024-01');
-    await expect(manufacture).toHaveAccessibleDescription(/2024/);
+    await expect(manufacture).toHaveValue('');
+    await expect(manufacture).not.toHaveAttribute('aria-describedby');
     await expect(budget.locator('[name="displacementCc"]')).toHaveValue('1998');
-    await expect(budget.locator('[name="powerHp"]')).not.toHaveValue('');
-    await expect(budget.getByTestId('inline-estimate-result')).toHaveCSS('background-color', 'rgb(23, 44, 34)');
+    await expect(budget.locator('[name="powerHp"]')).toHaveValue('150');
+    await expect(budget.getByTestId('inline-estimate-result')).toHaveCount(0);
+    await expect(budget.getByTestId('inline-estimate-status').getByRole('listitem')).toHaveCount(1);
     await budget.locator('[name="powertrain"]').selectOption('');
     const status = budget.getByTestId('inline-estimate-status');
-    await expect(status.getByRole('listitem')).toHaveCount(1);
+    await expect(status.getByRole('listitem')).toHaveCount(2);
     await expect(status).toHaveCSS('background-color', 'rgb(45, 32, 21)');
     await expect(budget.getByTestId('inline-estimate-result')).toHaveCount(0);
     await complete(budget, 'RU');
@@ -117,25 +118,34 @@ test('unknown choices stay empty through the explicit seed, storage and reload',
   }
 });
 
-test('the full calculator, reload and copied quote preserve the date assumption until the user edits the month', async ({ page, context }) => {
+test('the full calculator, reload and copied quote retain both complete range scenarios until an exact month is entered', async ({ page, context, request }) => {
+  await setPublicFixtureState(request, { estimateDateRange: true });
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
-  await expect(budget.getByTestId('inline-estimate-result')).toContainText('January of model year 2024');
+  await budget.locator('[name="customsDate"]').fill('2026-11-14');
+  const bounds = budget.getByTestId('manufacture-range-total');
+  await expect(bounds).toBeVisible();
+  const before = compact(await bounds.innerText());
+  await expect(budget.locator('[data-range-scenario]')).toHaveCount(2);
+  await expect(budget.locator('[name="manufactureDate"]')).toHaveValue('');
   await budget.getByTestId('vehicle-full-calculator').click();
   await expect(page).toHaveURL(/\/en\/calculator\/russia\/$/);
   const month = page.locator('#manufactureDate');
   for (let visit = 0; visit < 2; visit++) {
     if (visit) await page.reload();
-    await expect(month).toHaveValue('2024-01');
-    await expect(month).toHaveAccessibleDescription(/January of model year 2024/);
-    await expect(page.getByTestId('calculation-assumptions')).toContainText('January of model year 2024');
+    await expect(month).toHaveValue('');
+    await expect.poll(async () => compact(await page.getByTestId('manufacture-range-total').innerText())).toBe(before);
+    await expect(page.getByTestId('manufacture-range-result')).toContainText('2020-11');
+    await expect(page.getByTestId('manufacture-range-result')).toContainText('2026-11');
   }
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: 'Copy estimate' }).click();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('January of model year 2024');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Lower-cost scenario');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Higher-cost scenario');
   await month.fill('2024-02');
   await expect(month).not.toHaveAttribute('aria-describedby');
-  await expect(page.getByText(/January of model year 2024/)).toHaveCount(0);
+  await expect(page.getByTestId('manufacture-range-result')).toHaveCount(0);
+  await expect(page.getByTestId('total')).toBeVisible();
 });
 
 test('Russian detail budget fits a 320px screen and works without inventing missing vehicle facts', async ({
@@ -175,6 +185,7 @@ test('the import calculator stays usable on both sides of the two-column breakpo
   }
   await page.setViewportSize({ width: 1180, height: 1000 });
   await destination.selectOption('KZ');
+  await calculator.locator('[name="manufactureDate"]').fill('2024-02');
   await expect(calculator.getByTestId('inline-estimate-total')).toContainText('KZT');
 
   const summary = page.locator('main summary').filter({ hasText: 'Detailed vehicle information' });

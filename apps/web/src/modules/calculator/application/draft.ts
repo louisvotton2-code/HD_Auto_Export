@@ -2,7 +2,8 @@ import type { CountryRecord } from '../config/countries';
 import type { CalculationInput, Powertrain } from '../core/types';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, createDefaultInput } from './defaults';
-import { readManufactureEstimate, type ManufactureEstimate } from './manufacture-estimate';
+import { readManufactureEstimate } from './manufacture-estimate';
+import { isManufactureMonthRange, type ManufactureMonthRange } from './manufacture-range';
 
 export const CALCULATOR_DRAFT_STORAGE_KEY = 'hd-auto.calculator.draft.v2';
 export const LEGACY_CALCULATOR_DRAFT_STORAGE_KEY = 'aurex.calculator.draft.v1';
@@ -23,7 +24,7 @@ export interface StoredCalculatorDraft {
 export interface RestoredCalculatorDraft {
   input: CalculationInput;
   manualRates: boolean;
-  manufactureEstimate?: ManufactureEstimate;
+  manufactureRange?: ManufactureMonthRange;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -95,10 +96,10 @@ export function restoreCalculatorDraft(
       for (const key of ['transactionRate', 'euroRate', 'usdRate'] as const)
         if (typeof draft[key] === 'string' && draft[key].length <= 64) next[key] = draft[key];
     }
-    const manufactureEstimate = current
-      ? readManufactureEstimate(record.manufactureEstimate, draft.manufactureDate)
-      : undefined;
-    return { input: next, manualRates, ...(manufactureEstimate ? { manufactureEstimate } : {}) };
+    if (current && readManufactureEstimate(record.manufactureEstimate, draft.manufactureDate)) next.manufactureDate = '';
+    const manufactureRange = current && draft.country === country.code && next.manufactureDate === ''
+      && isManufactureMonthRange(record.manufactureRange) ? record.manufactureRange : undefined;
+    return { input: next, manualRates, ...(manufactureRange ? { manufactureRange } : {}) };
   } catch {
     return { input: fallback, manualRates: false };
   }

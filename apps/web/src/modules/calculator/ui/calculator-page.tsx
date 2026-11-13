@@ -3,16 +3,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import { useLocale, useTranslations } from 'next-intl';
+import type { Locale } from '@/i18n/routing';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
 import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
-import { calculateImportEstimate, type CalculationInput, type Powertrain } from '../index';
+import { calculateImportEstimate, type CalculationInput, type CalculationResult, type Powertrain } from '../index';
 import { createDefaultInput, convertTransactionPrice } from '../application/defaults';
 import { getClearanceDate } from '../application/current-date';
 import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
-import type { ManufactureEstimate } from '../application/manufacture-estimate';
+import { calculateManufactureRange, type ManufactureMonthRange } from '../application/manufacture-range';
+import { manufactureRangeCopy } from '../application/manufacture-range-copy';
 import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
   CALCULATOR_DRAFT_STORAGE_KEY,
@@ -27,6 +29,7 @@ import { getCopyQuoteFacts, type CopyQuoteText } from '../application/copy-quote
 import { CountryPolicyNotes } from './country-policy-notes';
 import { FeeLine } from './fee-line';
 import { ResultStamp } from './result-stamp';
+import { ManufactureRangeResult } from './manufacture-range-result';
 import { formatFeeFormula, formatMethodParameters } from '../application/fee-presentation';
 import type { CalculationLine } from '../core/types';
 import {
@@ -93,7 +96,7 @@ export function CalculatorPage({
   const [activeRates, setActiveRates] = useState(initialRates);
   const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
   const [manualRates, setManualRates] = useState(false);
-  const [manufactureEstimate, setManufactureEstimate] = useState<ManufactureEstimate>();
+  const [manufactureRange, setManufactureRange] = useState<ManufactureMonthRange>();
   const [ready, setReady] = useState(false);
   const [advanced, setAdvanced] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -127,7 +130,7 @@ export function CalculatorPage({
     setActiveRates(rates);
     setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
-    setManufactureEstimate(fragment ? fragment.seed.manufactureEstimate : restored.manufactureEstimate);
+    setManufactureRange(fragment ? fragment.seed.manufactureRange : restored.manufactureRange);
     if (fragment) {
       // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
       try {
@@ -147,11 +150,11 @@ export function CalculatorPage({
     if (!ready || input.country !== country.code) return;
     pendingSeedRef.current = null;
     try {
-      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates, manufactureEstimate }));
+      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates, manufactureRange }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, ready, country.code, activeRates, manufactureEstimate]);
+  }, [input, manualRates, ready, country.code, activeRates, manufactureRange]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -190,12 +193,13 @@ export function CalculatorPage({
       next[key] = next[key]?.trim() ?? '';
     return next;
   }, [input, country]);
-  const result = useMemo(() => calculateImportEstimate(normalized), [normalized]);
-  const manufactureNote = country.needsManufactureDate && manufactureEstimate
-    ? t(manufactureEstimate === 'model_year' ? 'modelYearEstimate' : 'manufactureYearEstimate', {
-        year: input.manufactureDate.slice(0, 4),
-      })
-    : undefined;
+  const rangeResult = useMemo(() => country.needsManufactureDate && manufactureRange && input.manufactureDate === ''
+    ? calculateManufactureRange(normalized, manufactureRange) : null, [normalized, manufactureRange, country.needsManufactureDate, input.manufactureDate]);
+  const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
+  const rangeCopy = manufactureRangeCopy[locale as Locale];
+  const manufactureNote = rangeResult
+    ? rangeCopy.source.replace('{from}', rangeResult.range.from).replace('{to}', rangeResult.range.to)
+      .replace('{count}', rangeResult.evaluatedMonths.toLocaleString(locale)) : undefined;
   const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
   const formatter = useMemo(
     () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 }),
@@ -258,7 +262,7 @@ export function CalculatorPage({
         : {}),
     }));
     setCopyState('idle');
-    if (key === 'manufactureDate') setManufactureEstimate(undefined);
+    if (key === 'manufactureDate') setManufactureRange(undefined);
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
@@ -282,7 +286,7 @@ export function CalculatorPage({
     setActiveRates(initialRates);
     setInput(defaultInput(country, getClearanceDate(new Date()), initialRates));
     setManualRates(false);
-    setManufactureEstimate(undefined);
+    setManufactureRange(undefined);
     setTouched(new Set());
     setCopyState('idle');
     setAdvanced(true);
@@ -330,30 +334,30 @@ export function CalculatorPage({
         : value.namespace === 'Calculator'
           ? t(value.key)
           : tq(value.key);
-    const quoteFacts = getCopyQuoteFacts(normalized, result, country, activeRates, manualRates);
+    const describe = (quoteInput: CalculationInput, quote: CalculationResult) => [
+      tq('parametersTitle'),
+      ...getCopyQuoteFacts(quoteInput, quote, country, activeRates, manualRates)
+        .map(fact => `${quoteText(fact.label)}: ${quoteText(fact.value)}`),
+      t('costBreakdown'),
+      ...quote.lines.flatMap(line => [
+        `${feeLabel(line.id)}: ${format(line.amount)} ${quote.currency} (${usdText(line.amount)})`,
+        methodText(line), `${td('formula')}: ${formulaText(line)}`,
+      ]),
+      `${t('importTotal')}: ${format(quote.total!)} ${quote.currency} (${usdText(quote.total!)})`,
+      ...(quote.additionalCosts.length ? [t('additionalCostsTitle'), ...quote.additionalCosts.flatMap(line => [
+        `${feeLabel(line.id)}: ${format(line.amount)} ${quote.currency} (${usdText(line.amount)})`,
+        methodText(line), `${td('formula')}: ${formulaText(line)}`,
+      ])] : []),
+      ...quote.assumptions.map(key => ta(key)),
+    ];
+    const quotes = rangeResult?.minimum && rangeResult.maximum
+      ? [rangeCopy.minimum, ...describe(rangeResult.minimum.input, rangeResult.minimum.result),
+        rangeCopy.maximum, ...describe(rangeResult.maximum.input, rangeResult.maximum.result)]
+      : describe(normalized, result);
     const text = [
       `${siteConfig.name} · ${tc(country.code)}`,
       ...(scopeLabel ? [scopeLabel] : []),
-      tq('parametersTitle'),
-      ...quoteFacts.map((fact) => `${quoteText(fact.label)}: ${quoteText(fact.value)}`),
-      t('costBreakdown'),
-      ...lines.flatMap((line) => [
-        `${feeLabel(line.id)}: ${format(line.amount)} ${result.currency} (${usdText(line.amount)})`,
-        methodText(line),
-        `${td('formula')}: ${formulaText(line)}`,
-      ]),
-      `${t('importTotal')}: ${format(result.total)} ${result.currency} (${usdText(result.total)})`,
-      ...(result.additionalCosts.length
-        ? [
-            t('additionalCostsTitle'),
-            ...result.additionalCosts.flatMap((line) => [
-              `${feeLabel(line.id)}: ${format(line.amount)} ${result.currency} (${usdText(line.amount)})`,
-              methodText(line),
-              `${td('formula')}: ${formulaText(line)}`,
-            ]),
-          ]
-        : []),
-      ...result.assumptions.map((key) => ta(key)),
+      ...quotes,
       ...(manufactureNote ? [manufactureNote] : []),
       t('usdReferenceHint'),
       t('referenceNotice'),
@@ -675,7 +679,7 @@ export function CalculatorPage({
                   draggable={false}
                 />
                 <h2 id="result-title">{t('resultTitle')}</h2>
-                <ResultStamp input={normalized} result={result} />
+                {!rangeResult && <ResultStamp input={normalized} result={result} />}
               </div>
               <div className="destination-summary">
                 <span className="country-flag" aria-hidden="true">
@@ -694,7 +698,8 @@ export function CalculatorPage({
                 </div>
                 <span className="destination-code">{country.code}</span>
               </div>
-              {result.status === 'reference' && result.total !== null ? (
+              {rangeResult && <ManufactureRangeResult calculation={rangeResult} locale={locale as Locale} rates={activeRates} />}
+              {rangeResult && result.status === 'reference' ? null : result.status === 'reference' && result.total !== null ? (
                 <>
                   <div className="fee-details-toolbar">
                     <span>{t('costBreakdown')}</span>
@@ -814,7 +819,7 @@ export function CalculatorPage({
               </button>
               <span className="sr-only" role="status" aria-live="polite">
                 {result.total !== null
-                  ? `${t('importTotal')}: ${format(result.total)} ${result.currency}`
+                  ? `${t('importTotal')}: ${format(result.total)}${rangeResult?.maximum ? ` – ${format(rangeResult.maximum.result.total!)}` : ''} ${result.currency}`
                   : t('unavailable')}
               </span>
             </section>
@@ -841,12 +846,13 @@ export function CalculatorPage({
         <div>
           <span>{t('importTotal')}</span>
           <strong>
-            {result.total === null ? '—' : format(result.total)}{' '}
+            {result.total === null ? '—' : rangeResult?.maximum
+              ? `${format(result.total)} – ${format(rangeResult.maximum.result.total!)}` : format(result.total)}{' '}
             <small>{result.total !== null ? result.currency : ''}</small>
           </strong>
           {result.total !== null && (
             <small className="mobile-total-usd" data-testid="mobile-total-usd">
-              {usdText(result.total)}
+              {usdText(result.total)}{rangeResult?.maximum && ` – ${usdText(rangeResult.maximum.result.total!)}`}
             </small>
           )}
         </div>

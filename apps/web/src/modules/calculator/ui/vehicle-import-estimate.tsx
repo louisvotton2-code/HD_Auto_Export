@@ -12,7 +12,9 @@ import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
+import { calculateManufactureRange, isManufactureMonthRange } from '../application/manufacture-range';
 import { vehicleManufacturePrefill } from '../application/manufacture-estimate';
+import { manufactureRangeCopy } from '../application/manufacture-range-copy';
 import {
   createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput,
   vehicleEstimateMissingLabel, type VehicleEstimateDraft,
@@ -20,6 +22,7 @@ import {
 import { vehicleEstimateCopy } from '../application/vehicle-estimate-copy';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { FeeLine } from './fee-line';
+import { ManufactureRangeResult } from './manufacture-range-result';
 import styles from './vehicle-import-estimate.module.css';
 
 type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate' | 'customsDate'
@@ -51,6 +54,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const copy = vehicleEstimateCopy[locale];
   const prefix = useId();
   const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), initialDate, initialRates]);
+  const manufactureRange = useMemo(() => vehicleManufacturePrefill(vehicle, initialDate).range, [identity]);
   const [state, setState] = useState(() => ({
     identity,
     input: createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates),
@@ -64,16 +68,12 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const input = current ? state.input : createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates);
   const country = getCountryByCode(input.country)!;
   const active = ready && !disabled && current;
-  const manufactureEstimate = !current || state.manufactureEdited
-    ? undefined
-    : vehicleManufacturePrefill(vehicle, initialDate).estimate;
-  const manufactureNote = country.needsManufactureDate && manufactureEstimate
-    ? t(manufactureEstimate === 'model_year' ? 'modelYearEstimate' : 'manufactureYearEstimate', {
-        year: input.manufactureDate.slice(0, 4),
-      })
-    : undefined;
+  const sourceRange = current && !state.manufactureEdited && input.manufactureDate === ''
+    && isManufactureMonthRange(manufactureRange) ? manufactureRange : undefined;
+  const activeRange = country.needsManufactureDate ? sourceRange : undefined;
   const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
-  const result = useMemo(() => calculateImportEstimate(normalized), [normalized]);
+  const rangeResult = useMemo(() => activeRange ? calculateManufactureRange(normalized, activeRange) : null, [normalized, activeRange]);
+  const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
   const formatter = useMemo(() => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, {
     maximumFractionDigits: 2,
   }), [locale]);
@@ -155,7 +155,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const emptyOption = <option value="">{vehicleEstimateMissingLabel(locale)}</option>;
   const seed = active ? createVehicleEstimateFragment({
     version: 1, sourceId: vehicle.id, input, rates: initialRates,
-    ...(manufactureEstimate ? { manufactureEstimate } : {}),
+    ...(sourceRange ? { manufactureRange: sourceRange } : {}),
   }) : null;
   const toolHref = `/${locale}/calculator/${country.slug}/${seed ?? ''}`;
   const feeId = (line: CalculationLine, extra = false) => `${prefix}-${country.code}-${extra ? 'extra-' : ''}${line.id}`;
@@ -218,9 +218,9 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         && field('displacementCc', t('displacement'))}
       {country.needsPower && <>
         {field('powerHp', t(input.powertrain === 'bev' ? 'electricPower' : 'power'))}
-        {vehicle.facts.powerKw !== null && vehicle.facts.powerKw > 0 && <p className={styles.note}>{copy.convertedPower}</p>}
+        {typeof vehicle.facts.powerHp === 'number' && vehicle.facts.powerHp > 0 && <p className={styles.note}>{manufactureRangeCopy[locale].suppliedPower}</p>}
       </>}
-      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month', note: manufactureNote })}
+      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month' })}
       {country.code === 'UZ' && select('condition', t('condition'), <>{emptyOption}
         <option value="used">{t('usedVehicle')}</option><option value="new">{t('newVehicle')}</option></>)}
       {country.code === 'UZ' && <p className={styles.note}>{t('conditionHelp')}</p>}
@@ -247,7 +247,10 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         </div>
       </details>
     </fieldset>
-    {active && result.status === 'reference' && result.total !== null ? <section className={styles.result} data-testid="inline-estimate-result">
+    {active && rangeResult && result.status !== 'reference' && <ManufactureRangeResult calculation={rangeResult} locale={locale} rates={initialRates} />}
+    {active && rangeResult && result.status === 'reference' ? <section className={styles.result} data-testid="inline-estimate-result">
+      <ManufactureRangeResult calculation={rangeResult} locale={locale} rates={initialRates} />
+    </section> : active && result.status === 'reference' && result.total !== null ? <section className={styles.result} data-testid="inline-estimate-result">
       <div className={styles.toolbar}>
         <h3>{t('costBreakdown')}</h3>
         <button type="button" aria-expanded={allExpanded} aria-controls={allIds.join(' ')}
@@ -262,7 +265,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         <span data-testid="inline-estimate-usd">{usd(result.total)}</span>
         <p>{t('notLanded')}</p>
       </div>
-      {manufactureNote && <p className={styles.resultDateNote}>{manufactureNote}</p>}
       {result.additionalCosts.length > 0 && <div className={styles.additional}>
         <h3>{t('additionalCostsTitle')}</h3>
         {result.additionalCosts.map((line) => renderLine(line, true))}

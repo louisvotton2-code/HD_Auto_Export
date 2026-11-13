@@ -19,6 +19,9 @@ import {
   PublicMediaQuerySchema,
   PublicVehicleFiltersSchema,
   PublicVehicleListSchema,
+  PublicVehicleCardListSchema,
+  PublicVehicleInspectionResponseSchema,
+  PublicVehiclePriceHistoryResponseSchema,
   PublicVehicleResponseSchema,
   PublicVehicleSchema,
   PublicVehicleQuerySchema,
@@ -112,6 +115,7 @@ function vehicle(id, locale, overrides = {}) {
   const beta = index % 2 === 1;
   const facts = {
     ...base.facts,
+    powerHp: demo ? null : 150,
     make: { id: beta ? 'beta' : 'alpha', name: beta ? 'Beta Motors' : 'Alpha Motors' },
     model: { id: beta ? 'beta_model' : 'alpha_model', name: beta ? 'Beta Model' : 'Alpha Model' },
     powertrain: beta ? 'petrol' : 'bev',
@@ -219,6 +223,7 @@ const resetState = () => ({
   previewDelayMs: 0,
   previewSlowLocale: '',
   previewImageCount: 1,
+  estimateDateRange: false,
   segmentGalleryCount: null,
   segmentConfigurationCount: null,
   segmentFailure: 'none',
@@ -263,6 +268,10 @@ function segmentConfiguration(state, row, locale) {
   }));
 }
 function segmentSeed(state, row, locale) {
+  if (state.estimateDateRange && row.id === 'fixture_car_1') {
+    row.facts.manufacturedAt = null;
+    row.manufacture = { date: null, range: { earliest: { precision: 'month', value: '2020-11' }, latest: { precision: 'month', value: '2026-11' } }, source: 'supplier', basis: null };
+  }
   if (state.segmentGalleryCount !== null) {
     const images = segmentGallery(state, row, locale);
     row.images = images.slice(0, 30);
@@ -466,6 +475,7 @@ function queryMoney(row, q) {
   return q.priceView === 'usd' ? row.displayPrice?.money : row.price.money;
 }
 function queryMatches(row, q) {
+  if (q.exportStatus && q.exportStatus !== 'all' && (row.exportStatus ?? 'unknown') !== q.exportStatus) return false;
   const f = row.facts;
   if (!searchMatches(row, q.q)) return false;
   for (const key of ['make', 'model', 'trim', 'generation'])
@@ -563,7 +573,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
-    if (Object.keys(patch).some(key => ['segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+    if (Object.keys(patch).some(key => ['estimateDateRange', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
       'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
@@ -644,6 +654,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
+          estimateDateRange: (v) => typeof v === 'boolean',
           segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
           segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
           segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),
@@ -748,7 +759,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 202, {data:{queued:active && report.data.revision===1},meta:{requestId:'fixture-media-report'}});
       }
       if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
-      const segmentMatch = /^\/api\/v1\/vehicles\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})\/(gallery|configuration)$/.exec(url.pathname);
+      const segmentMatch = /^\/api\/v1\/vehicles\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})\/(gallery|configuration|inspection|price-history)$/.exec(url.pathname);
       let catalogQuery, filterQuery, mediaQuery, segmentQuery;
       let locale = 'ru';
       if (url.pathname.startsWith('/api/v1/')) {
@@ -895,14 +906,18 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           offset = cursor.offset;
         }
         const snapshot = { ...state };
-        const complete = kind === 'gallery' ? segmentGallery(snapshot, found, locale) : segmentConfiguration(snapshot, found, locale);
+        const complete = kind === 'gallery' ? segmentGallery(snapshot, found, locale)
+          : kind === 'configuration' ? segmentConfiguration(snapshot, found, locale)
+          : kind === 'inspection' ? snapshot.reportPresenceMode === 'known' ? [
+            { id: 'inspection-1', category: segmentDisplay('检查', locale, 'zh'), part: null, name: segmentDisplay('事故记录', locale, 'zh'), value: segmentDisplay('0', locale, 'zh'), outcome: 'ok' },
+          ] : [] : [{ id: 'history-1', at: '2026-10-01T00:00:00.000Z', money: { amount: '0.00', currency: 'CNY' }, kind: 'seller' }];
         if (offset > complete.length) return send(res, 400, error('INVALID_REQUEST'));
         const start = snapshot.segmentOverlap && offset > 0 ? offset - 1 : offset;
         const nextOffset = Math.min(complete.length, start + segmentQuery.limit);
         const items = complete.slice(start, nextOffset);
         const nextCursor = nextOffset < complete.length ? Buffer.from(JSON.stringify({ vehicleId, locale, kind, revision, offset: nextOffset })).toString('base64url') : null;
-        const schema = kind === 'gallery' ? PublicVehicleGalleryResponseSchema : PublicVehicleConfigurationResponseSchema;
-        const payload = schema.parse({ data: { vehicleId, locale, revision, total: complete.length, items, nextCursor }, meta: { requestId: `fixture-${kind}` } });
+        const schema = { gallery: PublicVehicleGalleryResponseSchema, configuration: PublicVehicleConfigurationResponseSchema, inspection: PublicVehicleInspectionResponseSchema, 'price-history': PublicVehiclePriceHistoryResponseSchema }[kind];
+        const payload = schema.parse({ data: { vehicleId, locale, revision, total: complete.length, items, nextCursor, ...(kind === 'inspection' ? { status: complete.length ? 'available' : 'no_report' } : {}) }, meta: { requestId: `fixture-${kind}` } });
         if (snapshot.segmentFailure === 'private_field') payload.data.internal = { vin: 'PRIVATE_VIN_SENTINEL', seller: 'PRIVATE_SELLER_SENTINEL', staff: 'PRIVATE_STAFF_SENTINEL', reportUrl: 'https://reports.example.invalid/private' };
         if (snapshot.segmentFailure === 'wrong_locale') payload.data.locale = locale === 'ru' ? 'en' : 'ru';
         if (snapshot.segmentFailure === 'wrong_vehicle') payload.data.vehicleId = 'fixture_wrong_vehicle';
@@ -946,9 +961,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(
           res,
           200,
-          PublicVehicleListSchema.parse({
+          (catalogQuery.projection === 'card' ? PublicVehicleCardListSchema : PublicVehicleListSchema).parse({
             data: {
-              items: filtered.slice((page - 1) * pageSize, page * pageSize),
+              items: filtered.slice((page - 1) * pageSize, page * pageSize).map(row => {
+                if (catalogQuery.projection !== 'card') return row;
+                const { external: _external, configuration: _configuration, report: _report,
+                  mediaTotal: _mediaTotal, configurationTotal: _configurationTotal, ...card } = row;
+                return { ...card, content: { title: row.content.title }, images: row.images.slice(0, 1) };
+              }),
               page,
               pageSize,
               hasMore: page * pageSize < filtered.length,

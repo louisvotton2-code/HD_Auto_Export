@@ -4,6 +4,7 @@ import type { VehicleEstimateDraft } from './vehicle-estimate';
 import { EXCHANGE_CURRENCIES, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { parseCustomsDate, parseManufactureMonth } from '../core/dates';
 import { readManufactureEstimate, type ManufactureEstimate } from './manufacture-estimate';
+import { isManufactureMonthRange, type ManufactureMonthRange } from './manufacture-range';
 
 const key = 'hd-estimate';
 const maxLength = 6000;
@@ -19,7 +20,9 @@ export type VehicleEstimateSeed = {
   sourceId: string;
   input: VehicleEstimateDraft;
   rates: ExchangeRateSnapshot;
+  /** @deprecated Old links are sanitized; new fragments carry an explicit month or a bounded range. */
   manufactureEstimate?: ManufactureEstimate;
+  manufactureRange?: ManufactureMonthRange;
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -63,7 +66,8 @@ export function readStoredEstimateRates(raw: string | null, country: string): Ex
 export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | null {
   if (!record(value)) return null;
   const hasEstimate = Object.hasOwn(value, 'manufactureEstimate');
-  if (!exactKeys(value, hasEstimate ? [...seedKeys, 'manufactureEstimate'] : seedKeys)
+  const hasRange = Object.hasOwn(value, 'manufactureRange');
+  if (!exactKeys(value, [...seedKeys, ...(hasEstimate ? ['manufactureEstimate'] : []), ...(hasRange ? ['manufactureRange'] : [])])
     || value.version !== 1 || typeof value.sourceId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value.sourceId)
     || !record(value.input) || !exactKeys(value.input, inputKeys)
@@ -83,13 +87,20 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
   if ((input.manufactureDate !== '' && !parseManufactureMonth(input.manufactureDate as string))
     || !parseCustomsDate(input.customsDate as string)) return null;
   if (hasEstimate && !readManufactureEstimate(value.manufactureEstimate, input.manufactureDate)) return null;
+  if (hasRange && (hasEstimate || input.manufactureDate !== '' || !isManufactureMonthRange(value.manufactureRange))) return null;
   if (!parseEstimateRates(value.rates)) return null;
+  // Old deep links carried a guessed January. Keep the known draft, but not that guessed date.
+  if (hasEstimate) {
+    const { manufactureEstimate: _legacy, ...next } = value;
+    return { ...next, input: { ...input, manufactureDate: '' } } as unknown as VehicleEstimateSeed;
+  }
   return value as unknown as VehicleEstimateSeed;
 }
 
 export function createVehicleEstimateFragment(seed: VehicleEstimateSeed): string | null {
-  if (!parseVehicleEstimateSeed(seed)) return null;
-  const fragment = `#${key}=${encodeURIComponent(JSON.stringify(seed))}`;
+  const parsed = parseVehicleEstimateSeed(seed);
+  if (!parsed) return null;
+  const fragment = `#${key}=${encodeURIComponent(JSON.stringify(parsed))}`;
   return fragment.length <= maxLength ? fragment : null;
 }
 

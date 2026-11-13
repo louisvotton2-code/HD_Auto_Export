@@ -1,3 +1,4 @@
+import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import type { Money, PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { withImageAltText } from './vehicle-image-text';
@@ -22,87 +23,67 @@ export function formatVehicleMoney(money: Money, locale: Locale): string {
   return money.currency === 'CNY' ? `¥ ${amount}` : `${amount} ${money.currency}`;
 }
 
-export function formatPublicVehiclePrice(vehicle: PublicVehicle, locale: Locale): string {
+export function formatPublicVehiclePrice(vehicle: PublicVehicleSummary, locale: Locale): string {
   const { money } = vehicle.price;
   return money ? formatVehicleMoney(money, locale) : publicVehicleMessages(locale).priceLabels.on_request;
 }
 
-export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicle, locale: Locale) {
+export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicleSummary, locale: Locale) {
   const quote = publicUsdQuote(vehicle);
   if (!quote?.conversion) return null;
   return `≈ ${new Intl.NumberFormat(locale).format(roundedUsd(quote.money.amount))} USD`;
 }
 
-export function publicAvailabilityLabel(vehicle: PublicVehicle, locale: Locale): string {
+export function publicAvailabilityLabel(vehicle: PublicVehicleSummary, locale: Locale): string {
   // An unknown state has no public badge; it is never converted into an available claim.
   return publicVehicleMessages(locale).availability[vehicle.availability];
 }
 
-export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia | null {
+export function publicVehicleCover(vehicle: PublicVehicleSummary): PublicMedia | null {
   const cover =
     vehicle.images.find((image) => image.isCover) ??
     [...vehicle.images].sort((a, b) => a.sortOrder - b.sortOrder)[0];
   return cover ? { ...withImageAltText(cover, vehicle.display?.mediaAlt), url: publicMediaUrl(cover.url) } : null;
 }
 
-/** Unknown facts remain explicit; model year never substitutes for manufacturing date. */
+/** Hide unknown facts; legitimate zero values remain visible and power uses direct horsepower only. */
 export function publicVehicleFacts(
   vehicle: {
     facts: PublicVehicle['facts'];
-    display?: {
-      city: { contentLocale: string | null };
-      location: { contentLocale: string | null };
-    };
+    manufacture?: PublicVehicle['manufacture'];
+    display?: { city: { contentLocale: string | null }; location: { contentLocale: string | null } };
   },
   locale: Locale,
 ): { label: string; value: string; lang?: string }[] {
-  const t = publicVehicleMessages(locale);
-  const f = vehicle.facts;
+  const t = publicVehicleMessages(locale), f = vehicle.facts, c = catalogFilterCopy[locale];
   const number = new Intl.NumberFormat(locale);
+  const rows: { label: string; value: string; lang?: string }[] = [];
+  const add = (label: string, value: string | number | null | undefined, lang?: string) => {
+    if (value === null || value === undefined || String(value).trim() === '') return;
+    rows.push({ label, value: String(value), ...(lang ? { lang } : {}) });
+  };
+  const range = vehicle.manufacture?.range;
+  add(t.yearLabel, f.modelYear);
+  add(t.manufactureLabel, vehicle.manufacture?.date?.value ??
+    (range ? `${range.earliest.value} – ${range.latest.value}` : f.manufacturedAt?.value));
+  add(t.registrationLabel, f.firstRegistration?.value);
+  add(t.mileageLabel, f.mileageKm === null ? null : `${number.format(f.mileageKm)} ${t.km}`);
+  if (f.powertrain !== 'unknown') add(t.powertrain, t.powertrains[f.powertrain]);
+  add(c.trim, f.trim?.name);
+  add(c.generation, f.generation?.name);
+  if (f.drivetrain) add(c.drive, c.drives[f.drivetrain]);
+  add(t.engineLabel, f.engineCc === null ? null : `${number.format(f.engineCc)} cm³`);
+  const hp = { zh: '马力', en: 'hp', ru: 'л. с.' }[locale];
+  add(t.powerLabel, f.powerHp == null ? null : `${number.format(f.powerHp)} ${hp}`);
+  if (f.body) add(t.bodyLabel, t.bodies[f.body]);
+  if (f.transmission) add(t.transmissionLabel, t.transmissions[f.transmission]);
   const place = f.location?.displayName || f.location?.city;
   const country = f.location?.country;
-  const location = place || (country && (
-    new Intl.DisplayNames(locale, { type: 'region', fallback: 'none' }).of(country) ?? country
-  ));
-  const locationLanguage = f.location?.displayName
-    ? vehicle.display?.location.contentLocale
+  const location = place || (country ? new Intl.DisplayNames(locale, { type: 'region', fallback: 'none' }).of(country) ?? country : null);
+  const lang = f.location?.displayName ? vehicle.display?.location.contentLocale
     : f.location?.city ? vehicle.display?.city.contentLocale : locale;
-  return [
-    { label: t.yearLabel, value: f.modelYear === null ? t.unknown : String(f.modelYear) },
-    { label: t.manufactureLabel, value: f.manufacturedAt?.value ?? t.unknown },
-    { label: t.registrationLabel, value: f.firstRegistration?.value ?? t.unknown },
-    {
-      label: t.mileageLabel,
-      value: f.mileageKm === null ? t.unknown : `${number.format(f.mileageKm)} ${t.km}`,
-    },
-    { label: t.powertrain, value: t.powertrains[f.powertrain] },
-    ...(f.trim ? [{ label: catalogFilterCopy[locale].trim, value: f.trim.name }] : []),
-    ...(f.generation
-      ? [{ label: catalogFilterCopy[locale].generation, value: f.generation.name }]
-      : []),
-    ...(f.drivetrain
-      ? [
-          {
-            label: catalogFilterCopy[locale].drive,
-            value: catalogFilterCopy[locale].drives[f.drivetrain],
-          },
-        ]
-      : []),
-    {
-      label: t.engineLabel,
-      value: f.engineCc === null ? t.unknown : `${number.format(f.engineCc)} cm³`,
-    },
-    {
-      label: t.powerLabel,
-      value: f.powerKw === null ? t.unknown : `${number.format(f.powerKw)} kW`,
-    },
-    { label: t.bodyLabel, value: f.body ? t.bodies[f.body] : t.unknown },
-    {
-      label: t.transmissionLabel,
-      value: f.transmission ? t.transmissions[f.transmission] : t.unknown,
-    },
-    { label: t.locationLabel, value: location || t.unknown, lang: locationLanguage ?? undefined },
-  ];
+  add(t.locationLabel, location, lang ?? undefined);
+  return rows;
 }
 
 /** Only supported, validated query fields are emitted in public navigation links. */

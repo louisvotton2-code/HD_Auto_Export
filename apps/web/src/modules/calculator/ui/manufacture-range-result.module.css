@@ -1,0 +1,19 @@
+.range{display:grid;gap:12px;min-width:0;color:#c5e8d1;background:#172c22;border:1px solid #4b8865;border-radius:12px;padding:14px;margin:14px 0;font-size:12px;line-height:1.6}
+.note{margin:0;font-size:11px;overflow-wrap:anywhere}
+.total{display:grid;gap:4px;padding:14px;border:1px solid #619d7873;border-radius:10px;background:#224334}
+.total strong{color:#c9ffda;font-size:22px;overflow-wrap:anywhere}
+.scenario{min-width:0;border:1px solid #619d7855;border-radius:8px;padding:10px}
+.scenario>summary{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:7px;cursor:pointer;color:#d8f1e0;overflow-wrap:anywhere}
+.scenario>summary:focus-visible{outline:2px solid #b67749;outline-offset:4px}
+.scenario small{font-size:11px}
+.expandAll{margin:8px 0;background:none;border:0;padding:4px 0;color:#a8ddb9;font:inherit;cursor:pointer}
+.expandAll:focus-visible{outline:2px solid #b67749;outline-offset:3px}
+.scenario h4{font-size:12px;margin:14px 0 5px}
+.scenario :global(.fee-detail-toggle){font-size:12px;color:inherit}
+.scenario :global(.fee-values strong){font-size:12px}
+.scenario :global(.fee-detail-heading){min-width:0;overflow-wrap:anywhere}
+.scenario :global(.fee-method-panel){color:inherit}
+.scenario :global(.fee-line){min-width:0}
+.range .scenario :global(.fee-detail-heading),.range .scenario :global(.fee-values strong),.range .scenario :global(.fee-method-description),.range .scenario :global(.fee-formula){color:#d0e9d9}
+.range .scenario :global(.fee-usd),.range .scenario :global(.fee-detail-hint),.range .scenario :global(.fee-values small){color:#aac8b5}
+.notice{border:1px solid #c9874a88;padding:12px;border-radius:8px;color:#ffd8a3;background:#2d2015}

@@ -1,5 +1,6 @@
 'use client';
-import type { PublicVehicle } from '@hd/contracts/public';
+import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
+import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import { usePublicFreshness } from '../application/use-public-resource';
 import type { Locale } from '@/i18n/routing';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
@@ -15,7 +16,7 @@ export function PublicVehicleContacts({
   variant = 'card',
   purpose = 'vehicle',
 }: {
-  vehicle: PublicVehicle;
+  vehicle: PublicVehicleSummary;
   locale: Locale;
   variant?: 'card' | 'detail';
   purpose?: 'vehicle' | 'inspection';
@@ -45,7 +46,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${telegramLabel} — ${vehicle.stockCode}`}
+        aria-label={`${telegramLabel} — ${publicVehicleReference(vehicle).code}`}
       >
         <SocialIcon platform="telegram" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>Telegram</span>
@@ -57,7 +58,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${whatsappLabel} — ${vehicle.stockCode}`}
+        aria-label={`${whatsappLabel} — ${publicVehicleReference(vehicle).code}`}
       >
         <SocialIcon platform="whatsapp" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>WhatsApp</span>

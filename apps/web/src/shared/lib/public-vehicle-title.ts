@@ -1,11 +1,11 @@
-import type { PublicVehicle } from '@hd/contracts/public';
+import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import type { Locale } from '@/i18n/routing';
 
 const hasChineseText = /\p{Script=Han}/u;
 const genericTitle = { zh: '车辆信息', en: 'Vehicle details', ru: 'Информация об автомобиле' };
 
 /** Imported supplied titles retain their actual source language; catalog placeholders use safe facts. */
-export function publicVehicleTitle(vehicle: PublicVehicle, locale: Locale) {
+export function publicVehicleTitle(vehicle: PublicVehicleSummary, locale: Locale) {
   const original = vehicle.content.title;
   const missingTitle = vehicle.source.kind === 'external' && original.kind === 'catalog';
   const missingChinese = vehicle.source.kind !== 'external' && locale === 'zh' && !/^zh(?:-|$)/i.test(original.contentLocale);
@@ -15,7 +15,7 @@ export function publicVehicleTitle(vehicle: PublicVehicle, locale: Locale) {
   const { modelYear } = vehicle.facts;
   const factName = (field: 'make' | 'model' | 'trim') => {
     // The staff-published projection inserts a label for missing translations.
-    if (!vehicle.external && vehicle.display?.[field].status === 'missing') return '';
+    if (vehicle.source.kind !== 'external' && vehicle.display?.[field].status === 'missing') return '';
     return vehicle.facts[field]?.name.trim() ?? '';
   };
   const brand = factName('make');

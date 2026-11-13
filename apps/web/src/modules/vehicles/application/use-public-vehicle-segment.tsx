@@ -103,6 +103,7 @@ export function usePublicVehicleSegment<K extends VehicleSegmentKind>(kind: K, v
   const page = valid ? state.page : null;
   return {
     items: (page?.items ?? []) as VehicleSegmentPages[K]['items'],
+    inspectionStatus: page && 'status' in page ? (page as VehicleSegmentPages['inspection']).status : null,
     total: page?.total ?? null, started: valid && state.started,
     phase: valid ? state.phase : 'idle' as Phase,
     hasMore: page ? page.nextCursor !== null : true,

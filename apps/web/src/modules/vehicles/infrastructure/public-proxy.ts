@@ -21,6 +21,7 @@ import {
   legacyListSchema,
   localizedHomeSchema,
   localizedListSchema,
+  localizedCardListSchema,
 } from '../localized-projection';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -67,7 +68,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   const path = parts.join('/');
   const isMedia = /^media\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
   const isDetail = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
-  const isSegment = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/(gallery|configuration)$/.test(path);
+  const isSegment = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/(gallery|configuration|inspection|price-history)$/.test(path);
   if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail && !isSegment)
     return failure(404);
   const params = new URL(request.url).searchParams;
@@ -76,7 +77,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
     : path === 'vehicles'
       ? catalogQueryKeys
       : path === 'vehicle-filters'
-        ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize')
+        ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize' && key !== 'projection')
         : ['locale', 'view', 'priceView'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
@@ -158,7 +159,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
     const schema = path === 'home/vehicles'
       ? (localized ? localizedHomeSchema(locale, priceView) : legacyHomeSchema)
       : path === 'vehicles'
-        ? (localized ? localizedListSchema(locale, priceView) : legacyListSchema)
+        ? (query.projection === 'card' ? localizedCardListSchema(locale, priceView) : localized ? localizedListSchema(locale, priceView) : legacyListSchema)
         : PublicVehicleFiltersSchema;
     const value = await readPublicJson(
       upstream,

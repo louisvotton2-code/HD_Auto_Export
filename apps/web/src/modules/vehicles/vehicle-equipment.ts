@@ -93,7 +93,11 @@ export function groupVehicleEquipment(entries: readonly Entry[], locale: Locale)
   for (const entry of entries) {
     if (transfers !== undefined && isTransferEntry(entry)) continue;
     const name = entry.name.text.trim();
+    const value = entry.value.text.trim();
+    if (!name || !value || /^(?:null|undefined)$/i.test(value)) continue;
     const known = Object.hasOwn(knownFields, name) ? knownFields[name] : undefined;
+    // Unknown machine field identifiers remain in staff source data, never as unnamed public numbers.
+    if (!known && /^[a-z][A-Za-z0-9_.-]*[A-Z_.][A-Za-z0-9_.-]*$/.test(name)) continue;
     const group = known?.[0] ?? groupPatterns.find(([, patterns]) =>
       patterns.some((pattern) => pattern.test(name)),
     )?.[0] ?? 'other';

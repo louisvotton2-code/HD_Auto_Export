@@ -167,6 +167,18 @@
 .tile > bdi {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.referenceSource {
+  display: block;
+  margin-top: 6px;
+  color: #a89a8d;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.vinCode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .03em;
+}
 .mileageTile {
   border-color: transparent;
   background: linear-gradient(135deg, #9d5e34, #794323);

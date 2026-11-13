@@ -1,0 +1,23 @@
+# FE-EXT-07 展示与查询
+
+日期：2026-11-14（Asia/Shanghai）。状态：源码实现，待服务器受影响检查与PM指定唯一独立审查。
+
+## 范围与版本
+
+用户确认的EXT07执行方案；远端main起点`b19f9c76578ec8a5bebfb1c561c2fb30de2b2951`，分支`codex/web-ext07`，独立工作区`docs/private/fe-ext07-worktree`。根历史脏树未改。采用BE冻结合同`096c8aca96c05f9a45d9f29ef2644f40a7ad0ff5`（本地`7b6a0d0`），不修改contracts／锁／共享根脚本。第一次fetch已成功核到该基线；并发返回前多发的一次独立SSH重试因host key verification失败，未绕过验证、未改变远端。hooks检查通过。
+
+## 已实施
+
+轻量列表与严格schema，原详情／首页／收藏兼容；短询价编号和来源、稳定旧链接；出口条件／服务端排序；合法VIN／级别／出口事实；独立有界报告四状态及历史原币时间，保留原文语言，复用撤车／版本／429生命周期。配置只渲染已有seed，隐藏空值，保留0／false，删除完整配置按钮且不自动读取。未知机器字段不以无名数字展示。
+
+日期精确月优先，否则逐月覆盖来源范围（最多2400月），任何月份不完整不出部分报价；最低／最高整套场景保留费用、公式及另计项。直接hp，不从kW换算；后端USD优先，缺投影保留已知原币。范围保留到详情／完整页／深链／草稿／复制／手机合计，手动精确月切单情形，移除旧年款一月推断。
+
+即时局部busy保留车卡布局、链接pending固定空间、校验后Suspense、详情归顶／错误重试／减少动效；无祖先loading软404风险，库存自动预取预算0。具体维护入口见[首页与车源](../../开发/模块/首页与车源.md#fe-ext-07-展示与查询)。
+
+## 验证与交接
+
+本机只执行hooks核验、源码检查与`git diff --check`；未运行应用测试、类型、构建、浏览器或压测，未安装依赖、未启动服务。未将相邻旧结果算作本轮通过。三位实现子Agent分离计算器、导航、详情文件，未另建Reviewer；唯一独审由PM统一安排。
+
+OPS服务器针对准确提交串行执行既有门禁；以下是受影响检查定位，不要求先定向跑一遍后再重复完整门禁：官网类型／边界，calculator的manufacture-range、vehicle-estimate、estimate-seed、draft、inline SSR，vehicles的ext07-public、public-query、public-segments、localized-projection、public-presentation、equipment及公共contact相邻单元；Linux官网build；浏览器`catalog-navigation.spec.ts`、`vehicle-records.spec.ts`、`vehicle-segments.spec.ts`和`vehicle-estimate.spec.ts`（direct hp／range／RU深链及两列断点）。配置／报告既有相关断言已同步迁移，保留完整gallery和private preview保护。
+
+完成源码SHA由共享`docs/private/pm-ext07/FE-handoff.md`登记；服务器真实结果与失败修正追加本记录，不新建重复证据包。独审／联合验收／PR／CI／部署／全量同步由PM／OPS统一安排，当前均未在本前端交付中记为通过或已完成。

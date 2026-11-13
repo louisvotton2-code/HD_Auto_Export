@@ -31,8 +31,8 @@ describe('detail calculator server enhancement boundary', () => {
     expect(html).not.toContain('#hd-estimate=');
     expect(html).not.toContain('data-testid="inline-estimate-total"');
     expect(html).toMatch(/name="powertrain"[^>]*><option value="" selected="">/);
-    expect(html).toMatch(/aria-describedby="[^"]*-manufactureDate-note" name="manufactureDate" value="2024-01"/);
-    expect(html).toContain(messages[locale].Calculator.manufactureYearEstimate.replace('{year}', '2024'));
+    expect(html).toMatch(/name="manufactureDate" value=""/);
+    expect(html).not.toContain(messages[locale].Calculator.manufactureYearEstimate.replace('{year}', '2024'));
     expect(html).toMatch(/<fieldset[^>]*disabled=""/);
     expect(html).toContain('name="price"');
     expect(html).toContain('value="23500.00"');

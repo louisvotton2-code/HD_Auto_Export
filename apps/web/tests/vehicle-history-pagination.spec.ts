@@ -7,9 +7,9 @@ test.beforeEach(async ({ request }) => { await resetPublicFixture(request); });
 test.afterEach(async ({ request }) => { await resetPublicFixture(request); });
 
 const copy = {
-  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测信息', inspect: '查看检测项目', no: '无' },
-  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection details', inspect: 'View inspection details', no: 'No' },
-  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Данные осмотра автомобиля', inspect: 'Посмотреть результаты осмотра', no: 'Нет' },
+  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测报告', inspect: '查看检测报告', no: '无' },
+  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection report', inspect: 'View inspection report', no: 'No' },
+  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Отчёт об осмотре автомобиля', inspect: 'Посмотреть отчёт об осмотре', no: 'Нет' },
 };
 const kinds = ['accidents', 'transfers', 'owners', 'plateChanges', 'theft', 'flood', 'waterDamage', 'fire', 'totalLoss'];
 const filteredQuery = new URLSearchParams({
@@ -22,7 +22,7 @@ async function ids(cards: Locator) {
 }
 
 for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const) {
-  test(`${locale}: explicit history retains zero and negative facts while unverified reports stay unlinked at ${width}px`, async ({ page, request }) => {
+  test(`${locale}: explicit history retains zero and negative facts while report text uses its bounded public section at ${width}px`, async ({ page, request }) => {
     await page.setViewportSize({ width, height: 1000 });
     await setPublicFixtureState(request, { importedPublished: true, historyScenario: 'complete' });
     const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
@@ -44,7 +44,7 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     const inspection = main.getByRole('region', { name: copy[locale].inspection, exact: true });
     await expect(inspection).toBeVisible();
     const inspectLink = main.getByRole('link', { name: copy[locale].inspect, exact: true });
-    await expect(inspectLink).toHaveAttribute('href', `#vehicle-report-${externalFixtureId(1)}`);
+    await expect(inspectLink).toHaveAttribute('href', `#vehicle-public-inspection-${externalFixtureId(1)}`);
     await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });
@@ -52,7 +52,7 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
 
 for (const scenario of ['empty', 'conflict'] as const) {
   test(`${scenario}: dates, unknown values and contradictory history do not create a history card`, async ({ page, request }) => {
-    await setPublicFixtureState(request, { importedPublished: true, historyScenario: scenario });
+    await setPublicFixtureState(request, { importedPublished: true, historyScenario: scenario, reportPresenceMode: 'known' });
     await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
     const id = externalFixtureId(1);
     const response = await request.get(`/api/v1/vehicles/${id}/?locale=en&view=localized`);
@@ -65,8 +65,10 @@ for (const scenario of ['empty', 'conflict'] as const) {
     await expect(page.getByRole('region', { name: copy.en.inspection, exact: true })).toBeVisible();
     await expect(page.locator('main a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
     if (scenario === 'empty') {
-      await expect(page.getByRole('region', { name: copy.en.inspection, exact: true })).toContainText('0 / 24');
-      await expect(page.getByRole('region', { name: copy.en.inspection, exact: true })).toContainText('0 / 18');
+      const report = page.locator('[data-public-vehicle-inspection]');
+      await report.getByRole('button', { name: copy.en.inspect, exact: true }).click();
+      await expect(report.locator('[data-public-inspection-item] dd > span[lang="zh"]')).toHaveText('0');
+      await expect(page.locator('main [data-vehicle-history]')).toHaveCount(0);
     }
   });
 }

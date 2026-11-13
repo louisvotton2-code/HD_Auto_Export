@@ -8,11 +8,11 @@ import styles from './public-detail.module.css';
 
 export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: PublicVehicle; locale: Locale }) {
   if (!vehicle.external) return null;
-  const { detail, issues } = vehicle.external;
+  const { issues } = vehicle.external;
   const copy = externalDetailCopy[locale];
   const t = publicVehicleMessages(locale);
   const filters = catalogFilterCopy[locale];
-  const labels: Record<Exclude<ExternalIssue['field'], 'relatedListingUrls'>, string> = {
+  const labels: Partial<Record<ExternalIssue['field'], string>> = {
     make: t.make,
     model: t.model,
     trim: filters.trim,
@@ -38,8 +38,7 @@ export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: Publi
   };
   const uncertainFields = [...new Set(issues
     .filter(({ code }) => code === 'conflict' || code === 'invalid')
-    .map(({ field }) => field)
-    .filter((field) => field !== 'relatedListingUrls'))];
+    .flatMap(({ field }) => labels[field] ? [labels[field]!] : []))];
 
   return (
     <>
@@ -47,7 +46,7 @@ export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: Publi
         <section className={styles.card} aria-label={copy.needsConfirmation}>
           <h2 className={styles.cardHeading}>{copy.needsConfirmation}</h2>
           <ul className={styles.externalIssues}>
-            {uncertainFields.map((field) => <li key={field}>{labels[field]}</li>)}
+            {uncertainFields.map((label) => <li key={label}>{label}</li>)}
           </ul>
         </section>
       )}

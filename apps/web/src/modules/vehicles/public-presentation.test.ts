@@ -65,8 +65,8 @@ describe('public vehicle presentation', () => {
     const t = publicVehicleMessages('en');
     const facts = publicVehicleFacts(vehicle, 'en');
     expect(facts.find((fact) => fact.label === t.yearLabel)?.value).toBe('2024');
-    expect(facts.find((fact) => fact.label === t.manufactureLabel)?.value).toBe(t.unknown);
-    expect(facts.find((fact) => fact.label === t.mileageLabel)?.value).toBe(t.unknown);
+    expect(facts.find((fact) => fact.label === t.manufactureLabel)).toBeUndefined();
+    expect(facts.find((fact) => fact.label === t.mileageLabel)).toBeUndefined();
     vehicle.facts.mileageKm = 0;
     expect(
       publicVehicleFacts(vehicle, 'en').find((fact) => fact.label === t.mileageLabel)?.value,

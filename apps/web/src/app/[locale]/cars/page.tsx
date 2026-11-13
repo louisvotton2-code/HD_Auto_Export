@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
+import type { PublicVehicleQuery } from '@hd/contracts/public';
+import { Suspense } from 'react';
 import { connection } from 'next/server';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
 import { notFound } from 'next/navigation';
-import { routing } from '@/i18n/routing';
-import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
+import { routing, type Locale } from '@/i18n/routing';
+import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages, VehicleRouteLoading } from '@/modules/vehicles';
 import {
   getPublicCatalog,
   getPublicFilters,
@@ -36,6 +38,14 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!request) notFound();
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
+  return (
+    <Suspense fallback={<VehicleRouteLoading locale={locale} kind="catalog" />}>
+      <CatalogContents locale={locale} query={query} />
+    </Suspense>
+  );
+}
+
+async function CatalogContents({ locale, query }: { locale: Locale; query: PublicVehicleQuery }) {
   const [result, filters] = await Promise.allSettled([
     getPublicCatalog(query),
     getPublicFilters(locale, query),

@@ -1,4 +1,4 @@
-import type { PublicVehicle } from '@hd/contracts/public';
+import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import type { Locale } from '@/i18n/routing';
 import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import styles from './vehicle-rate-attribution.module.css';
@@ -14,7 +14,7 @@ export function VehicleRateAttribution({
   locale,
   className,
 }: {
-  vehicles: readonly PublicVehicle[];
+  vehicles: readonly PublicVehicleSummary[];
   locale: Locale;
   className?: string;
 }) {
