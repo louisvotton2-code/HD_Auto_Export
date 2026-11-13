@@ -76,14 +76,14 @@ def stream_size(argv, timeout=600, maximum=2*1024**3):
 
 def project(e, probe, *, used, total, media, controls, daily, raw):
     n=e['distinctProcessed']; target=e['targetRows']
-    if not e.get('sampleEvidenceSufficient') or n<=0 or target<n: raise ValueError('Insufficient sample')
+    if not e.get('sampleEvidenceSufficient') or n<=0 or target<=0: raise ValueError('Insufficient sample')
     for value in (used,total,media,controls,daily,raw,n,target,e['businessBytes'],e['sqlStagingBytes'],e['archiveDirectoryBytes'],e['walBytes']):
         if type(value) is not int or value<0: raise ValueError('Invalid byte measurement')
     business=max(e['businessBytes'],math.ceil(e['projectedBytesPerDetail']*target))
-    history=math.ceil(raw*target/n)
+    history=math.ceil(raw*max(n,target)/n)
     stage=e['sqlStagingBytes']; csv=e['archiveDirectoryBytes']; wal=max(e['walBytes'],2*1024**3)
     # Archive directory is conservatively all fixed CSV, never scaled by details.
-    full_dump=math.ceil((probe['businessDumpBytes']+probe['rawDumpBytes'])*target/probe['processedRows'])
+    full_dump=math.ceil((probe['businessDumpBytes']+probe['rawDumpBytes'])*max(n,target,probe['processedRows'])/probe['processedRows'])
     point=full_dump+3*stage+3*csv+media+controls
     protected=max(0,used-e['businessBytes']-stage-csv-media-e['walBytes']-daily)
     recovery=math.ceil(point*73/10)

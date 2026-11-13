@@ -14,6 +14,13 @@ class Peak(unittest.TestCase):
     def test_history_and_compressed_backup_separate(self):
         r=self.calculate(self.data());self.assertEqual(r['components']['historyBytes'],100000000)
         self.assertEqual(r['components']['recoveryPeakBytes'],898637300)
+    def test_shrinking_catalog_never_shrinks_retained_data(self):
+        e=self.data();e['targetRows']=5000
+        r=self.calculate(e)
+        self.assertGreaterEqual(r['components']['businessBytes'],e['businessBytes'])
+        self.assertEqual(r['components']['historyBytes'],2000000)
+        self.assertEqual(r['components']['recoveryPointBytes'],64301000)
+        self.assertGreaterEqual(r['projectedPeakBytes'],r['currentUsedBytes'])
     def test_incomplete_fails_closed(self):
         e=self.data();e['sampleEvidenceSufficient']=False
         with self.assertRaises(ValueError):self.calculate(e)
