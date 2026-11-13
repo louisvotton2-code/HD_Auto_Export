@@ -1,0 +1,11 @@
+[Unit]
+Description=HD Auto minute capacity decision
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Unit=hd-auto-ext07-capacity.service
+
+[Install]
+WantedBy=timers.target

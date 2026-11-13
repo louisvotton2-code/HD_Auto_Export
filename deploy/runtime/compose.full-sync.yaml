@@ -27,11 +27,17 @@ services:
       TRANSLATION_PROVIDER: disabled
       CHINACARAPI_KEY_FILE: /run/secrets/chinacarapi_key
       FULL_SYNC_ARCHIVE_ROOT: /private/full-sync
+      FULL_SYNC_CAPACITY_DECISION_FILE: /private/capacity/decision.json
       FULL_SYNC_CAPACITY_APPROVED_BYTES: ${FULL_SYNC_CAPACITY_APPROVED_BYTES:-0}
     volumes:
       - type: bind
         source: ${FULL_SYNC_DATA_ROOT:?use a dedicated directory on the mounted data disk}
         target: /private/full-sync
+        bind: {create_host_path: false}
+      - type: bind
+        source: /srv/hd-auto/data/full-sync-capacity
+        target: /private/capacity
+        read_only: true
         bind: {create_host_path: false}
     secrets:
       - {source: release_app_db_password, target: app_db_password}
