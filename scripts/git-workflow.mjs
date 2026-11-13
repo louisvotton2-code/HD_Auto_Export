@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { verificationPlan } from './verification-plan.mjs';
 
 const ownPath = fileURLToPath(import.meta.url);
 const version = 1;
@@ -66,15 +67,46 @@ function changedFiles(repo, base, head) {
   return git(repo, ['diff', '--name-only', '--no-renames', '-z', base, head]).stdout.split('\0').filter(Boolean);
 }
 
-function planFor(repo, base, head) {
+export function planFor(repo, base, head, { full = false } = {}) {
   const files = changedFiles(repo, base, head);
-  const mode = files.length > 0 && files.every((name) => name.endsWith('.md')) ? 'docs' : 'web';
-  return {
-    mode,
-    commands: mode === 'docs'
-      ? [['git', 'diff', '--check', base, head], ['internal:markdown-links-and-fences']]
-      : [['pnpm', 'check'], ['pnpm', 'build'], ['pnpm', 'test:e2e']],
+  // Read the actual pushed commit, including non-HEAD refs; never trust an uncommitted policy.
+  const readStage = (sha) => {
+    const result = git(repo, ['show', `${sha}:.github/verification-policy.json`], true);
+    try { return JSON.parse(result.stdout).stage; } catch { return 'production'; }
   };
+  const stage = [readStage(base), readStage(head)].every((value) => value === 'development')
+    ? 'development' : 'production';
+  const plan = verificationPlan(files, { stage, full });
+  return plan.mode === 'docs'
+    ? { mode: 'docs', commands: [['git', 'diff', '--check', base, head], ['internal:markdown-links-and-fences']] }
+    : plan;
+}
+
+/** CI uses the same selection as the local gate, without generating local review receipts. */
+export async function verifyCI(cwd, { base, full, runner = runCommand } = {}) {
+  if (!['true', 'false'].includes(full)) fail('CI --full must be true or false.');
+  const info = repository(cwd);
+  const head = headOf(info.root);
+  if (!oidPattern.test(base ?? '')) fail('CI base must be a full commit SHA.');
+  git(info.root, ['cat-file', '-e', `${base}^{commit}`]);
+  git(info.root, ['merge-base', '--is-ancestor', base, head]);
+  const plan = planFor(info.root, base, head, { full: full === 'true' });
+  console.log(`Verification scope: ${plan.mode}`);
+  for (const command of plan.commands) {
+    if (command[0] === 'internal:markdown-links-and-fences') {
+      checkDocumentation(info.root, base, head);
+      continue;
+    }
+    // Browser download is needed only for a full run, not daily scoped checks.
+    if (command.join(' ') === 'pnpm test:e2e') {
+      const browser = await runner(['pnpm', '--filter', '@hd/web', 'exec', 'playwright', 'install', '--with-deps', 'chrome'], { cwd: info.root, env: process.env });
+      if (browser.code !== 0 || browser.signal) fail('CI browser installation failed.');
+    }
+    console.log(command.join(' '));
+    const result = await runner(command, { cwd: info.root, env: process.env });
+    if (result.code !== 0 || result.signal) fail(`CI verification failed: ${command.join(' ')}`);
+  }
+  return plan;
 }
 
 /** Fixed application inputs; inherited service URLs, secrets and runner flags are excluded. */
@@ -377,7 +409,8 @@ function options(args, required) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   const cwd = process.cwd();
-  if (command === 'verify') console.log(JSON.stringify(await verifyPush(cwd, options(args, ['base'])), null, 2));
+  if (command === 'ci') console.log(JSON.stringify(await verifyCI(cwd, options(args, ['base', 'full'])), null, 2));
+  else if (command === 'verify') console.log(JSON.stringify(await verifyPush(cwd, options(args, ['base'])), null, 2));
   else if (command === 'review-record') {
     console.log(JSON.stringify(recordReview(cwd, options(args, ['base', 'sha', 'reviewer', 'report'])), null, 2));
     console.log('Recorded local workflow evidence only; this does not authenticate reviewer identity.');

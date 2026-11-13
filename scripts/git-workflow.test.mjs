@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   checkDocumentation, checkHooks, checkPush, installHooks, recordReview,
-  repository, verificationEnvironment, verifyPush,
+  repository, verificationEnvironment, verifyPush, planFor, verifyCI,
 } from './git-workflow.mjs';
 
 // Fixtures must not read or alter the developer's Git identity/global hook config.
@@ -44,7 +44,7 @@ function fixture(t) {
   git(root, 'config', 'user.email', 'fixture@example.invalid');
   write(root, 'README.md', '# Fixture\n');
   const old = save(root, 'before workflow exists');
-  for (const filename of ['scripts/git-workflow.mjs', '.githooks/pre-push']) {
+  for (const filename of ['scripts/git-workflow.mjs', 'scripts/verification-plan.mjs', '.githooks/pre-push']) {
     write(root, filename, fs.readFileSync(path.join(sourceRoot, filename), 'utf8'));
   }
   write(root, '.gitignore', 'artifacts/\n');
@@ -315,9 +315,9 @@ test('a mixed or empty-tree code range cannot downgrade to documentation verific
   write(f.root, 'README.md', '# Documentation plus code\n');
   const head = save(f.root, 'mixed change');
   const receipt = await verifyPush(f.root, { base: f.base, runner: successful });
-  assert.equal(receipt.mode, 'web');
+  assert.equal(receipt.mode, 'full');
   git(f.root, 'commit', '--allow-empty', '-qm', 'empty tree');
-  assert.equal((await verifyPush(f.root, { base: head, runner: successful })).mode, 'web');
+  assert.equal((await verifyPush(f.root, { base: head, runner: successful })).mode, 'full');
   await assert.rejects(verifyPush(f.root, { base: git(f.root, 'rev-parse', 'HEAD'), runner: successful }), /strict ancestor/);
 });
 
@@ -410,4 +410,56 @@ test('CLI rejects skip arguments and CI prepare does not install hooks', (t) => 
   assert.equal(prepare.status, 0, prepare.stderr);
   assert.match(prepare.stdout, /installation skipped/);
   assert.throws(() => checkHooks(f.root), /not installed\/effective/);
+});
+
+test('scoped receipts remain bound to committed policy, exact diff and independent review', async (t) => {
+  const f = fixture(t);
+  write(f.root, '.github/verification-policy.json', '{"stage":"development"}\n');
+  const base = save(f.root, 'start development phase');
+  write(f.root, 'apps/web/src/page.tsx', 'export const Page = 1;\n');
+  const head = save(f.root, 'web-only change');
+  const receipt = await verifyPush(f.root, { base, runner: successful });
+  assert.equal(receipt.mode, 'development');
+  assert.ok(receipt.results.some(({ command }) => command.join(' ') === 'pnpm --filter @hd/web build'));
+  assert.equal(receipt.results.some(({ command }) => command.includes('@hd/admin')), false);
+  assert.throws(() => checkPush(f.root, refLine(head, base)), /Evidence is missing/);
+  recordReview(f.root, review(f, base, head).args);
+  assert.equal(checkPush(f.root, refLine(head, base)).length, 1);
+  write(f.root, '.github/verification-policy.json', '{"stage":"production"}\n');
+  assert.equal(planFor(f.root, base, head).mode, 'development'); // target commit governs, not working copy.
+  const production = save(f.root, 'formal operations');
+  assert.equal(planFor(f.root, head, production).mode, 'full');
+  write(f.root, 'apps/web/src/page.tsx', 'export const Page = 2;\n');
+  const changed = save(f.root, 'production fix');
+  assert.equal(planFor(f.root, production, changed).mode, 'full');
+});
+
+test('CI shares the scoped plan, manual release runs stay full and command failures stop the run', async (t) => {
+  const f = fixture(t);
+  write(f.root, '.github/verification-policy.json', '{"stage":"development"}\n');
+  const base = save(f.root, 'development phase');
+  write(f.root, 'apps/admin/src/page.tsx', 'export const Page = 1;\n');
+  const head = save(f.root, 'admin change');
+  const calls = [];
+  const runner = async (command) => { calls.push(command.join(' ')); return successful(); };
+  assert.equal((await verifyCI(f.root, { base, full: 'false', runner })).mode, 'development');
+  assert.deepEqual(calls, planFor(f.root, base, head).commands.map((command) => command.join(' ')));
+  calls.length = 0;
+  assert.equal((await verifyCI(f.root, { base: head, full: 'true', runner })).mode, 'full');
+  assert.deepEqual(calls, ['pnpm check', 'pnpm build', 'pnpm --filter @hd/web exec playwright install --with-deps chrome', 'pnpm test:e2e']);
+  await assert.rejects(verifyCI(f.root, { base: '--all', full: 'false', runner }), /full commit SHA/);
+  await assert.rejects(verifyCI(f.root, { base, full: 'false', runner: async () => ({ code: 1, signal: null }) }), /CI verification failed/);
+});
+
+test('deletions and moves between applications cannot escape affected checks', (t) => {
+  const f = fixture(t);
+  write(f.root, '.github/verification-policy.json', '{"stage":"development"}\n');
+  write(f.root, 'apps/api/src/moved.ts', 'export const moved = 1;\n');
+  const base = save(f.root, 'API file');
+  fs.unlinkSync(path.join(f.root, 'apps/api/src/moved.ts'));
+  write(f.root, 'apps/web/src/moved.ts', 'export const moved = 1;\n');
+  const head = save(f.root, 'move file across application boundary');
+  const checks = planFor(f.root, base, head).commands.map((command) => command.join(' '));
+  assert.ok(checks.includes('pnpm --filter @hd/api test:integration'));
+  assert.ok(checks.includes('pnpm --filter @hd/web check'));
 });
