@@ -44,3 +44,14 @@ PM与OPS首轮失败合并处理。OPS `docs/private/ops-ext06/rehearsal/two-sta
 核对BE最终44bbcdd的media/service：media.create/upload/complete/delete分别为申请图片上传、图片文件上传完成、图片处理完成、删除图片。补UI中文名称；未知码仍按文本回退，包括Object原型同名字符串，不把未知值当函数渲染。没有变更API动作或审计事实。
 
 类型、103单元＋6守卫与构建通过（event-id-check.log／event-id-build.log），仅新事件定位fixture做浏览器定向复测（event-id-browser.log）；不重复整套，不冒称真实双员工复跑通过。同一Reviewer定向复查未发现可确认问题，准确修复提交另记AD-handoff；OPS负责最终组合再执行同一真实用例。当前3363／生产未切换。
+
+
+## 第二轮真实用例字段定位修复
+
+OPS与PM第二次失败合并同一修复。保留two-staff-live-second.log和ad-trace-artifacts-second-failure。已查看实际error-context与trace调用，检查583个DOM快照，确认展开事件内存在 `draft.content.title.sourceText` 与 `draft.content.title.translations.zh.text` 两个合法字段区域；原来的全抽屉pre文本计数不能判断某一字段是否正确。
+
+只修改测试：从已定位event.id的Collapse项内，精确选择 `draft.content.title.sourceText` 的带名region，再分别以“变更前／变更后”定位pre；项、字段和每侧均断言唯一，保持JSON序列化原标题／新标题完全相等。未使用first／nth或放宽数量，不改UI、DTO、runner、动作、限流或隔离。定向fixture补入同一事件中原文及中文译文相同值，先确认重复确实存在，再验证目标字段每侧精确值。
+
+已通看此单项剩余断言及helper：视口是数值轮询；关闭按钮位于唯一history dialog；内部备注经对应tab后精确textbox；公开三语按每次HTTP response的标量／schema检查，最后为请求数与固定附件对象，不再存在对全抽屉重复标题文本做单值推断的方式。此为静态核对，不冒称尚未到达的真实步骤已通过。
+
+field-path-typecheck.log类型通过、field-path-browser-exact.log仅同一新增回归1/1通过（每侧textContent逐字相等，不折叠空白）；UI源码与构建产物未变，未重复整套。trace检查的最小摘要见私有field-path-trace-inspection.json（不输出凭据／cookies／完整网络请求）。同一Reviewer已定向复查并通看后续断言，未发现新增可确认问题；准确补片另记AD-handoff，真实case由OPS执行，前两次失败不删除或改写。

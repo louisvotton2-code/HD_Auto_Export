@@ -23,7 +23,7 @@ test('activity event IDs distinguish overlapping vehicle and media versions and 
   const record = vehicle();
   await installApi(page, { items: [record], permissions: ['vehicles:read'] });
   await page.route(`**/api/v1/admin/vehicles/${record.id}/activity?*`, route => reply(route, envelope({ items: [
-    event({ id: 'title-save', oldVersion: 1, newVersion: 2, changes: [{ path: 'draft.content.title.sourceText', beforePresent: true, afterPresent: true, before: '修改前标题', after: '修改后标题' }] }),
+    event({ id: 'title-save', oldVersion: 1, newVersion: 2, changes: [{ path: 'draft.content.title.sourceText', beforePresent: true, afterPresent: true, before: '修改前标题', after: '修改后标题' }, { path: 'draft.content.title.translations.zh.text', beforePresent: true, afterPresent: true, before: '修改前标题', after: '修改后标题' }] }),
     event({ id: 'image-upload', action: 'media.upload', oldVersion: 1, newVersion: 2, changes: [{ path: 'media.image-1.state', beforePresent: true, afterPresent: true, before: 'pending', after: 'uploaded' }] }),
     event({ id: 'image-create', action: 'media.create' }), event({ id: 'image-complete', action: 'media.complete' }), event({ id: 'image-delete', action: 'media.delete' }),
     event({ id: 'future-action', action: 'constructor' }),
@@ -37,8 +37,18 @@ test('activity event IDs distinguish overlapping vehicle and media versions and 
   await expect(saved).toContainText('保存草稿');
   await expect(saved).toContainText('版本 1 → 2');
   await saved.click();
-  await expect(drawer.locator('pre').filter({ hasText: /^"修改前标题"$/ })).toHaveCount(1);
-  await expect(drawer.locator('pre').filter({ hasText: /^"修改后标题"$/ })).toHaveCount(1);
+  // Match the actual source/zh translation duplicate values from the second real-run trace.
+  await expect(drawer.locator('pre').filter({ hasText: /^"修改前标题"$/ })).toHaveCount(2);
+  const savedItem = drawer.locator('.ant-collapse-item').filter({ has: page.getByTestId('activity-event-title-save') });
+  await expect(savedItem).toHaveCount(1);
+  const titleDifference = savedItem.getByRole('region', { name: '车辆标题 · draft.content.title.sourceText的变更', exact: true });
+  await expect(titleDifference).toHaveCount(1);
+  const beforeTitle = titleDifference.locator('dl > div').filter({ has: page.getByText('变更前', { exact: true }) }).locator('pre');
+  const afterTitle = titleDifference.locator('dl > div').filter({ has: page.getByText('变更后', { exact: true }) }).locator('pre');
+  await expect(beforeTitle).toHaveCount(1);
+  await expect(beforeTitle).toHaveJSProperty('textContent', JSON.stringify('修改前标题'));
+  await expect(afterTitle).toHaveCount(1);
+  await expect(afterTitle).toHaveJSProperty('textContent', JSON.stringify('修改后标题'));
   await expect(drawer.locator('pre').filter({ hasText: /^"uploaded"$/ })).toHaveCount(0);
 });
 

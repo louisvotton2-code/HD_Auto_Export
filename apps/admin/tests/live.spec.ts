@@ -1164,8 +1164,16 @@ test(traceCaseTitle, async ({ page }, testInfo) => {
   await expect(savedEvent).toContainText('保存草稿');
   await expect(savedEvent).toContainText(`版本 ${saved!.oldVersion} → ${saved!.newVersion}`);
   await savedEvent.click();
-  await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源"$/ })).toHaveCount(1);
-  await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源修改后"$/ })).toHaveCount(1);
+  const savedItem = drawer.locator('.ant-collapse-item').filter({ has: page.getByTestId(`activity-event-${saved!.id}`) });
+  await expect(savedItem).toHaveCount(1);
+  const titleDifference = savedItem.getByRole('region', { name: '车辆标题 · draft.content.title.sourceText的变更', exact: true });
+  await expect(titleDifference).toHaveCount(1);
+  const beforeTitle = titleDifference.locator('dl > div').filter({ has: page.getByText('变更前', { exact: true }) }).locator('pre');
+  const afterTitle = titleDifference.locator('dl > div').filter({ has: page.getByText('变更后', { exact: true }) }).locator('pre');
+  await expect(beforeTitle).toHaveCount(1);
+  await expect(beforeTitle).toHaveJSProperty('textContent', JSON.stringify(originalTitle));
+  await expect(afterTitle).toHaveCount(1);
+  await expect(afterTitle).toHaveJSProperty('textContent', JSON.stringify(revisedTitle));
   await page.setViewportSize({ width: 320, height: 850 });
   await fitsViewport(page);
   await page.screenshot({ path: testInfo.outputPath('two-staff-history-320.png'), animations: 'disabled' });
