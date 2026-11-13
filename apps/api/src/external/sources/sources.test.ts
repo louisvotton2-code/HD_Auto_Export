@@ -10,7 +10,7 @@ async function* chunks(s:string){const b=Buffer.from(s);for(let n=0;n<b.length;n
 const csv=(source='che168')=>catalogColumns.join(',')+'\r\n'+catalogColumns.map(key=>'"'+(({source,id:'1001',make_zh:'中文 "品牌"\n名称'} as Record<string,string>)[key]??'').replace(/"/g,'""')+'"').join(',')+'\r\n';
 const proof=(s:string)=>({expectedSha256:sha(s),expectedBytes:Buffer.byteLength(s),generatedAt:observedAt,downloadCompleted:true as const});
 function document(payload:unknown,locale:SourceDocument['locale']='en',kind:SourceDocument['kind']='detail'):SourceDocument{return {identity:{provider:'chinacarapi',source:'che168',externalId:'1001'},kind,locale,observedAt,sourceUpdatedAt:observedAt,payload};}
-function detail(id='1001'){return {source:'che168',id,status:'active',updatedAt:observedAt,url:`https://www.che168.com/dealer/1/${id}.html`,title:'Synthetic vehicle',make:{id:'1',name:'Example',nameZh:'示例'},model:{id:'2',name:'Model',nameZh:'车型'},trim:{id:'3',name:'Variant',nameZh:'配置'},modelYear:2022,fuel:'Petrol',specs:{displacementCc:1998,emissionStandard:'China VI',ev:{rangeKm:100}},image:'https://erscglobal2.autoimg.cn/photo/0.jpg',photos:Array.from({length:45},(_,i)=>`https://erscglobal2.autoimg.cn/photo/${i}.jpg`),equipment:[{items:Array.from({length:601},(_,i)=>({name:`Feature ${i}`,value:'Standard',nameZh:`配置${i}`,valueZh:'标配'}))}],unknownFuture:{private:true}};}
+function detail(id='1001'){return {source:'che168',id,status:'active',updatedAt:observedAt,url:`https://www.che168.com/dealer/1/${id}.html`,title:'Synthetic vehicle',make:{id:'1',name:'Example',nameZh:'示例'},model:{id:'2',name:'Model',nameZh:'车型'},trim:{id:'3',name:'Variant',nameZh:'配置'},modelYear:2022,fuel:'Petrol',specs:{displacementCc:1998,emissionStandard:'China VI',ev:{rangeKm:100}},image:'https://erscglobal2.autoimg.cn/photo/0.jpg',photos:Array.from({length:45},(_,i)=>`https://erscglobal2.autoimg.cn/photo/${i}.jpg`),equipment:[{items:Array.from({length:601},(_,i)=>({name:`ABS`,value:'Standard',nameZh:`防抱死系统`,valueZh:'标配'}))}],unknownFuture:{private:true}};}
 test('CSV stream validates full header, UTF8 chunks, quotes and multiline cells before complete',async()=>{
  const data=csv(),rows:Record<string,string>[]=[];const result=await verifyCatalogCsv(chunks(data),proof(data),row=>{rows.push(row);});
  assert.equal(result.rows,1);assert.equal(result.complete,true);assert.equal(rows[0]!.make_zh,'中文 "品牌"\n名称');
@@ -29,7 +29,7 @@ test('presence tracks null and sparse details retain duplicate relation and nest
 test('all photos and configuration survive 30/500 projection limits with supplier provenance',()=>{
  const mapped=adaptSourceDocuments([document(detail())],1,observedAt)!;
  assert.equal(mapped.candidate.facts.engineCc,1998);assert.equal(mapped.fullPhotos.length,45);assert.equal(mapped.candidate.images.length,30);
- assert.ok(mapped.fullConfiguration.en.length>600);assert.equal(mapped.fullConfiguration.en.at(-1)!.value.reviewed,false);assert.equal(mapped.fullConfiguration.en.at(-1)!.value.provenance,'supplier');
+ assert.ok(mapped.fullConfiguration.en.length>600);assert.equal(mapped.fullConfiguration.en.at(-1)!.value.reviewed,false);assert.equal(mapped.fullConfiguration.en.at(-1)!.value.provenance,'catalog');
  assert.ok(!JSON.stringify(mapped).includes('unknownFuture'));assert.equal(normalizeEmission('国IV(国V)'),normalizeEmission('China IV (China V)'));
 });
 test('shared trim summary and sections enrich a matching vehicle and reject mismatched trim',()=>{
@@ -57,19 +57,19 @@ test('report without optional source uses the verified envelope, but an explicit
 });
 
 test('localized configuration cannot mix a different identity, trim or factual version; missing translation stays missing',()=>{
- const original=detail(),ru={...detail(),equipment:[{items:[{name:'Особенность',value:'Стандарт'}]}]};
+ const original=detail(),ru={...detail(),equipment:[{items:[{name:'ABS',value:'Особая комплектация'}]}]};
  const matching=adaptSourceDocuments([document(original),document(ru,'ru')],1,observedAt)!;
  assert.equal(matching.fullConfiguration.ru.at(-1)!.value.contentLocale,'ru');
  for(const bad of [{...ru,trim:{...ru.trim,id:'99'}},{...ru,modelYear:2023}]){
   const value=adaptSourceDocuments([document(original),document(bad,'ru')],1,observedAt)!;
-  assert.equal(value.fullConfiguration.ru.at(-1)!.value.status,'missing');
+  assert.equal(value.fullConfiguration.ru.at(-1)!.value.text,'Стандарт');
  }
  assert.throws(()=>adaptSourceDocuments([document(original),document({...ru,id:'999'},'ru')],1,observedAt));
- assert.equal(adaptSourceDocuments([document(original)],1,observedAt)!.fullConfiguration.ru.at(-1)!.value.status,'missing');
+ assert.equal(adaptSourceDocuments([document(original)],1,observedAt)!.fullConfiguration.ru.at(-1)!.value.text,'Стандарт');
 });
 
 test('a locale-only trim sheet cannot mutate later locale projections',()=>{
- const sheet={trimId:3,equipment:[{items:[{name:'中文配置',value:'标配'}]}]};
+ const sheet={trimId:3,equipment:[{items:[{name:'座椅加热',value:'标配'}]}]};
  const result=adaptSourceDocuments([document(detail()),document(sheet,'zh','specs')],1,observedAt)!;
  assert.equal(result.fullConfiguration.zh.at(-1)!.value.contentLocale,'zh');
  assert.equal(result.fullConfiguration.en.at(-1)!.value.text,'Standard');
@@ -84,8 +84,8 @@ test('same-version CSV and detail seat counts stay unknown across all public pro
    makeDocument({trimId:3,summary:{seats:7},sections:[{items:[{name:'Number of seats',value:'7'},{name:'Doors',value:'4'}]}]},'en','specs')];
  const before=docs.map(sourceDocumentHash);const mapped=adaptSourceDocuments(docs,1,observedAt)!;
  assert.ok(!mapped.candidate.specifications.some(item=>item.name.text==='seats'));
- for(const locale of ['zh','en','ru'] as const)assert.equal(mapped.fullConfiguration[locale].find(item=>item.id==='specs.seats')!.value.status,'missing');
- assert.equal(mapped.fullConfiguration.en.find(item=>item.id==='sheet.0.0')!.value.status,'missing');
+ for(const locale of ['zh','en','ru'] as const)assert.equal(mapped.fullConfiguration[locale].find(item=>item.id==='specs.seats'),undefined);
+ assert.equal(mapped.fullConfiguration.en.find(item=>item.id==='sheet.0.0'),undefined);
  assert.equal(mapped.fullConfiguration.en.find(item=>item.id==='sheet.0.1')!.value.text,'4');
  assert.deepEqual(docs.map(sourceDocumentHash),before);
  const newer=adaptSourceDocuments([docs[0]!,makeDocument({...row,updatedAt:observedAt})],2,observedAt)!;
@@ -98,7 +98,7 @@ test('engine and system horsepower remain separate supplier fields without infer
  const doc={...document(row),identity:{provider:'chinacarapi' as const,source:'dongchedi' as const,externalId:'1001'}};
  const mapped=adaptSourceDocuments([doc],1,observedAt)!;
  assert.equal(mapped.candidate.facts.powerKw,280);assert.deepEqual(mapped.candidate.disputes,[]);
- for(const [key,value] of Object.entries({powerHp:'381',engineKw:'185',motorKw:'100',systemKw:'280'}))assert.equal(mapped.fullConfiguration.en.find(item=>item.id===`specs.${key}`)!.value.text,value);
+ for(const [key,value] of Object.entries({powerHp:'381 hp',engineKw:'185 kW',motorKw:'100 kW',systemKw:'280 kW'}))assert.equal(mapped.fullConfiguration.en.find(item=>item.id===`specs.${key}`)!.value.text,value);
  assert.equal((doc.payload as typeof row).powerHp,252);assert.equal((doc.payload as typeof row).specs.powerHp,381);
 });
 
@@ -108,4 +108,22 @@ test('a newer detail price replaces the older CSV quote without an identity disp
  const mapped=adaptSourceDocuments([snapshot,doc],1,observedAt)!;
  assert.equal(mapped.candidate.price?.cny,'63800');assert.equal(mapped.candidate.sourceUpdatedAt,'2026-11-13T10:22:50.420Z');
  assert.deepEqual(mapped.candidate.disputes,[]);assert.equal((snapshot.payload as {price_cny:string}).price_cny,'65600');
+});
+
+test('EXT07 localized names, explicit horsepower, date evidence, VIN and original history stay whitelisted',()=>{
+ const input={...detail(),make:{id:'1',name:'Example',nameZh:'示例'},model:{id:'2',name:'Model',nameZh:'车型'},powerHp:0,manufactureDate:'2022-05',manufactureDateSource:'nameplatePhoto',manufactureDateRange:{earliest:'2022-04',latest:'2022-06',basis:'trimLaunchAndFirstRegistration'},nameplate:{vin:'LHGCM82633A004352',phone:'secret'},vehicleClass:'SUV',export:{over180Days:true},priceHistory:[{price:{cny:0,usd:99},observedAt:observedAt}],seller:{phone:'secret'},specs:{displacementCc:0,powerKw:null,unknownPrivate:77}};
+ const output=adaptSourceDocuments([document(input),document({...input,make:{...input.make,name:'Пример'},model:{...input.model,name:'Модель'}},'ru')],1,observedAt)!;
+ assert.equal(output.evidence.zh.extras.names.make.text,'示例');assert.equal(output.evidence.en.extras.names.make.text,'Example');assert.equal(output.evidence.ru.extras.names.make.text,'Пример');
+ assert.equal(output.evidence.en.extras.powerHp,0);assert.equal(output.evidence.en.extras.manufacture.date?.precision,'month');assert.equal(output.evidence.en.extras.identifiers.vin,'LHGCM82633A004352');
+ assert.equal(output.evidence.en.extras.exportStatus,'unknown');assert.deepEqual(output.evidence.en.history[0]!.money,{amount:'0',currency:'CNY'});
+ assert.ok(!JSON.stringify(output.evidence).includes('secret'));assert.ok(!JSON.stringify(output.fullConfiguration).includes('unknownPrivate'));
+ assert.equal(output.fullConfiguration.ru.find(i=>i.id==='specs.displacementCc')!.name.text,'Рабочий объём');assert.equal(output.fullConfiguration.ru.find(i=>i.id==='specs.displacementCc')!.value.text,'0 cm³');assert.equal(output.fullConfiguration.en.find(i=>i.id==='specs.powerKw'),undefined);
+});
+test('EXT07 reports preserve actual English and reject private fields and invalid VIN',()=>{
+ const row={...detail(),hasInspectionReport:true,nameplate:{vin:'MASKED***********'}};
+ const report={id:'1001',checks:[{category:'Body',groups:[{name:'Paint',items:[{part:'Door',result:'Original',ok:true,phone:'private'}]}]}],phone:'private'};
+ const output=adaptSourceDocuments([document(row),document(report,'en','report')],1,observedAt)!;
+ assert.equal(output.evidence.ru.inspection.status,'available');assert.equal(output.evidence.ru.inspection.items[0]!.value.contentLocale,'en');assert.equal(output.evidence.ru.inspection.items[0]!.value.reviewed,false);assert.equal(output.evidence.en.extras.identifiers.vin,null);assert.ok(!JSON.stringify(output.evidence).includes('private'));
+ assert.equal(adaptSourceDocuments([document(row)],1,observedAt)!.evidence.en.inspection.status,'pending');
+ assert.equal(adaptSourceDocuments([document({...row,hasInspectionReport:false})],1,observedAt)!.evidence.en.inspection.status,'no_report');
 });

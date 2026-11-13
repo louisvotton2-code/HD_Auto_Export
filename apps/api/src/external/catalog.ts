@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import {
-  PublicVehicleSchema, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
+  PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
 } from '@hd/contracts/public';
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
@@ -9,6 +9,8 @@ import { displayText, publicText, type ExternalProjection } from './normalize.js
 import type { ReportSourceRow } from './report-evidence.js';
 import { projectSourceReport } from './reports.js';
 import { applyInspectionEnrichment } from './inspection-enrichment.js';
+import { catalogOrder, catalogSeek, numericSort, usdSortAmount, type CatalogAnchor } from './cursor.js';
+export type { CatalogAnchor } from './cursor.js';
 
 export const publicListingId = (id: string) => `ext-${id}`;
 export const listingUuid = (id: string) => id.slice(4);
@@ -16,7 +18,8 @@ export const publicMediaId = (id: string) => `ximg-${id}`;
 const stockCode = (id: string) => `EXT-${id.toUpperCase()}`;
 type Queryable = Pick<Database['pool'] | PoolClient, 'query'>;
 type CatalogRow = {
-  configuration_total?:number;
+  configuration_total?:number; overridden_names?:string[];
+  extras?: Pick<PublicVehicleCard, 'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'> & {powerHp?:number|null;names?:Partial<Pick<VehicleDisplay,'make'|'model'|'trim'>>};
   listing_id: string; platform_id: string; platform_name: string; listing_url: string;
   facts: ExternalProjection['facts']; price_cny: string | null; issues: ExternalIssue[];
   localized: ExternalProjection['localized'][Locale]; details?: ExternalProjection['details'];
@@ -49,7 +52,7 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     remote: { revision: photo.revision, refreshedAt: photo.refreshed_at.toISOString(), expiresAt: iso(photo.expires_at) },
   }));
   const { title, description } = row.localized;
-  const display = { ...row.localized.display, mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
+  const display = { ...catalogDisplay(row), mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
   const id = publicListingId(row.listing_id);
   const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id,
     external_id: row.external_id!, source_revision: row.source_revision!, source_hash: row.source_hash!, source_data: row.source_data ?? null,
@@ -69,7 +72,8 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   return PublicVehicleSchema.parse({
     id, stockCode: stockCode(row.listing_id), detailPath: `/${locale}/cars/${id}/`,
     source: { kind: 'external', platform: { id: row.platform_id, name: row.platform_name }, listingUrl: row.listing_url },
-    facts: localizedFacts(row.facts, display), display,
+    facts: { ...localizedFacts(row.facts, display), ...(row.extras?.powerHp !== undefined ? {powerHp:row.extras.powerHp} : {}) }, display,
+    ...publicExtras(row),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
     content: { title, description }, images, mediaTotal:available.length, ...(row.configuration_total!==undefined?{configurationTotal:row.configuration_total}:{}),
     ...(report ? { report: { hasReport: report.hasReport } } : {}),
@@ -80,6 +84,36 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
       ...(detail ? { detail: { ...detail, original: { title: original('title'), model: original('model'), description: original('description') } } } : {}),
     },
   });
+}
+
+function catalogDisplay(row:CatalogRow):VehicleDisplay {
+  const display={...row.localized.display};
+  for(const key of ['make','model','trim'] as const) {
+    const extra=row.extras?.names?.[key];
+    // Current employee edits and disputed/missing identities retain precedence over source names.
+    if(row.facts[key] && extra?.status==='ready' && display[key].provenance!=='human' && !row.overridden_names?.includes(key))display[key]=extra;
+  }
+  return display;
+}
+// The extras table is a small public whitelist, never the provider response or report payload.
+function publicExtras(row: CatalogRow) {
+  return { ...(row.extras?.identifiers ? { identifiers: row.extras.identifiers } : {}),
+    ...(row.extras?.manufacture ? { manufacture: row.extras.manufacture } : {}),
+    ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass } : {}),
+    exportStatus: row.extras?.exportStatus ?? 'unknown' };
+}
+function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?: 'usd', quote: FxQuote|null=null): PublicVehicleCard {
+  const images: PublicMedia[] = photos.map(photo => ({ id:publicMediaId(photo.id),url:photo.url,alt:photo.alt?.text??'',altText:displayText(locale,photo.alt),
+    width:photo.width,height:photo.height,sortOrder:photo.position,isCover:true,
+    remote:{revision:photo.revision,refreshedAt:photo.refreshed_at.toISOString(),expiresAt:iso(photo.expires_at)} }));
+  const display={...catalogDisplay(row),mediaAlt:images.map(photo=>({mediaId:photo.id,value:photo.altText!}))};
+  const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
+  const id=publicListingId(row.listing_id);
+  return PublicVehicleCardSchema.parse({ id,stockCode:stockCode(row.listing_id),detailPath:`/${locale}/cars/${id}/`,
+    source:{kind:'external',platform:{id:row.platform_id,name:row.platform_name},listingUrl:row.listing_url},
+    facts:{...localizedFacts(row.facts,display),...(row.extras?.powerHp!==undefined?{powerHp:row.extras.powerHp}:{})},display,...publicExtras(row),
+    price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),content:{title:row.localized.title},images,
+    availability:'unknown',availabilityCheckedAt:null,sourceUpdatedAt:iso(row.source_updated_at),fetchedAt:row.fetched_at.toISOString(),publishedAt:row.published_at.toISOString() });
 }
 
 /** Escape LIKE metacharacters; query text always means a literal substring. */
@@ -105,6 +139,7 @@ function matches(query: PublicFilterQuery,quote:FxQuote|null=null) {
     }else if(query.priceCurrency!=='CNY')where.push('false');
     else {if(query.priceMin!==undefined)where.push(`f.price_cny>=${param(query.priceMin)}::numeric`);if(query.priceMax!==undefined)where.push(`f.price_cny<=${param(query.priceMax)}::numeric`);}
   }
+  if (query.exportStatus && query.exportStatus !== 'all') where.push(`coalesce(x.export_status,'unknown')=${param(query.exportStatus)}`);
   if (query.q) {
     const pattern = param(literalPattern(query.q));
     // The combined GIN candidate may cross field separators; the second predicate cannot.
@@ -138,18 +173,31 @@ export async function aggregateCatalogFacets(tx: Queryable, selection: string, v
   ) SELECT * FROM groups UNION ALL SELECT 'total',NULL,NULL,NULL,NULL,count(*)::int FROM matched`, values);
   return result.rows;
 }
-export type CatalogAnchor = {publishedAt:string;id:string};
 const columns = `c.listing_id,c.published_at,c.platform_name,c.listing_url,c.facts,c.price_cny,c.issues,
-  c.localized->$1::text AS localized,l.platform_id,l.fetched_at,l.source_updated_at`;
-const from = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text';
+  c.localized->$1::text AS localized,l.platform_id,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
+const cardColumns = `c.listing_id,c.published_at,c.platform_name,c.listing_url,c.facts,c.price_cny,
+  jsonb_build_object('title',c.localized->$1::text->'title','display',c.localized->$1::text->'display') AS localized,
+  l.platform_id,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
+const extrasJoin = ' LEFT JOIN external_vehicle_extras x ON x.listing_id=c.listing_id AND x.locale=$1::text LEFT JOIN external_listing_overrides o ON o.listing_id=c.listing_id';
+const from = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text' + extrasJoin;
 // Catalogue rows only exist for visible listings. This second predicate is also useful when repairing projections.
 const visible = "WHERE l.upstream_state='active'";
 const ordered = 'ORDER BY c.published_at DESC,c.listing_id';
 
-async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, time: number,priceView?:'usd',quote:FxQuote|null=null) {
+async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, time: number,priceView?:'usd',quote:FxQuote|null=null,card=false):Promise<Array<PublicVehicle|PublicVehicleCard>> {
   if (!rows.length) return [];
+  const ids=rows.map(row=>row.listing_id);
+  // One indexed cover probe per picked listing; no full gallery travels to Node for card requests.
+  if(card) {
+    const photos=await tx.query<ImageRow>(`SELECT m.* FROM unnest($1::uuid[]) AS picked(listing_id) CROSS JOIN LATERAL (
+      SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at FROM external_media
+      WHERE active AND listing_id=picked.listing_id AND (expires_at IS NULL OR expires_at>$2::timestamptz)
+      ORDER BY position,id LIMIT 1) m`,[ids,new Date(time).toISOString()]);
+    const covers=new Map(photos.rows.map(photo=>[photo.listing_id,photo]));
+    return rows.map(row=>toCard(row,covers.has(row.listing_id)?[covers.get(row.listing_id)!]:[],locale,priceView,quote));
+  }
   const photos = await tx.query<ImageRow>(`SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at
-    FROM external_media WHERE active AND listing_id=ANY($1::uuid[]) ORDER BY listing_id,position,id`, [rows.map(row => row.listing_id)]);
+    FROM external_media WHERE active AND listing_id=ANY($1::uuid[]) ORDER BY listing_id,position,id`, [ids]);
   const totals=await tx.query<{listing_id:string;total:number}>("SELECT listing_id,total FROM external_source_segment_sets WHERE listing_id=ANY($1::uuid[]) AND locale=$2 AND kind='configuration'",[rows.map(row=>row.listing_id),locale]);
   const configurationTotals=new Map(totals.rows.map(row=>[row.listing_id,row.total]));
   const images = new Map<string, ImageRow[]>();
@@ -165,12 +213,13 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
   const result = await tx.query<CatalogRow>(`SELECT ${columns},c.details,l.provider,l.external_id,l.source_revision::text,l.source_hash,l.source_data,l.upstream_state,
     i.binding AS inspection_binding,i.content AS inspection_content
     ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id ${visible} AND c.listing_id=$2`, [locale, id]);
-  return (await materialize(tx, result.rows, locale, time,priceView,quote))[0] ?? null;
+  return ((await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle | undefined) ?? null;
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
 const filterFrom = (query: PublicFilterQuery) => 'FROM external_catalog_filter f' +
-  (query.q ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '');
+  (query.q ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
+  (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND (f.locale_mask & CASE $1::text WHEN 'zh' THEN 1 WHEN 'en' THEN 2 WHEN 'ru' THEN 4 ELSE 0 END)<>0`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 
@@ -179,30 +228,37 @@ export async function countExternal(tx: Queryable, query: PublicFilterQuery,quot
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
   return result.rows[0]!.total;
 }
-export async function listExternalPage(tx: Queryable, query: PublicFilterQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null) {
+export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null) {
   const { where, values } = matches(query,quote);
-  const selection=`SELECT f.listing_id,f.published_at ${filterFrom(query)} ${filterVisible}${where}`;
+  const sort=query.sort??'newest',numeric=numericSort(sort);
+  let column=sort==='mileage_asc'?'f.mileage_km':sort==='year_desc'?'f.model_year':'f.price_cny';
+  if(sort.startsWith('price_')&&query.priceView==='usd')column=usdSortAmount(column,"'CNY'",quote,values);
+  const sortSelect=numeric?`,(${column}) AS sort_value`:'';
+  const selection=`SELECT f.listing_id,f.published_at${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
+  const order=numeric?`ORDER BY ${catalogOrder(column,'f.listing_id',sort)}`:filterOrdered;
   let picked:string;
-  if(after) {
+  if(after && !numeric) {
     values.push(after.publishedAt,after.id);
     const time=`$${values.length-1}::timestamptz`,id=`$${values.length}::uuid`,size=`$${values.length+1}`;
-    // Both seeks are bounded before any wide JSON or localized rows are fetched.
     picked=`SELECT * FROM (
-      (${selection} AND f.published_at=${time} AND f.listing_id>${id} ${filterOrdered} LIMIT ${size})
-      UNION ALL (${selection} AND f.published_at<${time} ${filterOrdered} LIMIT ${size})
+      (${selection} AND f.published_at=${time} AND f.listing_id>${id} ${order} LIMIT ${size})
+      UNION ALL (${selection} AND f.published_at<${time} ${order} LIMIT ${size})
     ) seeked ORDER BY published_at DESC,listing_id LIMIT ${size}`;
     values.push(limit);
   } else {
-    picked=`${selection} ${filterOrdered} LIMIT $${values.length+1} OFFSET $${values.length+2}`;
-    values.push(limit,offset);
+    const seek=after?` AND ${catalogSeek(column,'f.listing_id',after,sort,values)}`:'';
+    picked=`${selection}${seek} ${order} LIMIT $${values.length+1} OFFSET $${values.length+2}`;
+    values.push(limit,after?0:offset);
   }
-  const result=await tx.query<CatalogRow & {cursor_published_at:string}>(`WITH picked AS MATERIALIZED (${picked})
-    SELECT ${columns},to_char(c.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at
+  const result=await tx.query<CatalogRow & {cursor_published_at:string;cursor_sort_value?:string|null}>(`WITH picked AS MATERIALIZED (${picked})
+    SELECT ${query.projection==='card'?cardColumns:columns},to_char(c.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at
+      ${numeric?',picked.sort_value::text AS cursor_sort_value':''}
     FROM picked JOIN external_catalog c ON c.listing_id=picked.listing_id
     JOIN external_listings l ON l.id=c.listing_id
-    JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text
-    ${visible} ${ordered}`,values);
-  return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote),anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at}))};
+    JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text ${extrasJoin}
+    ${visible} ${numeric?`ORDER BY ${catalogOrder('picked.sort_value','c.listing_id',sort)}`:ordered}`,values);
+  return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote,query.projection==='card'),
+    anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}))};
 }
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null) {
   const { where, values } = matches(query,quote);
@@ -248,8 +304,13 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
         WHEN 'trim' THEN winner.trim_label WHEN 'generation' THEN winner.generation_label END AS name,
       g.make_id,g.model_id,g.count
     FROM facets g LEFT JOIN LATERAL (
-      SELECT make_label,model_label,trim_label,generation_label FROM external_catalog_search
-      WHERE listing_id=substring(g.label_order FROM 19 FOR 36)::uuid AND locale=$1::text
+      SELECT CASE WHEN coalesce(overrides.data->'facts' ? 'make',false) OR labels.localized->$1::text->'display'->'make'->>'provenance'='human' THEN label.make_label ELSE coalesce(extra.data->'names'->'make'->>'text',label.make_label) END AS make_label,
+        CASE WHEN coalesce(overrides.data->'facts' ? 'model',false) OR labels.localized->$1::text->'display'->'model'->>'provenance'='human' THEN label.model_label ELSE coalesce(extra.data->'names'->'model'->>'text',label.model_label) END AS model_label,
+        CASE WHEN coalesce(overrides.data->'facts' ? 'trim',false) OR labels.localized->$1::text->'display'->'trim'->>'provenance'='human' THEN label.trim_label ELSE coalesce(extra.data->'names'->'trim'->>'text',label.trim_label) END AS trim_label,label.generation_label
+      FROM external_catalog_search label JOIN external_catalog labels ON labels.listing_id=label.listing_id
+      LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=label.listing_id
+      LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale
+      WHERE label.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid AND label.locale=$1::text
         AND g.kind IN ('make','model','trim','generation') LIMIT 1
     ) winner ON true`,values);
   // Historical projections may contain a null label despite a present ID. The
@@ -257,13 +318,17 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // without probing labels for every normal matched vehicle.
   const missing=result.rows.filter(row=>['make','model','trim','generation'].includes(row.kind)&&row.name===null);
   if(missing.length) {
-    const name=`CASE missing.kind WHEN 'make' THEN label.make_label WHEN 'model' THEN label.model_label
-      WHEN 'trim' THEN label.trim_label WHEN 'generation' THEN label.generation_label END`;
+    const name=`CASE missing.kind WHEN 'make' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'make',false) OR labels.localized->$1::text->'display'->'make'->>'provenance'='human' THEN label.make_label ELSE coalesce(extra.data->'names'->'make'->>'text',label.make_label) END
+      WHEN 'model' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'model',false) OR labels.localized->$1::text->'display'->'model'->>'provenance'='human' THEN label.model_label ELSE coalesce(extra.data->'names'->'model'->>'text',label.model_label) END
+      WHEN 'trim' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'trim',false) OR labels.localized->$1::text->'display'->'trim'->>'provenance'='human' THEN label.trim_label ELSE coalesce(extra.data->'names'->'trim'->>'text',label.trim_label) END WHEN 'generation' THEN label.generation_label END`;
     const fallback=await tx.query<Pick<CatalogFacetRow,'kind'|'id'|'name'|'make_id'|'model_id'>>(`SELECT missing.*,selected.name
       FROM jsonb_to_recordset($${matchingValues.length+1}::jsonb) AS missing(kind text,id text,make_id text,model_id text)
       CROSS JOIN LATERAL (
         SELECT ${name} AS name ${filterFrom(query)}
         JOIN external_catalog_search label ON label.listing_id=f.listing_id AND label.locale=$1::text
+        JOIN external_catalog labels ON labels.listing_id=f.listing_id
+        LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=f.listing_id
+        LEFT JOIN external_vehicle_extras extra ON extra.listing_id=f.listing_id AND extra.locale=$1::text
         ${filterVisible}${where} AND ${name} IS NOT NULL AND CASE missing.kind
           WHEN 'make' THEN f.make_id=missing.id
           WHEN 'model' THEN f.make_id=missing.make_id AND f.model_id=missing.id

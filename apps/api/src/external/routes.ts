@@ -9,6 +9,7 @@ import { reportMediaFailure } from './catalog.js';
 import { getExternalListingOverview, listExternalListings } from './listings.js';
 import { createProviderProbe } from './provider-probe.js';
 import { listSourceDocuments, getSourceDocument } from './sources/index.js';
+import { fullSyncStatus,setFullSyncPaused } from './full-sync/status.js';
 import { ingestionStatus } from './ingestion/status.js';
 import { ExternalStore } from './store.js';
 import { createTrial, getTrial } from './trial.js';
@@ -36,6 +37,9 @@ const row = (request: FastifyRequest) => Number((request.params as { row: string
 
 export function registerExternalRoutes(app: FastifyInstance, db: Database, actor: (request: FastifyRequest) => Actor, providerAccountKey?: string) {
   const store = new ExternalStore(db);
+  app.get(`${prefix}/sync-status`,{schema:schema('getExternalFullSyncStatus',admin.ExternalFullSyncStatusResponseSchema)},async request=>result(await fullSyncStatus(db),request));
+  app.post(`${prefix}/sync-control`,{schema:schema('controlExternalFullSync',admin.ExternalFullSyncStatusResponseSchema,{headers:idem,body:admin.ExternalFullSyncControlSchema})},async request=>result(await setFullSyncPaused(db,request.body as admin.ExternalFullSyncControl,actor(request),key(request)),request));
+
   app.get(`${prefix}/listings/:id/source-documents`,{schema:schema('listExternalSourceDocuments',admin.ExternalSourceDocumentsResponseSchema,{params:listingId,querystring:admin.ActivityQuerySchema})},async request=>result(await listSourceDocuments(db,pathId(request),request.query as admin.ActivityQuery),request));
   app.get(`${prefix}/listings/:id/source-documents/:documentId`,{schema:schema('getExternalSourceDocument',admin.ExternalSourceDocumentResponseSchema,{params:listingId.extend({documentId:z.uuid()})})},async request=>result(await getSourceDocument(db,pathId(request),(request.params as {documentId:string}).documentId),request));
 

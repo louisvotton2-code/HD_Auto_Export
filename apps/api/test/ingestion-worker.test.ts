@@ -4,7 +4,7 @@ import {randomBytes,createHash} from 'node:crypto';
 import {prepareSnapshot} from '../src/external/ingestion/snapshot.js';
 import {hydratePending} from '../src/external/ingestion/hydrate.js';
 import {ChinaCarClient} from '../src/external/ingestion/provider.js';
-import {catalogColumns} from '../src/external/sources/index.js';
+import {catalogColumns,decodeSourceBlob} from '../src/external/sources/index.js';
 import {readFile,stat} from 'node:fs/promises';
 import path from 'node:path';
 import {createDatabase,type Database} from '../src/db/index.js';
@@ -97,7 +97,7 @@ test('fixed-scope ingestion persists leases, pages, failures, withdrawal precede
    const body=JSON.stringify({results:[{source:'che168',id:'123',status:'active'}],notFound:['124'],unknownWrapper:{preserved:true}});
    const client=new ChinaCarClient('fake-key',{fetch:async()=>new Response(body,{headers:{'content-type':'application/json'}})});
    assert.equal(await hydratePending(database,client,id),1);
-   const blob=(await database.pool.query('SELECT raw_text AS body FROM external_source_blobs WHERE hash=$1',[createHash('sha256').update(body).digest('hex')])).rows[0];assert.equal(blob.body,body);
+   const blob=(await database.pool.query('SELECT * FROM external_source_blobs WHERE hash=$1',[createHash('sha256').update(body).digest('hex')])).rows[0];assert.equal(decodeSourceBlob(blob).rawText,body);
    const result=await new FixedScopeWorker(database,apply).tick(id);assert.equal(result.processed,1);assert.equal(result.state,'ready');
    assert.equal((await database.pool.query("SELECT hydration_error FROM external_ingestion_events WHERE job_id=$1 AND external_id='124'",[id])).rows[0].hydration_error,'not_found');
   });

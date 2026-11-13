@@ -4,21 +4,24 @@ import { adaptChinaCarSample } from '../china-car-sample.js';
 import { chinaCarSampleProfile, knownPhotoExpiry, publicLink } from '../profiles.js';
 import { displayText, isPublicText, jsonHash, sha256 } from '../normalize.js';
 import { mergePresent, type SourceDocument } from './documents.js';
+import {sourceDisplay,specificationDisplay,namedSpecificationDisplay} from './display.js';
+import {projectVehicleEvidence,type VehicleEvidenceProjection} from './public-evidence.js';
 
 export type SourceConfigurationItem={id:string;name:DisplayText;value:DisplayText};
-export type FullSourceProjection={candidate:ExternalUpsertCandidate;fullPhotos:ExternalUpsertCandidate['images'];fullConfiguration:Record<Locale,SourceConfigurationItem[]>;duplicateOf:string|null;rejectedPhotos:number};
+export type FullSourceProjection={candidate:ExternalUpsertCandidate;fullPhotos:ExternalUpsertCandidate['images'];fullConfiguration:Record<Locale,SourceConfigurationItem[]>;duplicateOf:string|null;rejectedPhotos:number;evidence:VehicleEvidenceProjection};
 type ObjectValue=Record<string,unknown>;
 const object=(value:unknown):ObjectValue=>value&&typeof value==='object'&&!Array.isArray(value)?value as ObjectValue:{};
 const array=(value:unknown):unknown[]=>Array.isArray(value)?value:[];
 const text=(value:unknown)=>typeof value==='string'?value:null;
 const number=(value:unknown)=>typeof value==='string'&&value!==''&&/^\d+(\.\d+)?$/.test(value)?Number(value):typeof value==='number'?value:null;
 export const normalizeEmission=(value:unknown)=>typeof value==='string'?value.replace(/国\s*(VI|IV|V|III|II|I|6|5|4|3|2|1)/g,(_,v:string)=>`China ${{'1':'I','2':'II','3':'III','4':'IV','5':'V','6':'VI'}[v]??v}`).replace(/\s+/g,'').toLowerCase():null;
-const energy:Record<string,string>={'汽油':'Petrol','柴油':'Diesel','纯电动':'Electric','纯电':'Electric','插电式混合动力':'Plug-in Hybrid','插电混动':'Plug-in Hybrid','油电混合':'Hybrid','增程式':'Range Extender','Бензин':'Petrol','Дизель':'Diesel','Электро':'Electric','Электрический':'Electric','Гибрид':'Hybrid'};
+const energy:Record<string,string>={'汽油':'Petrol','柴油':'Diesel','纯电动':'Electric','纯电':'Electric','插电式混合动力':'Plug-in Hybrid','插电混动':'Plug-in Hybrid','油电混合':'Hybrid','增程式':'Range Extender','Бензин':'Petrol','Дизель':'Diesel','Электро':'Electric','Электрический':'Electric','Гибрид':'Hybrid','плагин-гибрид':'Plug-in Hybrid','petrol':'Petrol','gasoline':'Gasoline','diesel':'Diesel','electric':'Electric','hybrid':'Hybrid','plug-in hybrid':'Plug-in Hybrid','range extender':'Range Extender'};
+const canonicalEnergy=new Map(Object.entries(energy).map(([key,value])=>[key.toLowerCase(),value]));
 /** Only known categorical values normalize; translated label differences never become invented facts. */
 function normalizedDetail(input:ObjectValue):ObjectValue{
   const row=structuredClone(input),specs=object(row.specs);
-  row.fuel=energy[String(row.fuel)]??row.fuel;
-  specs.energyType=energy[String(specs.energyType)]??specs.energyType;row.specs=specs;
+  row.fuel=canonicalEnergy.get(String(row.fuel).toLowerCase())??row.fuel;
+  specs.energyType=canonicalEnergy.get(String(specs.energyType).toLowerCase())??specs.energyType;row.specs=specs;
   row.transmission=({'自动':'Automatic','手动':'Manual','Автоматическая':'Automatic','Механическая':'Manual'} as Record<string,string>)[String(row.transmission)]??row.transmission;
   return row;
 }
@@ -51,25 +54,18 @@ function suppressSeats(row:ObjectValue){
     if([item.name,item.nameZh].some(name=>typeof name==='string'&&countLabel.test(name.trim()))){item.value=null;item.valueZh=null;}
   }
 }
-function fieldDisplay(value:unknown,locale:Locale):DisplayText{
-  const result=typeof value==='number'||typeof value==='boolean'?String(value):text(value);
-  if(!result||result.length>500||!isPublicText(result))return displayText(locale,null);
-  const neutral=/^[\d\s.,+\-/%]+(?:(?:mm|cm|m|kg|kW|hp|Nm|kWh|km|L|s|h|V|A|°C)(?:\/\d+(?:km|h))?)?$/.test(result);
-  const contentLocale=neutral?'und':/\p{Script=Han}/u.test(result)?'zh':/\p{Script=Cyrillic}/u.test(result)?'ru':/[A-Za-z]/.test(result)?'en':'und';
-  if(contentLocale!=='und'&&contentLocale!==locale)return displayText(locale,null);
-  return displayText(locale,{text:result,contentLocale},'supplier');
-}
+const fieldDisplay=sourceDisplay;
 const specKeys=['displacementCc','powerKw','powerHp','torqueNm','engineKw','motorKw','systemKw','energyType','emissionStandard','cylinders','transmissionType','gears','driveType','bodyType','doors','seats','lengthMm','widthMm','heightMm','wheelbaseMm','curbWeightKg','grossWeightKg','fuelTankL','trunkL','topSpeedKmh','acceleration0to100S','fuelConsumptionL100km','launchDate','warranty'];
 const evKeys=['batteryKwh','batteryType','batteryWarranty','consumptionKwh100km','fastChargeHours','motorLayout','motorPowerKw','motorTorqueNm','motorType','motors','rangeKm','slowChargeHours'];
 function configuration(row:ObjectValue,locale:Locale,disputed:boolean):SourceConfigurationItem[]{
   // The unresolved trim/year affects the whole supplier specification sheet; retain it privately until reviewed.
   if(disputed)return [];
   const result:SourceConfigurationItem[]=[];
-  const add=(id:string,name:unknown,value:unknown)=>{result.push({id,name:fieldDisplay(name,locale),value:fieldDisplay(value,locale)});};
+  const add=(id:string,name:unknown,value:unknown)=>{const item=namedSpecificationDisplay(name,value,locale);if(item)result.push({id,...item});};
   const specs=object(row.specs);
   for(const [section,group] of array(row.specSections).entries())for(const [position,value] of array(object(group).items).entries()){const item=object(value);if(disputed&&/续航|range|запас хода|年款|model year/i.test(String(item.name)))continue;add(`sheet.${section}.${String(item.id??position)}`,item.name,item.value);}
-  for(const key of specKeys)if(Object.hasOwn(specs,key))add(`specs.${key}`,key,specs[key]);
-  for(const key of evKeys)if(Object.hasOwn(object(specs.ev),key)&&(!disputed||key!=='rangeKm'))add(`specs.ev.${key}`,key,object(specs.ev)[key]);
+  for(const key of specKeys){const item=specificationDisplay(key,specs[key],locale);if(item)result.push({id:`specs.${key}`,...item});}
+  for(const key of evKeys){const item=specificationDisplay(key,object(specs.ev)[key],locale);if(item)result.push({id:`specs.ev.${key}`,...item});}
   for(const [section,group] of array(row.equipment).entries())for(const [position,value] of array(object(group).items).entries()){
     const item=object(value);const name=locale==='zh'?item.nameZh??item.name:item.name;
     if(disputed&&/续航|range|запас хода|年款|model year/i.test(String(name)))continue;
@@ -99,7 +95,7 @@ export function adaptSourceDocuments(documents:SourceDocument[],revision:number,
   const detailRow=object(detail.payload),unknownSeats=seatsConflict(csv,detailRow);
   const base=normalizedDetail(object(mergePresent(csvDetail(csv),detailRow)));
   if(String(base.source)!==identity.source||String(base.id)!==identity.externalId)return null;
-  const specsDoc=latest('specs',detail.locale)??latest('specs');
+  const specsDoc=latest('specs',detail.locale)??latest('specs','und');
   if(specsDoc){const payload=object(specsDoc.payload);if(payload.trimId!==undefined&&String(payload.trimId)!==String(object(base.trim).id))throw new Error('Shared trim identity differs.');base.specs=mergePresent(base.specs,payload.summary??payload.specs??payload);if(payload.equipment!==undefined)base.equipment=payload.equipment;base.specSections=payload.sections;}
   if(unknownSeats)suppressSeats(base);
   const captures:Partial<Record<Locale,ObjectValue>>={};
@@ -122,8 +118,10 @@ export function adaptSourceDocuments(documents:SourceDocument[],revision:number,
   const fullConfiguration={} as Record<Locale,SourceConfigurationItem[]>;
   for(const locale of ['zh','en','ru'] as const){const localized=captures[locale];const matching=localized&&matchingFacts(base,localized);
     const localizedRow=matching?object(mergePresent(base,localized)):structuredClone(base);const localizedSpecs=latest('specs',locale);if(localizedSpecs){const sheet=object(localizedSpecs.payload);if(sheet.trimId!==undefined&&String(sheet.trimId)!==String(object(base.trim).id))throw new Error('Shared trim identity differs.');localizedRow.specs=mergePresent(localizedRow.specs,sheet.summary??sheet.specs??sheet);if(sheet.equipment!==undefined)localizedRow.equipment=sheet.equipment;localizedRow.specSections=sheet.sections;}if(unknownSeats)suppressSeats(localizedRow);fullConfiguration[locale]=configuration(localizedRow,locale,disputed);}
+  // The legacy detail preview uses the same whitelist; complete entries remain in the paginated projection.
+  candidate.specifications=fullConfiguration.en.slice(0,500).map(item=>({name:{text:item.name.text!,contentLocale:item.name.contentLocale!},value:{text:item.value.text!,contentLocale:item.value.contentLocale!}}));
   candidate.images=photos.items.slice(0,30);
-  return {candidate,fullPhotos:photos.items,fullConfiguration,duplicateOf:text(csv.duplicate_of)??text(base.duplicate_of),rejectedPhotos:photos.rejected};
+  return {candidate,fullPhotos:photos.items,fullConfiguration,duplicateOf:text(csv.duplicate_of)??text(base.duplicate_of),rejectedPhotos:photos.rejected,evidence:projectVehicleEvidence(documents)};
 }
 
 function matchingFacts(base:ObjectValue,localized:ObjectValue){

@@ -3,6 +3,7 @@ import {isCursorTime} from '../../cursor-time.js';
 import type {Database} from '../../db/index.js';
 import {ApiError,notFound} from '../../errors.js';
 import type {SourceDocument} from './documents.js';
+import {decodeSourceBlob} from './archive.js';
 const publicId=z.string().regex(/^ext-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 const Cursor=z.strictObject({listingId:publicId,time:z.string().regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/),id:z.uuid()});
 type Row={id:string;kind:SourceDocument['kind'];locale:SourceDocument['locale'];hash:string;first_observed_at:Date;last_observed_at:Date;source_updated_at:Date|null;cursor_time:string};
@@ -26,8 +27,8 @@ export async function listSourceDocuments(db:Database,id:string,query:{cursor?:s
 }
 export async function getSourceDocument(db:Database,id:string,documentId:string){
  if(!publicId.safeParse(id).success||!z.uuid().safeParse(documentId).success)throw notFound();
- const row=(await db.pool.query<Row&{payload:unknown;raw_text:string|null;response_hash:string|null}>(`SELECT d.*,b.payload,b.raw_text ${relation}
+ const row=(await db.pool.query<Row&{payload:unknown;raw_text:string|null;compressed:Buffer|null;raw_exact:boolean;response_hash:string|null}>(`SELECT d.*,b.payload,b.raw_text,b.compressed,b.raw_exact ${relation}
  JOIN external_source_blobs b ON b.hash=d.hash WHERE l.id=$1 AND d.id=$2`,[id.slice(4),documentId])).rows[0];
  if(!row)throw notFound();
- return {...summary(row),payload:row.payload,rawText:row.raw_text,response:row.response_hash?{hash:row.response_hash,shared:true as const}:null};
+ return {...summary(row),...decodeSourceBlob(row),response:row.response_hash?{hash:row.response_hash,shared:true as const}:null};
 }

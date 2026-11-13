@@ -71,8 +71,10 @@ function searchWhere(query: ExternalListingListQuery, values: unknown[]): string
   if (query.yearMax !== undefined) conditions.push(`(${facts}->>'modelYear')::int<=${param(query.yearMax)}`);
   if (query.mileageMax !== undefined) conditions.push(`(${facts}->>'mileageKm')::int<=${param(query.mileageMax)}`);
   if (query.q) {
+    const short=/^(che168|dongchedi)-([0-9]+)$/.exec(query.q);
     const id = searchListingId(query.q);
-    if (id) conditions.push('l.id=' + param(id) + '::uuid');
+    if(short)conditions.push('l.platform_id='+param(short[1])+' AND l.external_id='+param(short[2]));
+    else if (id) conditions.push('l.id=' + param(id) + '::uuid');
     else {
       const pattern = param(literalPattern(query.q));
       // A line break can otherwise create an accidental cross-field match in
@@ -103,7 +105,7 @@ export async function listExternalListings(db: Database, query: ExternalListingL
       + from + " " + where + " ORDER BY l.fetched_at DESC,l.id LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2),
       [...values, pageSize, offset]);
     const items = result.rows.map((row): ExternalListingSummary => ({
-      activity:row.activity,id: publicListingId(row.id),
+      activity:row.activity,id: publicListingId(row.id),inquiryCode:`${row.platform_id}-${row.external_id}`,
       version: row.version,
       provider: row.provider,
       platformId: row.platform_id,
