@@ -10,6 +10,14 @@ spec.loader.exec_module(routine)
 
 
 class RoutineBackupTests(unittest.TestCase):
+    def test_transient_peak_includes_components_container_and_cipher(self):
+        self.assertEqual(routine.reserve_bytes(1000, 1000), 6600+128*1024**2)
+        for invalid in [-1, True, '100']:
+            with self.assertRaises(ValueError): routine.reserve_bytes(invalid, 0)
+        with self.assertRaises(ValueError): routine.control_root(Path('/'))
+        with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/data'))
+        self.assertEqual(routine.control_root(Path('/etc/fstab')), Path('/etc/fstab'))
+
     def test_retention_only_two_successful_daily_points(self):
         points = [dict(name=str(i), kind='daily', complete=True, createdAt=str(i)) for i in range(4)]
         points += [dict(name='release', kind='release', complete=True, createdAt='0'),
