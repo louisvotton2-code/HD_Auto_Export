@@ -32,7 +32,10 @@ def estimate(baseline, current, *, processed, target):
                   for field in ('databaseBytes', 'archiveBytes')}
     remaining = target - processed
     growth = math.ceil(sum(per_source.values()) * remaining)
-    archive_history_reserve = current['archiveBytes'] + math.ceil(per_source['archiveBytes'] * remaining)
+    if baseline.get('archivesInDatabase', False) != current.get('archivesInDatabase', False):
+        raise ValueError('Archive accounting mode changed between samples')
+    history_fields = ('databaseBytes', 'archiveBytes') if current.get('archivesInDatabase', False) else ('archiveBytes',)
+    archive_history_reserve = sum(current[field] + math.ceil(per_source[field] * remaining) for field in history_fields)
     active = current['databaseBytes'] + current['archiveBytes'] + growth + archive_history_reserve
     # Current filesystem usage already includes staging, old backups and WAL.
     # Reserve two future *uncompressed* full recovery points plus one additional
@@ -51,7 +54,7 @@ def estimate(baseline, current, *, processed, target):
         'warning': used_ratio >= .60 or projected_ratio >= .60,
         'pauseHeavyWork': used_ratio >= .70 or projected_ratio >= .70,
         'reason': 'capacity_limit' if used_ratio >= .70 or projected_ratio >= .70 else 'within_budget',
-        'assumptions': 'linear database/archive growth; one extra archive version; two uncompressed future backups; WAL reserve at least 2 GiB; indexes not double counted; staging and existing backups already in disk usage',
+        'assumptions': 'linear database/archive growth; one extra archive version (whole DB reserved if archives are embedded); two uncompressed future backups; WAL reserve at least 2 GiB; indexes not double counted; staging and existing backups already in disk usage',
     }
 
 
