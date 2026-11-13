@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {performance} from 'node:perf_hooks';
 import {open,rename,unlink} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import {z} from 'zod';
@@ -12,14 +13,18 @@ export function retryAfter(value:string|null,now=Date.now()){
  if(!value)return 1000;const ms=/^\d+$/.test(value)?Number(value)*1000:Date.parse(value)-now;
  return Number.isFinite(ms)?Math.max(500,ms):1000;
 }
+export type BulkAttemptObservation=Readonly<{
+ source:Source;locale:Locale;requestedCount:number;elapsedMs:number;responseBytes:number|null;
+ resultCode:'ok'|'timeout'|'too_large'|'rate_limited'|'rejected';splitCode:'SYNC_TIMEOUT'|'SYNC_TOO_LARGE'|null;
+}>;
 export class FullSyncClient{
  private busy=false;private lastRequest=0;
- constructor(private key:string,private options:{fetch?:typeof fetch;wait?:(ms:number)=>Promise<void>;beforeRequest?:()=>Promise<void>;beforeBulk?:(ids:number,source:Source)=>Promise<void>;defer?:(ms:number)=>Promise<void>;timeoutMs?:number}={}){
+ constructor(private key:string,private options:{fetch?:typeof fetch;wait?:(ms:number)=>Promise<void>;beforeRequest?:()=>Promise<void>;beforeBulk?:(ids:number,source:Source)=>Promise<void>;defer?:(ms:number)=>Promise<void>;timeoutMs?:number;onBulkAttempt?:(observation:BulkAttemptObservation)=>void}={}){
   if(!/^[\x21-\x7e]{1,1024}$/.test(key))throw new FullSyncError('SYNC_KEY_INVALID');
  }
- private async response(endpoint:string,body?:unknown,timeoutMs=this.options.timeoutMs??30_000){
+ private async response(endpoint:string,body?:unknown,timeoutMs=this.options.timeoutMs??30_000,onRequestStart?:()=>void){
   await (this.options.wait??delay)(Math.max(0,500-(Date.now()-this.lastRequest)));await this.options.beforeRequest?.();this.lastRequest=Date.now();
-  let response:Response;try{response=await (this.options.fetch??fetch)(`https://api.chinacarapi.com${endpoint}`,{method:body===undefined?'GET':'POST',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'x-api-key':this.key,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
+  let response:Response;onRequestStart?.();try{response=await (this.options.fetch??fetch)(`https://api.chinacarapi.com${endpoint}`,{method:body===undefined?'GET':'POST',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'x-api-key':this.key,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
   catch{throw new FullSyncError('SYNC_TIMEOUT');}
   if(!response.ok){await response.body?.cancel();const wait=response.status===429?retryAfter(response.headers.get('retry-after')):1000;
    if(response.status===429)await this.options.defer?.(wait);
@@ -27,11 +32,11 @@ export class FullSyncClient{
   return response;
  }
  private async exclusive<T>(work:()=>Promise<T>){if(this.busy)throw new FullSyncError('SYNC_NETWORK_BUSY');this.busy=true;try{return await work();}finally{this.busy=false;}}
- private async json(endpoint:string,body?:unknown):Promise<{payload:unknown;rawResponse:Raw}>{return this.exclusive(async()=>{
-  const response=await this.response(endpoint,body);if(!response.body)throw new FullSyncError('SYNC_RESPONSE_INVALID');
+ private async json(endpoint:string,body?:unknown,onRequestStart?:()=>void):Promise<{payload:unknown;rawResponse:Raw;responseBytes:number}>{return this.exclusive(async()=>{
+  const response=await this.response(endpoint,body,undefined,onRequestStart);if(!response.body)throw new FullSyncError('SYNC_RESPONSE_INVALID');
   const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
   try{for(;;){const value=await reader.read();if(value.done)break;size+=value.value.length;if(size>LIMITS.bodyBytes)throw new FullSyncError('SYNC_TOO_LARGE');chunks.push(value.value);}
-   const bytes=Buffer.concat(chunks),text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return {payload:JSON.parse(text),rawResponse:{hash:createHash('sha256').update(bytes).digest('hex'),body:text}};
+   const bytes=Buffer.concat(chunks),text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return {payload:JSON.parse(text),responseBytes:size,rawResponse:{hash:createHash('sha256').update(bytes).digest('hex'),body:text}};
   }catch(e){if(e instanceof FullSyncError)throw e;if(e instanceof Error&&['AbortError','TimeoutError'].includes(e.name))throw new FullSyncError('SYNC_TIMEOUT');throw new FullSyncError('SYNC_RESPONSE_INVALID');}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
  });}
  async probeExport(){return this.exclusive(async()=>{const response=await this.response('/api/catalog/export');await response.body?.cancel();const at=response.headers.get('x-generated-at');if(!at||!Number.isFinite(Date.parse(at)))throw new FullSyncError('SYNC_EXPORT_HEADER');return new Date(at).toISOString();});}
@@ -55,13 +60,29 @@ export class FullSyncClient{
  async *bulk(source:Source,ids:string[],locale:Locale):AsyncGenerator<Bulk>{
   if(!ids.length||ids.length>500||new Set(ids).size!==ids.length||ids.some(id=>!/^\d{1,100}$/.test(id)))throw new FullSyncError('SYNC_BULK_INVALID');
   const q=new URLSearchParams({source});if(locale!=='en')q.set('lang',locale);
-  let raw;try{await this.options.beforeBulk?.(ids.length,source);raw=await this.json(`/api/vehicle/bulk?${q}`,{ids});}catch(e){
-   if(e instanceof FullSyncError&&['SYNC_TIMEOUT','SYNC_TOO_LARGE'].includes(e.code)&&ids.length>1){const middle=Math.ceil(ids.length/2);yield* this.bulk(source,ids.slice(0,middle),locale);yield* this.bulk(source,ids.slice(middle),locale);return;}if(e instanceof FullSyncError)e.affectedIds??=ids;throw e;
+  let started:number|null=null,raw:Awaited<ReturnType<FullSyncClient['json']>>|undefined;
+  const observe=(resultCode:BulkAttemptObservation['resultCode'],splitCode:BulkAttemptObservation['splitCode'])=>{
+   if(started===null)return; // Quota/rate gates that prevent sending are not network attempts.
+   const observation:BulkAttemptObservation=Object.freeze({source,locale,requestedCount:ids.length,
+    elapsedMs:Math.max(0,performance.now()-started),responseBytes:raw?.responseBytes??null,resultCode,splitCode});
+   try{this.options.onBulkAttempt?.(observation);}catch{/* Diagnostics must never retry or invalidate a successful response. */}
+  };
+  let result:z.infer<typeof bulk>;
+  try{
+   await this.options.beforeBulk?.(ids.length,source);
+   raw=await this.json(`/api/vehicle/bulk?${q}`,{ids},()=>{started=performance.now();});
+   result=bulk.parse(raw.payload);const returned=[...result.results.map(r=>r.id),...result.notFound];
+   if(returned.length!==ids.length||new Set(returned).size!==ids.length||returned.some(id=>!ids.includes(id))||result.results.some(r=>r.source!==source))throw new FullSyncError('SYNC_BULK_IDENTITY');
+  }catch(e){
+   const code=e instanceof FullSyncError?e.code:null;
+   const splitCode=ids.length>1&&(code==='SYNC_TIMEOUT'||code==='SYNC_TOO_LARGE')?code:null;
+   observe(code==='SYNC_TIMEOUT'?'timeout':code==='SYNC_TOO_LARGE'?'too_large':code==='SYNC_RATE_LIMITED'?'rate_limited':'rejected',splitCode);
+   if(splitCode){const middle=Math.ceil(ids.length/2);yield* this.bulk(source,ids.slice(0,middle),locale);yield* this.bulk(source,ids.slice(middle),locale);return;}
+   if(e instanceof FullSyncError)e.affectedIds??=ids;throw e;
   }
-  const result=bulk.parse(raw.payload),returned=[...result.results.map(r=>r.id),...result.notFound];
-  if(returned.length!==ids.length||new Set(returned).size!==ids.length||returned.some(id=>!ids.includes(id))||result.results.some(r=>r.source!==source))throw new FullSyncError('SYNC_BULK_IDENTITY');
-  yield {...result,rawResponse:raw.rawResponse};
+  observe('ok',null);yield {...result,rawResponse:raw.rawResponse};
  }
+
  daily(kind:'account'|'dictionary'){return this.json(kind==='account'?'/api/me':'/api/enums');}
  report(source:Source,id:string){if(!/^\d{1,100}$/.test(id))throw new FullSyncError('SYNC_ID_INVALID');return this.json(`/api/inspection/${id}?source=${source}`);}
 }

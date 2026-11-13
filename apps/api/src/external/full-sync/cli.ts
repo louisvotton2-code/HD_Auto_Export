@@ -34,7 +34,8 @@ async function main(){
      const wait=Number(row.wait);if(wait>60_000)throw new FullSyncError('SYNC_RATE_LIMITED',wait);if(wait)await delay(wait);
      await db.pool.query("UPDATE external_full_sync SET request_after=clock_timestamp()+interval '500 milliseconds' WHERE id=1");
     },defer:async ms=>{await db.pool.query("UPDATE external_full_sync SET request_after=greatest(request_after,clock_timestamp()+$1*interval '1 millisecond') WHERE id=1",[ms]);},
-    beforeBulk:(count,source)=>reserveBulkQuota(db,count,source)
+    beforeBulk:(count,source)=>reserveBulkQuota(db,count,source),
+    onBulkAttempt:observation=>console.info(JSON.stringify({event:'external.full_sync.bulk_attempt',...observation}))
    });
    worker=new FullSyncWorker(db,client,directory);if(!await worker.acquire()){process.exitCode=75;return;}
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});

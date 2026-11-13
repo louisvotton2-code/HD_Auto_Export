@@ -21,7 +21,7 @@ const staff:string[]=[],external:string[]=[],covers=new Map<string,string>();let
 const query=(extra:Record<string,unknown>={})=>PublicVehicleQuerySchema.parse({locale:'en',view:'localized',projection:'card',pageSize:48,...extra});
 const filters=(extra:Record<string,unknown>={})=>PublicFilterQuerySchema.parse({locale:'en',view:'localized',...extra});
 const ids=(result:Awaited<ReturnType<InventoryService['listPublic']>>)=>result.data.items.map(item=>item.id);
-const cache=new PublicCatalogCache({namespace:'isolated-cards'}, {readRevision:usd=>readPublicCatalogRevision(db,usd)});
+const cache=new PublicCatalogCache({namespace:'hd:isolated-cards'}, {readRevision:usd=>readPublicCatalogRevision(db,usd)});
 
 before(async()=>{
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;await migrateDatabase(db);

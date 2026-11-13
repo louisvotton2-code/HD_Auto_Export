@@ -198,3 +198,5 @@ node dist/external/full-sync/cli.js archive-release --reference BACKUP_NAME
 ```
 
 pin保护来源document/blob和未清理CSV快照，与CSV清理共用归档锁；须在备份开始前执行。release只解除指定reference，不删除数据。备份读取与恢复仍由OPS流程执行。
+
+批次运行日志使用 `event=external.full_sync.bulk_attempt`：只含 `source/locale/requestedCount/elapsedMs/responseBytes/resultCode/splitCode`。计时从实际发送开始，不含限速和额度等待；成功字节数取实际响应流，传输失败为null；拆批前失败与成功子批分别记录。日志不含车辆ID、URL、凭据、正文或供应商异常消息，记录失败不会触发重打请求。OPS结合容器内存峰值和持久容量样本判断500及拆批效果，无需额外探测供应商。
