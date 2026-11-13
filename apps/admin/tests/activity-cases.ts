@@ -66,7 +66,8 @@ test('activity read-only list shows historical identity and authoritative falsy 
     ] }), event({ id: 'old-event', action: 'historical.unknown', actor: { kind: 'unknown', staffId: null, name: null }, detailState: 'unknown', changes: null })], nextCursor: null }));
   });
   await page.goto('/admin/vehicles');
-  await expect(page.getByText('操作时姓名 · 员工 ID staff_historical_1')).toHaveCount(2);
+  await expect(page.getByText('操作时姓名', { exact: true })).toHaveCount(2);
+  await expect(page.locator('dl[aria-label="员工与系统操作摘要"] [tabindex="0"]')).toHaveCount(2);
   await expect(page.getByRole('link', { name: '编辑', exact: true })).toHaveCount(0);
   await clickHistory(page);
   const drawer = history(page);
@@ -194,13 +195,17 @@ test('activity employee-managed external copies retain creator identity in list 
   record.draft = makeExternalVehicleDraftFixture();
   record.activity = { ...summary, firstImported: null };
   const api = await installApi(page, { items: [record] });
+  await page.setViewportSize({ width: 1200, height: 960 });
   await page.goto('/admin/vehicles');
-  await expect(page.getByText('操作时姓名 · 员工 ID staff_historical_1')).toHaveCount(2);
+  await expect(page.getByText('操作时姓名', { exact: true })).toHaveCount(2);
+  const listGeometry = () => page.locator('.table-region .ant-table-content').evaluate(element => ({ pageWidth: document.documentElement.scrollWidth, tableScrolls: element.scrollWidth > element.clientWidth }));
+  await expect.poll(listGeometry).toEqual({ pageWidth: 1200, tableScrolls: false });
   await page.goto(`/admin/vehicles/${record.id}`);
   await expect(page.getByText('操作时姓名 · 员工 ID staff_historical_1')).toHaveCount(2);
   api.items[0].deletedAt = at;
   await page.goto('/admin/recycle-bin');
-  await expect(page.getByText('操作时姓名 · 员工 ID staff_historical_1')).toHaveCount(2);
+  await expect(page.getByText('操作时姓名', { exact: true })).toHaveCount(2);
+  await expect.poll(listGeometry).toEqual({ pageWidth: 1200, tableScrolls: false });
 });
 
 const ingestionJob: NonNullable<ExternalIngestionStatus['latestJob']> = {

@@ -55,3 +55,14 @@ OPS与PM第二次失败合并同一修复。保留two-staff-live-second.log和ad
 已通看此单项剩余断言及helper：视口是数值轮询；关闭按钮位于唯一history dialog；内部备注经对应tab后精确textbox；公开三语按每次HTTP response的标量／schema检查，最后为请求数与固定附件对象，不再存在对全抽屉重复标题文本做单值推断的方式。此为静态核对，不冒称尚未到达的真实步骤已通过。
 
 field-path-typecheck.log类型通过、field-path-browser-exact.log仅同一新增回归1/1通过（每侧textContent逐字相等，不折叠空白）；UI源码与构建产物未变，未重复整套。trace检查的最小摘要见私有field-path-trace-inspection.json（不输出凭据／cookies／完整网络请求）。同一Reviewer已定向复查并通看后续断言，未发现新增可确认问题；准确补片另记AD-handoff，真实case由OPS执行，前两次失败不删除或改写。
+
+
+## 全仓门禁的1200宽列表布局修复
+
+OPS精确9facd23a62a832d5caf4a3177e2251bf0287c9f3门禁在车辆列表1200宽断言失败：整页仍1200，但新增独立240px追溯列与1120表格最小宽导致表内短横滚。按PM转达的既有产品要求判断为布局回归，不是应放宽的旧断言。失败verify.log／截图／trace保留在OPS verify-da361cb3d739b01e；无passing receipt、未推送。此处不重跑无关整套。
+
+修复把创建／最近人工修改并回原145px日期列，恢复原850表内最小宽；保留通用资料更新、库存核验、删除时间，以及external员工副本的系统导入／批次／同步信息，保持与人工修改独立。紧凑模式仅员工车辆列表／回收站使用，详情和三方摘要保持完整模式。姓名完整换行，完整姓名、稳定ID、日期年份／北京时间与DB UTC可经hover／键盘focus Tooltip和时间aria/title查看；保留操作记录按钮与详情完整追溯。不删数据、不用省略号隐藏姓名，不重构整表。来源长状态Tag允许换行，避免再撑宽。
+
+原1200 pageWidth=1200/tableScrolls=false和手机390 pageWidth=390/tableScrolls=true断言原样保留；加长姓名/ID、键盘完整详情、手机横滚两端车辆及操作按钮可达检查，并验证员工external副本／回收站在1200也无短横滚。四项定向通过，截图已查看，未把失败改成通过或修改期待值。类型／103单元＋6守卫／构建通过，最终证据compact-list-check-final.log、compact-list-build-final.log、compact-list-browser-final.log及对应test输出截图；此次定向仅用合成数据，未重跑真实HTTP链路；同一Reviewer已核完整追溯、可访问性、截图及原断言保持，未发现可确认问题，准确补片另记AD-handoff。
+
+另外核阅OPS第三轮真实双员工结果：combinedSourceHead42f5f1bcdae9d3d3aedb581574678403b94d6f1c、FEbuild -F2oZEwFquf3va88wtZF_、exitCode0，原证据two-staff-live-third-result.json及ad-trace-artifacts-pass保留。这只证明该受保护HTTP/UI流程在该组合通过，不把它当本次列表成品或新最终门禁通过；worker后续补片与全仓最终检查仍归OPS。
