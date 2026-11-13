@@ -55,7 +55,7 @@ export class FullSyncWorker{
  async state(){return (await this.db.pool.query('SELECT * FROM external_full_sync WHERE id=1')).rows[0]!;}
  async space(){const disk=await statfs(this.directory);const used=1-disk.bavail/disk.blocks;if(!Number.isFinite(used))throw new FullSyncError('SYNC_SPACE_UNKNOWN');
   await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1',[used>=.70]);return {used,available:disk.bavail*disk.bsize,total:disk.blocks*disk.bsize};}
- async heavy(){await this.alive();const s=await this.state(),disk=await this.space();if(s.capacity_pending&&!Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES))throw new FullSyncError('SYNC_CAPACITY_PENDING');if(!s.enabled||s.paused||disk.used>=.70)throw new FullSyncError('SYNC_HEAVY_PAUSED');}
+ async heavy(){await this.alive();const s=await this.state(),disk=await this.space();if(s.capacity_pending)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(!s.enabled||s.paused||disk.used>=.70)throw new FullSyncError('SYNC_HEAVY_PAUSED');}
  /** 2000-event page staged in 100-event transactions. Cursor advances only after every chunk and raw evidence is durable. */
  async receiveDelta(){
   await this.alive();const s=await this.state();if(!s.since_at)return false;
@@ -99,6 +99,8 @@ export class FullSyncWorker{
   });return events.length;
  }
  async snapshot(){
+  // Freeze CSV expansion while the first detail sample waits for reports/capacity approval.
+  if(await this.sampleSaturated())return 0;
   await this.heavy();await mkdir(this.directory,{recursive:true,mode:0o700});
   let snapshot=(await this.db.pool.query("SELECT * FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
   if(!snapshot){
@@ -137,13 +139,17 @@ export class FullSyncWorker{
   const completedSnapshot=(await this.db.pool.query('SELECT rows FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0];
   const compressed=(await this.db.pool.query('SELECT sum(octet_length(compressed))::text AS bytes,count(*) FILTER(WHERE compressed IS NULL)::integer AS uncompacted FROM external_source_blobs')).rows[0]!;
   let archiveBytes=0;for(const entry of await readdir(this.directory,{withFileTypes:true})){if(entry.isFile())archiveBytes+=(await stat(path.join(this.directory,entry.name))).size;}
-  const rows=Number(completedSnapshot?.rows)||Math.ceil(bytes/Math.max(1,Number(measured.stage_bytes)/Number(measured.n))),businessBytes=relations.reduce((n,r)=>n+Number(r.total_bytes),0);
+  const rows=Number(completedSnapshot?.rows)||Math.ceil(bytes/Math.max(1,Number(measured.stage_bytes)/Number(measured.n)));
+  // CSV staging already contains the full export, including its indexes/TOAST. It is not a detail sample.
+  const sqlStagingBytes=relations.filter(r=>r.relation==='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
+  const businessBytes=relations.filter(r=>r.relation!=='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
   const actualPerDetail=details>=Math.min(10000,rows)&&sample.three_locales===details&&sample.reports+sample.no_report>=details?businessBytes/details:null;
-  const projected=rows*(actualPerDetail??128*1024)*6+bytes*3+Number(wal);
+  const projectedBusinessBytes=rows*(actualPerDetail??128*1024)*6;
+  const fixedBytes=sqlStagingBytes+archiveBytes+Number(wal),projected=projectedBusinessBytes+fixedBytes;
   const approved=Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0),enoughSample=actualPerDetail!==null;
   const allowed=enoughSample&&projected<=Math.min(approved>0?approved:Number.MAX_SAFE_INTEGER,Math.max(0,disk.total*.70-(disk.total-disk.available)));
-  const estimate={sampleRows:Number(measured.n),distinctProcessed:details,detailSampleRows:details,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:Number(completedSnapshot?.rows)||null,estimatedRows:rows,actualBytesPerDetail:actualPerDetail,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
-    estimatedBytes:projected,approvedBudgetBytes:approved||null,allowed,assumptions:['Relation sizes include indexes and compressed raw storage.','WAL delta includes concurrent database activity.','6x covers retained source history, indexes, WAL and three backup points.','128KiB per vehicle is a conservative fallback, not a measured detail size.','Automatic continuation requires complete three-language details and checked report presence for the sample.'],at:new Date().toISOString()};
+  const estimate={sampleRows:Number(measured.n),distinctProcessed:details,detailSampleRows:details,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:Number(completedSnapshot?.rows)||null,estimatedRows:rows,actualBytesPerDetail:actualPerDetail,businessBytes,projectedBusinessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
+    estimatedBytes:projected,approvedBudgetBytes:approved||null,allowed,assumptions:['Business relation sizes include indexes and compressed raw storage, excluding the complete SQL CSV staging relation.','SQL staging (including indexes/TOAST), actual archive files and measured WAL delta are fixed costs, never extrapolated per detail.','csvBytes is source metadata; the actual files are counted once in archiveDirectoryBytes.','WAL delta includes concurrent database activity.','6x applies only to business growth for retained history and backup headroom; OPS separately measures whole-disk and backup costs.','128KiB per vehicle is a conservative fallback, not a measured detail size.','Automatic continuation requires complete three-language details and checked report presence for the sample.'],at:new Date().toISOString()};
   await this.db.pool.query('UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2 WHERE id=1',[JSON.stringify(estimate),allowed]);
   if(!allowed)throw new FullSyncError(enoughSample||approved>0?'SYNC_CAPACITY_ESTIMATE':'SYNC_CAPACITY_PENDING');
  }
@@ -189,6 +195,7 @@ export class FullSyncWorker{
  }
  async details(){
   await this.heavy();const remaining=await this.sampleRemaining();
+  // At the boundary only refresh existing sample members invalidated by newer events; never fetch a new identity.
   const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1`,[remaining===0])).rows[0];
   if(!selected)return 0;const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
    WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[remaining===0?500:Math.min(500,remaining),remaining===0,selected.source])).rows;

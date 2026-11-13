@@ -184,7 +184,7 @@ node dist/external/full-sync/cli.js control --action pause --version CURRENT_VER
 
 必要环境：`DATABASE_URL_FILE`、`CHINACARAPI_KEY_FILE` 指向只读私有凭据文件；`FULL_SYNC_ARCHIVE_ROOT` 是新数据盘内的绝对持久目录，不是系统临时目录。进程内部连接池2、网络并发1、总速率至多2请求/秒并持久遵守Retry-After；部署另限制0.5 CPU/512MiB。bulk从500开始，超时/响应过大递归减半，成功分批即入库。原文先压缩共享存档，事件/工作只保存引用；整页持久后才推进接收游标，实际应用独立计数。CSV先流式校验完整性，单次缺行只触发核查；明确撤回优先处理，有效备用来源可接替代表，稳定挂牌ID和人工覆盖不搬移。
 
-容量检查区分CSV暂存与业务详情样本：下载/暂存始终受70%磁盘硬限制；业务1万条的三语详情与报告代表样本才用于容量估算。样本或空间预算不足会停重任务，不把报告未查当无报告。`external_full_sync.capacity_estimate` 是内部运维读数，含来源身份数、详情/语言/报告完成量、CSV目标、关系/索引、WAL差量、压缩原文和归档目录字节；OPS还需计全备和其他业务占用。`FULL_SYNC_CAPACITY_APPROVED_BYTES` 仅在OPS取得实测后设置为额外预算上限；不能解除磁盘70%限制或把未测样本记成通过。60%告警和预测峰值由部署监控联合检查。
+容量检查区分CSV暂存与业务详情样本：下载/暂存始终受70%磁盘硬限制；业务1万条的三语详情与报告代表样本才用于容量估算。样本满额等待报告/判定时停止推进CSV快照和获取新身份详情，继续撤回、报告及被增量事件更新的已有样本补齐。样本或空间预算不足会停重任务，不把报告未查当无报告。`external_full_sync.capacity_estimate` 是内部运维读数：`businessBytes/actualBytesPerDetail/projectedBusinessBytes` 仅外推业务关系（含索引和压缩原文）；完整SQL暂存表及索引/TOAST单列 `sqlStagingBytes`，与实测 `archiveDirectoryBytes`、`walBytes` 合为 `fixedBytes`，不乘车辆比例或业务6倍预留。`csvBytes` 只是原始导出大小元数据，文件已按目录实占计入一次。`estimatedBytes=projectedBusinessBytes+fixedBytes`；OPS另计全盘、备份与其他业务占用。`FULL_SYNC_CAPACITY_APPROVED_BYTES` 仅在OPS取得实测后设置为额外预算上限；不能绕过 `capacity_pending`、解除磁盘70%限制或把未测样本记成通过。60%告警和预测峰值由部署监控联合检查。
 
 0023替代EXT06的长期原文保留规则：保留当前原文和最近一版历史，历史最多7天；待处理引用、备份点及员工审计证据受保护。已有未压缩内容可读，后台有界压缩，公开请求不解压整份来源。备份必须先保护blob和document引用及CSV归档快照，保留点删除后再释放；归档、数据库与配置须一并恢复。准确备份操作及服务器实测结果由本轮OPS交付，不能以文档视为已执行。
 

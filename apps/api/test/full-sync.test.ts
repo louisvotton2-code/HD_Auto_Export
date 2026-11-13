@@ -55,15 +55,62 @@ test('formal full synchronization has durable independent receipt/application an
    feed.push({id:4,source:'che168',vehicleId:'123',type:'relisted',at:'2026-11-14T00:00:03.000Z'});await worker!.receiveDelta();await worker!.applyEvents();
    assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_work WHERE source='che168' AND external_id='123'")).rows[0].n,1);
   });
-  await t.test('the first 10000 sample details pause expansion but allow report verification',async()=>{
+  await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async()=>{
+   const snapshotId=randomUUID(),archivePath=path.join(directory,`${snapshotId}.csv.gz`),archive=Buffer.alloc(8192,1);
+   await writeFile(archivePath,archive);
+   await database.pool.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,apply_cursor,bytes) VALUES($1,$2,'applying',$3,50000,50000,10000,20000000)",[snapshotId,at,archivePath]);
+   // The complete export is materially larger than the detail sample; it must not be scaled by 50000/10000.
+   await database.pool.query(`INSERT INTO external_full_stage(snapshot_id,row_number,source,external_id,payload)
+    SELECT $1,g,'dongchedi',(100000+g)::text,jsonb_build_object('source','dongchedi','id',(100000+g)::text,'description',repeat(md5(g::text),16)) FROM generate_series(1,50000) g`,[snapshotId]);
    await database.pool.query("INSERT INTO external_full_members(source,external_id,canonical_id,state,sampled,last_detail_at,locales,report_state) SELECT 'dongchedi',(100000+g)::text,'sample:'||g,'active',true,now(),ARRAY['zh','en','ru'],'pending' FROM generate_series(1,10000) g");
-   assert.equal(await worker!.sampleRemaining(),0);assert.equal(await worker!.promoteSnapshot(randomUUID()),0);
+   const originalSpace=worker!.space.bind(worker!),originalBudget=process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
+   try{
+   process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=String(1024**4);
+   worker!.space=async()=>({used:0,available:1024**4,total:1024**4});
+   assert.equal(await worker!.sampleRemaining(),0);assert.equal(await worker!.promoteSnapshot(snapshotId),0);
+   assert.equal(await worker!.snapshot(),0);
+   (client as unknown as {bulk:Function}).bulk=async function*(){throw new Error('New detail fetch must wait for the sample gate');};
+   assert.equal(await worker!.details(),0);
    await worker!.capacityGate();assert.equal((await database.pool.query('SELECT capacity_pending FROM external_full_sync')).rows[0].capacity_pending,false);
    (client as unknown as {report:Function}).report=async()=>({payload:{hasReport:false},rawResponse:raw({hasReport:false})});
    await database.pool.query("INSERT INTO external_full_work(source,external_id,kind,generation) VALUES('dongchedi','100001','report',1)");
-   assert.equal(await worker!.report(),1);
+   // Exercise the actual scheduler with an active snapshot, a queued new identity and a pending sample report.
+   await database.pool.query("UPDATE external_full_sync SET next_maintenance_at=now()+interval '1 day' WHERE id=1");
+   feed.push({id:5,source:'che168',vehicleId:'123',type:'removed',at:'2026-11-14T00:00:04.000Z'});
+   await worker!.receiveDelta();await worker!.tick();
    assert.equal((await database.pool.query("SELECT report_state FROM external_full_members WHERE source='dongchedi' AND external_id='100001'")).rows[0].report_state,'no_report');
-   await database.pool.query("DELETE FROM external_full_members WHERE canonical_id LIKE 'sample:%'");
+   assert.equal((await database.pool.query("SELECT state FROM external_full_members WHERE source='che168' AND external_id='123'")).rows[0].state,'withdrawn');
+   assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0].apply_cursor,'10000');
+   assert.equal((await database.pool.query("SELECT count(*)::integer AS n FROM external_full_members WHERE source='dongchedi'")).rows[0].n,10000);
+   assert.equal((await database.pool.query("SELECT count(*)::integer AS n FROM external_source_documents WHERE kind='csv'")).rows[0].n,0);
+
+   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_ESTIMATE/);
+   assert.equal((await worker!.state()).capacity_estimate.allowed,false,'An approved budget cannot replace the unfinished report sample');
+   await assert.rejects(worker!.heavy(),/SYNC_CAPACITY_PENDING/);
+   await database.pool.query("UPDATE external_full_members SET report_state='no_report' WHERE sampled");
+   await worker!.estimateCapacity(snapshotId,20000000);
+   const estimate=(await worker!.state()).capacity_estimate;
+   const stageBytes=Number((await database.pool.query("SELECT pg_total_relation_size('external_full_stage')::text AS bytes")).rows[0].bytes);
+   assert.equal(estimate.sqlStagingBytes,stageBytes);assert.ok(stageBytes>estimate.businessBytes);
+   assert.equal(estimate.archiveDirectoryBytes,archive.length);
+   assert.equal(estimate.actualBytesPerDetail,estimate.businessBytes/10000);
+   assert.equal(estimate.fixedBytes,stageBytes+archive.length+estimate.walBytes);
+   assert.ok(Math.abs(estimate.estimatedBytes-(estimate.businessBytes*5*6+estimate.fixedBytes))<1);
+   assert.ok(estimate.estimatedBytes<(estimate.businessBytes+stageBytes)*5*6,'The full staging relation must not inflate per-vehicle projection');
+   assert.equal(estimate.allowed,true);
+   worker!.space=async()=>({used:.70,available:.30*1024**4,total:1024**4});
+   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_ESTIMATE/);
+   assert.equal((await worker!.state()).capacity_estimate.allowed,false,'70% remains a hard limit despite an approved budget');
+   worker!.space=async()=>({used:0,available:1024**4,total:1024**4});
+   await worker!.capacityGate();assert.equal(await worker!.sampleRemaining(),500);
+   }finally{
+    worker!.space=originalSpace;if(originalBudget===undefined)delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;else process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=originalBudget;
+    await database.pool.query('UPDATE external_full_sync SET capacity_pending=false,last_capacity_sample=0 WHERE id=1');
+    await database.pool.query("DELETE FROM external_full_work w USING external_full_members m WHERE w.source=m.source AND w.external_id=m.external_id AND m.canonical_id LIKE 'sample:%'");
+    await database.pool.query("DELETE FROM external_full_members WHERE canonical_id LIKE 'sample:%'");
+    await database.pool.query('DELETE FROM external_full_stage WHERE snapshot_id=$1',[snapshotId]);
+    await database.pool.query('DELETE FROM external_full_snapshots WHERE id=$1',[snapshotId]);await rm(archivePath);
+   }
   });
   await t.test('complete streamed CSV passes bootstrap before any detail capacity sample exists',async()=>{
    const id=randomUUID(),file=path.join(directory,`${id}.csv`);
@@ -101,7 +148,7 @@ test('formal full synchronization has durable independent receipt/application an
    const count=(await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n;
    await worker!.recover();await worker!.recover();await assert.rejects(worker!.recover(),/SYNC_RECOVERY_LIMIT/);
    assert.equal((await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n,count);
-   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,4);
+   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,5);
   });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });
