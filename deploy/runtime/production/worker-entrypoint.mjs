@@ -14,16 +14,29 @@ export function workerEnvironment(input, password, uid = process.getuid?.()) {
   if (!password || /[\u0000\r\n]/.test(password)) throw new Error('Invalid database secret');
   const {database, user} = deploymentDatabaseIdentity(input.HD_DATABASE_NAME);
   if (database === 'hd_auto') throw new Error('Worker requires the current validated release database');
-  return {...input, DATABASE_URL: `postgresql://${user}:${encodeURIComponent(password)}@postgres:5432/${database}`};
+  const {EXTERNAL_FX_NETWORK, EXTERNAL_FX_FORMAL_DATABASE, ...rest} = input;
+  return {...rest, DATABASE_URL: `postgresql://${user}:${encodeURIComponent(password)}@postgres:5432/${database}`};
+}
+
+export function workerInvocation(args) {
+  if (['fx-refresh', 'fx-health'].includes(args[0])) {
+    if (args.length !== 1) throw new Error('Formal FX operation accepts no extra arguments');
+    return {argv: ['dist/external/fx-cli.js', args[0] === 'fx-refresh' ? '--formal-refresh' : '--formal-health'], formalFx: true};
+  }
+  if (!['prepare', 'catch-up', 'once', 'status', 'recover'].includes(args[0])) throw new Error('Worker requires an explicit bounded operation');
+  return {argv: ['dist/external/ingestion/cli.js', ...args], formalFx: false};
 }
 
 export async function main(args = process.argv.slice(2)) {
-  if (!['prepare', 'catch-up', 'once', 'status', 'recover'].includes(args[0])) {
-    throw new Error('Worker requires an explicit bounded operation');
-  }
+  const operation = workerInvocation(args);
   const {readLocalSecret} = await import('/app/apps/api/dist/local-secrets.js');
   const env = workerEnvironment(process.env, readLocalSecret('/run/secrets/app_db_password'));
-  const child = spawn(process.execPath, ['dist/external/ingestion/cli.js', ...args], {stdio: 'inherit', env});
+  if (operation.formalFx) {
+    env.EXTERNAL_CATALOG_MODE = 'disabled';
+    env.EXTERNAL_FX_NETWORK = 'enabled';
+    env.EXTERNAL_FX_FORMAL_DATABASE = env.HD_DATABASE_NAME;
+  }
+  const child = spawn(process.execPath, operation.argv, {stdio: 'inherit', env});
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
   child.on('error', () => {console.error('Worker could not start'); process.exit(1);});
   child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));

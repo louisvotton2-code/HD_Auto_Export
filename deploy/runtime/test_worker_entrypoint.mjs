@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {workerEnvironment} from './production/worker-entrypoint.mjs';
+import {workerEnvironment, workerInvocation} from './production/worker-entrypoint.mjs';
 
 const approved = {HD_DEPLOYMENT_ENV: 'production', HD_RELEASE_ID: 'a'.repeat(40),
   HD_DATABASE_NAME: 'hd_release_' + 'b'.repeat(16), EXTERNAL_SYNC_MODE: 'off', TRANSLATION_PROVIDER: 'disabled'};
@@ -37,4 +37,16 @@ test('missing/old/invalid deployment identity and malformed secrets are refused'
   for (const password of ['', 'synthetic\n', 'synthetic\0']) {
     assert.throws(() => workerEnvironment(approved, password, 15001));
   }
+});
+
+test('FX is a separate exact operation; ingestion cannot inherit a network refresh gate', () => {
+  assert.deepEqual(workerInvocation(['fx-refresh']), {argv: ['dist/external/fx-cli.js', '--formal-refresh'], formalFx: true});
+  assert.deepEqual(workerInvocation(['fx-health']), {argv: ['dist/external/fx-cli.js', '--formal-health'], formalFx: true});
+  assert.throws(() => workerInvocation(['fx-refresh', '--seed', 'a']));
+  assert.throws(() => workerInvocation(['dist/main.js']));
+  assert.throws(() => workerInvocation([]));
+  assert.equal(workerInvocation(['once', '--job', 'synthetic-id']).formalFx, false);
+  const env = workerEnvironment({...approved, EXTERNAL_FX_NETWORK: 'enabled', EXTERNAL_FX_FORMAL_DATABASE: 'other'}, 'synthetic', 15001);
+  assert.equal(env.EXTERNAL_FX_NETWORK, undefined);
+  assert.equal(env.EXTERNAL_FX_FORMAL_DATABASE, undefined);
 });
