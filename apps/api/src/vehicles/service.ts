@@ -650,7 +650,8 @@ export class InventoryService {
       let column=sort==='mileage_asc'?"(p.data->'facts'->>'mileageKm')::numeric":sort==='year_desc'?"(p.data->'facts'->>'modelYear')::numeric":staffPriceAmountSql;
       if(sort.startsWith('price_')&&query.priceView==='usd')column=usdSortAmount(column,"p.data->'price'->'money'->>'currency'",quote,params);
       const selection=query.projection==='card'?staffCardSelect(query.locale,params):publicSelect;
-      const selected=selection.replace('SELECT ',`SELECT to_char(v.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at,${numeric?`(${column})::text AS cursor_sort_value,`:''}`);
+      // SQL regexes contain dollar tokens such as $': callback replacement preserves them literally.
+      const selected=selection.replace('SELECT ',()=>`SELECT to_char(v.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at,${numeric?`(${column})::text AS cursor_sort_value,`:''}`);
       const order=numeric?`ORDER BY ${catalogOrder(column,'v.id',sort)}`:'ORDER BY v.published_at DESC,v.id';
       let staff:QueryResult<Row & {cursor_published_at:string;cursor_sort_value?:string|null}>|null=null;
       if(cursor?.stream!=='external'&&(cursor||offset<staffTotal)) {

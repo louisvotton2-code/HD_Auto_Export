@@ -51,7 +51,7 @@ before(async()=>{
       await tx.query(`INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,upstream_state,fetched_at,published_at)
         VALUES($1,'synthetic-feed','synthetic-market',$2,1,$3,$4,'active',now(),$5)`,[id,`card-${i}`,'a'.repeat(64),JSON.stringify(candidate),`2026-02-01T00:00:00.00000${i+1}Z`]);
       await tx.query(`INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
-        VALUES($1,$2,'Synthetic Market',$3,$4,$5,$6,$7,$8)`,[id,`2026-02-01T00:00:00.00000${i+1}Z`,candidate.listingUrl,JSON.stringify(p.facts),p.priceCny,JSON.stringify(p.issues),JSON.stringify(p.localized),JSON.stringify({...p.details,rawMarker:'DETAIL_MUST_NOT_LEAVE_SQL'})]);
+        VALUES($1,$2,'Synthetic Market',$3,$4,$5,$6,$7,$8)`,[id,`2026-02-01T00:00:00.00000${i+1}Z`,candidate.listingUrl,JSON.stringify(p.facts),p.priceCny,JSON.stringify(p.issues),JSON.stringify(p.localized),JSON.stringify({...p.details,original:{...p.details.original,description:{text:'DETAIL_MUST_NOT_LEAVE_SQL',contentLocale:'en'}}})]);
       for(let j=0;j<20;j++) {
         const mediaId=randomUUID();if(j===1)covers.set(`ext-${id}`,`ximg-${mediaId}`);
         await tx.query(`INSERT INTO external_media(id,listing_id,source_media_id,url,position,active,refreshed_at,expires_at)
@@ -65,7 +65,10 @@ after(async()=>{await cache.close();await db.close();try{if(created)await mainte
 test('card database rows contain one live cover and no description, configuration, source document or report',async()=>{
   const returned:unknown[]=[];const statements:string[]=[];
   const observed={...db,transaction:async<T>(work:(tx:PoolClient)=>Promise<T>)=>db.transaction(async tx=>work({query:async(sql:string,values?:unknown[])=>{
-    statements.push(sql);const result=await tx.query(sql,values);returned.push(...result.rows);return result;
+    statements.push(sql);const result=await tx.query(sql,values);
+    // The read-only transaction setup has two statements; pg returns one result per statement.
+    for(const part of Array.isArray(result)?result:[result])returned.push(...part.rows);
+    return result;
   }} as PoolClient))} as Database;
   const result=PublicVehicleCardListSchema.parse(await new InventoryService(observed,true).listPublic(query(),'card'));
   assert.equal(result.data.items.length,8);
