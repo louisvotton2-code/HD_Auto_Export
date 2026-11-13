@@ -125,7 +125,7 @@ def measure():
 def dump_command(c, image, name, extra):
     return ['docker','run','--rm','--name',name,'--network',c['dumpNetwork'],
             '--cpus','0.25','--memory','256m','--memory-swap','256m','--pids-limit','64',
-            '--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
+            '--read-only','--user','0:0','--cap-drop=ALL','--security-opt=no-new-privileges',
             '--tmpfs','/tmp:rw,noexec,nosuid,size=16m',
             '--mount',f"type=bind,src={c['dumpPgpassFile']},dst=/run/pgpass,readonly",
             '--env','PGPASSFILE=/run/pgpass','--env','PGCONNECT_TIMEOUT=10',
