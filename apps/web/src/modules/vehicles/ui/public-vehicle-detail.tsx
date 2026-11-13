@@ -19,13 +19,13 @@ import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { VehiclePriceValues } from './vehicle-price-values';
 import { VehicleHistory } from './vehicle-history';
-import { VehicleConfiguration } from './vehicle-configuration';
+import { PublicVehicleConfiguration } from './public-vehicle-configuration';
+import { PublicVehicleGallery } from './public-vehicle-gallery';
 import { VehicleInspectionReport, VehicleReportLink } from './vehicle-inspection-report';
 import { hasInspectionContent } from '../vehicle-inspection';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
-  VehicleGallery,
   type VehicleDestination,
 } from './vehicle-gallery';
 import styles from './public-detail.module.css';
@@ -100,7 +100,7 @@ export function PublicVehicleDetail({
                 locale={locale}
               />
             </div>
-            <VehicleGallery images={vehicle.images} title={title} locale={locale} />
+            <PublicVehicleGallery vehicle={vehicle} title={title} locale={locale} />
             <div className={styles.tiles}>
               <div className={styles.tile}>
                 <p><span className={styles.tileIcon}><Icon name="document" size={16} /></span>{copy.inquiry}</p>
@@ -157,7 +157,7 @@ export function PublicVehicleDetail({
                 </p>
               </section>
             )}
-            <VehicleConfiguration configuration={vehicle.configuration} locale={locale} />
+            <PublicVehicleConfiguration vehicle={vehicle} locale={locale} />
             <ExternalVehicleInformation vehicle={vehicle} locale={locale} />
           </div>
 

@@ -4,11 +4,11 @@ import type { Locale } from '@/i18n/routing';
 const hasChineseText = /\p{Script=Han}/u;
 const genericTitle = { zh: '车辆信息', en: 'Vehicle details', ru: 'Информация об автомобиле' };
 
-/** Use the localized catalog facts when there is no supplied Chinese title. */
+/** Imported supplied titles retain their actual source language; catalog placeholders use safe facts. */
 export function publicVehicleTitle(vehicle: PublicVehicle, locale: Locale) {
   const original = vehicle.content.title;
   const missingTitle = vehicle.source.kind === 'external' && original.kind === 'catalog';
-  const missingChinese = locale === 'zh' && !/^zh(?:-|$)/i.test(original.contentLocale);
+  const missingChinese = vehicle.source.kind !== 'external' && locale === 'zh' && !/^zh(?:-|$)/i.test(original.contentLocale);
   if (!missingTitle && !missingChinese) {
     return { text: original.text, lang: original.contentLocale };
   }

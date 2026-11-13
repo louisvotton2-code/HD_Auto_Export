@@ -53,7 +53,7 @@ export async function requestPublicApi(
     if (!response.ok) {
       await response.body?.cancel();
       throw new PublicApiError(
-        [400, 404, 429].includes(response.status) ? response.status : 503,
+        [400, 404, 409, 429].includes(response.status) ? response.status : 503,
         response.status === 429
           ? String(retryAfterSeconds(response.headers.get('retry-after')))
           : undefined,

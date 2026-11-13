@@ -22,6 +22,9 @@ import {
   PublicVehicleResponseSchema,
   PublicVehicleSchema,
   PublicVehicleQuerySchema,
+  PublicVehicleSegmentQuerySchema,
+  PublicVehicleGalleryResponseSchema,
+  PublicVehicleConfigurationResponseSchema,
 } from '@hd/contracts/public';
 
 export const fixtureSuite = 'hd-web-public-catalog-v1';
@@ -216,7 +219,63 @@ const resetState = () => ({
   previewDelayMs: 0,
   previewSlowLocale: '',
   previewImageCount: 1,
+  segmentGalleryCount: null,
+  segmentConfigurationCount: null,
+  segmentFailure: 'none',
+  segmentDelayMs: 0,
+  segmentRevision: 1,
+  segmentFallback: false,
+  segmentOverlap: false,
 });
+
+// Synthetic segment collections stay server-side; the public vehicle seed remains bounded.
+function segmentDisplay(text, locale, contentLocale = locale) {
+  return { status: 'ready', text, requestedLocale: locale, contentLocale, provenance: 'original', reviewed: false };
+}
+function segmentGallery(state, row, locale) {
+  if (state.segmentGalleryCount === null) return row.images;
+  return Array.from({ length: state.segmentGalleryCount }, (_, index) => {
+    const id = `media_segment_${row.id}_v${state.segmentRevision}_${index + 1}`;
+    if (row.source.kind === 'external') {
+      const hex = createHash('sha256').update(id).digest('hex');
+      return {
+        id: `ximg-${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
+        url: `https://photos.example.invalid/segment-${row.id}-v${state.segmentRevision}-${index + 1}.webp`,
+        alt: `Source photo ${index + 1}`, width: null, height: null, sortOrder: index, isCover: index === 0,
+        remote: row.images[0]?.remote ?? { revision: state.segmentRevision, refreshedAt: timestamp, expiresAt: null },
+      };
+    }
+    return { id, url: `/api/v1/media/${id}`, alt: `Photo ${index + 1}`, width: 640, height: 420, sortOrder: index, isCover: index === 0 };
+  });
+}
+function segmentConfiguration(state, row, locale) {
+  if (state.segmentConfigurationCount === null) {
+    if (row.external?.detail) return row.external.detail.specifications.map(({ name, value }, index) => ({
+      id: `fixture-spec-${index}`, name: segmentDisplay(name.text, locale, name.contentLocale), value: segmentDisplay(value.text, locale, value.contentLocale),
+    }));
+    return row.configuration?.items ?? [];
+  }
+  return Array.from({ length: state.segmentConfigurationCount }, (_, index) => ({
+    id: `cfg-${(index + 1).toString(16).padStart(4, '0')}`,
+    name: segmentDisplay(state.segmentFallback && index === 0 ? '排量(cc)' : `Configuration item ${index + 1}`, locale, state.segmentFallback && index === 0 ? 'zh' : locale),
+    value: segmentDisplay(index === 0 ? '0 cm³ / 8 AT' : index === 1 ? '0' : index === 2 ? 'false' : `Value ${index + 1}`, locale, state.segmentFallback && index === 0 ? 'zh' : locale),
+  }));
+}
+function segmentSeed(state, row, locale) {
+  if (state.segmentGalleryCount !== null) {
+    const images = segmentGallery(state, row, locale);
+    row.images = images.slice(0, 30);
+    row.mediaTotal = images.length;
+    if (row.display) row.display.mediaAlt = row.images.map(image => ({ mediaId: image.id, value: segmentDisplay(image.alt, locale) }));
+  }
+  if (state.segmentConfigurationCount !== null) {
+    const items = segmentConfiguration(state, row, locale);
+    row.configurationTotal = items.length;
+    if (row.external?.detail) row.external.detail.specifications = items.slice(0, 3).map(({ name, value }) => ({ name: { text: name.text, contentLocale: name.contentLocale }, value: { text: value.text, contentLocale: value.contentLocale } }));
+    else row.configuration = items.length ? { version: 1, items: items.slice(0, 3) } : null;
+  }
+  return row;
+}
 
 // Deliberately synthetic employee sessions, draft content and image bytes. These endpoints
 // belong only to the isolated fixture server and never authenticate a real account.
@@ -487,6 +546,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   // The nonce survives every reset. A prior test's cache key can never become current again.
   const catalogEpoch = randomUUID();
   let catalogRevision = 0;
+  let segmentRevision = 0;
   let fxVersion = randomUUID();
   let stateChangedAt = Date.now();
   let mismatchesRemaining = 0;
@@ -502,6 +562,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
+    if (Object.keys(patch).some(key => ['segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+      'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
       fxVersion = randomUUID();
@@ -540,7 +602,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, { suite: fixtureSuite });
       if (url.pathname === '/__fixtures/reset' && req.method === 'POST') {
         state = resetState();
-        changed({ usdRateAvailable: true });
+        changed({ usdRateAvailable: true, segmentRevision: 1 });
         requests = [];
         return send(res, 200, { suite: fixtureSuite, state });
       }
@@ -581,6 +643,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
+          segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
+          segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
+          segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),
+          segmentDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
+          segmentRevision: (v) => Number.isInteger(v) && v >= 1 && v <= 100,
+          segmentFallback: (v) => typeof v === 'boolean',
+          segmentOverlap: (v) => typeof v === 'boolean',
+
         };
         if (
           !patch ||
@@ -677,17 +747,19 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 202, {data:{queued:active && report.data.revision===1},meta:{requestId:'fixture-media-report'}});
       }
       if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
-      let catalogQuery, filterQuery, mediaQuery;
+      const segmentMatch = /^\/api\/v1\/vehicles\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})\/(gallery|configuration)$/.exec(url.pathname);
+      let catalogQuery, filterQuery, mediaQuery, segmentQuery;
       let locale = 'ru';
       if (url.pathname.startsWith('/api/v1/')) {
         const raw = Object.fromEntries(url.searchParams);
         if ([...url.searchParams.keys()].some((key) => url.searchParams.getAll(key).length !== 1))
           return send(res, 400, error('INVALID_REQUEST'));
-        const rawId = url.pathname.match(/^\/api\/v1\/(?:vehicles|media)\/(.*)$/)?.[1];
+        const rawId = segmentMatch?.[1] ?? url.pathname.match(/^\/api\/v1\/(?:vehicles|media)\/(.*)$/)?.[1];
         if (rawId !== undefined && !IdSchema.safeParse(rawId).success)
           return send(res, 400, error('INVALID_REQUEST'));
         try {
-          if (url.pathname.startsWith('/api/v1/media/'))
+          if (segmentMatch) { segmentQuery = PublicVehicleSegmentQuerySchema.parse(raw); locale = segmentQuery.locale; }
+          else if (url.pathname.startsWith('/api/v1/media/'))
             mediaQuery = PublicMediaQuerySchema.parse(raw);
           else if (url.pathname === '/api/v1/vehicles') {
             catalogQuery = PublicVehicleQuerySchema.parse(filterInput(raw));
@@ -795,9 +867,48 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           item.display.mediaAlt = [];
           item.external.issues.push({ field: 'images', code: 'expired' });
         }
-        return priceProjection(item);
+        return priceProjection(detail ? segmentSeed(state, item, locale) : item);
       };
       const all = [...staff, ...imports.map((kind) => makeImport(kind))];
+      if (segmentMatch) {
+        const [, vehicleId, kind] = segmentMatch;
+        const visibleImport = state.importedPublished && state.mode !== 'empty'
+          ? importStates.filter(value => value !== 'supplier' || !state.importedWithdrawn).find(value => makeImportedPublicVehicleFixture(locale, value).id === vehicleId)
+          : undefined;
+        const found = visibleImport ? makeImport(visibleImport, true)
+          : staff.find(row => row.id === vehicleId) ?? (vehicleId === 'fixture_sold' ? vehicle(vehicleId, locale) : null);
+        if (!found || state.segmentFailure === 'missing') return send(res, 404, error('NOT_FOUND'));
+        if (!visibleImport && state.configurationMode !== 'none') found.configuration = fixtureConfiguration(locale, state.configurationMode);
+        if (state.segmentFailure === 'conflict') return send(res, 409, error('VERSION_CONFLICT'));
+        if (state.segmentFailure === 'rate_limit') return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
+        if (state.segmentFailure === 'unavailable') return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+        const revision = createHash('sha256').update(`${catalogEpoch}:segments:${segmentRevision}:${state.segmentRevision}:${vehicleId}:${kind}:${locale}`).digest('hex');
+        let offset = 0;
+        if (segmentQuery.cursor) {
+          let cursor;
+          try { cursor = JSON.parse(Buffer.from(segmentQuery.cursor, 'base64url').toString('utf8')); }
+          catch { return send(res, 400, error('INVALID_REQUEST')); }
+          if (cursor.vehicleId !== vehicleId || cursor.locale !== locale || cursor.kind !== kind || !Number.isInteger(cursor.offset) || cursor.offset < 1)
+            return send(res, 400, error('INVALID_REQUEST'));
+          if (cursor.revision !== revision) return send(res, 409, error('VERSION_CONFLICT'));
+          offset = cursor.offset;
+        }
+        const snapshot = { ...state };
+        const complete = kind === 'gallery' ? segmentGallery(snapshot, found, locale) : segmentConfiguration(snapshot, found, locale);
+        if (offset > complete.length) return send(res, 400, error('INVALID_REQUEST'));
+        const start = snapshot.segmentOverlap && offset > 0 ? offset - 1 : offset;
+        const nextOffset = Math.min(complete.length, start + segmentQuery.limit);
+        const items = complete.slice(start, nextOffset);
+        const nextCursor = nextOffset < complete.length ? Buffer.from(JSON.stringify({ vehicleId, locale, kind, revision, offset: nextOffset })).toString('base64url') : null;
+        const schema = kind === 'gallery' ? PublicVehicleGalleryResponseSchema : PublicVehicleConfigurationResponseSchema;
+        const payload = schema.parse({ data: { vehicleId, locale, revision, total: complete.length, items, nextCursor }, meta: { requestId: `fixture-${kind}` } });
+        if (snapshot.segmentFailure === 'private_field') payload.data.internal = { vin: 'PRIVATE_VIN_SENTINEL', seller: 'PRIVATE_SELLER_SENTINEL', staff: 'PRIVATE_STAFF_SENTINEL', reportUrl: 'https://reports.example.invalid/private' };
+        if (snapshot.segmentFailure === 'wrong_locale') payload.data.locale = locale === 'ru' ? 'en' : 'ru';
+        if (snapshot.segmentFailure === 'wrong_vehicle') payload.data.vehicleId = 'fixture_wrong_vehicle';
+        // Capture before this delay so a navigation test can receive a deliberately late old page.
+        if (snapshot.segmentDelayMs) await new Promise(resolve => setTimeout(resolve, snapshot.segmentDelayMs));
+        return send(res, 200, payload);
+      }
       if (url.pathname === '/api/v1/home/vehicles') {
         const sections =
           state.sectionCount > 0 && staff.length
@@ -951,7 +1062,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               res,
               200,
               PublicVehicleResponseSchema.parse({
-                data: withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode),
+                data: segmentSeed(state, withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode), locale),
                 meta: catalogMeta('fixture-detail'),
               }),
             )
@@ -966,7 +1077,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
             ? [vehicle('fixture_future', locale)]
             : []),
         ];
-        const referenced = readable.some((v) => v.images.some((image) => image.id === mediaId));
+        const referenced = readable.some((v) => segmentGallery(state, v, locale).some((image) => image.id === mediaId));
         if (!referenced) return send(res, 404, error('NOT_FOUND'));
         const png = imageBytes(mediaId, mediaQuery?.variant === 'thumb');
         res.writeHead(200, {
