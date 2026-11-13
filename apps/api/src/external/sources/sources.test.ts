@@ -127,3 +127,13 @@ test('EXT07 reports preserve actual English and reject private fields and invali
  assert.equal(adaptSourceDocuments([document(row)],1,observedAt)!.evidence.en.inspection.status,'pending');
  assert.equal(adaptSourceDocuments([document({...row,hasInspectionReport:false})],1,observedAt)!.evidence.en.inspection.status,'no_report');
 });
+
+test('engine and motor horsepower have separate three-language labels and never replace vehicle horsepower',()=>{
+ const row={...detail(),powerHp:300,specs:{...detail().specs,engineHp:150,motorHp:0,powerHp:400}};
+ const output=adaptSourceDocuments([document(row)],1,observedAt)!;
+ for(const locale of ['zh','en','ru'] as const){
+  const engine=output.fullConfiguration[locale].find(i=>i.id==='specs.engineHp')!,motor=output.fullConfiguration[locale].find(i=>i.id==='specs.motorHp')!;
+  assert.equal(engine.value.text,'150 hp');assert.equal(motor.value.text,'0 hp');assert.equal(engine.name.contentLocale,locale);assert.equal(motor.name.contentLocale,locale);
+  assert.notEqual(engine.name.text,motor.name.text);assert.equal(output.evidence[locale].extras.powerHp,300);
+ }
+});

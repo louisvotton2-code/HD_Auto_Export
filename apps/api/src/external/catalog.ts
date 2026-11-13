@@ -97,8 +97,11 @@ function catalogDisplay(row:CatalogRow):VehicleDisplay {
 }
 // The extras table is a small public whitelist, never the provider response or report payload.
 function publicExtras(row: CatalogRow) {
+  const manufacture=row.overridden_names?.includes('manufacturedAt')
+    ? {date:row.facts.manufacturedAt,range:null,source:'staff',basis:null}
+    : row.extras?.manufacture;
   return { ...(row.extras?.identifiers ? { identifiers: row.extras.identifiers } : {}),
-    ...(row.extras?.manufacture ? { manufacture: row.extras.manufacture } : {}),
+    ...(manufacture ? { manufacture } : {}),
     ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass } : {}),
     exportStatus: row.extras?.exportStatus ?? 'unknown' };
 }

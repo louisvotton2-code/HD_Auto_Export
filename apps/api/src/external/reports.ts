@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { AdminReportSchema, type AdminReport, type VehicleDraftSource } from '@hd/contracts/admin';
 import type { ReportSourceRow } from './report-evidence.js';
-import { chinaCarSampleProfile, getPlatform, publicLink, syntheticProfile } from './profiles.js';
+import { chinaCarProfile, chinaCarSampleProfile, getPlatform, publicLink, syntheticProfile } from './profiles.js';
 
 type Queryable = Pick<PoolClient, 'query'>;
 export type ReportEnrichment = { binding: unknown; content: unknown } | null;
@@ -11,7 +11,7 @@ const absent = (): AdminReport => ({ hasReport: false, url: null });
 
 /** Source presence is independent of network verification. A rejected URL still proves a source claim, never clickability. */
 export function projectSourceReport(source: ReportSourceRow, enrichment: ReportEnrichment = null): AdminReport {
-  const profile = source.provider === chinaCarSampleProfile.id ? chinaCarSampleProfile : source.provider === syntheticProfile.id ? syntheticProfile : null;
+  const profile = source.provider === chinaCarProfile.id ? chinaCarProfile : source.provider === chinaCarSampleProfile.id ? chinaCarSampleProfile : source.provider === syntheticProfile.id ? syntheticProfile : null;
   if (!profile || !getPlatform(profile, source.platform_id) || !source.source_data ||
       source.source_data.platformId !== source.platform_id || source.source_data.externalId !== source.external_id) return absent();
   const inspection = source.source_data.inspection;

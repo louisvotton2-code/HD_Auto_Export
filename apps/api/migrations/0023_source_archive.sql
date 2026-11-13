@@ -65,3 +65,15 @@ BEGIN
 END $$;
 CREATE TRIGGER external_extras_public_version AFTER INSERT OR UPDATE OR DELETE ON external_vehicle_extras FOR EACH ROW EXECUTE FUNCTION version_public_source_evidence();
 CREATE TRIGGER external_evidence_public_version AFTER INSERT OR UPDATE OR DELETE ON external_vehicle_evidence_sets FOR EACH ROW EXECUTE FUNCTION version_public_source_evidence();
+-- Persistent primary-key sweep avoids rescanning retained/pinned prefixes on every tick.
+CREATE TABLE external_source_maintenance (
+ id integer PRIMARY KEY CHECK(id=1),phase text NOT NULL DEFAULT 'documents' CHECK(phase IN('documents','responses','trims','blobs')),
+ cursor jsonb NOT NULL DEFAULT '{}',due_at timestamptz NOT NULL DEFAULT now(),rounds bigint NOT NULL DEFAULT 0,
+ scanned bigint NOT NULL DEFAULT 0,deleted bigint NOT NULL DEFAULT 0,compressed bigint NOT NULL DEFAULT 0,
+ last_completed_at timestamptz,updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO external_source_maintenance(id) VALUES(1);
+CREATE INDEX external_source_heads_document ON external_source_heads(document_id);
+CREATE INDEX external_source_documents_version_order ON external_source_documents(provider,source,external_id,kind,locale,last_observed_at DESC,id DESC);
+CREATE INDEX external_source_responses_version_order ON external_source_responses(document_id,observed_at DESC,response_hash DESC);
+CREATE INDEX external_trim_documents_version_order ON external_trim_documents(provider,trim_id,locale,last_observed_at DESC,hash DESC);

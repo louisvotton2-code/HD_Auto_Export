@@ -6,7 +6,7 @@ CREATE TABLE external_full_sync (
  next_delta_at timestamptz NOT NULL DEFAULT now(), next_snapshot_at timestamptz NOT NULL DEFAULT now(),
  next_maintenance_at timestamptz NOT NULL DEFAULT now(), last_success_at timestamptz,
  last_error_code text, last_error_at timestamptz, request_after timestamptz NOT NULL DEFAULT '-infinity',
- recovery_count integer NOT NULL DEFAULT 0, triggered_by text, last_capacity_sample bigint NOT NULL DEFAULT 0,capacity_pending boolean NOT NULL DEFAULT false,capacity_estimate jsonb,capacity_baseline jsonb, account jsonb, bulk_day date, bulk_ids integer NOT NULL DEFAULT 0,
+ recovery_count integer NOT NULL DEFAULT 0, triggered_by text, last_capacity_sample bigint NOT NULL DEFAULT 0,capacity_pending boolean NOT NULL DEFAULT false,capacity_estimate jsonb,capacity_baseline jsonb, account jsonb, account_checked_at timestamptz,account_reserved_ids integer NOT NULL DEFAULT 0, bulk_day date, bulk_ids integer NOT NULL DEFAULT 0,
  updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO external_full_sync(id) VALUES(1);

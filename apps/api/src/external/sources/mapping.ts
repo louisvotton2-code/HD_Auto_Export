@@ -55,7 +55,7 @@ function suppressSeats(row:ObjectValue){
   }
 }
 const fieldDisplay=sourceDisplay;
-const specKeys=['displacementCc','powerKw','powerHp','torqueNm','engineKw','motorKw','systemKw','energyType','emissionStandard','cylinders','transmissionType','gears','driveType','bodyType','doors','seats','lengthMm','widthMm','heightMm','wheelbaseMm','curbWeightKg','grossWeightKg','fuelTankL','trunkL','topSpeedKmh','acceleration0to100S','fuelConsumptionL100km','launchDate','warranty'];
+const specKeys=['displacementCc','powerKw','powerHp','torqueNm','engineKw','motorKw','engineHp','motorHp','systemKw','energyType','emissionStandard','cylinders','transmissionType','gears','driveType','bodyType','doors','seats','lengthMm','widthMm','heightMm','wheelbaseMm','curbWeightKg','grossWeightKg','fuelTankL','trunkL','topSpeedKmh','acceleration0to100S','fuelConsumptionL100km','launchDate','warranty'];
 const evKeys=['batteryKwh','batteryType','batteryWarranty','consumptionKwh100km','fastChargeHours','motorLayout','motorPowerKw','motorTorqueNm','motorType','motors','rangeKm','slowChargeHours'];
 function configuration(row:ObjectValue,locale:Locale,disputed:boolean):SourceConfigurationItem[]{
   // The unresolved trim/year affects the whole supplier specification sheet; retain it privately until reviewed.

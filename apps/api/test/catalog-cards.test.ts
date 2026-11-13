@@ -140,6 +140,13 @@ test('source name enrichment preserves employee text and fact overrides in cards
     await db.pool.query('INSERT INTO external_listing_overrides(listing_id,data) VALUES($1,$2)',[id,JSON.stringify({hidden:false,facts:{model:{id:'synthetic-r1',name:'Employee fact model'}},text:[]})]);
     assert.equal((await read()).data.items[0]!.facts.model!.name,'Employee fact model');
     assert.equal((await service.filters(filters({q:'Unique enrichment vehicle'}))).models[0]!.name,'Employee fact model');
+    const corrected={value:'2021-05',precision:'month'};
+    await db.pool.query("UPDATE external_vehicle_extras SET data=data||$2::jsonb WHERE listing_id=$1",[id,JSON.stringify({manufacture:{date:{value:'2020-01',precision:'month'},range:null,source:'supplier',basis:null}})]);
+    await db.pool.query("UPDATE external_listing_overrides SET data=jsonb_set(data,'{facts,manufacturedAt}',$2::jsonb) WHERE listing_id=$1",[id,JSON.stringify(corrected)]);
+    await db.pool.query("UPDATE external_catalog SET facts=jsonb_set(facts,'{manufacturedAt}',$2::jsonb) WHERE listing_id=$1",[id,JSON.stringify(corrected)]);
+    assert.deepEqual((await read()).data.items[0]!.manufacture,{date:corrected,range:null,source:'staff',basis:null});
+    assert.deepEqual((await service.getPublic(`ext-${id}`,'en','localized')).manufacture,{date:corrected,range:null,source:'staff',basis:null});
+
   } finally {
     await db.pool.query('DELETE FROM external_listing_overrides WHERE listing_id=$1',[id]);
     await db.pool.query('DELETE FROM external_vehicle_extras WHERE listing_id=$1',[id]);

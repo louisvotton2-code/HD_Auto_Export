@@ -6,9 +6,11 @@ import {mkdir,statfs,stat,unlink,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
-import {verifyCatalogCsv,persistSourceResponse,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,compactSourceBlobs,pruneSourceHistory,pruneSourceBlobs,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
+import {verifyCatalogCsv,persistSourceResponse,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {jsonHash} from '../normalize.js';
+import {runSourceMaintenance} from './maintenance.js';
+import {syncAccount} from './quota.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,parseAlias} from './apply.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
@@ -146,6 +148,21 @@ export class FullSyncWorker{
   if(!allowed)throw new FullSyncError(enoughSample||approved>0?'SYNC_CAPACITY_ESTIMATE':'SYNC_CAPACITY_PENDING');
  }
  async promoteSnapshot(id:string){
+  const remaining=await this.sampleRemaining();if(!remaining)return 0;
+  const target=Math.min(500,remaining);let promoted=0;
+  // At most ten 100-row transactions per tick; interleaved sources can fill one real 500-ID bulk.
+  for(let part=0;part<10;part++){
+   const ready=(await this.db.pool.query(`SELECT source,count(*)::integer AS n FROM (
+    SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+    WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn'
+    ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1000) q GROUP BY source`)).rows;
+   if(ready.some(row=>row.n>=target))break;
+   const count=await this.promoteSnapshotChunk(id);promoted+=count;if(count<100)break;
+   await this.applyEvents(true);
+  }
+  return promoted;
+ }
+ private async promoteSnapshotChunk(id:string){
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
    const snap=(await tx.query("SELECT * FROM external_full_snapshots WHERE id=$1 AND state IN('verified','applying') FOR UPDATE",[id])).rows[0];if(!snap)return 0;
    const rows=(await tx.query('SELECT * FROM external_full_stage WHERE snapshot_id=$1 AND row_number>$2 ORDER BY row_number LIMIT 100',[id,snap.apply_cursor])).rows;
@@ -171,8 +188,10 @@ export class FullSyncWorker{
   });
  }
  async details(){
-  await this.heavy();const remaining=await this.sampleRemaining();const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[remaining===0?500:Math.min(500,remaining),remaining===0])).rows;
+  await this.heavy();const remaining=await this.sampleRemaining();
+  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1`,[remaining===0])).rows[0];
+  if(!selected)return 0;const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[remaining===0?500:Math.min(500,remaining),remaining===0,selected.source])).rows;
   if(!jobs.length)return 0;
   for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
    const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale));if(!wanted.length)continue;
@@ -188,7 +207,7 @@ export class FullSyncWorker{
      });
     }
     for(const id of response.notFound)await this.failWork(source,id,'detail','SYNC_DETAIL_NOT_FOUND');
-   }}catch(error){for(const job of wanted.filter(j=>!(error instanceof FullSyncError)||!error.affectedIds||error.affectedIds.includes(j.external_id)))await this.failWork(source,job.external_id,'detail',errorCode(error));throw error;}
+   }}catch(error){if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'))throw error;for(const job of wanted.filter(j=>!(error instanceof FullSyncError)||!error.affectedIds||error.affectedIds.includes(j.external_id)))await this.failWork(source,job.external_id,'detail',errorCode(error));throw error;}
   }
   let applied=0;
   for(const job of jobs){try{await this.transaction(async tx=>{
@@ -241,19 +260,18 @@ export class FullSyncWorker{
  }
  async daily(){
   await this.heavy();for(const kind of ['account','dictionary'] as const){
-   if((await this.db.pool.query('SELECT 1 FROM external_full_daily WHERE kind=$1 AND day=current_date',[kind])).rowCount)continue;
+   if((await this.db.pool.query("SELECT 1 FROM external_full_daily WHERE kind=$1 AND day=(now() AT TIME ZONE 'UTC')::date",[kind])).rowCount)continue;
    const result=await this.client.daily(kind);await this.transaction(async tx=>{await persistSourceResponse(tx,result.rawResponse);
     await protectSourceBlob(tx,result.rawResponse.hash,{kind:'pending',reference:`full-daily:${kind}:${new Date().toISOString().slice(0,10)}`});
-    await tx.query('INSERT INTO external_full_daily VALUES($1,current_date,$2) ON CONFLICT DO NOTHING',[kind,result.rawResponse.hash]);
-    if(kind==='account'){const account=result.payload as Record<string,unknown>;
-     if(!account||!['business','scale','trial'].includes(String(account.plan).toLowerCase())||typeof account.expiresAt==='string'&&Date.parse(account.expiresAt)<=Date.now())throw new FullSyncError('SYNC_ACCOUNT_UNAVAILABLE');
-     await tx.query('UPDATE external_full_sync SET account=$1 WHERE id=1',[JSON.stringify(account)]);
+    await tx.query("INSERT INTO external_full_daily VALUES($1,(now() AT TIME ZONE 'UTC')::date,$2) ON CONFLICT DO NOTHING",[kind,result.rawResponse.hash]);
+    if(kind==='account'){const account=syncAccount(result.payload);
+     await tx.query('UPDATE external_full_sync SET account=$1,account_checked_at=clock_timestamp(),account_reserved_ids=0 WHERE id=1',[JSON.stringify(account)]);
     }
    });
   }
-  await this.transaction(async tx=>{const old=(await tx.query("SELECT kind,to_char(day,'YYYY-MM-DD') AS day FROM external_full_daily d WHERE day<current_date-7 OR (SELECT count(*) FROM external_full_daily newer WHERE newer.kind=d.kind AND newer.day>d.day)>=2 LIMIT 100")).rows;for(const row of old){await releaseSourceReferences(tx,'pending',`full-daily:${row.kind}:${row.day}`);await tx.query('DELETE FROM external_full_daily WHERE kind=$1 AND day=$2',[row.kind,row.day]);}await compactSourceBlobs(tx,20);await pruneSourceHistory(tx,200);await pruneSourceBlobs(tx);});
+  await this.transaction(async tx=>{const old=(await tx.query("SELECT kind,to_char(day,'YYYY-MM-DD') AS day FROM external_full_daily d WHERE day<current_date-7 OR (SELECT count(*) FROM external_full_daily newer WHERE newer.kind=d.kind AND newer.day>d.day)>=2 LIMIT 100")).rows;for(const row of old){await releaseSourceReferences(tx,'pending',`full-daily:${row.kind}:${row.day}`);await tx.query('DELETE FROM external_full_daily WHERE kind=$1 AND day=$2',[row.kind,row.day]);}});
   await this.pruneStaging();
-  await this.db.pool.query("UPDATE external_full_sync SET next_maintenance_at=now()+interval '1 day' WHERE id=1");
+  await this.db.pool.query("UPDATE external_full_sync SET next_maintenance_at=(date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' WHERE id=1");
  }
  async sampleRemaining(){
   const row=(await this.db.pool.query(`SELECT last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND state<>'withdrawn') AS sampled,
@@ -298,7 +316,7 @@ export class FullSyncWorker{
    await this.applyEvents(true);
    if(s.since_at&&new Date(s.next_delta_at).getTime()<=Date.now())try{await this.receiveDelta();}catch(e){if(e instanceof FullSyncError&&e.code==='SYNC_CURSOR_EXPIRED')await this.recover();else throw e;}
    await this.applyEvents(true);const disk=await this.space();if(s.paused||disk.used>=.70)return;
-   await this.applyEvents();if(s.capacity_pending){await this.capacityGate();if((await this.state()).capacity_pending)return;}
+   await this.applyEvents();await runSourceMaintenance(this.db);if(s.capacity_pending){await this.capacityGate();if((await this.state()).capacity_pending)return;}
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const initialPending=(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;

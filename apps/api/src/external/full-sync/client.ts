@@ -14,7 +14,7 @@ export function retryAfter(value:string|null,now=Date.now()){
 }
 export class FullSyncClient{
  private busy=false;private lastRequest=0;
- constructor(private key:string,private options:{fetch?:typeof fetch;wait?:(ms:number)=>Promise<void>;beforeRequest?:()=>Promise<void>;beforeBulk?:(ids:number)=>Promise<void>;defer?:(ms:number)=>Promise<void>;timeoutMs?:number}={}){
+ constructor(private key:string,private options:{fetch?:typeof fetch;wait?:(ms:number)=>Promise<void>;beforeRequest?:()=>Promise<void>;beforeBulk?:(ids:number,source:Source)=>Promise<void>;defer?:(ms:number)=>Promise<void>;timeoutMs?:number}={}){
   if(!/^[\x21-\x7e]{1,1024}$/.test(key))throw new FullSyncError('SYNC_KEY_INVALID');
  }
  private async response(endpoint:string,body?:unknown,timeoutMs=this.options.timeoutMs??30_000){
@@ -55,7 +55,7 @@ export class FullSyncClient{
  async *bulk(source:Source,ids:string[],locale:Locale):AsyncGenerator<Bulk>{
   if(!ids.length||ids.length>500||new Set(ids).size!==ids.length||ids.some(id=>!/^\d{1,100}$/.test(id)))throw new FullSyncError('SYNC_BULK_INVALID');
   const q=new URLSearchParams({source});if(locale!=='en')q.set('lang',locale);
-  let raw;try{await this.options.beforeBulk?.(ids.length);raw=await this.json(`/api/vehicle/bulk?${q}`,{ids});}catch(e){
+  let raw;try{await this.options.beforeBulk?.(ids.length,source);raw=await this.json(`/api/vehicle/bulk?${q}`,{ids});}catch(e){
    if(e instanceof FullSyncError&&['SYNC_TIMEOUT','SYNC_TOO_LARGE'].includes(e.code)&&ids.length>1){const middle=Math.ceil(ids.length/2);yield* this.bulk(source,ids.slice(0,middle),locale);yield* this.bulk(source,ids.slice(middle),locale);return;}if(e instanceof FullSyncError)e.affectedIds??=ids;throw e;
   }
   const result=bulk.parse(raw.payload),returned=[...result.results.map(r=>r.id),...result.notFound];

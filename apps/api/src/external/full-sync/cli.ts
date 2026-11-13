@@ -5,6 +5,7 @@ import {createDatabase} from '../../db/index.js';
 import {readDatabaseEnvironment,readLocalSecret} from '../../local-secrets.js';
 import {protectSourceBackup,releaseSourceReferences} from '../sources/index.js';
 import {FullSyncError} from './types.js';
+import {reserveBulkQuota} from './quota.js';
 import {FullSyncClient} from './client.js';
 import {FullSyncWorker,configureFullSync} from './engine.js';
 import {fullSyncStatus,setFullSyncPaused} from './status.js';
@@ -33,13 +34,7 @@ async function main(){
      const wait=Number(row.wait);if(wait>60_000)throw new FullSyncError('SYNC_RATE_LIMITED',wait);if(wait)await delay(wait);
      await db.pool.query("UPDATE external_full_sync SET request_after=clock_timestamp()+interval '500 milliseconds' WHERE id=1");
     },defer:async ms=>{await db.pool.query("UPDATE external_full_sync SET request_after=greatest(request_after,clock_timestamp()+$1*interval '1 millisecond') WHERE id=1",[ms]);},
-    beforeBulk:async count=>{await db.transaction(async tx=>{
-     const s=(await tx.query('SELECT *,current_date AS today FROM external_full_sync WHERE id=1 FOR UPDATE')).rows[0]!;
-     if(!s.account)throw new FullSyncError('SYNC_ACCOUNT_REQUIRED');const plan=String(s.account.plan).toLowerCase();
-     const previous=String(s.bulk_day)===String(s.today)?s.bulk_ids:0;
-     if(plan==='trial'&&previous+count>1000)throw new FullSyncError('SYNC_ACCOUNT_DAILY_LIMIT');
-     await tx.query('UPDATE external_full_sync SET bulk_day=current_date,bulk_ids=$1 WHERE id=1',[previous+count]);
-    });}
+    beforeBulk:(count,source)=>reserveBulkQuota(db,count,source)
    });
    worker=new FullSyncWorker(db,client,directory);if(!await worker.acquire()){process.exitCode=75;return;}
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});

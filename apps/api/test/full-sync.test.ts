@@ -72,6 +72,11 @@ test('formal full synchronization has durable independent receipt/application an
    await database.pool.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,sha256,bytes) VALUES($1,$2,'staging',$3,$4,$5)",[id,at,file,createHash('sha256').update(csv).digest('hex'),csv.length]);
    await worker!.snapshot();const state=(await database.pool.query('SELECT state,rows,staged FROM external_full_snapshots WHERE id=$1',[id])).rows[0];
    assert.equal(state.rows,'10000');assert.equal(state.staged,'10000');assert.equal(state.state,'applying');
+   assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[id])).rows[0].apply_cursor,'500');
+   const calls:number[]=[];
+   (client as unknown as {bulk:Function}).bulk=async function*(source:string,ids:string[]){calls.push(ids.length);const payload={results:ids.map(id=>({source,id,status:'active',hasInspectionReport:false})),notFound:[]};yield {...payload,rawResponse:raw(payload)};};
+   assert.equal(await worker!.details(),500);assert.deepEqual(calls,[500,500,500]);
+
    assert.equal((await database.pool.query('SELECT capacity_pending FROM external_full_sync')).rows[0].capacity_pending,false);
    await database.pool.query("UPDATE external_full_snapshots SET state='failed' WHERE id=$1",[id]);
   });
