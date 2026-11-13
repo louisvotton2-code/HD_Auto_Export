@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResult } from 'pg';
-import { AdminVehicleSchema, VehicleDraftInputSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
+import { AdminVehicleSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
   type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery, type ConfirmPublicationPreviewRequest,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
@@ -11,8 +11,7 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { locales, normalizeContent, sourceHash } from './content.js';
 import { VehicleTranslationBundleSchema, type VehicleTranslationBundle, type SaveVehicleTranslationBundle } from '@hd/contracts/admin';
 import type { TranslationPlanInput, TranslationPlanInputField } from './translation-plans.js';
-import type { VehicleTranslator } from './translation.js';
-import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type PublishedLocalization,type DisplayProjection} from './localization.js';
+import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
 import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
@@ -380,7 +379,7 @@ export class InventoryService {
       return localizationResponse(await lockVehicle(tx,id));
     });
   }
-  async displayTranslationSuggestions(id:string,input:GenerateDisplayTranslations,actor:Actor,key:string,translator:VehicleTranslator){
+  async displayTranslationSuggestions(id:string,input:GenerateDisplayTranslations,actor:Actor,key:string){
     id=id.toLowerCase();const operation=`vehicle.displayTranslationSuggestions:${id}`;
     const request={id,...input};const hash=createHash('sha256').update(canonical(request)).digest('hex');
     const receipt=(await this.db.pool.query('SELECT request_hash,response FROM idempotency_keys WHERE actor_id=$1 AND operation=$2 AND key=$3 AND expires_at>now()',[actor.id,operation,key])).rows[0];
@@ -388,7 +387,7 @@ export class InventoryService {
     throw new ApiError(422,'TRANSLATION_CONFIRMATION_REQUIRED','Create and explicitly confirm a translation plan before generating suggestions.');
 
   }
-  async translationSuggestions(id:string,version:number,actor:Actor,key:string,translator:VehicleTranslator) {
+  async translationSuggestions(id:string,version:number,actor:Actor,key:string) {
     id=id.toLowerCase();const operation=`vehicle.translationSuggestions:${id}`;const input={id,version};
     // Historical receipts must replay even if the vehicle was later edited or the provider disabled.
     const receipt=(await this.db.pool.query('SELECT request_hash,response FROM idempotency_keys WHERE actor_id=$1 AND operation=$2 AND key=$3 AND expires_at>now()',[actor.id,operation,key])).rows[0];

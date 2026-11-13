@@ -201,9 +201,6 @@ export async function listExternalPage(tx: Queryable, query: PublicFilterQuery, 
     ${visible} ${ordered}`,values);
   return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote),anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at}))};
 }
-export async function listExternal(tx: Queryable, query: PublicFilterQuery, limit: number, offset: number, time: number,quote:FxQuote|null=null) {
-  return (await listExternalPage(tx,query,limit,offset,time,undefined,quote)).items;
-}
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null) {
   const { where, values } = matches(query,quote);
   const matchingValues=[...values];

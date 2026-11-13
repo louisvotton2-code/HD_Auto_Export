@@ -95,15 +95,6 @@ export function applyLocalizationInput(id:string,source:Source,current:StoredLoc
   return syncLocalization(id,source,result,'zh');
 }
 
-export function validateLocalizationPublication(data:LocalizationData,manual:boolean){
-  const failures=[];
-  for(const field of data.fields)for(const locale of locales){
-    const value=field.translations[locale];
-    if(!value||value.sourceVersion!==field.sourceVersion||value.reviewStatus==='stale')
-      failures.push({path:`localization.${field.ref}.${locale}`,code:'REQUIRED_FOR_PUBLICATION',message:'A current display translation is required before publication.'});
-  }
-  if(failures.length)throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Display localization is not ready to publish.',failures.slice(0,100));
-}
 export const missingDisplay=(locale:Locale):DisplayText=>({text:null,requestedLocale:locale,contentLocale:null,status:'missing',provenance:null,reviewed:false});
 export function resolveDisplay(field:DisplayField|undefined,locale:Locale,manual:boolean):DisplayText{
   const value=field?.translations[locale];
