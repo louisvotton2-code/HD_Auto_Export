@@ -186,6 +186,8 @@ node dist/external/full-sync/cli.js control --action pause --version CURRENT_VER
 
 容量检查区分CSV暂存与业务详情样本：下载/暂存始终受70%磁盘硬限制；业务1万条的三语详情与报告代表样本才用于容量估算。样本满额等待报告/判定时停止推进CSV快照和获取新身份详情，继续撤回、报告及被增量事件更新的已有样本补齐。估算失败进入 `capacity_pending` 后，仅允许SQL筛选为已有样本的详情/报告任务（至多500详情及20报告/轮）及所需当日账户额度刷新；补齐后复估，通过后的下一轮才恢复新增身份和快照。此窄路径仍受管理员暂停、70%硬限制及供应商配额约束。样本或空间预算不足会停新增重任务，不把报告未查当无报告。`external_full_sync.capacity_estimate` 是内部运维读数：`businessBytes/actualBytesPerDetail/projectedBusinessBytes` 仅外推业务关系（含索引和压缩原文）；完整SQL暂存表及索引/TOAST单列 `sqlStagingBytes`，与实测 `archiveDirectoryBytes`、`walBytes` 合为 `fixedBytes`，不乘车辆比例或业务6倍预留。`csvBytes` 只是原始导出大小元数据，文件已按目录实占计入一次。`estimatedBytes=projectedBusinessBytes+fixedBytes`；OPS另计全盘、备份与其他业务占用。`FULL_SYNC_CAPACITY_APPROVED_BYTES` 仅在OPS取得实测后设置为额外预算上限；不能整体绕过容量暂停、解除磁盘70%限制或把未测样本记成通过。60%告警和预测峰值由部署监控联合检查。
 
+采样分母按已经取得详情的 `sampled` 成员固定累计，区别于实时在售数量：之后撤回不减少采样名额，不额外导入替补。`detailSampleRows=activeDetailSampleRows+withdrawnSampleRows`；撤回为单列终态，不计入当前三语/报告完成量或“无报告”量，重新挂牌须重新补齐当前三语及报告。门槛为完整快照目标与1万的较小值。`actualBytesPerDetail` 仍为固定样本的实测业务均值；有撤回时，实际外推使用的 `projectedBytesPerDetail` 取该均值、上一轮单车预估、128KiB保守下限的最大值，避免因撤回造成低估。全部样本撤回也按此保守值重新判预算，不能冒称仍有有效在售/报告样本；空间仍不足则保持容量暂停。
+
 0023替代EXT06的长期原文保留规则：保留当前原文和最近一版历史，历史最多7天；待处理引用、备份点及员工审计证据受保护。已有未压缩内容可读，后台有界压缩，公开请求不解压整份来源。备份必须先保护blob和document引用及CSV归档快照，保留点删除后再释放；归档、数据库与配置须一并恢复。准确备份操作及服务器实测结果由本轮OPS交付，不能以文档视为已执行。
 
 公开API增加卡片投影、排序/出口状态、实际语言名称、完整有效VIN、生产日期依据、直接马力、分页检测与原币价格历史，见[接口第21节](../../docs/开发/车辆接口.md#21-ext07-全量同步与公开资料)。俄语返回英文时如实标contentLocale=en；供应商只给登记天数/over180Days不推断出口资格，缺少明确status保持unknown。AI仍只读取同一公开白名单，不读取原档或数据库连接。

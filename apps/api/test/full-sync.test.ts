@@ -109,15 +109,15 @@ test('formal full synchronization has durable independent receipt/application an
    await worker!.receiveDelta();
    await database.pool.query("INSERT INTO external_full_members(source,external_id,canonical_id,state) VALUES('dongchedi','200001','sample:unsampled','pending')");
    await database.pool.query("INSERT INTO external_full_work(source,external_id,kind,generation,priority) VALUES('dongchedi','200001','detail',1,1000),('dongchedi','200001','report',1,1000)");
-   const repairs:string[]=[],reportRepairs:string[]=[];
+   const repairs:string[]=[],reportRepairs:string[]=[];let repairId='100001';
    (client as unknown as {bulk:Function}).bulk=async function*(source:string,ids:string[],locale:string){
-    assert.equal(source,'dongchedi');assert.deepEqual(ids,['100001']);
+    assert.equal(source,'dongchedi');assert.deepEqual(ids,[repairId]);
     assert.equal((await worker!.state()).capacity_pending,true);
-    repairs.push(locale);const payload={results:[{source,id:'100001',status:'active',hasInspectionReport:true}],notFound:[]};
+    repairs.push(locale);const payload={results:[{source,id:repairId,status:'active',hasInspectionReport:true}],notFound:[]};
     yield {...payload,rawResponse:raw(payload)};
    };
    (client as unknown as {report:Function}).report=async(source:string,id:string)=>{
-    assert.equal(source,'dongchedi');assert.equal(id,'100001');
+    assert.equal(source,'dongchedi');assert.equal(id,repairId);
     assert.equal((await worker!.state()).capacity_pending,true);reportRepairs.push(id);
     return {payload:{hasReport:false},rawResponse:raw({hasReport:false})};
    };
@@ -145,6 +145,55 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await database.pool.query("SELECT count(*)::integer AS n FROM external_full_work WHERE source='dongchedi' AND external_id='200001'")).rows[0].n,2);
    assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0].apply_cursor,'10000');
    await worker!.heavy();
+
+   const rejectBudget=async()=>{
+    await database.pool.query('UPDATE external_full_sync SET last_capacity_sample=0 WHERE id=1');
+    process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES='1';
+    await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_ESTIMATE/);
+    assert.equal((await worker!.state()).capacity_pending,true);
+    delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
+   };
+   // Withdrawal after a rejected estimate keeps the already measured sample slot; it does not admit a replacement car.
+   await rejectBudget();
+   feed.push({id:7,source:'dongchedi',vehicleId:'100002',type:'removed',at:'2026-11-14T00:00:06.000Z'});
+   await worker!.receiveDelta();await worker!.applyEvents(true);
+   assert.equal(await worker!.sampleRemaining(),0);
+   await worker!.tick();
+   let recovered=await worker!.state();
+   assert.equal(recovered.capacity_pending,false);assert.equal(Number(recovered.last_capacity_sample),10000);
+   assert.equal(recovered.capacity_estimate.detailSampleRows,10000);assert.equal(recovered.capacity_estimate.withdrawnSampleRows,1);
+   assert.equal(recovered.capacity_estimate.activeDetailSampleRows,9999);
+   assert.equal(recovered.capacity_estimate.confirmedNoReport,9999);
+   assert.ok(recovered.capacity_estimate.projectedBytesPerDetail>=128*1024);
+   assert.ok(recovered.capacity_estimate.projectedBytesPerDetail>=recovered.capacity_estimate.actualBytesPerDetail);
+
+   // An update can invalidate locales before the withdrawal arrives. A withdrawn record is terminal, never a fake report.
+   await rejectBudget();
+   feed.push({id:8,source:'dongchedi',vehicleId:'100003',type:'price',at:'2026-11-14T00:00:07.000Z'});
+   await worker!.receiveDelta();await worker!.applyEvents();
+   assert.equal((await database.pool.query("SELECT cardinality(locales) AS n FROM external_full_members WHERE source='dongchedi' AND external_id='100003'")).rows[0].n,0);
+   feed.push({id:9,source:'dongchedi',vehicleId:'100003',type:'removed',at:'2026-11-14T00:00:08.000Z'});
+   await worker!.receiveDelta();await worker!.tick();recovered=await worker!.state();
+   assert.equal(recovered.capacity_pending,false);assert.equal(recovered.capacity_estimate.withdrawnSampleRows,2);
+   assert.equal(recovered.capacity_estimate.threeLocaleCompleted,9998);assert.equal(recovered.capacity_estimate.confirmedNoReport,9998);
+
+   // Explicit relist leaves the terminal state and must again fetch all locales and actually check report presence.
+   await rejectBudget();repairId='100003';repairs.length=0;reportRepairs.length=0;
+   feed.push({id:10,source:'dongchedi',vehicleId:'100003',type:'relisted',at:'2026-11-14T00:00:09.000Z'});
+   await worker!.receiveDelta();await worker!.tick();recovered=await worker!.state();
+   assert.deepEqual(repairs,['zh','en','ru']);assert.deepEqual(reportRepairs,['100003']);
+   assert.equal(recovered.capacity_pending,false);assert.equal(recovered.capacity_estimate.withdrawnSampleRows,1);
+   assert.equal(recovered.capacity_estimate.threeLocaleCompleted,9999);assert.equal(recovered.capacity_estimate.confirmedNoReport,9999);
+
+   // Even a wholly withdrawn cohort can be reevaluated conservatively; no active member/report is invented.
+   await rejectBudget();await database.pool.query("UPDATE external_full_members SET state='withdrawn' WHERE sampled");
+   await worker!.tick();recovered=await worker!.state();
+   assert.equal(recovered.capacity_pending,false);assert.equal(recovered.capacity_estimate.detailSampleRows,10000);
+   assert.equal(recovered.capacity_estimate.withdrawnSampleRows,10000);assert.equal(recovered.capacity_estimate.activeDetailSampleRows,0);
+   assert.equal(recovered.capacity_estimate.threeLocaleCompleted,0);assert.equal(recovered.capacity_estimate.reportCompleted,0);assert.equal(recovered.capacity_estimate.confirmedNoReport,0);
+   assert.ok(recovered.capacity_estimate.projectedBytesPerDetail>=128*1024);
+   assert.equal((await database.pool.query("SELECT count(*)::integer AS n FROM external_full_work WHERE source='dongchedi' AND external_id='200001'")).rows[0].n,2);
+   assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0].apply_cursor,'10000');
    }finally{
     worker!.space=originalSpace;if(originalBudget===undefined)delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;else process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=originalBudget;
     await database.pool.query('UPDATE external_full_sync SET capacity_pending=false,last_capacity_sample=0 WHERE id=1');
@@ -190,7 +239,7 @@ test('formal full synchronization has durable independent receipt/application an
    const count=(await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n;
    await worker!.recover();await worker!.recover();await assert.rejects(worker!.recover(),/SYNC_RECOVERY_LIMIT/);
    assert.equal((await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n,count);
-   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,6);
+   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,10);
   });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });

@@ -136,7 +136,12 @@ export class FullSyncWorker{
   const measured=(await this.db.pool.query(`SELECT coalesce(sum(pg_column_size(payload)),0)::bigint AS stage_bytes,count(*)::bigint AS n FROM external_full_stage WHERE snapshot_id=$1 AND row_number<=10000`,[snapshotId])).rows[0]!;
   const relations=(await this.db.pool.query(`SELECT c.relname AS relation,pg_total_relation_size(c.oid)::text AS total_bytes,pg_indexes_size(c.oid)::text AS index_bytes FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r' AND c.relname LIKE 'external_%'`)).rows;
   const wal=(await this.db.pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes',[state.capacity_baseline?.walLsn??'0/0'])).rows[0]!.bytes;
-  const sample=(await this.db.pool.query("SELECT count(*)::integer AS details,count(*) FILTER(WHERE cardinality(locales)=3)::integer AS three_locales,count(*) FILTER(WHERE report_state IN('available','unavailable'))::integer AS reports,count(*) FILTER(WHERE report_state='no_report')::integer AS no_report FROM external_full_members WHERE sampled AND state<>'withdrawn' AND last_detail_at IS NOT NULL")).rows[0]!;const details=sample.details;
+  const sample=(await this.db.pool.query(`SELECT count(*)::integer AS details,
+   count(*) FILTER(WHERE state<>'withdrawn')::integer AS active_details,count(*) FILTER(WHERE state='withdrawn')::integer AS withdrawn,
+   count(*) FILTER(WHERE state<>'withdrawn' AND cardinality(locales)=3)::integer AS three_locales,
+   count(*) FILTER(WHERE state<>'withdrawn' AND report_state IN('available','unavailable'))::integer AS reports,
+   count(*) FILTER(WHERE state<>'withdrawn' AND report_state='no_report')::integer AS no_report
+   FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL`)).rows[0]!;const details=sample.details;
   const completedSnapshot=(await this.db.pool.query('SELECT rows FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0];
   const compressed=(await this.db.pool.query('SELECT sum(octet_length(compressed))::text AS bytes,count(*) FILTER(WHERE compressed IS NULL)::integer AS uncompacted FROM external_source_blobs')).rows[0]!;
   let archiveBytes=0;for(const entry of await readdir(this.directory,{withFileTypes:true})){if(entry.isFile())archiveBytes+=(await stat(path.join(this.directory,entry.name))).size;}
@@ -144,13 +149,17 @@ export class FullSyncWorker{
   // CSV staging already contains the full export, including its indexes/TOAST. It is not a detail sample.
   const sqlStagingBytes=relations.filter(r=>r.relation==='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
   const businessBytes=relations.filter(r=>r.relation!=='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
-  const actualPerDetail=details>=Math.min(10000,rows)&&sample.three_locales===details&&sample.reports+sample.no_report>=details?businessBytes/details:null;
-  const projectedBusinessBytes=rows*(actualPerDetail??128*1024)*6;
+  // sampled records an already materialized detail, not present inventory. Withdrawal is terminal; relist must complete again.
+  const actualPerDetail=details>0&&details>=Math.min(10000,rows)&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report>=sample.active_details?businessBytes/details:null;
+  const previousPerDetail=Number(state.capacity_estimate?.projectedBytesPerDetail??state.capacity_estimate?.actualBytesPerDetail??0);
+  // Terminal samples do not masquerade as checked reports. Keep a conservative floor and the prior projection when any withdraw.
+  const projectedBytesPerDetail=sample.withdrawn>0?Math.max(actualPerDetail??0,128*1024,previousPerDetail):actualPerDetail??128*1024;
+  const projectedBusinessBytes=rows*projectedBytesPerDetail*6;
   const fixedBytes=sqlStagingBytes+archiveBytes+Number(wal),projected=projectedBusinessBytes+fixedBytes;
   const approved=Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0),enoughSample=actualPerDetail!==null;
   const allowed=enoughSample&&projected<=Math.min(approved>0?approved:Number.MAX_SAFE_INTEGER,Math.max(0,disk.total*.70-(disk.total-disk.available)));
-  const estimate={sampleRows:Number(measured.n),distinctProcessed:details,detailSampleRows:details,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:Number(completedSnapshot?.rows)||null,estimatedRows:rows,actualBytesPerDetail:actualPerDetail,businessBytes,projectedBusinessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
-    estimatedBytes:projected,approvedBudgetBytes:approved||null,allowed,assumptions:['Business relation sizes include indexes and compressed raw storage, excluding the complete SQL CSV staging relation.','SQL staging (including indexes/TOAST), actual archive files and measured WAL delta are fixed costs, never extrapolated per detail.','csvBytes is source metadata; the actual files are counted once in archiveDirectoryBytes.','WAL delta includes concurrent database activity.','6x applies only to business growth for retained history and backup headroom; OPS separately measures whole-disk and backup costs.','128KiB per vehicle is a conservative fallback, not a measured detail size.','Automatic continuation requires complete three-language details and checked report presence for the sample.'],at:new Date().toISOString()};
+  const estimate={sampleRows:Number(measured.n),distinctProcessed:details,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:Number(completedSnapshot?.rows)||null,estimatedRows:rows,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,businessBytes,projectedBusinessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
+    estimatedBytes:projected,approvedBudgetBytes:approved||null,allowed,assumptions:['Business relation sizes include indexes and compressed raw storage, excluding the complete SQL CSV staging relation.','SQL staging (including indexes/TOAST), actual archive files and measured WAL delta are fixed costs, never extrapolated per detail.','csvBytes is source metadata; the actual files are counted once in archiveDirectoryBytes.','WAL delta includes concurrent database activity.','6x applies only to business growth for retained history and backup headroom; OPS separately measures whole-disk and backup costs.','128KiB per vehicle is a conservative fallback, not a measured detail size; withdrawn samples retain this floor and the prior per-detail projection.','The sample denominator includes previously materialized withdrawn members. Withdrawal is a separate terminal outcome, not a checked or absent report; every non-withdrawn sample needs current three-language details and checked report presence.'],at:new Date().toISOString()};
   await this.db.pool.query('UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2 WHERE id=1',[JSON.stringify(estimate),allowed]);
   if(!allowed)throw new FullSyncError(enoughSample||approved>0?'SYNC_CAPACITY_ESTIMATE':'SYNC_CAPACITY_PENDING');
  }
@@ -288,10 +297,11 @@ export class FullSyncWorker{
   await this.db.pool.query("UPDATE external_full_sync SET next_maintenance_at=(date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' WHERE id=1");
  }
  async sampleRemaining(){
-  const row=(await this.db.pool.query(`SELECT last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND state<>'withdrawn') AS sampled,
+  const row=(await this.db.pool.query(`SELECT last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL) AS sampled,
    (SELECT rows FROM external_full_snapshots WHERE rows>0 ORDER BY created_at DESC LIMIT 1) AS target FROM external_full_sync WHERE id=1`)).rows[0]!;
   if(Number(row.last_capacity_sample)>0)return 500;
-  return Math.max(0,10000-Number(row.sampled));
+  const target=Number(row.target)>0?Math.min(10000,Number(row.target)):10000;
+  return Math.max(0,target-Number(row.sampled));
  }
  async sampleSaturated(){return await this.sampleRemaining()===0;}
  async capacityGate(){
@@ -300,7 +310,7 @@ export class FullSyncWorker{
   if(incomplete)return; // Reports continue independently while new detail work waits at the sample boundary.
   const snap=(await this.db.pool.query("SELECT id,bytes FROM external_full_snapshots WHERE state IN('verified','applying','complete') ORDER BY created_at DESC LIMIT 1")).rows[0];
   if(!snap)return;await this.estimateCapacity(snap.id,Number(snap.bytes));
-  await this.db.pool.query("UPDATE external_full_sync SET last_capacity_sample=(SELECT count(*) FROM external_full_members WHERE sampled AND state<>'withdrawn'),capacity_pending=false WHERE id=1");
+  await this.db.pool.query("UPDATE external_full_sync SET last_capacity_sample=(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL),capacity_pending=false WHERE id=1");
  }
  async pruneStaging(){
   await this.transaction(async tx=>{
