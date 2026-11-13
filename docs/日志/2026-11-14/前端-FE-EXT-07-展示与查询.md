@@ -25,3 +25,7 @@ OPS服务器针对准确提交串行执行既有门禁；以下是受影响检�
 ### 首轮服务器类型失败修正
 
 OPS对联合候选`ad948fc7b3b9ccf20af3974ff54f39faddde45c0`执行门禁，API／AD检查已过，官网类型检查实际失败两处：分页组件仍要求完整详情列表DTO、联系草稿的状态映射残留旧`PublicVehicle`类型名。分页改为只依赖轻量列表的分页／meta结构，仍兼容相同元信息的旧详情响应；草稿状态改从现有`PublicVehicleSummary`取类型。不添加cast或降低schema校验。尚未执行官网unit／build／browser，补片仅做本机hooks及diff核验，交OPS续跑官网类型及后续未执行检查，不要求重跑已过的API／AD。
+
+### 服务器工程边界失败修正
+
+PM回传联合`ee6d05d17a9c94d556cd9335c5ddf32600865283`官网类型已过，边界检查实际拒绝公共计算入口导入`application/manufacture-range`。纯范围实现移至`core/manufacture-range.ts`，相对依赖仅调整为同层core；公共入口直接导出core，application保留内部导入兼容转发，既有UI／草稿／测试不必迁移。已逐文本确认全部计算实现与原版本相同，仅依赖路径变化；未放宽边界工具、未改税费公式或扩功能。本机仅hooks与diff检查，工程边界／应用检查仍交PM指定唯一OPS执行者在服务器续跑；不新增Reviewer或向其他对话重复派发。
