@@ -50,3 +50,8 @@ test('private source documents expose a single identity body and only reference 
  assert.equal(pub.ExternalSourceDocumentResponseSchema,undefined);
  assert.equal(admin.ExternalProviderStatusSchema.shape.worker.safeParse('fixed_once').success,true);
 });
+test('gallery alt metadata retains actual source language and review status',()=>{
+ const image={id:'ximg-11111111-1111-4111-8111-111111111111',url:'https://photos.example.invalid/a.jpg',alt:'正面',width:null,height:null,sortOrder:31,isCover:false,
+  remote:{revision:1,refreshedAt:at,expiresAt:null},altText:{text:'正面',requestedLocale:'en',contentLocale:'zh',status:'ready',provenance:'supplier',reviewed:false}};
+ assert.deepEqual(pub.PublicMediaSchema.parse(image).altText,image.altText);
+});

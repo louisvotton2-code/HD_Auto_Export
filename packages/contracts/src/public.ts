@@ -26,6 +26,7 @@ export const PublicMediaSchema = z.strictObject({
   id: IdSchema,
   url: MediaUrlSchema,
   alt: z.string().max(500),
+  altText: DisplayTextSchema.optional(),
   width: z.number().int().positive().max(100_000).nullable(),
   height: z.number().int().positive().max(100_000).nullable(),
   sortOrder: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
