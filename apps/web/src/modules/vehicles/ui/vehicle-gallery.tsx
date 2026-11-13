@@ -10,6 +10,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type ReactNode,
   type TouchEvent,
 } from 'react';
 import type { Locale } from '@/i18n/routing';
@@ -17,6 +18,7 @@ import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
+import { imageAltAttributes } from '../vehicle-image-text';
 import { VehiclePhotoFallback } from './vehicle-photo';
 import { VehicleGalleryThumbnails } from './vehicle-gallery-thumbnails';
 import type { VehicleGalleryImage, VehicleGalleryImageStatus } from './vehicle-gallery-image';
@@ -34,11 +36,17 @@ export function VehicleGallery({
   title,
   locale,
   onActiveImageStatus,
+  onOpen,
+  imagePosition,
+  viewerFooter,
 }: {
   images: VehicleGalleryImage[];
   title: string;
   locale: Locale;
   onActiveImageStatus?: (status: VehicleGalleryImageStatus) => void;
+  onOpen?: () => void;
+  imagePosition?: (position: number, loaded: number) => string;
+  viewerFooter?: ReactNode;
 }) {
   const t = detailContent[locale];
   const ordered = useMemo(
@@ -81,6 +89,7 @@ export function VehicleGallery({
     ordered.findIndex((image) => image.id === selectedId),
   );
   const selected = ordered[index];
+  const positionLabel = imagePosition?.(index + 1, ordered.length) ?? t.imagePosition(index + 1, ordered.length);
   const hasPhoto = Boolean(selected);
   const previous = ordered.find((image) => image.id === previousId && image.id !== selected?.id);
   const firstImageId = ordered[0]?.id ?? null;
@@ -158,6 +167,7 @@ export function VehicleGallery({
     pageOverflow.current ??= document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     setOpened(true);
+    onOpen?.();
   }
   function openViewer(event: MouseEvent<HTMLAnchorElement>) {
     if (staffLocked) {
@@ -313,7 +323,7 @@ export function VehicleGallery({
           target="_blank"
           rel="noopener noreferrer"
           onClick={enhanced || onActiveImageStatus ? openViewer : undefined}
-          aria-label={`${t.openGallery} — ${t.imagePosition(index + 1, ordered.length)}`}
+          aria-label={`${t.openGallery} — ${positionLabel}`}
           aria-haspopup={enhanced ? 'dialog' : undefined}
           aria-disabled={staffLocked || undefined}
         >
@@ -329,7 +339,7 @@ export function VehicleGallery({
               data-outgoing={image.id !== selected.id}
               data-gallery-active-image={!opened && image.id === selected.id ? image.id : undefined}
               src={publicMediaUrl(image.url)}
-              alt={image.id === selected.id ? image.alt || title : ''}
+              {...imageAltAttributes(image, image.id === selected.id ? image.alt || title : '')}
               aria-hidden={image.id !== selected.id ? true : undefined}
               width={image.width ?? undefined}
               height={image.height ?? undefined}
@@ -362,8 +372,8 @@ export function VehicleGallery({
             </button>
           </>
         )}
-        <span className={styles.counter} aria-label={t.imagePosition(index + 1, ordered.length)}>
-          {index + 1} / {ordered.length}
+        <span className={styles.counter} aria-label={positionLabel}>
+          {imagePosition ? positionLabel : `${index + 1} / ${ordered.length}`}
         </span>
         {loadingId === selectedKey && (
           <span className={styles.loading} role="status">
@@ -387,7 +397,7 @@ export function VehicleGallery({
         disabled={staffLocked}
       />
       <span className={styles.srOnly} role="status">
-        {t.imagePosition(index + 1, ordered.length)}
+        {positionLabel}
       </span>
       <dialog
         ref={dialog}
@@ -412,7 +422,7 @@ export function VehicleGallery({
           onPointerCancel={cancelTouch}
         >
           <div className={styles.viewerHead}>
-            <span id={captionId}>{t.imagePosition(index + 1, ordered.length)}</span>
+            <span id={captionId}>{positionLabel}</span>
             <button
               type="button"
               className={styles.close}
@@ -430,7 +440,7 @@ export function VehicleGallery({
                 data-gallery-active-image={selected.id}
                 src={publicMediaUrl(selected.url)}
                 referrerPolicy={selected.url.startsWith('https:') ? 'no-referrer' : undefined}
-                alt={selected.alt || title}
+                {...imageAltAttributes(selected, selected.alt || title)}
                 width={selected.width ?? undefined}
                 height={selected.height ?? undefined}
                 onLoad={(event) => { if (acceptsImageEvent(selected, event.currentTarget)) loaded(selected); }}
@@ -473,6 +483,7 @@ export function VehicleGallery({
               </div>
             )}
           </div>
+          {opened && viewerFooter}
         </div>
       </dialog>
     </div>

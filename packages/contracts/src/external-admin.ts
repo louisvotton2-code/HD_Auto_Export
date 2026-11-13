@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AdminActivitySummarySchema } from './activity.js';
 import { IdSchema, LanguageTagSchema, LocaleSchema, NamedValueSchema, PowertrainSchema, TimestampSchema, VehicleFactsSchema, responseSchema } from './common.js';
 import { DrivetrainSchema } from './localization.js';
 import {
@@ -144,6 +145,7 @@ export const ExternalListingSchema = z.strictObject({
   sourceHashes: z.strictObject({ title: SourceHashSchema.nullable(), model: SourceHashSchema.nullable(), description: SourceHashSchema.nullable() }),
   vehicle: PublicVehicleSchema.nullable(),
   report: AdminReportSchema.optional(),
+  activity: AdminActivitySummarySchema.optional(),
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);
@@ -187,6 +189,7 @@ export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
   sourceUpdatedAt: TimestampSchema.nullable(),
   publishedAt: TimestampSchema.nullable(),
   hasOverrides: z.boolean(),
+  activity: AdminActivitySummarySchema.optional(),
   facts: ExternalListingListFactsSchema.nullable().optional(),
 });
 export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
@@ -246,7 +249,7 @@ export const ExternalProviderAccountSchema = z.strictObject({
 export type ExternalProviderAccount = z.infer<typeof ExternalProviderAccountSchema>;
 export const ExternalProviderStatusSchema = z.strictObject({
   provider: z.literal('chinacarapi'),
-  worker: z.literal('not_configured'),
+  worker: z.enum(['not_configured','fixed_once']),
   lastBatch: ExternalBatchSchema.nullable(),
   lastImportAt: TimestampSchema.nullable(),
   lastFetchedAt: TimestampSchema.nullable(),
@@ -255,3 +258,26 @@ export const ExternalProviderStatusSchema = z.strictObject({
 });
 export type ExternalProviderStatus = z.infer<typeof ExternalProviderStatusSchema>;
 export const ExternalProviderStatusResponseSchema = responseSchema(ExternalProviderStatusSchema);
+
+/** Read-only one-shot importer status. No request can enable scheduling or import scope. */
+export const ExternalIngestionStatusSchema = z.strictObject({
+  mode:z.literal('fixed_once'),continuous:z.literal(false),
+  latestJob:z.strictObject({id:z.uuid(),state:z.enum(['awaiting_snapshot','ready','complete','paused']),
+    createdAt:TimestampSchema,generatedAt:TimestampSchema,completedAt:TimestampSchema.nullable(),
+    triggeredByStaffId:IdSchema,receivedEvents:CountSchema,appliedEvents:CountSchema,
+    rawIdentityCount:CountSchema,canonicalVehicleCount:CountSchema,publicVehicleCount:CountSchema,
+    networkRequests:CountSchema,failures:CountSchema,recoveryCount:CountSchema,
+  }).nullable(),
+});
+export type ExternalIngestionStatus=z.infer<typeof ExternalIngestionStatusSchema>;
+export const ExternalIngestionStatusResponseSchema=responseSchema(ExternalIngestionStatusSchema);
+
+export const ExternalSourceDocumentSummarySchema=z.strictObject({
+ id:z.uuid(),kind:z.enum(['csv','detail','specs','report','event']),locale:z.enum(['zh','en','ru','und']),
+ hash:SourceHashSchema,firstObservedAt:TimestampSchema,lastObservedAt:TimestampSchema,sourceUpdatedAt:TimestampSchema.nullable(),
+});
+export const ExternalSourceDocumentsResponseSchema=responseSchema(z.strictObject({items:z.array(ExternalSourceDocumentSummarySchema).max(100),nextCursor:z.string().max(2000).nullable()}));
+export const ExternalSourceDocumentResponseSchema=responseSchema(ExternalSourceDocumentSummarySchema.extend({
+ payload:z.json(),rawText:z.string().nullable(),response:z.strictObject({hash:SourceHashSchema,shared:z.literal(true)}).nullable(),
+}));
+export type ExternalSourceDocumentSummary=z.infer<typeof ExternalSourceDocumentSummarySchema>;

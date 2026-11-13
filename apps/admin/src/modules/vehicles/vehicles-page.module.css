@@ -1,0 +1,4 @@
+.times { display: grid; gap: 6px; min-width: 0; }
+.timeMeta { color: #716b5f; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.timeMeta time { display: block; }
+.statusTag { max-width: 100%; white-space: normal; }

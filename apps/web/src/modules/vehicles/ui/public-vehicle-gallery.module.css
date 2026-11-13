@@ -1,0 +1,58 @@
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  min-width: 0;
+  margin-top: 12px;
+  flex-shrink: 0;
+}
+.viewerControls {
+  margin-top: 0;
+  padding: 12px 14px;
+  border-top: 1px solid #ffffff1a;
+}
+.summary {
+  flex: 1 1 150px;
+  margin: 0;
+  color: #b7b7b7;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.message {
+  flex-basis: 100%;
+  margin: 0;
+  color: #b7b7b7;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.button {
+  flex: 0 1 auto;
+  min-height: 40px;
+  max-width: 100%;
+  border: 1px solid #b6774966;
+  border-radius: 9px;
+  padding: 9px 14px;
+  background: #1e1e1e;
+  color: #d6a27c;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  transition: background-color 180ms;
+}
+.button:hover:not(:disabled) {
+  background: #30251d;
+}
+.button:focus-visible {
+  outline: 2px solid #c88858;
+  outline-offset: 3px;
+}
+.button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}

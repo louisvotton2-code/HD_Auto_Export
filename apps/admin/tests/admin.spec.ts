@@ -1,3 +1,4 @@
+import './activity-cases';
 import './report-cases';
 import './workspace-layout-cases';
 import './workspace-cases';

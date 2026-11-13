@@ -38,11 +38,13 @@ export const chinaCarSampleProfile: ExternalSourceProfile = {
     dongchedi: { name: '懂车帝', listingHost: 'www.dongchedi.com', contentLocale: 'zh' },
   },
   media: url => url.hostname === 'erscglobal2.autoimg.cn' ? !url.search :
-    unsignedPhotos.has(url.hostname) ? exactQuery(url, { psm }) : signedPhotos.has(url.hostname) && exactQuery(url, signedQuery),
+    unsignedPhotos.has(url.hostname) ? exactQuery(url, { psm }) : signedPhotos.has(url.hostname) && (exactQuery(url, signedQuery) || exactQuery(url, { psm, rk3s: signedQuery.lk3s, 'x-expires': signedQuery['x-expires'], 'x-signature': signedQuery['x-signature'] })),
   report: url => url.hostname === 'activitym.che168.com' && url.pathname === '/2025/honestVehicleInspectionReport/main/index' && exactQuery(url, reportQuery),
 };
 
-export const getProfile = (provider: string) => provider === chinaCarSampleProfile.id ? chinaCarSampleProfile : syntheticProfile;
+/** Formal fixed-list worker only; HTTP sample import cannot choose this profile. */
+export const chinaCarProfile: ExternalSourceProfile = { ...chinaCarSampleProfile, id: 'chinacarapi' };
+export const getProfile = (provider: string) => provider === chinaCarProfile.id ? chinaCarProfile : provider === chinaCarSampleProfile.id ? chinaCarSampleProfile : syntheticProfile;
 export const getPlatform = (profile: ExternalSourceProfile, id: string) => Object.hasOwn(profile.platforms, id) ? profile.platforms[id]! : null;
 export function publicLink(value: string | null, use: LinkUse, profile = syntheticProfile, platform?: string): string | null {
   if (!value || !ExternalHttpsUrlSchema.safeParse(value).success) return null;

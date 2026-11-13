@@ -3,6 +3,7 @@ import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { Button, Card, Input, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { ExternalListingListQuerySchema, ExternalListingListResponseSchema, ExternalListingOverviewResponseSchema } from '@hd/contracts/admin';
 import { ExternalHttpsUrlSchema } from '@hd/contracts/public';
+import { ActivityHistory, ActivitySummary, type ActivityTarget } from '../activity';
 import { powertrainLabels } from '../vehicles/draft-form';
 import { externalRoot, listingLabels, pageSize, platformName } from './external-labels';
 import { ResourceContent } from './resource-content';
@@ -20,6 +21,7 @@ export function ExternalCatalogPage() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const [searchReset, setSearchReset] = useState(0);
+  const [history, setHistory] = useState<ActivityTarget | null>(null);
   const q = params.get('q')?.replaceAll('\0', '').trim().slice(0, 2048) ?? '';
   const make = filterSchema.make.safeParse(params.get('make')).data;
   const model = make ? filterSchema.model.safeParse(params.get('model')).data : undefined;
@@ -115,7 +117,7 @@ export function ExternalCatalogPage() {
       <ResourceContent {...resource} loading={resource.loading || needsPageCorrection} retry={resource.reload}>
         {result && <Table
           rowKey="id"
-          scroll={{ x: 900 }}
+          scroll={{ x: 1150 }}
           dataSource={result.items}
           locale={{ emptyText: '没有符合条件的三方车源' }}
           pagination={{
@@ -141,6 +143,7 @@ export function ExternalCatalogPage() {
               <Tag color={listing.state === 'published' ? 'success' : undefined}>{listingLabels[listing.state]}</Tag>
               {listing.hasOverrides && <Tag color="gold">已修订</Tag>}
             </Space> },
+            { title: '操作追溯', width: 250, render: (_, listing) => <><ActivitySummary activity={listing.activity} external showCreated={false} /><Button type="link" size="small" onClick={() => setHistory({ kind: 'external', id: listing.id, label: `${platformName(listing.platformId)} · ${listing.externalId}` })}>操作记录</Button></> },
             { title: '原始挂牌', width: 120, render: (_, listing) => {
               const link = ExternalHttpsUrlSchema.safeParse(listing.listingUrl);
               return link.success
@@ -151,5 +154,6 @@ export function ExternalCatalogPage() {
         />}
       </ResourceContent>
     </Card>
+    <ActivityHistory target={history} onClose={() => setHistory(null)} />
   </section>;
 }

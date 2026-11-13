@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { VehicleSegmentContext } from '../application/use-public-vehicle-segment';
 import { type PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
@@ -32,10 +33,13 @@ export function PublicDetailResource({
     [vehicle],
   );
   const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicUsdView })}`;
+  const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const resource = usePublicResource(url, initial, localizedVehicleSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/${id}/`,
     initialRetryAfter,
+    cooldown,
   });
+  const segmentContext = useMemo(() => ({ cooldown, onMissing: resource.markMissing }), [resource.markMissing]);
   useEffect(() => {
     if (!resource.missing) return;
     // A removed detail reached through history must not retain an indexable old document.
@@ -49,6 +53,7 @@ export function PublicDetailResource({
   }, [resource.missing]);
   return (
     <PublicFreshnessBoundary url={url} phase={resource.phase}>
+      <VehicleSegmentContext value={segmentContext}>
       {resource.missing || !resource.data ? (
         <main
           id="main"
@@ -85,6 +90,7 @@ export function PublicDetailResource({
         fallbackHref={`/${locale}/cars/${id}/`}
         floating
       />
+      </VehicleSegmentContext>
     </PublicFreshnessBoundary>
   );
 }

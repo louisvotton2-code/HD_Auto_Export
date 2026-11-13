@@ -14,6 +14,8 @@ import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './a
 import { InventoryService, type Actor } from './vehicles/service.js';
 import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
+import { VehicleSegments } from './vehicles/segments.js';
+import { ActivityService } from './activity/service.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError, notFound } from './errors.js';
@@ -76,6 +78,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   const translator=options.translator??createVehicleTranslator(config.translation,new PgTranslationBudget(db));
   const translationPlans=new TranslationPlanService(db,translator,(id,who)=>inventory.translationPlanInput(id,who));
   const media=new MediaService(db,mediaStore);
+  const activity=new ActivityService(db);
+  const segments=new VehicleSegments(db,inventory);
   const isSsrService=createSsrServiceIdentity(config.ssrService);
   const ssrOriginLimiter=new SsrOriginLimiter();
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.headers.x-hd-ssr-key','req.body','res.headers.set-cookie']} : false,
@@ -122,7 +126,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       const member=await requireStaff(request,auth,db);
       staff.set(request,member);
       requireTrustedOrigin(request,config);
-      if(external && !member.permissions.includes('vehicles:read')) {
+      if((external || route.endsWith('/activity')) && !member.permissions.includes('vehicles:read')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle read permission is required.');
       }
       const changesExternalListing = request.method==='PUT' && route===externalOverridesPath ||
@@ -199,21 +203,21 @@ export async function buildApp(config:Config=readConfig(), options:{
   if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:config.publicCache.enabled,metrics:catalogCache.metrics()}));
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
+      const ready=await db.pool.query(`SELECT ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
         JOIN public_catalog_state cs ON cs.id=1 JOIN translation_budget_state bs ON bs.id=1
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
         LEFT JOIN publication_preview_confirmations pc ON false
         LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
-        LEFT JOIN translation_budget_reservations br ON false
+        LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,ss.revision,state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
-          LEFT JOIN external_listing_overrides o ON false WHERE state.id=1`);
+          LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false WHERE state.id=1`);
         if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
       }
       return {status:'ready' as const};
@@ -270,6 +274,10 @@ export async function buildApp(config:Config=readConfig(), options:{
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
   const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
   app.get('/api/v1/admin/vehicles/:id/translation-bundle',{schema:adminSchema('getVehicleTranslationBundle',{params:IdParams,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.getTranslationBundle((request.params as {id:string}).id,actor(request)),request));
+  app.get('/api/v1/vehicles/:id/gallery',{schema:{operationId:'getVehicleGallery',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleGalleryResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleGalleryResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'gallery',request.query as pub.PublicVehicleSegmentQuery)),request));
+  app.get('/api/v1/vehicles/:id/configuration',{schema:{operationId:'getVehicleConfiguration',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleConfigurationResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleConfigurationResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'configuration',request.query as pub.PublicVehicleSegmentQuery)),request));
+  app.get('/api/v1/admin/vehicles/:id/activity',{schema:adminSchema('getVehicleActivity',{params:IdParams,querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.staff((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
+  app.get('/api/v1/admin/external/listings/:id/activity',{schema:adminSchema('getExternalListingActivity',{params:z.strictObject({id:pub.ExternalListingIdSchema}),querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.external((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
   app.put('/api/v1/admin/vehicles/:id/translation-bundle',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicleTranslationBundle',{params:IdParams,body:adm.SaveVehicleTranslationBundleSchema,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.saveTranslationBundle((request.params as {id:string}).id,request.body as adm.SaveVehicleTranslationBundle,actor(request)),request));
   app.post('/api/v1/admin/vehicles/:id/translation-plans',{schema:adminSchema('createVehicleTranslationPlan',{params:IdParams,body:adm.CreateTranslationPlanRequestSchema,response:{200:adm.TranslationPlanResponseSchema,...errorResponses}})},async request=>response(await translationPlans.create((request.params as {id:string}).id,request.body as adm.CreateTranslationPlanRequest,actor(request)),request));
   app.post('/api/v1/admin/vehicles/:id/translation-plans/:planId/generate',{schema:adminSchema('generateConfirmedVehicleTranslationPlan',{params:PlanParams,body:adm.GenerateTranslationPlanRequestSchema,headers:idemHeader,response:{200:adm.TranslationPlanResultResponseSchema,...errorResponses}})},async request=>{

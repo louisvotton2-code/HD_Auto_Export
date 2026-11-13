@@ -1,13 +1,13 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
 import { ExternalProviderStatusResponseSchema, type ExternalProviderAccount } from '@hd/contracts/admin';
 import { formatTime } from '../vehicles/draft-form';
 import { externalRoot, platformName } from './external-labels';
+import { IngestionStatusCard } from './ingestion-status-card';
 import { ResourceContent } from './resource-content';
 import { useExternalResource } from './use-external-resource';
 import styles from './external-sources.module.css';
-
-const workerLabels = { not_configured: '未配置' };
 
 const accountLabels: Record<ExternalProviderAccount['state'], string> = {
   not_configured: '未配置',
@@ -20,6 +20,7 @@ const accountLabels: Record<ExternalProviderAccount['state'], string> = {
 };
 
 export function ExternalStatusPage() {
+  const [refresh, setRefresh] = useState(0);
   const resource = useExternalResource(`${externalRoot}/provider-status`, ExternalProviderStatusResponseSchema);
   const status = resource.data?.data;
   const account = status?.account;
@@ -28,10 +29,11 @@ export function ExternalStatusPage() {
     <header className={styles.heading}>
       <Typography.Title level={2}>三方 API 状态</Typography.Title>
       <Space wrap>
-        <Button onClick={resource.reload} loading={resource.loading}>刷新状态</Button>
+        <Button onClick={() => { resource.reload(); setRefresh(value => value + 1); }} loading={resource.loading}>刷新状态</Button>
         <Link to="/external-sources/batches">历史导入批次</Link>
       </Space>
     </header>
+    <IngestionStatusCard key={refresh} />
     <ResourceContent {...resource} retry={resource.reload}>
       {status && account && <>
         <Card title="ChinaCarAPI">
@@ -51,9 +53,8 @@ export function ExternalStatusPage() {
             ] : []),
           ]} />
         </Card>
-        <Card title="本地数据">
+        <Card title="历史入库参考">
           <Descriptions column={{ xs: 1, md: 2 }} items={[
-            { key: 'worker', label: '自动同步', children: <Tag>{workerLabels[status.worker]}</Tag> },
             { key: 'import', label: '最近成功入库', children: formatTime(status.lastImportAt) },
             { key: 'fetched', label: '最近来源采集时间', children: formatTime(status.lastFetchedAt) },
             { key: 'source', label: '已知来源更新时间', children: formatTime(status.lastSupplierUpdatedAt) },

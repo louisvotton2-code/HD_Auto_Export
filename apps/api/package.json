@@ -19,6 +19,7 @@
     "external:sample": "node --import tsx src/external/sample-cli.ts",
     "external:scale-seed": "node --import tsx src/external/scale-seed.ts",
     "external:scale-bench": "node --import tsx src/external/scale-bench.ts",
+    "external:ingest": "node --import tsx src/external/ingestion/cli.ts",
     "external:sync": "node --import tsx src/external/sync/cli.ts",
     "external:trial-fake": "node --import tsx src/external/trial-fake.ts",
     "external:fx": "node --import tsx src/external/fx-cli.ts",

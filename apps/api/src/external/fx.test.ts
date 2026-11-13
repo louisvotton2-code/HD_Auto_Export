@@ -72,3 +72,10 @@ test('CLI invalid/closed gate errors omit connection secrets and exit before ope
     assert.ok(rejected);
   }
 });
+
+test('formal FX refresh requires explicit database identity, production release and network gate',()=>{
+ const auth={networkEnabled:true,mode:'disabled',nodeEnv:'production',databaseUrl:'postgresql://operator@db/formal_catalog',formalDatabase:'formal_catalog',releaseId:'a'.repeat(40)};
+ assert.equal(assertFxRefreshAuthorization(auth),'formal_catalog');
+ for(const change of [{networkEnabled:false},{nodeEnv:'test'},{mode:'synthetic'},{formalDatabase:'another_db'},{releaseId:'unreleased'},{databaseUrl:'postgresql://operator@db/formal_catalog?options=override'}])assert.throws(()=>assertFxRefreshAuthorization({...auth,...change}));
+ assert.throws(()=>assertFxRefreshAuthorization({...auth,formalDatabase:undefined}));
+});

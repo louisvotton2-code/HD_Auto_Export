@@ -4,7 +4,6 @@ import { externalDetailCopy } from '../external-detail-copy';
 import { publicVehicleMessages } from '../public-messages';
 import { catalogFilterCopy } from '../catalog-filter-copy';
 import { detailContent } from '../detail-content';
-import { VehicleEquipment } from './vehicle-equipment';
 import styles from './public-detail.module.css';
 
 export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: PublicVehicle; locale: Locale }) {
@@ -41,7 +40,6 @@ export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: Publi
     .filter(({ code }) => code === 'conflict' || code === 'invalid')
     .map(({ field }) => field)
     .filter((field) => field !== 'relatedListingUrls'))];
-  const specifications = detail?.specifications ?? [];
 
   return (
     <>
@@ -53,7 +51,6 @@ export function ExternalVehicleInformation({ vehicle, locale }: { vehicle: Publi
           </ul>
         </section>
       )}
-      {!vehicle.configuration && <VehicleEquipment specifications={specifications} title={copy.specifications} locale={locale} />}
     </>
   );
 }

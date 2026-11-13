@@ -219,6 +219,13 @@ export function usePublicResource<T>(
     },
     [],
   );
+  const markMissing = useCallback(() => {
+    request.current.id++;
+    request.current.controller?.abort();
+    request.current.controller = undefined;
+    setState({ url: active.current.url, data: null, phase: 'fresh', missing: true,
+      navigation: active.current.navigationPath ? publicNavigationVersion(active.current.navigationPath) : 0 });
+  }, []);
   return {
     ...state,
     // A rate limit on another request does not invalidate an already loaded dictionary.
@@ -230,5 +237,6 @@ export function usePublicResource<T>(
         ? state.phase
         : ('checking' as PublicFreshness),
     reload: load,
+    markMissing,
   };
 }

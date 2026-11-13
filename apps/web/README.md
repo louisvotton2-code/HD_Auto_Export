@@ -42,6 +42,10 @@ apps/web/.next/standalone/
 
 ## 公开数据与失败处理
 
+EXT06完整图库／配置通过正式公开`vehicles/:id/gallery|configuration`逐页读取，每页50、明确操作、不自动拉全库；第一正式页替换首屏预览，同revision追加，409清栈等重读、404撤除整车、429共享等待不自动重试。分页始终no-store且不新增内部SSR服务别名；员工preview保持私有payload／解码，不调用公开分段。维护入口见[首页与车源](../../docs/开发/模块/首页与车源.md#fe-ext-06-全照片与配置分段)。首屏图片30及配置上限是投影界限，不是完整来源存储数量；正式300数据、FX受控刷新和生产导入由BE／PA／OPS交付。
+
+照片说明采用每图可选`altText`的实际语言／来源／审核信息；旧响应回退到匹配的`display.mediaAlt`或原alt，不推断人审。第四合同补片后必须重建相同合同的官网成品，不能用旧strict-schema bundle验收新API字段。
+
 - `modules/vehicles/server.ts` 是仅供App服务端装配的公开入口；schema校验HTTP位于infrastructure。浏览器安全的 `vehicles/index.ts` 只导出展示能力，不能混入网络服务端配置。应用不导入API源码或数据库。
 - 页面用request-time `connection()`，HTML外壳动态，车辆详情无需构建时枚举ID。FE-REL-03只对首页／目录／筛选／详情的匿名SSR DTO启用进程内有界缓存，HTTP仍`cache:no-store`；逐次内部版本核对、键与TTL规则见下节。metadata阻塞发送以保留真实404和demo noindex。持久布局的PublicNavigationFreshness只在用户Back／Forward时核对对应URL；focus、visibility和普通pageshow不请求数据。URL查询／明确重试走局部JSON，保留main、滚动、输入和图库；同URL新导航版本取代旧inflight请求，不能只按URL去重。
 - 同源 `/api/v1/` handler只允许GET公开首页／目录／筛选／详情／媒体。目录q/品牌/车型/配置/代次/动力/驱动/原币价格/里程/年款范围及分页由服务端查询，浏览器增强使用JSON与原生history，未下载全库做本地筛选；q同时约束facets。媒体统一尾斜杠避免308，缩略图仅`?variant=thumb`，外链不改写。它不代理管理路径、不转发Cookie／Authorization／Set-Cookie或原始内部错误，媒体每次经API检查有效公开引用。

@@ -1,3 +1,4 @@
+import { activityChanges } from '../activity/changes.js';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { MediaAssetSchema, type MediaUploadRequest, type MediaRights } from '@hd/contracts/admin';
@@ -35,7 +36,7 @@ export class MediaService {
       const id=randomUUID();
       const result=await tx.query<MediaRow>(`INSERT INTO media_assets(id,vehicle_id,content_type,expected_size,rights,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '30 minutes') RETURNING *`,[id,input.vehicleId,input.contentType,input.sizeBytes,JSON.stringify(input.rights)]);
       const row=result.rows[0]!;
-      await audit(tx,actor,'media.create',input.vehicleId,null,1);
+      await audit(tx,actor,'media.create',input.vehicleId,null,1,activityChanges(null,{id,state:'pending'},`media.${id}`));
       return {media:dto(row),method:'PUT' as const,uploadUrl:`/api/v1/admin/media/${id}/content`,expiresAt:row.expires_at.toISOString()};
     });
   }
@@ -46,7 +47,7 @@ export class MediaService {
       if(bytes.length!==row.expected_size||contentType!==row.content_type) throw new ApiError(400,'INVALID_REQUEST','Upload does not match its declared size and type.');
       const result=await this.store.put(id,bytes,contentType);
       const updated=await tx.query<MediaRow>("UPDATE media_assets SET state='uploaded',width=$2,height=$3,byte_size=$4,version=version+1 WHERE id=$1 RETURNING *",[id,result.width,result.height,result.byteSize]);
-      await audit(tx,actor,'media.upload',row.vehicle_id,version,version+1);
+      await audit(tx,actor,'media.upload',row.vehicle_id,version,version+1,activityChanges(row.state,'uploaded',`media.${id}.state`));
       return dto(updated.rows[0]!);
     });
   }
@@ -57,7 +58,7 @@ export class MediaService {
       if(row.state!=='uploaded') throw new ApiError(422,'MEDIA_NOT_READY','Upload and image validation must finish first.');
       await this.store.read(id);
       const updated=await tx.query<MediaRow>("UPDATE media_assets SET state='ready',expires_at=now()+interval '24 hours',version=version+1 WHERE id=$1 RETURNING *",[id]);
-      await audit(tx,actor,'media.complete',row.vehicle_id,version,version+1);
+      await audit(tx,actor,'media.complete',row.vehicle_id,version,version+1,activityChanges(row.state,'ready',`media.${id}.state`));
       return dto(updated.rows[0]!);
     });
   }
@@ -97,7 +98,7 @@ export class MediaService {
       const draft=await tx.query('SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$1 AND data->\'media\' @> $2::jsonb',[row.vehicle_id,JSON.stringify([{id}])]);
       if(historical.rowCount||draft.rowCount) throw new ApiError(409,'MEDIA_IN_USE','Remove draft references first; publication history references are protected.');
       await tx.query("UPDATE media_assets SET state='deleted',version=version+1 WHERE id=$1",[id]);
-      await audit(tx,actor,'media.delete',row.vehicle_id,version,version+1);
+      await audit(tx,actor,'media.delete',row.vehicle_id,version,version+1,activityChanges(row.state,'deleted',`media.${id}.state`));
       return row.vehicle_id;
     });
     // Revoke visibility and commit the audit first. Physical cleanup takes a new

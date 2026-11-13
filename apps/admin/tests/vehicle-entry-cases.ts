@@ -73,8 +73,14 @@ test('public snapshot preview distinguishes a missing locale from a proxy route 
 });
 
 for (const startsOnDesktop of [false, true]) {
-  test(`vehicle table scrolls only inside the table on mobile ${startsOnDesktop ? 'after desktop resize' : 'on first load'}`, async ({ page }) => {
-    await installApi(page, { items: [vehicle()] });
+  test(`vehicle table scrolls only inside the table on mobile ${startsOnDesktop ? 'after desktop resize' : 'on first load'}`, async ({ page }, testInfo) => {
+    const record = vehicle();
+    record.activity = {
+      created: { at: '2026-11-13T01:02:03.000Z', actor: { kind: 'staff', staffId: 'staff-layout-creator-000000000000000000000001', name: '采购资料维护员工甲（姓名完整可读）' } },
+      lastModified: { at: '2026-11-13T03:04:05.000Z', actor: { kind: 'staff', staffId: 'staff-layout-editor-000000000000000000000002', name: '车辆运营修改员工乙（姓名完整可读）' } },
+      firstImported: null, lastSyncedAt: null,
+    };
+    await installApi(page, { items: [record] });
     await page.setViewportSize(startsOnDesktop ? { width: 1200, height: 960 } : { width: 390, height: 844 });
     await page.goto('/admin/vehicles');
     await expect(page.getByText('FIXTURE-0001', { exact: true })).toBeVisible();
@@ -82,10 +88,31 @@ for (const startsOnDesktop of [false, true]) {
       pageWidth: document.documentElement.scrollWidth,
       tableScrolls: table.scrollWidth > table.clientWidth,
     }));
+    const table = page.locator('.table-region .ant-table-content');
+    const metadata = page.locator('dl[aria-label="员工与系统操作摘要"]');
+    for (const actor of [record.activity.created!.actor, record.activity.lastModified!.actor]) await expect(metadata.getByText(actor.name!, { exact: true })).toBeVisible();
+    const creation = metadata.locator(':scope > div').filter({ has: page.getByText('创建', { exact: true }) }).locator('[tabindex="0"]');
+    await creation.focus();
+    await expect(page.getByRole('tooltip')).toContainText(record.activity.created!.actor.staffId!);
+    await expect(page.getByRole('tooltip')).toContainText(record.activity.created!.at);
+    await expect(page.getByRole('tooltip')).toContainText('北京时间');
+    await creation.blur();
+    await expect(page.getByRole('tooltip')).not.toBeVisible();
     if (startsOnDesktop) {
       await expect.poll(geometry).toEqual({ pageWidth: 1200, tableScrolls: false });
+      await table.scrollIntoViewIfNeeded();
+      await expect(page.getByRole('button', { name: '操作记录', exact: true })).toBeInViewport();
+      await page.screenshot({ path: testInfo.outputPath('vehicle-table-1200.png'), animations: 'disabled' });
       await page.setViewportSize({ width: 390, height: 844 });
     }
     await expect.poll(geometry).toEqual({ pageWidth: 390, tableScrolls: true });
+    await table.scrollIntoViewIfNeeded();
+    await table.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+    await expect(page.getByRole('button', { name: '操作记录', exact: true })).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath('vehicle-table-390-actions.png'), animations: 'disabled' });
+    await table.evaluate(element => { element.scrollLeft = 0; });
+    await expect(page.getByText('FIXTURE-0001', { exact: true })).toBeInViewport();
+    await expect.poll(geometry).toEqual({ pageWidth: 390, tableScrolls: true });
+    await page.screenshot({ path: testInfo.outputPath('vehicle-table-390-vehicle.png'), animations: 'disabled' });
   });
 }

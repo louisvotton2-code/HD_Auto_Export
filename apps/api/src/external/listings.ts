@@ -1,9 +1,12 @@
+import { externalActivitySql } from '../activity/service.js';
+import type { AdminActivitySummary } from '@hd/contracts/admin';
 import type { ExternalListingListQuery, ExternalListingSummary, ExternalOverrides, ExternalUpsertCandidate } from '@hd/contracts/admin';
 import type { Database } from '../db/index.js';
 import { literalPattern, publicListingId } from './catalog.js';
 import { eligibleTextOverride, sourceCopy, sourceHashes, type TextSourceIdentities } from './normalize.js';
 
 type ListingRow = {
+  activity: AdminActivitySummary;
   id: string;
   version: number;
   provider: string;
@@ -95,12 +98,12 @@ export async function listExternalListings(db: Database, query: ExternalListingL
     const total = count.rows[0]!.total;
     const offset = (page - 1) * pageSize;
     if (offset >= total) return { page, pageSize, total, items: [] };
-    const result = await tx.query<ListingRow>("SELECT l.id,l.version,l.provider,l.platform_id,l.external_id,l.source_data,o.data AS overrides,o.text_source_identities,"
+    const result = await tx.query<ListingRow>(`SELECT ${externalActivitySql()} AS activity,l.id,l.version,l.provider,l.platform_id,l.external_id,l.source_data,o.data AS overrides,o.text_source_identities,`
       + facts + " AS catalog_facts," + state + " AS state,l.fetched_at,l.source_updated_at,l.published_at," + hasOverrides + " AS has_overrides "
       + from + " " + where + " ORDER BY l.fetched_at DESC,l.id LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2),
       [...values, pageSize, offset]);
     const items = result.rows.map((row): ExternalListingSummary => ({
-      id: publicListingId(row.id),
+      activity:row.activity,id: publicListingId(row.id),
       version: row.version,
       provider: row.provider,
       platformId: row.platform_id,

@@ -24,7 +24,7 @@ describe('public vehicle titles', () => {
     expect(publicVehicleTitle(english, 'en')).toEqual({ text: 'Toyota', lang: 'en' });
   });
 
-  it('omits unpublished staff translations but keeps source facts for imports', () => {
+  it('omits unpublished staff translations but retains a supplied imported original', () => {
     const vehicle = makeLocalizedPublicVehicleFixture('zh', 'missing');
     vehicle.content.title = { ...vehicle.content.title, text: 'Source title', contentLocale: 'en' };
     vehicle.facts.trim = { id: 'old_trim', name: '待翻译' };
@@ -33,6 +33,12 @@ describe('public vehicle titles', () => {
     const imported = makeImportedPublicVehicleFixture('zh');
     imported.content.title = { ...imported.content.title, text: 'R1 Hybrid', contentLocale: 'en' };
     imported.display!.model = { ...imported.display!.trim };
-    expect(publicVehicleTitle(imported, 'zh')).toEqual({ text: '丰田 示例 R1 2024款', lang: 'zh' });
+    expect(publicVehicleTitle(imported, 'zh')).toEqual({ text: 'R1 Hybrid', lang: 'en' });
+  });
+
+  it.each(['zh', 'en', 'ru'] as const)('keeps the actual original title language in %s without synthetic translation', locale => {
+    const imported = makeImportedPublicVehicleFixture(locale);
+    imported.content.title = { ...imported.content.title, text: '原始车名 0 kW', contentLocale: 'zh' };
+    expect(publicVehicleTitle(imported, locale)).toEqual({ text: '原始车名 0 kW', lang: 'zh' });
   });
 });

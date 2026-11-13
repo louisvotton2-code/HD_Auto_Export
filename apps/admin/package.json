@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test tests/trace-live-guard.test.mjs",
     "test:e2e": "playwright test",
     "check": "pnpm typecheck && pnpm test",
     "test:e2e:live": "node tests/run-live.mjs"

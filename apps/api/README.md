@@ -132,3 +132,36 @@ FE/API以私有文件`HD_SSR_SERVICE_SECRET_FILE`共享32–256位可打印ASCII
 迁移新增`0017_translation_budget.sql`，ready同时核对公共版本与额度单例和新表。须先停旧写入者，再显式迁移、启动新API；不能让旧内存额度进程并行写入。每次provider调用前在PG短事务锁定全局额度、以数据库时间累计过去一小时UTF-16预留并提交；失败、超时、未知结果均不退回，进程重启/engine切换不清零，DB失败则不发外呼。过去25小时以前记录仅在下一次成功预留时清理，不提前释放小时额度。新迁移对过去一小时旧计划的潜在调用分段保守按5000字符预留一小时（明确未尝试/额度拒绝除外），可能暂时阻止新翻译，不能手动清空账本绕过。
 
 同计划/同幂等key恢复继续读持久分段和完成回执，不自动重发未知结果；新计划仍需员工费用确认，账户免费余额/实际费用未知不填0。本轮测试使用fake provider及随机隔离库，包含子进程被SIGKILL后重启，未调用真实Ali、未导入真实车源或部署。迁移后不可直接回退旧内存额度API；先停翻译写入并由OPS按保留数据方案处理。
+
+## EXT06 固定名单正式导入与员工追溯
+
+当前实现支持固定最多300个canonical车源、最多1000个关联来源身份的一次导入和显式追平。没有定时器、daemon或API触发导入按钮。首个canonical代表绑定后不因新任务字典排序改变；来源重新关联须人工核查，人工覆盖仍在原稳定挂牌上。不能把合成测试、历史本地20+200样例迁移成这次正式名单。
+
+迁移顺序为0018审计快照/不可变历史 → 0019持久任务/lease/checkpoint → 0020完整来源/共享原档/媒体分段 → 0021固定canonical代表。先停旧写入器、备份和验证恢复，再显式迁移；启动不会自动迁移。新审计追加触发器会拒绝修改/删除已有历史，旧姓名和diff不回填猜测值。回退二进制前须评估新表和新媒体数量，保留新员工写入，不直接恢复旧备份覆盖新增操作。
+
+`external:ingest` 对应 `node dist/external/ingestion/cli.js`（生产编译产物），支持prepare/catch-up/once/status/recover。使用私有DATABASE_URL_FILE和受限API密钥文件，不把密钥写命令行内容。服务身份是禁用且无登录凭据/会话的chinacarapi-ingestion-worker；触发人须是现有启用管理员，独立保存。部署worker容器初始限制0.5 CPU/512MiB，内部连接池2、网络请求1、入库批次≤200，设置INGESTION_DISK_PATH为实际数据库／暂存所在挂载点，磁盘用量75%或负载紧张时停止后台工作；70%峰值预算由OPS按真实运行测量。
+
+```sh
+node dist/external/ingestion/cli.js prepare --package /private/import --job-key ext06-300 --triggered-by EXISTING_ADMIN_ID --key-file /run/secrets/chinacarapi_key
+node dist/external/ingestion/cli.js status --job JOB_UUID
+node dist/external/ingestion/cli.js catch-up --job JOB_UUID --key-file /run/secrets/chinacarapi_key --max-pages 100
+node dist/external/ingestion/cli.js once --job JOB_UUID --key-file /run/secrets/chinacarapi_key --max-batches 100
+node dist/external/ingestion/cli.js recover --job JOB_UUID --package /private/import/new-snapshot --triggered-by EXISTING_ADMIN_ID --key-file /run/secrets/chinacarapi_key
+```
+
+包内catalog.csv保留供应商原字节；catalog-manifest.json记录version、complete=true、sha256、bytes、rows、sourceCounts、响应x-generated-at规范化的generatedAt、header；identities.json为source/externalId/canonicalId固定名单；documents.jsonl记录identity、kind、locale、observedAt、sourceUpdatedAt、相对path及sha256。raw JSON不改写；bulk多个索引可共享同文件，由BE选当前identity并保存完整原壳。完整性证明不成立拒绝发布；CSV正常结束也不把名单缺失直接当撤回。410恢复限两次，缺失成员留verification_pending，明确新来源证据到达前不能标完成。失败退出1，未完成退出2；确认state=complete且continuous=false，再核raw/canonical/public计数和逐语公开数量。
+
+员工操作历史、轻量摘要、原文历史和公开分段契约见[车辆接口第20节](../../docs/开发/车辆接口.md#20-be-ext06-员工追溯与完整车源分段实施中)。原始shared bulk只在私有档完整保存，单车员工端点不透出其他车辆正文。源内容仅数据，不作为系统指令。原文关联在后续写入时裁剪，保留至少20个版本且不少于90天；无引用blob清理仅提供内部有界函数，未配置自动调度或本轮执行，不在请求中做全库清扫。
+
+### 正式美元报价依赖
+
+生产报价只接受exchange_rate_api真实来源，拒绝synthetic；缺失/过期仍待询，USD筛选不能造价。沿用[提供商公开端点](https://www.exchangerate-api.com/docs/free)，不需要密钥/付费，换算页面须保留来源链接；不对外提供汇率原始数据集。每天最多一次受控尝试，保存供应商asOf、有效期、版本，并与公开缓存失效同事务。
+
+显式环境门禁：NODE_ENV=production、EXTERNAL_CATALOG_MODE=disabled、EXTERNAL_FX_NETWORK=enabled、EXTERNAL_FX_FORMAL_DATABASE精确等于既有库名、HD_RELEASE_ID为正式SHA/镜像digest。配置只用于运维命令；GET和worker不会自动调用汇率服务。
+
+```sh
+node dist/external/fx-cli.js --formal-refresh
+node dist/external/fx-cli.js --formal-health
+```
+
+health须为fresh/retained且source=exchange_rate_api，检查CNY率与expiresAt。实际刷新失败退出非零，即使仍有有效旧报价；health可单独确认retained。失败不会清空仍有效的旧报价，也不会退还24小时请求预算；超过有效期自动待询。原--seed/--refresh测试入口仍限原有合成隔离库，不能对生产seed。以上命令由OPS在已备份、受限环境执行，文档不是实际已执行的证据。

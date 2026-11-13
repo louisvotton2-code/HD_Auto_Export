@@ -29,6 +29,7 @@ COPY --from=api-build /app/apps/api/dist ./dist
 COPY --from=api-build /app/apps/api/migrations ./migrations
 COPY --from=api-build /app/packages/contracts /app/packages/contracts
 COPY deploy/runtime/api-entrypoint.mjs deploy/runtime/database-name.mjs /app/
+COPY deploy/runtime/production/worker-entrypoint.mjs /app/production/worker-entrypoint.mjs
 ENTRYPOINT ["node", "/app/api-entrypoint.mjs"]
 CMD ["dist/main.js"]
 FROM build AS web-build

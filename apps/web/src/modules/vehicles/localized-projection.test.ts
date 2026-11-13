@@ -11,6 +11,14 @@ import {
 } from './localized-projection';
 
 describe('localized public projection boundary', () => {
+  it('validates the requested scope of per-image metadata without rewriting its actual language', () => {
+    const vehicle = makeLocalizedPublicVehicleFixture('ru');
+    vehicle.images[0].altText = { status: 'ready', text: '正面', requestedLocale: 'ru', contentLocale: 'zh', provenance: 'supplier', reviewed: false };
+    const value = { data: vehicle, meta: { requestId: 'image-alt' } };
+    expect(localizedVehicleSchema('ru').parse(value).data.images[0].altText).toMatchObject({ contentLocale: 'zh', provenance: 'supplier', reviewed: false });
+    vehicle.images[0].altText.requestedLocale = 'en';
+    expect(() => localizedVehicleSchema('ru').parse(value)).toThrow();
+  });
   it.each([true, false])('only accepts the detail report existence fact (%s) without an original URL', (hasReport) => {
     const vehicle = makeLocalizedPublicVehicleFixture('en');
     vehicle.report = { hasReport };

@@ -2,6 +2,7 @@ import type { PublicMedia } from '@hd/contracts/public';
 
 /** Renderable fields shared by published photos and authenticated staff preview photos. */
 export type VehicleGalleryImage = Pick<PublicMedia, 'id' | 'url' | 'alt' | 'sortOrder' | 'isCover'> & {
+  altText?: PublicMedia['altText'];
   width?: number | null;
   height?: number | null;
   remote?: PublicMedia['remote'];

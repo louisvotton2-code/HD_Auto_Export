@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { AdminActivitySummarySchema } from './activity.js';
+export * from './activity.js';
 import { AdminReportSchema } from './external-admin.js';
 import { VehicleConfigurationSchema, parseVehicleConfigurationJson } from './configuration.js';
 import { LocalizationDataSchema, VehicleLocalizationSchema } from './localization.js';
@@ -119,6 +121,7 @@ export const AdminVehicleSchema = z.strictObject({
   // null is reserved for immutable historical receipts created before this field existed.
   hasUnpublishedChanges: z.boolean().nullable().default(null),
   createdAt: TimestampSchema, updatedAt: TimestampSchema,
+  activity: AdminActivitySummarySchema.optional(),
 });
 export type AdminVehicle = z.infer<typeof AdminVehicleSchema>;
 export const AdminVehicleResponseSchema = responseSchema(AdminVehicleSchema);

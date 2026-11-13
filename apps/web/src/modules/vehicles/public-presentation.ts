@@ -1,5 +1,6 @@
 import type { Money, PublicMedia, PublicVehicle, PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { withImageAltText } from './vehicle-image-text';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { publicUsdQuote, roundedUsd } from '@/shared/lib/public-vehicle-price';
@@ -41,7 +42,7 @@ export function publicVehicleCover(vehicle: PublicVehicle): PublicMedia | null {
   const cover =
     vehicle.images.find((image) => image.isCover) ??
     [...vehicle.images].sort((a, b) => a.sortOrder - b.sortOrder)[0];
-  return cover ? { ...cover, url: publicMediaUrl(cover.url) } : null;
+  return cover ? { ...withImageAltText(cover, vehicle.display?.mediaAlt), url: publicMediaUrl(cover.url) } : null;
 }
 
 /** Unknown facts remain explicit; model year never substitutes for manufacturing date. */

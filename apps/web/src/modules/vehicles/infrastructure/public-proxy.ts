@@ -3,6 +3,7 @@ import {
   PublicLocaleQuerySchema,
   PublicMediaQuerySchema,
   PublicVehicleFiltersSchema,
+  PublicVehicleSegmentQuerySchema,
 } from '@hd/contracts/public';
 import {
   PublicApiError,
@@ -13,6 +14,7 @@ import {
   getPublicVehicle,
 } from './public-api';
 import type { Locale } from '@/i18n/routing';
+import { parseVehicleSegment, type VehicleSegmentKind } from '../public-segments';
 import { catalogQueryKeys, parseFilterQuery } from '../public-query';
 import {
   legacyHomeSchema,
@@ -33,6 +35,8 @@ function failure(status: number, retryAfter?: string) {
               ? 'INVALID_REQUEST'
               : status === 429
                 ? 'RATE_LIMITED'
+                : status === 409
+                  ? 'VERSION_CONFLICT'
                 : 'SERVICE_UNAVAILABLE',
         message:
           status === 404
@@ -41,8 +45,10 @@ function failure(status: number, retryAfter?: string) {
               ? 'Invalid public query'
               : status === 429
                 ? 'Too many requests. Please try again later.'
+                : status === 409
+                  ? 'Vehicle content changed. Reload this section.'
                 : 'Service temporarily unavailable',
-        retryable: status === 503 || status === 429,
+        retryable: status === 503 || status === 429 || status === 409,
       },
       meta: { requestId: crypto.randomUUID() },
     },
@@ -61,10 +67,11 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   const path = parts.join('/');
   const isMedia = /^media\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
   const isDetail = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
-  if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail)
+  const isSegment = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\/(gallery|configuration)$/.test(path);
+  if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail && !isSegment)
     return failure(404);
   const params = new URL(request.url).searchParams;
-  const allowed = isMedia
+  const allowed = isSegment ? ['locale', 'limit', 'cursor'] : isMedia
     ? ['variant']
     : path === 'vehicles'
       ? catalogQueryKeys
@@ -75,7 +82,8 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
     let query: Record<string, string | number | undefined> = {};
-    if (isMedia) query = PublicMediaQuerySchema.parse(Object.fromEntries(params));
+    if (isSegment) query = PublicVehicleSegmentQuerySchema.parse(Object.fromEntries(params));
+    else if (isMedia) query = PublicMediaQuerySchema.parse(Object.fromEntries(params));
     else {
       const raw = Object.fromEntries(params);
       if (path === 'vehicles') {
@@ -90,7 +98,13 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         query = parsed;
       } else query = PublicLocaleQuerySchema.parse(raw);
     }
-    if (isDetail) IdSchema.parse(parts[1]);
+    if (isDetail || isSegment) IdSchema.parse(parts[1]);
+    if (isSegment) {
+      const value = await readPublicJson(`/api/v1/${path}?${queryString(query)}`, {
+        parse: body => parseVehicleSegment(parts[2] as VehicleSegmentKind, body, parts[1]!, query.locale as Locale),
+      }, request.headers);
+      return Response.json(value, { headers });
+    }
     if (isDetail) {
       const vehicle = await getPublicVehicle(
         parts[1]!,

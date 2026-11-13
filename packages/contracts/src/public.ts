@@ -8,7 +8,7 @@ import {
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
   VehicleFactsSchema, CurrencySchema, MoneySchema, NamedValueSchema, responseSchema,
 } from './common.js';
-import {DrivetrainSchema,VehicleDisplaySchema} from './localization.js';
+import {DrivetrainSchema,VehicleDisplaySchema,DisplayTextSchema} from './localization.js';
 import { ExternalHttpsUrlSchema, ExternalListingIdSchema, ExternalMediaIdSchema, ExternalPublicSummarySchema, PublicReportSchema, PublicTextSchema, RemoteMediaMetadataSchema } from './external-public.js';
 
 export * from './common.js';
@@ -26,9 +26,10 @@ export const PublicMediaSchema = z.strictObject({
   id: IdSchema,
   url: MediaUrlSchema,
   alt: z.string().max(500),
+  altText: DisplayTextSchema.optional(),
   width: z.number().int().positive().max(100_000).nullable(),
   height: z.number().int().positive().max(100_000).nullable(),
-  sortOrder: z.number().int().min(0).max(29),
+  sortOrder: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   isCover: z.boolean(),
   remote: RemoteMediaMetadataSchema.optional(),
 }).superRefine((value, ctx) => {
@@ -68,6 +69,8 @@ export const PublicVehicleSchema = z.strictObject({
   displayPrice:PublicUsdPriceSchema.optional(),
   content: z.strictObject({ title: PublicTextSchema, description: PublicTextSchema.nullable() }),
   images: z.array(PublicMediaSchema).max(30),
+  mediaTotal: z.number().int().nonnegative().optional(),
+  configurationTotal: z.number().int().nonnegative().optional(),
   external: ExternalPublicSummarySchema.optional(),
   // Detail-only. Lists omit the potentially large configuration payload.
   configuration: ConfigurationDisplaySchema.nullable().optional(),
@@ -203,3 +206,23 @@ export const PublicVehicleFiltersSchema = responseSchema(z.strictObject({
   priceCurrencies:z.array(z.strictObject({id:CurrencySchema,count:z.number().int().nonnegative()})).optional(),
 })).extend({meta:PublicCatalogResponseMetaSchema});
 export type PublicVehicleFilters = z.infer<typeof PublicVehicleFiltersSchema>;
+
+/** Fresh, no-store detail segments. Cursors bind resource, locale and publication revision. */
+export const PublicVehicleSegmentQuerySchema = z.strictObject({
+  locale: LocaleSchema.default('zh'), cursor: z.string().min(1).max(2000).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type PublicVehicleSegmentQuery = z.infer<typeof PublicVehicleSegmentQuerySchema>;
+const segmentFields = { vehicleId: IdSchema, locale: LocaleSchema, revision: z.string().regex(/^[a-f0-9]{64}$/),
+  total: z.number().int().nonnegative(), nextCursor: z.string().max(2000).nullable() };
+export const PublicVehicleGalleryResponseSchema = responseSchema(z.strictObject({
+  ...segmentFields, items: z.array(PublicMediaSchema).max(100),
+}));
+export type PublicVehicleGalleryResponse = z.infer<typeof PublicVehicleGalleryResponseSchema>;
+export const PublicConfigurationEntrySchema = z.strictObject({
+  id: z.string().min(1).max(450), name: DisplayTextSchema, value: DisplayTextSchema,
+});
+export const PublicVehicleConfigurationResponseSchema = responseSchema(z.strictObject({
+  ...segmentFields, items: z.array(PublicConfigurationEntrySchema).max(100),
+}));
+export type PublicVehicleConfigurationResponse = z.infer<typeof PublicVehicleConfigurationResponseSchema>;

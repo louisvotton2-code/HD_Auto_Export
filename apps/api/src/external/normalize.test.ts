@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeExternalCandidateFixture } from '@hd/contracts/fixtures';
 import { buildProjection, emptyOverrides } from './normalize.js';
+import {publicLink,chinaCarProfile} from './profiles.js';
 
 test('source free text containing a VIN or formatted international phone stays in private source data', () => {
   const source = makeExternalCandidateFixture(1);
@@ -26,4 +27,12 @@ test('unresolved disputes suppress source copy and alt text that could repeat th
   assert.equal(publicFields.images[0]!.alt, null);
   assert.equal(publicFields.localized.en.title.kind, 'catalog');
   assert.equal(publicFields.details.original.title, null);
+});
+
+
+test('known signed media supports both supplier key variants without expanding host or query permissions',()=>{
+ const url='https://p3-dcd-sign.byteimg.com/photo.jpg?psm=1.2&rk3s=abc123&x-expires=1900000000&x-signature=abcdefghijklmnop';
+ assert.equal(publicLink(url,'media',chinaCarProfile),url);
+ const legacy=url.replace('rk3s','lk3s');assert.equal(publicLink(legacy,'media',chinaCarProfile),legacy);
+ for(const invalid of [url+'&extra=secret',url+'&lk3s=abc',url.replace('p3-dcd-sign.byteimg.com','evil.invalid'),url+'&rk3s=duplicate'])assert.equal(publicLink(invalid,'media',chinaCarProfile),null);
 });

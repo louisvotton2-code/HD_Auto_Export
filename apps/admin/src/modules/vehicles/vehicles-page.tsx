@@ -3,11 +3,13 @@ import { Link, useBlocker, useOutletContext, useSearchParams } from 'react-route
 import { Alert, App, Button, Card, Dropdown, Empty, Image, Input, Modal, Pagination, Select, Space, Table, Tag, Typography } from 'antd';
 import { CarOutlined, CheckCircleOutlined, FileTextOutlined, MoreOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { AdminVehicleListSchema, AvailabilitySchema, PublicationStateSchema, PowertrainSchema, type AdminVehicle, type AdminVehicleList, type StaffMe } from '@hd/contracts/admin';
+import { ActivityHistory, ActivitySummary, ActivityTimestamp, type ActivityTarget } from '../activity';
 import { request } from '../../shared/api/client';
 import { useVehicleDictionary } from '../../shared/api/vehicle-dictionary';
-import { availabilityLabels, formatTime, publicationLabels, powertrainLabels } from './draft-form';
+import { availabilityLabels, publicationLabels, powertrainLabels } from './draft-form';
 import { BulkVehicleActions } from './bulk-vehicle-actions';
 import { VehicleDeletionActions } from './vehicle-deletion-actions';
+import styles from './vehicles-page.module.css';
 
 export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
   const staff = useOutletContext<StaffMe>();
@@ -25,6 +27,7 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
   const [lifecycleTarget, setLifecycleTarget] = useState<AdminVehicle | null>(null);
   const [lifecycleConflict, setLifecycleConflict] = useState(false);
   const [notice, setNotice] = useState('');
+  const [history, setHistory] = useState<ActivityTarget | null>(null);
   const bulkBusy = batchBusy || lifecycleBusy;
   const blocker = useBlocker(bulkBusy);
   useEffect(() => {
@@ -119,12 +122,17 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
         columns={[
           { title: '车辆信息', key: 'vehicle', width: 260, render: (_, row) => { const media = row.draft.media.find(item => item.isCover) ?? row.draft.media[0]; const name = [row.draft.facts.make?.name, row.draft.facts.model?.name].filter(Boolean).join(' ') || row.draft.content.title.sourceText || '待补充车辆'; return <div className="vehicle-cell">{media && !deleted ? <Image width={84} height={60} src={`/api/v1/admin/media/${encodeURIComponent(media.id)}/preview`} alt={media.alt || name} style={{ objectFit: 'cover', borderRadius: 8 }} /> : <span className="vehicle-thumb-placeholder"><CarOutlined /></span>}<div>{canWrite ? <Link className="vehicle-name" to={`/vehicles/${row.id}`}>{name}</Link> : <span className="vehicle-name">{name}</span>}<div className="vehicle-stock">{row.stockCode}</div><div className="vehicle-spec">{row.draft.facts.modelYear ? `${row.draft.facts.modelYear}款 · ` : ''}{powertrainLabels[row.draft.facts.powertrain]}</div>{row.draft.source.kind === 'external' && <Tag color="blue" style={{ marginTop: 5 }}>外部挂牌 · 库存未知</Tag>}{row.draft.source.kind === 'demo' && <Tag className="demo-tag" color="gold" style={{ marginTop: 5 }}>展示样例，非实际库存</Tag>}</div></div>; } },
           { title: '展示价格', width: 125, render: (_, row) => <div className="vehicle-price">{row.draft.price.kind === 'on_request' ? '待询价' : row.draft.price.money?.amount == null ? `报价待填写${row.draft.price.money ? ` · ${row.draft.price.money.currency}` : ''}` : `${row.draft.price.money.amount} ${row.draft.price.money.currency}`} <small>{row.draft.price.kind === 'reference' ? '参考价格' : row.draft.price.kind === 'asking' ? '公开报价' : '暂无公开报价'}</small></div> },
-          { title: '库存 / 发布', width: 120, render: (_, row) => deleted ? <Tag>已删除</Tag> : <Space direction="vertical" size={5}><Tag color={row.draft.source.kind === 'demo' ? 'gold' : inventoryColor[row.availability]}>{row.draft.source.kind === 'demo' ? '非实际库存' : row.draft.source.kind === 'external' ? '外部挂牌 · 库存未知' : availabilityLabels[row.availability]}</Tag><Tag color={publicationColor[row.publicationState]}>{publicationLabels[row.publicationState]}</Tag></Space> },
-          { title: deleted ? '删除时间' : '更新时间', width: 145, render: (_, row) => <div style={{ color: '#607278', fontSize: 11 }}>{formatTime(deleted ? row.deletedAt : row.updatedAt)}<div style={{ marginTop: 7 }}>核验：{row.draft.source.kind !== 'manual' ? '不适用' : formatTime(row.availabilityCheckedAt)}</div></div> },
-          { title: '操作', key: 'actions', width: 166, render: (_, row) => <Space wrap>{canWrite && <Link to={`/vehicles/${row.id}`}>{deleted ? '查看详情' : '编辑'}</Link>}{canWrite && <Button type="link" size="small" danger={!deleted} disabled={bulkBusy} onClick={() => { setLifecycleTarget(row); setLifecycleConflict(false); }}>{deleted ? '恢复车辆' : '删除车辆'}</Button>}<Dropdown menu={{ items: [{ key: 'copy', label: '复制车号', onClick: () => { void navigator.clipboard.writeText(row.stockCode).then(() => message.success('车号已复制')).catch(() => message.error('复制失败，请手动复制车号')); } }, { key: 'public', disabled: !!row.deletedAt || row.publicationState !== 'published', label: row.deletedAt || row.publicationState !== 'published' ? '未公开' : <a href={`/api/v1/vehicles/${encodeURIComponent(row.id)}?locale=zh&view=localized`} target="_blank" rel="noreferrer">查看公开接口</a> }] }}><Button type="text" size="small" aria-label={`更多操作 ${row.stockCode}`} icon={<MoreOutlined />} /></Dropdown></Space> },
+          { title: '库存 / 发布', width: 120, render: (_, row) => deleted ? <Tag>已删除</Tag> : <Space direction="vertical" size={5}><Tag className={styles.statusTag} color={row.draft.source.kind === 'demo' ? 'gold' : inventoryColor[row.availability]}>{row.draft.source.kind === 'demo' ? '非实际库存' : row.draft.source.kind === 'external' ? '外部挂牌 · 库存未知' : availabilityLabels[row.availability]}</Tag><Tag color={publicationColor[row.publicationState]}>{publicationLabels[row.publicationState]}</Tag></Space> },
+          { title: deleted ? '删除 / 追溯' : '时间 / 追溯', key: 'activity', width: 145, render: (_, row) => <div className={styles.times}>
+            <ActivitySummary activity={row.activity} external={row.draft.source.kind === 'external'} compact />
+            <div className={styles.timeMeta}>{deleted ? '删除' : '资料更新'}：{(deleted ? row.deletedAt : row.updatedAt) ? <ActivityTimestamp at={(deleted ? row.deletedAt : row.updatedAt)!} compact /> : '尚未记录'}</div>
+            <div className={styles.timeMeta}>库存核验：{row.draft.source.kind !== 'manual' ? '不适用' : row.availabilityCheckedAt ? <ActivityTimestamp at={row.availabilityCheckedAt} compact /> : '尚未记录'}</div>
+          </div> },
+          { title: '操作', key: 'actions', width: 166, render: (_, row) => <Space wrap><Button type="link" size="small" onClick={() => setHistory({ kind: 'vehicle', id: row.id, label: row.stockCode })}>操作记录</Button>{canWrite && <Link to={`/vehicles/${row.id}`}>{deleted ? '查看详情' : '编辑'}</Link>}{canWrite && <Button type="link" size="small" danger={!deleted} disabled={bulkBusy} onClick={() => { setLifecycleTarget(row); setLifecycleConflict(false); }}>{deleted ? '恢复车辆' : '删除车辆'}</Button>}<Dropdown menu={{ items: [{ key: 'copy', label: '复制车号', onClick: () => { void navigator.clipboard.writeText(row.stockCode).then(() => message.success('车号已复制')).catch(() => message.error('复制失败，请手动复制车号')); } }, { key: 'public', disabled: !!row.deletedAt || row.publicationState !== 'published', label: row.deletedAt || row.publicationState !== 'published' ? '未公开' : <a href={`/api/v1/vehicles/${encodeURIComponent(row.id)}?locale=zh&view=localized`} target="_blank" rel="noreferrer">查看公开接口</a> }] }}><Button type="text" size="small" aria-label={`更多操作 ${row.stockCode}`} icon={<MoreOutlined />} /></Dropdown></Space> },
         ]} /></div>}
       {result && <div className="table-pagination"><Pagination current={page} pageSize={pageSize} total={result.total} onChange={changePage} showSizeChanger pageSizeOptions={[12, 24, 48]} showTotal={total => `共 ${total} 辆`} size="small" responsive disabled={bulkBusy} /></div>}
     </Card>
+    <ActivityHistory target={history} onClose={() => setHistory(null)} />
     <Modal open={lifecycleTarget !== null} title={deleted ? '恢复车辆' : '删除车辆'} closable={!lifecycleBusy} keyboard={!lifecycleBusy} maskClosable={!lifecycleBusy} destroyOnHidden footer={<Button disabled={lifecycleBusy} onClick={() => setLifecycleTarget(null)}>关闭</Button>} onCancel={() => !lifecycleBusy && setLifecycleTarget(null)}>
       {lifecycleTarget && <><Typography.Paragraph strong>{lifecycleTarget.stockCode} · {lifecycleTarget.draft.content.title.sourceText || '车辆档案'}</Typography.Paragraph>
         {lifecycleConflict && <Alert showIcon type="warning" title="版本已变化" description="本次操作未覆盖新版本。请关闭窗口并刷新列表，核对资料后重新操作。" style={{ marginBottom: 16 }} />}
