@@ -101,6 +101,53 @@ test('fixed-scope ingestion persists leases, pages, failures, withdrawal precede
    const result=await new FixedScopeWorker(database,apply).tick(id);assert.equal(result.processed,1);assert.equal(result.state,'ready');
    assert.equal((await database.pool.query("SELECT hydration_error FROM external_ingestion_events WHERE job_id=$1 AND external_id='124'",[id])).rows[0].hydration_error,'not_found');
   });
+  await t.test('a newer snapshot releases exhausted old deltas for independent order-zero identities',async()=>{
+   for(const withSourceTime of [false,true]){
+    const identity={provider:'chinacarapi' as const,source:'che168' as const,externalId:withSourceTime?'126':'125'};
+    const scope={...manifest,identities:[{source:identity.source,externalId:identity.externalId,canonicalId:`car-${identity.externalId}`}]};
+    const id=await createImportJob(database,`exhausted-${identity.externalId}`,scope,'worker-test-admin');
+    const worker=new FixedScopeWorker(database,apply),prefix=`exhausted-${identity.externalId}`;
+    await verifySnapshot(database,id,scope.csv);
+    await receivePage(database,id,{lane:'snapshot',inputCursor:null,nextCursor:null,terminal:true,events:[{...event(`${prefix}-initial`),identity}]});
+    assert.equal((await worker.tick(id)).checkpoint,'1');
+    const oldTime='2026-11-13T01:00:00.000Z',observedAt=withSourceTime?'2026-11-15T00:00:00.000Z':oldTime;
+    const delta={...event(`${prefix}-old`,'upsert','100'),identity,observedAt,document:withSourceTime?[{identity,kind:'event',locale:'und',observedAt,sourceUpdatedAt:oldTime,payload:{id:'100'}}]:[]};
+    await receivePage(database,id,{lane:'delta',inputCursor:null,nextCursor:'100',terminal:true,events:[delta]});
+    let requests=0;const client=new ChinaCarClient('fake-key',{fetch:async()=>{requests++;return new Response(JSON.stringify({results:[],notFound:[identity.externalId]}),{headers:{'content-type':'application/json'}});}});
+    for(let attempt=0;attempt<3;attempt++){
+     await database.pool.query("UPDATE external_ingestion_events SET hydration_retry_at='-infinity' WHERE job_id=$1",[id]);
+     assert.equal(await hydratePending(database,client,id),0);
+    }
+    assert.equal(requests,9);assert.equal(await hydratePending(database,client,id),0);assert.equal(requests,9);
+    assert.equal((await worker.tick(id)).processed,0);
+    const before=(await database.pool.query('SELECT business_order,business_at FROM external_ingestion_identity_state WHERE provider=$1 AND source=$2 AND external_id=$3',[identity.provider,identity.source,identity.externalId])).rows[0];
+    assert.equal(before.business_order,'0');assert.equal(before.business_at.toISOString(),at);
+    const proof={...scope.csv,sha256:'b'.repeat(64),generatedAt:'2026-11-14T00:00:00.000Z'};
+    await recoverExpiredCursor(database,id,proof);await verifySnapshot(database,id,proof);
+    await receivePage(database,id,{lane:'snapshot',inputCursor:null,nextCursor:null,terminal:true,events:[{...event(`${prefix}-recovered`),identity,snapshotHash:proof.sha256,observedAt:proof.generatedAt}]});
+    await receivePage(database,id,{lane:'delta',inputCursor:null,nextCursor:'200',terminal:true,events:[]});
+    const recovered=await worker.tick(id);assert.equal(recovered.processed,1);assert.equal(recovered.checkpoint,'1');assert.equal(recovered.state,'ready');
+    const finished=await worker.tick(id);assert.equal(finished.processed,1);assert.equal(finished.checkpoint,'3');assert.equal(finished.state,'complete');
+    const stale=(await database.pool.query('SELECT outcome,hydration_attempts,hydrated_document FROM external_ingestion_events WHERE job_id=$1 AND seq=2',[id])).rows[0];
+    assert.deepEqual(stale,{outcome:'obsolete',hydration_attempts:3,hydrated_document:null});assert.equal(requests,9);
+    const after=(await database.pool.query('SELECT business_order,business_at,withdrawn FROM external_ingestion_identity_state WHERE provider=$1 AND source=$2 AND external_id=$3',[identity.provider,identity.source,identity.externalId])).rows[0];
+    assert.equal(after.business_order,'0');assert.equal(after.business_at.toISOString(),proof.generatedAt);assert.equal(after.withdrawn,false);
+    assert.equal((await database.pool.query('SELECT obsolete FROM test_worker_effects WHERE event_key=$1',[`${prefix}-old`])).rows[0].obsolete,true);
+    // A current or newer event remains blocked until its missing details are hydrated.
+    await beginCatchUp(database,id);
+    await receivePage(database,id,{lane:'delta',inputCursor:'200',nextCursor:'202',terminal:true,events:[proof.generatedAt,'2026-11-16T00:00:00.000Z'].map((time,index)=>({
+     ...event(`${prefix}-current-${index}`,'upsert',String(201+index)),identity,observedAt:time,document:[{identity,kind:'event',locale:'und',observedAt:time,sourceUpdatedAt:time,payload:{id:String(201+index)}}]
+    }))});
+    const blocked=await worker.tick(id);assert.equal(blocked.processed,0);assert.equal(blocked.checkpoint,'3');assert.equal(blocked.state,'ready');
+    await beginCatchUp(database,id);
+    await receivePage(database,id,{lane:'delta',inputCursor:'202',nextCursor:'203',terminal:true,events:[{
+     ...event(`${prefix}-older-observation`,'upsert','0'),identity,document:[{identity,kind:'event',locale:'und',observedAt:at,sourceUpdatedAt:proof.generatedAt,payload:{id:'203'}}]
+    }]});
+    const tied=await worker.tick(id);assert.equal(tied.processed,1);assert.equal(tied.checkpoint,'3');assert.equal(tied.state,'ready');
+    assert.equal((await database.pool.query('SELECT outcome FROM external_ingestion_events WHERE job_id=$1 AND seq=6',[id])).rows[0].outcome,'obsolete');
+    assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_ingestion_events WHERE job_id=$1 AND completed_at IS NULL',[id])).rows[0].n,2);
+   }
+  });
   await t.test('410 recovery retains scope and queued events and stops at the configured bound',async()=>{
    const id=await createImportJob(database,'recovery',manifest,'worker-test-admin');await receivePage(database,id,{lane:'delta',inputCursor:null,nextCursor:'5',terminal:true,events:[event('withdraw-recovery','withdraw','105')]});
    await recoverExpiredCursor(database,id,manifest.csv);await recoverExpiredCursor(database,id,manifest.csv);await assert.rejects(recoverExpiredCursor(database,id,manifest.csv),/RECOVERY_LIMIT/);

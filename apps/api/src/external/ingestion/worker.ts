@@ -98,8 +98,18 @@ export class FixedScopeWorker{
   return this.db.transaction(async tx=>{
    const job=(await tx.query<Job>(`SELECT * FROM external_ingestion_jobs WHERE id=$1 AND lease_owner=$2 AND fence=$3 AND lease_until>clock_timestamp() FOR UPDATE`,[lease.jobId,lease.owner,lease.fence])).rows[0];
    if(!job)fail('INGESTION_LEASE_LOST');await serviceActor(tx);
+   // Unhydrated deltas may pass only when obsolete under the same source-time/order rules below.
+   // Use the first event document (null falls back to observed_at), with JavaScript millisecond precision.
    const rows=(await tx.query<{seq:string;event_key:string;provider:'chinacarapi';source:'che168'|'dongchedi';external_id:string;operation:IngestionEvent['operation'];business_order:string;observed_at:Date;document:IngestionEvent['document'];canonical_id:string;lane:Lane;snapshot_hash:string|null}>(`SELECT e.*,coalesce(e.hydrated_document,e.document) AS document,m.canonical_id FROM external_ingestion_events e JOIN external_ingestion_members m USING(job_id,provider,source,external_id)
-    WHERE e.job_id=$1 AND completed_at IS NULL AND ($2 OR (operation='withdraw' AND lane='delta')) AND (operation='withdraw' OR lane<>'delta' OR hydrated_document IS NOT NULL OR EXISTS(SELECT 1 FROM external_ingestion_identity_state i WHERE i.provider=e.provider AND i.source=e.source AND i.external_id=e.external_id AND (i.business_order>e.business_order OR (i.withdrawn AND (e.operation<>'relist' OR i.business_order>=e.business_order))))) ORDER BY (operation='withdraw') DESC,seq LIMIT $3`,[lease.jobId,job.state==='ready',WORKER_LIMITS.batch])).rows;
+    WHERE e.job_id=$1 AND completed_at IS NULL AND ($2 OR (operation='withdraw' AND lane='delta'))
+    AND (operation='withdraw' OR lane<>'delta' OR hydrated_document IS NOT NULL OR EXISTS(
+     SELECT 1 FROM external_ingestion_identity_state i WHERE i.provider=e.provider AND i.source=e.source AND i.external_id=e.external_id AND (
+      i.business_order>e.business_order OR (i.withdrawn AND (e.operation<>'relist' OR i.business_order>=e.business_order))
+      OR (i.business_order=e.business_order AND e.observed_at<i.observed_at)
+      OR date_trunc('milliseconds',i.business_at)>date_trunc('milliseconds',coalesce((
+       SELECT doc->>'sourceUpdatedAt' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.document)='array' THEN e.document ELSE '[]'::jsonb END) WITH ORDINALITY AS entries(doc,position)
+       WHERE doc->>'kind'='event' ORDER BY position LIMIT 1)::timestamptz,e.observed_at)))))
+    ORDER BY (operation='withdraw') DESC,seq LIMIT $3`,[lease.jobId,job.state==='ready',WORKER_LIMITS.batch])).rows;
    if(rows.length)await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    for(const row of rows){
     const event:IngestionEvent={key:row.event_key,identity:{provider:row.provider,source:row.source,externalId:row.external_id},operation:row.operation,businessOrder:row.business_order,observedAt:row.observed_at.toISOString(),document:row.document,...(row.snapshot_hash?{snapshotHash:row.snapshot_hash}:{})};
