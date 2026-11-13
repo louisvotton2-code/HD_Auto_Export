@@ -88,3 +88,23 @@ test('route skeletons do not change missing vehicle or invalid catalog queries i
     expect(invalid.status()).toBe(404);
   }
 });
+
+test('vehicle details render their heading, price and contacts without JavaScript in all three languages', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    for (const locale of ['zh', 'en', 'ru']) {
+      const response = await page.goto(`/${locale}/cars/fixture_car_3/`);
+      expect(response?.status()).toBe(200);
+      const main = page.locator('main[data-public-vehicle-detail="fixture_car_3"]');
+      await expect(main).toBeVisible();
+      await expect(main.locator('h1')).toBeVisible();
+      await expect(main.locator('h1')).toHaveText(/\S/);
+      await expect(main.locator('[data-vehicle-original-price]').filter({ visible: true }).first()).toContainText(/\d/);
+      await expect(main.locator('[data-vehicle-contacts] a[href^="https://t.me/"]').first()).toBeVisible();
+      await expect(main.locator('[data-vehicle-contacts] a[href^="https://wa.me/"]').first()).toBeVisible();
+    }
+  } finally {
+    await context.close();
+  }
+});
