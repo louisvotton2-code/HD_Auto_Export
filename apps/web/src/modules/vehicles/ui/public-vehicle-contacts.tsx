@@ -7,7 +7,7 @@ import { SocialIcon } from '@/shared/ui/social-icon';
 import { publicVehicleMessages } from '../public-messages';
 import { externalDetailCopy } from '../external-detail-copy';
 import { buildVehicleInspectionContactLinks } from '../inspection-contact';
-import styles from './vehicles.module.css';
+import styles from './public-vehicle-contacts.module.css';
 
 export function PublicVehicleContacts({
   vehicle,

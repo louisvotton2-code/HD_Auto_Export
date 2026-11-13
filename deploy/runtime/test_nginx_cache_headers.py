@@ -3,11 +3,20 @@ import http.client, http.server, json, os, pathlib, shutil, socket, socketserver
 HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 class Origin(http.server.BaseHTTPRequestHandler):
+    calls=[]
     def do_GET(self):
+        self.calls.append(self.path)
         known={'/_next/static/chunks/chunk-12345678.js':200,'/_next/static/chunks/partial-12345678.js':206,'/_next/static/build-12345678/_buildManifest.js':304}
         status=known.get(self.path,404 if self.path.startswith('/_next/static/') else 200)
         body=json.dumps({'headers':dict(self.headers.items()),'path':self.path}).encode() if not self.path.startswith('/_next/static/') else b'code'
-        self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Cache-Control','public, max-age=600' if self.path=='/zh/guide/' else 'no-store')
+        content_type='application/json'
+        if '/cars/missing/' in self.path:
+            status=404;content_type='text/x-component' if self.headers.get('RSC') else 'text/html';body=b'original missing response'
+        elif '/cars/unavailable/' in self.path:status=503;body=b'original unavailable'
+        elif '/cars/limited/' in self.path:status=429;body=b'original limited'
+        elif self.path.startswith('/404/'):
+            content_type='text/html';body=('<html>readable '+self.path.split('/')[2]+' missing vehicle</html>').encode()
+        self.send_response(status);self.send_header('Content-Type',content_type);self.send_header('Cache-Control','public, max-age=600' if self.path=='/zh/guide/' else 'no-store')
         if self.path.startswith('/staff/'):
             self.send_header('X-Frame-Options','SAMEORIGIN');self.send_header('Content-Security-Policy',"frame-ancestors 'self'");self.send_header('Referrer-Policy','same-origin')
         self.send_header('Content-Length',str(len(body) if status!=304 else 0));self.end_headers()
@@ -45,6 +54,9 @@ class DomainCacheHeaders(unittest.TestCase):
             time.sleep(.05)
         else:raise RuntimeError('Isolated nginx socket did not start')
     def request(self,host,path,headers=None,tls=True,method='GET'):
+        # Exercise routing without overrunning the unchanged 8r/s production
+        # SSR limiter as the independent boundary cases share one Unix peer.
+        time.sleep(.14)
         r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(r/('tls.sock' if tls else 'http.sock')))
         if tls:s=ssl.create_default_context(cafile=str(r/'cert.pem')).wrap_socket(s,server_hostname=host)
         with s:
@@ -82,4 +94,19 @@ class DomainCacheHeaders(unittest.TestCase):
         for path in ['/api/v1/vehicles','/zh/cars/']:
             status,headers,body=self.request('cars.hongdingauto.com',path,{'X-HD-SSR-Key':'synthetic-forgery','X-Forwarded-For':'203.0.113.55'});self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');origin=json.loads(body)['headers'];self.assertFalse(any(k.lower()=='x-hd-ssr-key' for k in origin));self.assertNotEqual(origin.get('X-Forwarded-For'),'203.0.113.55')
         self.assertEqual(self.request('cars.hongdingauto.com','/zh/guide/')[1]['cache-control'],'public, max-age=600')
+    def test_missing_vehicle_documents_keep_404_and_only_use_the_localized_html_fallback(self):
+        for locale in ['zh','en','ru']:
+            Origin.calls.clear()
+            status,headers,body=self.request('cars.hongdingauto.com','/'+locale+'/cars/missing/?private=value',{'Accept':'text/html','Cookie':'synthetic-private','Authorization':'synthetic-auth'})
+            self.assertEqual(status,404);self.assertIn(('readable '+locale+' missing vehicle').encode(),body,str(Origin.calls))
+            self.assertEqual(headers['cache-control'],'private, no-store');self.assertIn('noindex',headers['x-robots-tag'])
+            self.assertEqual(Origin.calls,['/'+locale+'/cars/missing/?private=value','/404/'+locale+'/'])
+            self.assertEqual(self.request('cars.hongdingauto.com','/'+locale+'/cars/missing/',{'Accept':'text/html'},method='HEAD')[0],404)
+        for headers in [{'Accept':'text/html','RSC':'1'},{'Accept':'text/html','Next-Router-Prefetch':'1'},{'Accept':'text/html','Next-Router-Segment-Prefetch':'/tree'},{'Accept':'text/html','Purpose':'prefetch'},{'Accept':'text/html','Sec-Purpose':'prefetch;prerender'},{'Accept':'application/json'}]:
+            Origin.calls.clear()
+            status,_,body=self.request('cars.hongdingauto.com','/zh/cars/missing/',headers)
+            self.assertEqual(status,404);self.assertEqual(body,b'original missing response');self.assertEqual(Origin.calls,['/zh/cars/missing/'])
+        for path,expected in [('unavailable',503),('limited',429),('present',200)]:
+            Origin.calls.clear();self.assertEqual(self.request('cars.hongdingauto.com','/zh/cars/'+path+'/',{'Accept':'text/html'})[0],expected)
+            self.assertEqual(Origin.calls,['/zh/cars/'+path+'/'])
 if __name__=='__main__':unittest.main()

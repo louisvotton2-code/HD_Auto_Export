@@ -22,8 +22,3 @@ export type Vehicle = {
   /** Identifies the provenance of a demo sample, not current vehicle availability. */
   sampleOrigin: 'company-legacy' | 'reference-korea';
 };
-export type VehicleFilters = {
-  query?: string;
-  fuel?: VehicleFuel | 'all';
-  body?: VehicleBody | 'all';
-};

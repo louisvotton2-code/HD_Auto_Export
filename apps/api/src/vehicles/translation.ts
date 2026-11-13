@@ -4,7 +4,7 @@ import { VehicleTranslationSuggestionsSchema,getDisplayTextLimit } from '@hd/con
 import type { Config } from '../config.js';
 import { ApiError } from '../errors.js';
 import { translationQuotaExceeded, type TranslationBudget } from './translation-budget.js';
-import { locales, sourceHash } from './content.js';
+import { sourceHash } from './content.js';
 
 export interface TranslationProvider {
   readonly engineVersion:string;
