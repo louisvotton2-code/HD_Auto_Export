@@ -33,3 +33,14 @@ BE最终44bbcdd已保存并独审；第四契约757f184新增可选PublicMedia.a
 6项preflight守卫单测、类型检查通过，6项加入应用test脚本；精确单项发现通过与真实执行分别记录。实际运行待OPS最终组合，尚未记通过。API／PG核心事务、失败／409／回放／禁用等继续按BE和OPS范围验证。
 
 独立Reviewer发现测试P2：退出／重新登录保留编辑路径，乙登录后不能等车辆列表标题。已改为等登录表单消失和乙身份就绪，再显式进入车辆；原业务／login helper保持；同一Reviewer复查P2已关闭，其余未发现新增可确认问题，允许交OPS在约定隔离环境实际运行，尚不代表真实通过。
+
+
+## 真实首轮事件定位修复
+
+PM与OPS首轮失败合并处理。OPS `docs/private/ops-ext06/rehearsal/two-staff-live.log` 显示同一抽屉同时存在vehicle.save和media.upload的版本1→2；两套记录版本各自计数，不能用版本区间定位唯一事件。首次真实测试在该选择器处失败，日志已保留，不记整体通过；此前发布HTTP200和已完成断言仅为到达阶段，不能替代后半段验证。
+
+历史项增加正式event.id对应的测试定位标识，真实case按已解析的保存事件ID选择，仍断言动作“保存草稿”、版本以及标题修改前／后精确值，不改原内容断言、runner或隔离保护。新增定向fixture同时含版本重叠的车辆／图片事件，检查只展开目标差异，未知动作仍安全回退。
+
+核对BE最终44bbcdd的media/service：media.create/upload/complete/delete分别为申请图片上传、图片文件上传完成、图片处理完成、删除图片。补UI中文名称；未知码仍按文本回退，包括Object原型同名字符串，不把未知值当函数渲染。没有变更API动作或审计事实。
+
+类型、103单元＋6守卫与构建通过（event-id-check.log／event-id-build.log），仅新事件定位fixture做浏览器定向复测（event-id-browser.log）；不重复整套，不冒称真实双员工复跑通过。同一Reviewer定向复查未发现可确认问题，准确修复提交另记AD-handoff；OPS负责最终组合再执行同一真实用例。当前3363／生产未切换。

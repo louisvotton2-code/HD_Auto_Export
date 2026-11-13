@@ -1159,7 +1159,11 @@ test(traceCaseTitle, async ({ page }, testInfo) => {
   const drawer = page.getByRole('dialog', { name: '车辆操作记录' });
   await expect(drawer.getByText(`${creator.name} · 员工 ID ${creator.id}`, { exact: true })).toHaveCount(1);
   await expect(drawer.getByText(`${editor.name} · 员工 ID ${editor.id}`, { exact: true })).toHaveCount(events.filter(event => event.actor.staffId === editor.id).length);
-  await drawer.getByText(`版本 ${saved!.oldVersion} → ${saved!.newVersion}`, { exact: true }).click();
+  const savedEvent = drawer.getByTestId(`activity-event-${saved!.id}`);
+  await expect(savedEvent).toHaveCount(1);
+  await expect(savedEvent).toContainText('保存草稿');
+  await expect(savedEvent).toContainText(`版本 ${saved!.oldVersion} → ${saved!.newVersion}`);
+  await savedEvent.click();
   await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源"$/ })).toHaveCount(1);
   await expect(drawer.locator('pre').filter({ hasText: /^"双员工隔离车源修改后"$/ })).toHaveCount(1);
   await page.setViewportSize({ width: 320, height: 850 });

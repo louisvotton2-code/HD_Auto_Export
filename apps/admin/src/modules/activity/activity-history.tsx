@@ -33,7 +33,7 @@ function HistoryContent({ target }: { target: ActivityTarget }) {
       : resource.error ? <Alert showIcon type="error" title="操作记录未能读取" description={resource.error} action={<Button onClick={refresh}>重新读取</Button>} />
       : resource.data && (resource.data.data.items.length ? <Collapse key={JSON.stringify([cursor, revision])} items={resource.data.data.items.map(event => ({
         key: event.id,
-        label: <div className={styles.eventHeading}><strong>{activityAction(event.action)}</strong><span>{activityActor(event.actor)}</span>
+        label: <div className={styles.eventHeading} data-testid={`activity-event-${event.id}`}><strong>{activityAction(event.action)}</strong><span>{activityActor(event.actor)}</span>
           <time dateTime={event.at}>{activityTime(event.at)}</time><span className={styles.utc}>UTC：{event.at}</span>
           <span><Tag>版本 {event.oldVersion ?? '未记录'} → {event.newVersion ?? '未记录'}</Tag></span></div>,
         children: <EventDetails event={event} />,

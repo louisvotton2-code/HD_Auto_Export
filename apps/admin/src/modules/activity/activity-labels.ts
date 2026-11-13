@@ -5,10 +5,12 @@ const actions: Record<string, string> = {
   'vehicle.archive': '下架车辆', 'vehicle.availability': '更新库存状态', 'vehicle.delete': '删除车辆',
   'vehicle.restore': '恢复车辆', 'vehicle.translationBundle.save': '保存公开多语',
   'vehicle.localization.save': '保存展示译文', 'vehicle.preview.confirm': '确认发布预览',
+  'media.create': '申请图片上传', 'media.upload': '图片文件上传完成',
+  'media.complete': '图片处理完成', 'media.delete': '删除图片',
   'vehicle.media.add': '添加图片', 'vehicle.media.remove': '移除图片', 'vehicle.media.reorder': '调整图片顺序',
   'vehicle.media.cover': '设置封面', 'external.override': '人工修订', 'external.override.save': '保存人工修订',
 };
-export const activityAction = (action: string) => actions[action] ?? `其他操作（${action}）`;
+export const activityAction = (action: string) => Object.hasOwn(actions, action) ? actions[action] : `其他操作（${action}）`;
 
 const fields: Record<string, string> = {
   'facts.make': '品牌', 'facts.model': '车型', 'facts.trim': '配置版本', 'facts.modelYear': '年款',

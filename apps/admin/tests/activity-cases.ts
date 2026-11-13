@@ -19,6 +19,29 @@ const event = (overrides: Partial<ActivityEvent> = {}): ActivityEvent => ({
 const history = (page: Page) => page.getByRole('dialog', { name: '车辆操作记录' });
 const clickHistory = (page: Page) => page.getByRole('button', { name: '操作记录', exact: true }).first().click();
 
+test('activity event IDs distinguish overlapping vehicle and media versions and preserve readable action labels', async ({ page }) => {
+  const record = vehicle();
+  await installApi(page, { items: [record], permissions: ['vehicles:read'] });
+  await page.route(`**/api/v1/admin/vehicles/${record.id}/activity?*`, route => reply(route, envelope({ items: [
+    event({ id: 'title-save', oldVersion: 1, newVersion: 2, changes: [{ path: 'draft.content.title.sourceText', beforePresent: true, afterPresent: true, before: '修改前标题', after: '修改后标题' }] }),
+    event({ id: 'image-upload', action: 'media.upload', oldVersion: 1, newVersion: 2, changes: [{ path: 'media.image-1.state', beforePresent: true, afterPresent: true, before: 'pending', after: 'uploaded' }] }),
+    event({ id: 'image-create', action: 'media.create' }), event({ id: 'image-complete', action: 'media.complete' }), event({ id: 'image-delete', action: 'media.delete' }),
+    event({ id: 'future-action', action: 'constructor' }),
+  ], nextCursor: null })));
+  await page.goto('/admin/vehicles'); await clickHistory(page);
+  const drawer = history(page);
+  await expect(drawer.getByText('版本 1 → 2', { exact: true })).toHaveCount(2);
+  for (const label of ['申请图片上传', '图片文件上传完成', '图片处理完成', '删除图片', '其他操作（constructor）']) await expect(drawer.getByText(label, { exact: true })).toBeVisible();
+  const saved = drawer.getByTestId('activity-event-title-save');
+  await expect(saved).toHaveCount(1);
+  await expect(saved).toContainText('保存草稿');
+  await expect(saved).toContainText('版本 1 → 2');
+  await saved.click();
+  await expect(drawer.locator('pre').filter({ hasText: /^"修改前标题"$/ })).toHaveCount(1);
+  await expect(drawer.locator('pre').filter({ hasText: /^"修改后标题"$/ })).toHaveCount(1);
+  await expect(drawer.locator('pre').filter({ hasText: /^"uploaded"$/ })).toHaveCount(0);
+});
+
 test('activity read-only list shows historical identity and authoritative falsy and absent differences', async ({ page }) => {
   const record = { ...vehicle(), activity: summary };
   await installApi(page, { items: [record], permissions: ['vehicles:read'] });
