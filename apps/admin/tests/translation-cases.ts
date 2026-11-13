@@ -3,6 +3,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
+import { captureFixtureEvidence } from './fixture-evidence';
 import { acknowledgePublicationPreview, chooseYear } from './publication-test-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
@@ -12,15 +13,6 @@ function publishedVehicle(): AdminVehicle {
 const publishButton = (page: Page) => page.getByTestId('vehicle-publish');
 function requestSnapshot(route: Route) { return { key: route.request().headers()['idempotency-key'], body: route.request().postData() }; }
 async function openPreview(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '发布预览'); }
-async function captureFixtureEvidence(page: Page, name: string) {
-  for (const width of [1440, 320]) {
-    await page.setViewportSize({ width, height: width === 320 ? 844 : 1000 });
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: test.info().outputPath(`fixture-${name}-${width}.png`), fullPage: true, animations: 'disabled' });
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-}
 
 test('publication unchanged state survives refresh and internal or inventory changes do not unlock publishing', async ({ page }) => {
   const record = publishedVehicle(); const api = await installApi(page, { items: [record] });

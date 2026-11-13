@@ -1,18 +1,10 @@
 /** Public localized metadata contract simulations. Unified editing lives in bundle-cases. */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { PublicVehicleSchema, type DisplayText, type PublicVehicle } from '@hd/contracts/public';
 import { envelope, installApi, reply } from './api-fixture';
+import { captureFixtureEvidence } from './fixture-evidence';
 const priceId = '40000000-0000-4000-8000-000000000003';
-async function capture(page: Page, name: string) {
-  for (const width of [1440, 320]) {
-    await page.setViewportSize({ width, height: width === 320 ? 844 : 1000 });
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: test.info().outputPath(`fixture-${name}-${width}.png`), fullPage: true, animations: 'disabled' });
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-}
 test('localization public verification requests localized metadata and never falls back to raw Chinese facts', async ({ page }) => {
   await installApi(page);
   const ready = (text: string): DisplayText => ({ status: 'ready', text, requestedLocale: 'en', contentLocale: 'en', provenance: 'machine', reviewed: false });
@@ -56,5 +48,5 @@ test('localization public verification requests localized metadata and never fal
   await expect(page.getByText('服务尚未提供多语展示资料', { exact: true })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('不得回退的原始中文');
   expect(queries).toHaveLength(2); expect(queries.every(query => query.get('view') === 'localized' && query.get('locale') === 'en')).toBe(true);
-  await capture(page, 'public-display-verification');
+  await captureFixtureEvidence(page, 'public-display-verification');
 });
