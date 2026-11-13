@@ -196,13 +196,15 @@ node dist/external/full-sync/cli.js control --action pause --version CURRENT_VER
 
 OPS每60秒有锁测量并原子替换宿主 `/srv/hd-auto/data/full-sync-capacity/decision.json`；整个目录只读挂载至worker的 `/private/capacity`，设置 `FULL_SYNC_CAPACITY_DECISION_FILE=/private/capacity/decision.json`。worker只读，不创建/修改裁决。文件须为私有普通文件（建议0600或0640，禁止组写/其他用户权限和符号链接），不超过64KiB。原子替换目录挂载可让每次读取看到完整的新/旧文件；不能挂载单个被替换的inode。
 
-JSON严格字段：`schemaVersion:1`、`model:"hd-ext07-peak-v1"`、`snapshotId`（UUID）、`targetRows/sampleRows`、`evidenceHash`（64位小写SHA-256）、UTC `measuredAt/expiresAt`、`decision:"allow"|"wait"|"blocked"`、`reason`、`projectedPeakBytes`（证据不足可为null）、`diskTotalBytes/currentUsedBytes`、`components`。所有字节/数量是非负安全整数，磁盘总量必须为正且与worker实际盘相同；非null峰值不得小于当前实占。`reason` 为至多64字符小写字母开头的字母/数字/下划线/连字符代码；`components` 为至多64项的平面键值，键至多64字符且字母开头，值只接受非负安全整数或同样的短模型代码，不接收正文、车辆信息、URL或凭据。JSON不接受额外字段。
+JSON严格字段：`schemaVersion:1`、`model:"hd-ext07-peak-v1"`、`snapshotId`（UUID）、`targetRows/sampleRows`、`evidenceHash`（64位小写SHA-256）、UTC `measuredAt/expiresAt`、`decision:"allow"|"wait"|"blocked"`、`reason`、`projectedPeakBytes`（证据不足可为null）、`diskTotalBytes/currentUsedBytes`、`components`。所有字节/数量是非负安全整数，磁盘总量必须为正且与worker实际盘相同；非null峰值不得小于当前实占。`reason` 严格采用OPS控制器四个大写固定枚举：allow对应 `SYNC_CAPACITY_VERIFIED`，blocked对应 `SYNC_CAPACITY_LIMIT`，wait对应 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE` 或 `SYNC_CAPACITY_WAITING_MEASUREMENT`；未知码、大小写变化和状态不匹配均拒绝。`components` 为至多64项的平面键值，键至多64字符且字母开头，值只接受非负安全整数或至多64字符的小写字母开头的字母/数字/下划线/连字符模型代码，不接收正文、车辆信息、URL或凭据。JSON不接受额外字段。
 
 BE唯一生成 `evidenceHash`，OPS原样回写。SQL按 `source,external_id COLLATE "C"` 取固定样本，最多10001行（多一行用于拒绝超量）。每个身份 `[source,external_id]` 与状态 `[source,external_id,canonical_id,state,event_order,desired_generation,applied_generation,sortedLocales,report_state,lastDetailEpoch,reportCheckedEpoch]` 分别用PostgreSQL的JSONB文本、UTF-8、SHA-256转成64位小写摘要；代次/事件序号和非null时间使用文本，语言按C排序。依身份C顺序拼接定长摘要后分别SHA-256，形成 `cohortHash/stateHash`，无成员身份离开SQL。外层对 `{model:"hd-ext07-evidence-v1",snapshotId,targetRows,cohortHash,stateHash,history}` 使用仓库 `jsonHash`：对象key递归按字典序，数组保序，UTF-8无空白JSON；`history` 是有效基线的model、cohortHash、stateHash、sampleRows、来源snapshotId/targetRows及bytesPerDetail，或null。轮询时间、基线at、易变磁盘/WAL字节不进入绑定。相同状态不重写历史单价，新增非样本身份不改绑定；快照、样本成员/代次/语言/报告/撤回/重新挂牌改变会使旧绑定失效。
 
 裁决最长有效10分钟，未来时差最多60秒；每次重任务前重新读取核对时效、快照和样本绑定，不永久缓存allow。下一每日CSV尚未完整验证时仍绑定上一已验证快照，相关暂存峰值由OPS预留；新CSV验证后立即重新绑定，未取得新裁决不推进业务扩量。只有合法匹配的allow且 `projectedPeakBytes < diskTotalBytes*0.7`、当前真实磁盘占用<70%、未人工暂停且额度可用时才放行。
 
 错误区分：样本/历史不足为 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE`；缺文件、非法JSON、过期、错批次/hash或wait/blocked为 `SYNC_CAPACITY_AWAITING_DECISION`；真实预测或当前磁盘达到70%为 `SYNC_CAPACITY_LIMIT`；额外峰值上限不足为 `SYNC_CAPACITY_BUDGET_CAP`。已有pending阻断一般重任务为 `SYNC_CAPACITY_PENDING`，人工暂停/当前磁盘守卫仍可能返回 `SYNC_HEAVY_PAUSED`。新的匹配allow能自动恢复，无需重启或修改环境。等待期间仍保持上述受控样本修复与撤回。
+
+组合回归 `test/full-sync-capacity-ops.test.ts` 必须在包含BE与OPS控制器的集成版本、提供Python 3的隔离检查环境执行。它直接导入仓库 `deploy/runtime/production/capacity-decision.py` 的纯判定/原子写文件函数，用合成测量生成真实控制器输出，再交BE读取；覆盖allow、70%限制、样本不足和测量失败，不调用生产main/测量器或外部来源。不复制控制器/输出样例，也不在缺少控制器时跳过。测量失败的空绑定/零磁盘结果按等待处理，不能沿用旧allow。
 
 ### 原文保留与公开资料
 

@@ -7,13 +7,14 @@ import {jsonHash} from '../normalize.js';
 
 const bytes=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const token=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+const reason=z.enum(['SYNC_CAPACITY_VERIFIED','SYNC_CAPACITY_LIMIT','SYNC_CAPACITY_INSUFFICIENT_SAMPLE','SYNC_CAPACITY_WAITING_MEASUREMENT']);
 const utc=z.iso.datetime().refine(value=>value.endsWith('Z'));
 const decisionSchema=z.strictObject({schemaVersion:z.literal(1),model:z.literal('hd-ext07-peak-v1'),
  snapshotId:z.uuid(),targetRows:bytes,sampleRows:bytes,evidenceHash:z.string().regex(/^[a-f0-9]{64}$/),
- measuredAt:utc,expiresAt:utc,decision:z.enum(['allow','wait','blocked']),reason:token,
+ measuredAt:utc,expiresAt:utc,decision:z.enum(['allow','wait','blocked']),reason,
  projectedPeakBytes:bytes.nullable(),diskTotalBytes:bytes.positive(),currentUsedBytes:bytes,
  components:z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),z.union([bytes,token])).refine(value=>Object.keys(value).length<=64),
-});
+}).refine(value=>value.decision==='allow'?value.reason==='SYNC_CAPACITY_VERIFIED':value.decision==='blocked'?value.reason==='SYNC_CAPACITY_LIMIT':value.reason==='SYNC_CAPACITY_INSUFFICIENT_SAMPLE'||value.reason==='SYNC_CAPACITY_WAITING_MEASUREMENT');
 export type CapacityDecision=z.infer<typeof decisionSchema>;
 export type CapacityBinding={snapshotId:string;targetRows:number;sampleRows:number;evidenceHash:string};
 export type CapacityDisk={total:number;available:number;used:number};

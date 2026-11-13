@@ -68,7 +68,7 @@ test('formal full synchronization has durable independent receipt/application an
    const approveCurrent=async()=>{
     const e=(await worker!.state()).capacity_estimate,measuredAt=Date.now();
     const decision={schemaVersion:1,model:'hd-ext07-peak-v1',snapshotId:e.snapshotId,targetRows:e.targetRows,sampleRows:e.sampleRows,evidenceHash:e.evidenceHash,
-     measuredAt:new Date(measuredAt).toISOString(),expiresAt:new Date(measuredAt+600000).toISOString(),decision:'allow',reason:'within_budget',projectedPeakBytes:500000000,diskTotalBytes:1024**4,currentUsedBytes:0,components:{fixtureMeasuredPeak:500000000}};
+     measuredAt:new Date(measuredAt).toISOString(),expiresAt:new Date(measuredAt+600000).toISOString(),decision:'allow',reason:'SYNC_CAPACITY_VERIFIED',projectedPeakBytes:500000000,diskTotalBytes:1024**4,currentUsedBytes:0,components:{fixtureMeasuredPeak:500000000}};
     await writeFile(decisionFile+'.next',JSON.stringify(decision),{mode:0o600});await rename(decisionFile+'.next',decisionFile);
    };
    const waitForDecision=async()=>{await assert.rejects(worker!.tick(),/SYNC_CAPACITY_AWAITING_DECISION/);await approveCurrent();await worker!.tick();};
