@@ -417,27 +417,44 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
       viewport: { width: 320, height: 844 },
     });
     const page = await context.newPage();
-    await page.goto('/ru/cars/fixture_demo/');
-    await expect(page.locator('main h1')).toHaveText(labels.ru.title);
-    await expect(page.locator('main')).not.toContainText(labels.ru.demo);
-    for (const [name, slug, code] of [['Россия', 'russia', 'ru'], ['Казахстан', 'kazakhstan', 'kz']] as const) {
-      const countryLink = page.locator('main').getByRole('link', { name, exact: true });
-      await expect(countryLink).toHaveAttribute('href', `/ru/calculator/${slug}/`);
-      await expect(countryLink.locator('img')).toHaveAttribute('src', `/flags/${code}.svg`);
-      await expect(countryLink.locator('img')).toHaveAttribute('alt', '');
-      await expect(countryLink.locator('img')).toHaveAttribute('aria-hidden', 'true');
-    }
-    await expectDetailContacts(page, 'ru', 'SHOW-ALPHA', 'fixture_demo');
-    const contacts = page.locator('#vehicle-contact-fixture_demo [data-vehicle-contacts="fixture_demo"]');
-    const telegram = contacts.locator('a[href^="https://t.me/"]');
-    const whatsapp = contacts.locator('a[href^="https://wa.me/"]');
-    await telegram.focus();
-    await expect(telegram).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(whatsapp).toBeFocused();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
-    await context.close();
+    try {
+      await page.goto('/ru/cars/fixture_demo/');
+      await expect(page.locator('main h1')).toHaveText(labels.ru.title);
+      await expect(page.locator('main')).not.toContainText(labels.ru.demo);
+      await expect(page.locator('main a[href="/ru/cars/"]')).toBeVisible();
+      await expectDetailContacts(page, 'ru', 'SHOW-ALPHA', 'fixture_demo');
+      const contacts = page.locator('#vehicle-contact-fixture_demo [data-vehicle-contacts="fixture_demo"]');
+      const telegram = contacts.locator('a[href^="https://t.me/"]');
+      const whatsapp = contacts.locator('a[href^="https://wa.me/"]');
+      await telegram.focus();
+      await expect(telegram).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(whatsapp).toBeFocused();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+      // The disabled inline select is not navigation without JS. Use its explicit full-tool link.
+      const calculatorEntry = page.getByTestId('vehicle-full-calculator');
+      await expect(calculatorEntry).toHaveCount(1);
+      await expect(calculatorEntry).toHaveAttribute('href', '/ru/calculator/');
+      await calculatorEntry.click();
+      await expect(page).toHaveURL(/\/ru\/calculator\/$/);
+      const choices = page.locator('main').getByRole('navigation');
+      await expect(choices.getByRole('link')).toHaveCount(7);
+      const russia = choices.getByRole('link', { name: 'Россия', exact: true });
+      const kazakhstan = choices.getByRole('link', { name: 'Казахстан', exact: true });
+      await expect(russia).toHaveAttribute('href', '/ru/calculator/russia/');
+      await expect(kazakhstan).toHaveAttribute('href', '/ru/calculator/kazakhstan/');
+      await kazakhstan.click();
+      await expect(page).toHaveURL(/\/ru\/calculator\/kazakhstan\/$/);
+      await expect(page.locator('main h1')).toBeVisible();
+      await expect(page.locator('.country-tab.active')).toHaveAttribute('href', '/ru/calculator/kazakhstan/');
+      for (const [name, slug, code] of [['Россия', 'russia', 'ru'], ['Казахстан', 'kazakhstan', 'kz']] as const) {
+        const countryLink = page.locator(`.country-nav a[href="/ru/calculator/${slug}/"]`);
+        await expect(countryLink).toHaveText(name);
+        await expect(countryLink.locator('img')).toHaveAttribute('src', `/flags/${code}.svg`);
+        await expect(countryLink.locator('img')).toHaveAttribute('alt', '');
+        await expect(countryLink.locator('img')).toHaveAttribute('aria-hidden', 'true');
+      }
+    } finally { await context.close(); }
   });
 });

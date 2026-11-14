@@ -12,7 +12,6 @@ type Locale = keyof typeof publicFixtureLabels;
 async function expectVehicleContacts(contacts: Locator, id: string, locale: Locale, demo = true) {
   await expect(contacts).toHaveCount(1);
   await expect(contacts).toHaveAttribute('data-vehicle-contacts', id);
-  await expect(contacts.locator('a')).toHaveCount(2);
   const telegram = contacts.locator('a[href^="https://t.me/"]');
   const whatsapp = contacts.locator('a[href^="https://wa.me/"]');
   await expect(telegram).toHaveCount(1);
@@ -54,6 +53,11 @@ async function expectVehicleContacts(contacts: Locator, id: string, locale: Loca
   expect(new URL((await whatsapp.getAttribute('href'))!).pathname).toBe('/8618215932610');
 }
 
+async function platformHrefs(contacts: Locator) {
+  return contacts.locator('a[href^="https://t.me/"], a[href^="https://wa.me/"]')
+    .evaluateAll(links => links.map(link => link.getAttribute('href')).sort());
+}
+
 async function expectDetailContactAreas(page: Page, id: string, locale: Locale, demo = true) {
   const sidebar = page.locator(`#vehicle-contact-${id} [data-vehicle-contacts="${id}"]`);
   const service = page.locator(`#inspection[data-inspection-service] [data-vehicle-contacts="${id}"]`);
@@ -74,18 +78,24 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       await expect(contacts.locator('a[href^="https://t.me/HD_Auto_CN?"]')).toHaveCount(1);
       await expect(contacts.locator('a[href^="https://wa.me/8618215932610?"]')).toHaveCount(1);
       await expect(contacts.locator('a[href^="tel:"]')).toHaveCount(0);
+      const id = await card.getAttribute('data-public-vehicle');
+      expect(id).toBeTruthy();
+      const details = contacts.locator(`a[href="/${locale}/cars/${id}/"]`);
+      await expect(details).toHaveCount(1);
+      await expect(details).toHaveAttribute('href', `/${locale}/cars/${id}/`);
+      await expect(details).toBeEnabled();
     }
     const contacts = page.locator('[data-home-section="vehicles-featured"] [data-public-vehicle="fixture_demo"] [data-vehicle-contacts]');
     const id = await contacts.getAttribute('data-vehicle-contacts');
     expect(id).toBe('fixture_demo');
     await expectVehicleContacts(contacts, id!, locale);
-    const homeHrefs = await contacts
-      .locator('a[target="_blank"]')
-      .evaluateAll((links) => links.map((link) => link.getAttribute('href')));
-    await page.goto(`/${locale}/cars/${id}/`);
+    const homeHrefs = await platformHrefs(contacts);
+    // The homepage contact area also owns a distinct detail CTA; exercise it instead of dropping it from coverage.
+    await contacts.locator(`a[href="/${locale}/cars/${id}/"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/${locale}/cars/${id}/$`));
     const { sidebar, service } = await expectDetailContactAreas(page, id!, locale);
     for (const detailContacts of [sidebar, service]) {
-      expect(await detailContacts.locator('a').evaluateAll((links) => links.map((link) => link.getAttribute('href')))).toEqual(homeHrefs);
+      expect(await platformHrefs(detailContacts)).toEqual(homeHrefs);
     }
   });
 
@@ -96,7 +106,8 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     const cards = page.locator('main article');
     expect(await cards.count()).toBeGreaterThan(0);
     for (const card of await cards.all()) {
-      await expect(card.locator('[data-vehicle-contacts] a')).toHaveCount(2);
+      await expect(card.locator('[data-vehicle-contacts] a[href^="https://t.me/HD_Auto_CN?"]')).toHaveCount(1);
+      await expect(card.locator('[data-vehicle-contacts] a[href^="https://wa.me/8618215932610?"]')).toHaveCount(1);
       await expect(card.locator('a a')).toHaveCount(0);
     }
     for (const id of ['fixture_demo', 'fixture_car_1']) {
@@ -104,13 +115,11 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       const catalogCard = page.locator(`main [data-public-vehicle="${id}"]`);
       const catalogContacts = catalogCard.locator(`[data-vehicle-contacts="${id}"]`);
       await expectVehicleContacts(catalogContacts, id, locale, id === 'fixture_demo');
-      const catalogHrefs = await catalogContacts
-        .locator('a')
-        .evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+      const catalogHrefs = await platformHrefs(catalogContacts);
       await catalogCard.locator('h2 a').click();
       const { sidebar, service } = await expectDetailContactAreas(page, id, locale, id === 'fixture_demo');
       for (const detailContacts of [sidebar, service]) {
-        expect(await detailContacts.locator('a').evaluateAll((links) => links.map((link) => link.getAttribute('href')))).toEqual(catalogHrefs);
+        expect(await platformHrefs(detailContacts)).toEqual(catalogHrefs);
       }
     }
   });
