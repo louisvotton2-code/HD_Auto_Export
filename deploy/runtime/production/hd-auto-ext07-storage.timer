@@ -1,0 +1,12 @@
+[Unit]
+Description=HD Auto minute storage check
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Unit=hd-auto-ext07-storage.service
+
+[Install]
+WantedBy=timers.target

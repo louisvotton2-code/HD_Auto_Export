@@ -125,8 +125,43 @@
   clip-path: inset(50%);
 }
 .results {
+  position: relative;
   min-width: 0;
   scroll-margin-top: 88px;
+}
+.results::before {
+  content: '';
+  position: absolute;
+  z-index: 4;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #b6774930, #d99a6b, #b6774930);
+  background-size: 200% 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+.results[aria-busy='true']::before {
+  opacity: 1;
+  animation: catalogProgress 1.4s linear infinite;
+}
+.catalogStatus {
+  position: sticky;
+  z-index: 5;
+  top: 88px;
+  height: 0;
+  pointer-events: none;
+}
+.catalogStatus > :global(.public-resource-status) {
+  position: absolute;
+  top: 8px;
+  inset-inline: 8px;
+  margin: 0;
+  box-shadow: 0 4px 18px #0006;
+  pointer-events: auto;
+}
+@keyframes catalogProgress {
+  to { background-position: -200% 0; }
 }
 .resultsHeading {
   display: flex;
@@ -433,12 +468,41 @@
   outline-offset: 3px;
 }
 .linkPending {
-  display: none;
-}
-.linkPending:not(:empty) {
-  display: block;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin-inline-start: 6px;
+  vertical-align: middle;
   color: #c88858;
+  opacity: 0;
+}
+.linkPending[data-link-pending] {
+  opacity: 1;
+}
+.cardImage > .linkPending {
+  position: absolute;
+  z-index: 3;
+  inset: auto 12px 12px auto;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  border-radius: 50%;
+  background: #141414e6;
+}
+.linkPendingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.linkPending[data-link-pending] .linkPendingDot {
+  animation: linkProgress 1s ease-in-out infinite;
+}
+@keyframes linkProgress {
+  50% { opacity: .35; }
 }
 @media (max-width: 1023px) {
   .catalogLayout {
@@ -466,6 +530,10 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .results[aria-busy='true']::before,
+  .linkPending[data-link-pending] .linkPendingDot {
+    animation: none;
+  }
   .cardLight {
     display: none;
   }

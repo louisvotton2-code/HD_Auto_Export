@@ -7,7 +7,7 @@ import type { PoolClient, QueryResult } from 'pg';
 import { AdminVehicleSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
   type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery, type ConfirmPublicationPreviewRequest,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
-import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
+import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
@@ -20,6 +20,7 @@ import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
 import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
+import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
 
 export type Actor = { id: string; requestId: string };
 type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'content'|'configuration'> & { price: PublicVehicle['price']; images: PublicMedia[] };
@@ -62,6 +63,44 @@ function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized',priceView?
     publishedAt:iso(row.published_at), detailPath:`/${locale}/cars/${row.id}/`,
     ...(view==='localized'?projection:{}), ...(includeConfiguration?{configuration:configuration??null}:{}),
   });
+}
+/** Card SQL projects only the selected locale and cover before rows leave PostgreSQL. */
+function staffCardSelect(locale: Locale, params: unknown[]) {
+  params.push(locale);const lang=`$${params.length}::text`;
+  const image=`(SELECT image FROM jsonb_array_elements(p.data->'images') WITH ORDINALITY AS media(image,position)
+    ORDER BY coalesce((image->>'isCover')::boolean,false) DESC,position LIMIT 1)`;
+  const projection=`pl.projections->${lang}`;
+  const cover=`coalesce((SELECT image FROM jsonb_array_elements(${projection}->'images') image WHERE image->>'id'=(${image})->>'id' LIMIT 1),${image})`;
+  const display=`jsonb_set(${projection}->'display','{mediaAlt}',coalesce((SELECT jsonb_agg(value) FROM jsonb_array_elements(${projection}->'display'->'mediaAlt') WHERE value->>'mediaId'=(${image})->>'id'),'[]'::jsonb))`;
+  return `SELECT v.id,v.stock_number,v.availability,v.availability_checked_at,v.published_at,
+    jsonb_build_object('source',jsonb_build_object('kind',p.data->'source'->'kind','platform',p.data->'source'->'platform',
+      'listingUrl',p.data->'source'->'listingUrl','sourceUpdatedAt',p.data->'source'->'sourceUpdatedAt','collectedAt',p.data->'source'->'collectedAt'),
+      'facts',p.data->'facts','price',p.data->'price','content',jsonb_build_object('title',jsonb_build_object('sourceLanguage',p.data->'content'->'title'->'sourceLanguage',
+        'sourceVersion',p.data->'content'->'title'->'sourceVersion','translations',jsonb_build_object(${lang},p.data->'content'->'title'->'translations'->${lang}))),
+      'images',jsonb_build_array(${image}), 'identifiers',p.data->'identifiers','manufacture',p.data->'manufacture',
+      'exportStatus',p.data->'exportStatus','vehicleClass',p.data->'vehicleClass') AS publication_data,
+    CASE WHEN pl.publication_id IS NOT NULL AND ${projection} IS NULL THEN jsonb_build_object('facts',pl.data->'facts','fields',coalesce((SELECT jsonb_agg(jsonb_set(value,'{translations}',jsonb_build_object(${lang},value->'translations'->${lang})))
+      FROM jsonb_array_elements(pl.data->'fields') WHERE value->>'ref' NOT LIKE 'configuration.%'
+      AND (value->>'ref' NOT LIKE 'media.%' OR value->>'ref'='media.'||lower((${image})->>'id')||'.alt')),'[]'::jsonb)) END AS published_localization,
+    CASE WHEN ${projection} IS NOT NULL THEN jsonb_build_object(${lang},jsonb_build_object('facts',${projection}->'facts','price',${projection}->'price',
+      'source',${projection}->'source','images',jsonb_build_array(${cover}),'display',${display})) END AS projections
+    ${publicFrom}`;
+}
+function toCard(row:Row,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null):PublicVehicleCard {
+  const p=row.publication_data!;
+  const field=p.content.title,item=field.translations[locale]!;
+  const {configuration:_configuration,...projection}=row.projections?.[locale]??projectDisplay(row.id,p,locale,
+    row.published_localization?{data:row.published_localization,bindings:{}}:undefined);
+  const extras=p as Snapshot & Pick<PublicVehicleCard,'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'>;
+  return PublicVehicleCardSchema.parse({id:row.id,stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
+    source:p.source.kind==='external'?{kind:'external',platform:p.source.platform,listingUrl:p.source.listingUrl}:{kind:p.source.kind},
+    facts:p.facts,price:p.price,...(priceView==='usd'?{displayPrice:projectUsdPrice(p.price,quote)}:{}),
+    content:{title:{text:item.text,requestedLocale:locale,contentLocale:item.kind==='original'?field.sourceLanguage:locale,kind:item.kind,reviewed:p.source.kind==='manual'&&item.reviewStatus==='approved'}},
+    images:p.images,availability:row.availability,availabilityCheckedAt:iso(row.availability_checked_at),
+    sourceUpdatedAt:p.source.kind==='external'?p.source.sourceUpdatedAt:null,fetchedAt:p.source.kind==='external'?p.source.collectedAt:null,
+    publishedAt:iso(row.published_at),detailPath:`/${locale}/cars/${row.id}/`,...(view==='localized'?projection:{}),
+    ...(extras.identifiers?{identifiers:extras.identifiers}:{}),...(extras.manufacture?{manufacture:extras.manufacture}:{}),
+    ...(extras.vehicleClass?{vehicleClass:extras.vehicleClass}:{}),exportStatus:extras.exportStatus??'unknown'});
 }
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -205,6 +244,7 @@ function publicConditions(query:PublicFilterQuery,params:unknown[],quote:FxQuote
       params.push(query.priceCurrency);where.push(`p.data->'price'->'money'->>'currency'=$${params.length}`);
     }
   }
+  if(query.exportStatus&&query.exportStatus!=='all'){params.push(query.exportStatus);where.push(`coalesce(p.data->>'exportStatus','unknown')=$${params.length}`);}
   const search=publicSearch(query,params);if(search)where.push(search);
   return where.join(' AND ');
 }
@@ -251,7 +291,7 @@ const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
   const {page,cursor,pagination,...filters}=query;
   return createHash('sha256').update(canonical({...filters,q:filters.q||undefined,external})).digest('hex');
 };
-function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:string):Cursor {
+function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:string,sort?:PublicFilterQuery['sort']):Cursor {
   let item:Cursor;
   try {
     item=JSON.parse(Buffer.from(value,'base64url').toString('utf8')) as Cursor;
@@ -260,6 +300,7 @@ function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:str
       new Date(Date.parse(item.after.publishedAt)).toISOString().slice(0,19)!==item.after.publishedAt.slice(0,19)||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.after.id)||item.query!==binding)
       throw new Error('invalid cursor');
+    if(numericSort(sort) && item.after.sortValue!==null && (typeof item.after.sortValue!=='string'||!/^\d{1,14}(?:\.\d{1,2})?$/.test(item.after.sortValue)))throw new Error('invalid sort anchor');
   } catch {throw new ApiError(400,'INVALID_REQUEST','The catalog cursor does not match this query.');}
   if(item.epoch!==version.epoch||item.revision!==version.revision)throw new ApiError(409,'VERSION_CONFLICT','The catalog changed. Restart from the first page.');
   if(fx!==undefined&&item.fx!==fx)throw new ApiError(409,'VERSION_CONFLICT','The exchange-rate quote changed or expired. Restart from the first page.');
@@ -597,7 +638,7 @@ export class InventoryService {
       const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
       const version=cursorMode?(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!:null;
       const binding=queryBinding(query,includeExternal);
-      const cursor=query.cursor?decodeCursor(query.cursor,binding,version!,fx):null;
+      const cursor=query.cursor?decodeCursor(query.cursor,binding,version!,fx,query.sort):null;
       if(cursor?.stream==='external'&&!includeExternal)throw new ApiError(400,'INVALID_REQUEST','External cursor is unavailable.');
       const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params,quote)}`;
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
@@ -605,23 +646,32 @@ export class InventoryService {
       const total=staffTotal+(includeExternal?await countExternal(tx,query,quote):0);
       const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
       const limit=query.pageSize+(cursorMode?1:0);
-      const selected=publicSelect.replace('SELECT v.*,',`SELECT to_char(v.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at,v.*,`);
-      let staff:QueryResult<Row & {cursor_published_at:string}>|null=null;
+      const sort=query.sort??'newest',numeric=numericSort(sort);
+      let column=sort==='mileage_asc'?"(p.data->'facts'->>'mileageKm')::numeric":sort==='year_desc'?"(p.data->'facts'->>'modelYear')::numeric":staffPriceAmountSql;
+      if(sort.startsWith('price_')&&query.priceView==='usd')column=usdSortAmount(column,"p.data->'price'->'money'->>'currency'",quote,params);
+      const selection=query.projection==='card'?staffCardSelect(query.locale,params):publicSelect;
+      // SQL regexes contain dollar tokens such as $': callback replacement preserves them literally.
+      const selected=selection.replace('SELECT ',()=>`SELECT to_char(v.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at,${numeric?`(${column})::text AS cursor_sort_value,`:''}`);
+      const order=numeric?`ORDER BY ${catalogOrder(column,'v.id',sort)}`:'ORDER BY v.published_at DESC,v.id';
+      let staff:QueryResult<Row & {cursor_published_at:string;cursor_sort_value?:string|null}>|null=null;
       if(cursor?.stream!=='external'&&(cursor||offset<staffTotal)) {
         let sql:string;
-        if(cursor?.stream==='staff') {
+        if(cursor?.stream==='staff'&&!numeric) {
           params.push(cursor.after.publishedAt,cursor.after.id);
           const time=`$${params.length-1}::timestamptz`,id=`$${params.length}::uuid`,size=`$${params.length+1}`;
           sql=`SELECT * FROM (
-            (${selected}${where} AND v.published_at=${time} AND v.id>${id} ORDER BY v.published_at DESC,v.id LIMIT ${size})
-            UNION ALL (${selected}${where} AND v.published_at<${time} ORDER BY v.published_at DESC,v.id LIMIT ${size})
+            (${selected}${where} AND v.published_at=${time} AND v.id>${id} ${order} LIMIT ${size})
+            UNION ALL (${selected}${where} AND v.published_at<${time} ${order} LIMIT ${size})
           ) picked ORDER BY published_at DESC,id LIMIT ${size}`;
           params.push(limit);
-        } else {sql=`${selected}${where} ORDER BY v.published_at DESC,v.id LIMIT $${params.length+1} OFFSET $${params.length+2}`;params.push(limit,offset);}
-        staff=await tx.query<Row & {cursor_published_at:string}>(sql,params);
+        } else {
+          const seek=cursor?.stream==='staff'?` AND ${catalogSeek(column,'v.id',cursor.after,sort,params)}`:'';
+          sql=`${selected}${where}${seek} ${order} LIMIT $${params.length+1} OFFSET $${params.length+2}`;params.push(limit,cursor?0:offset);
+        }
+        staff=await tx.query<Row & {cursor_published_at:string;cursor_sort_value?:string|null}>(sql,params);
       }
-      const items=staff?.rows.map(row=>toPublic(row,query.locale,query.view,query.priceView,quote))??[];
-      const anchors:Array<{stream:'staff'|'external';after:CatalogAnchor}>=(staff?.rows??[]).map(row=>({stream:'staff',after:{id:row.id,publishedAt:row.cursor_published_at}}));
+      const items:Array<PublicVehicle|PublicVehicleCard>=staff?.rows.map(row=>query.projection==='card'?toCard(row,query.locale,query.view,query.priceView,quote):toPublic(row,query.locale,query.view,query.priceView,quote))??[];
+      const anchors:Array<{stream:'staff'|'external';after:CatalogAnchor}>=(staff?.rows??[]).map(row=>({stream:'staff',after:{id:row.id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}}));
       if(includeExternal&&items.length<limit) {
         const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,cursor?.stream==='external'?cursor.after:undefined,quote);
         items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));

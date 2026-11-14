@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import {refreshVehicleEvidence} from './public-evidence.js';
 import type { PoolClient } from 'pg';
 import { PublicMediaSchema, DisplayTextSchema, type PublicMedia, type Locale } from '@hd/contracts/public';
 import { jsonHash, displayText } from '../normalize.js';
@@ -20,7 +21,7 @@ export async function refreshSourceSegments(tx:PoolClient,listingId:string,proje
     photos.push(PublicMediaSchema.parse({id:`ximg-${row.id}`,url:photo.url,alt:photo.alt?.text??'',width:photo.width,height:photo.height,sortOrder:position,isCover:photos.length===0,
       remote:{revision:row.revision,refreshedAt:row.refreshed_at.toISOString(),expiresAt:photo.expiresAt}}));
   }
-  let changed=false;
+  let changed=await refreshVehicleEvidence(tx,listingId,projection.evidence);
   for(const locale of ['zh','en','ru'] as const)for(const kind of ['photos','configuration'] as const){
     const items=kind==='photos'?photos.map(photo=>({...photo,altText:displayText(locale,projection.fullPhotos[photo.sortOrder]?.alt??null)})):projection.fullConfiguration[locale];
     if(kind==='configuration')for(const item of projection.fullConfiguration[locale]){DisplayTextSchema.parse(item.name);DisplayTextSchema.parse(item.value);}

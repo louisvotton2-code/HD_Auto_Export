@@ -15,7 +15,7 @@ import styles from './external-sources.module.css';
 
 const fields = ['title', 'model', 'description'] as const;
 const locales = ['zh', 'en', 'ru'] as const;
-const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'firstRegistration'];
+const summaryFields: FactField[] = ['make', 'model', 'modelYear', 'mileageKm', 'powertrain', 'powerHp', 'firstRegistration'];
 
 function ListingContent({ listing, locale, changeLocale, reload }: {
   listing: ExternalListing; locale: Locale; changeLocale: (locale: Locale) => void; reload: () => void;
@@ -35,7 +35,8 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
     <Card title={publicCopy.title?.text ?? source?.copy.title?.original.text ?? '当前挂牌'}>
       <Space wrap>
         <Tag>{listingLabels[listing.state]}</Tag>
-        <span className={styles.reason}>站内车源 ID {listing.id}</span>
+        {listing.inquiryCode && <Typography.Text className={styles.reason} copyable={{ text: listing.inquiryCode }}>询价编号：{listing.inquiryCode}</Typography.Text>}
+        <span className={styles.reason}>旧站内车源 ID {listing.id}</span>
         <span>来源版本 {listing.sourceRevision}</span>
         <span>管理版本 {listing.version}</span>
         <SourceReportLink url={listing.report?.url} />
@@ -47,7 +48,7 @@ function ListingContent({ listing, locale, changeLocale, reload }: {
       <Descriptions title={vehicle ? '公开车辆参数' : '入库车辆参数'} className={styles.listingFacts} column={{ xs: 1, sm: 2, xl: 3 }} size="small"
         items={summaryFields.map(field => ({
           key: field, label: fieldLabels[field],
-          children: !vehicle && source?.disputes.includes(field) && !Object.hasOwn(listing.overrides.facts, field)
+          children: !vehicle && source?.disputes.some(dispute => dispute === field) && !Object.hasOwn(listing.overrides.facts, field)
             ? '来源有冲突，待核对'
             : field === 'model' && publicCopy.model?.text ? publicCopy.model.text : formatExternalFact(field, facts[field]),
         }))} />

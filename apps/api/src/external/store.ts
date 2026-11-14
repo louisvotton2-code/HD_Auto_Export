@@ -181,6 +181,15 @@ export async function applyFormalCandidate(tx:PoolClient,candidate:ExternalCandi
   return {listingId:result.listing_id,status:result.status,systemActor:actor.id};
 }
 
+/** Rebuild an existing representative without changing source versions or staff overrides. Caller owns the writer transaction. */
+export async function reprojectFormalListing(tx:PoolClient,id:string) {
+ await lockExternalWrites(tx);
+ const row=await findListing(tx,id);if(!row)throw notFound();
+ const projection=row.upstream_state==='active'?projectListing(row,row.overrides??emptyOverrides()):null;
+ const changed=await saveProjection(tx,row,projection);if(changed)await advanceRevision(tx);
+ return changed;
+}
+
 export class ExternalStore {
   constructor(private db: Database, private importProfile: ExternalSourceProfile = syntheticProfile) {}
 
@@ -262,7 +271,7 @@ export class ExternalStore {
       if (!row) throw notFound();
       const overrides = row.overrides ?? emptyOverrides();
       const hashes = projectListing(row, overrides)?.sourceHashes ?? sourceHashes(null);
-      return { activity:await externalActivitySummary(tx,row.id),id, version: row.version, state: upstreamState(row),
+      return { activity:await externalActivitySummary(tx,row.id),inquiryCode:`${row.platform_id}-${row.external_id}`,id, version: row.version, state: upstreamState(row),
         identity: { provider: row.provider, platformId: row.platform_id, externalId: row.external_id },
         sourceRevision: Number(row.source_revision), sourceUpdatedAt: iso(row.source_updated_at), fetchedAt: row.fetched_at.toISOString(),
         source: row.source_data, overrides, sourceHashes: hashes, report: await getExternalReport(tx, row.id), vehicle: await getExternalPublic(tx, row.id, locale) };
@@ -318,9 +327,10 @@ export class ExternalStore {
         (SELECT fetched_at FROM external_listings WHERE provider=ANY($1::text[]) ORDER BY fetched_at DESC LIMIT 1) AS fetched_at,
         (SELECT source_updated_at FROM external_listings WHERE provider=ANY($1::text[])
           ORDER BY source_updated_at DESC NULLS LAST LIMIT 1) AS source_updated_at`, [providers]);
+      const full=(await tx.query<{mode:'full'|'continuous'}>('SELECT mode FROM external_full_sync WHERE id=1 AND enabled')).rows[0];
       return {
         provider: 'chinacarapi' as const,
-        worker: (await tx.query('SELECT 1 FROM external_ingestion_jobs LIMIT 1')).rowCount ? 'fixed_once' as const : 'not_configured' as const,
+        worker:full?.mode??( (await tx.query('SELECT 1 FROM external_ingestion_jobs LIMIT 1')).rowCount ? 'fixed_once' as const : 'not_configured' as const),
         lastBatch: latestBatch ? batchView(latestBatch) : null,
         lastImportAt: iso(times!.imported_at),
         lastFetchedAt: iso(times!.fetched_at),

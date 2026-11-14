@@ -1,0 +1,58 @@
+# Formal EXT07 worker; old synthetic sync remains off. Apply after production overlays.
+services:
+  full-worker:
+    image: hd-auto-api:${RELEASE_ID:?use the reviewed main release}
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    profiles: [full-sync]
+    user: '${APP_UID:?use the existing non-root identity}:${APP_GID:?use its GID}'
+    init: true
+    entrypoint: [node, /app/production/worker-entrypoint.mjs]
+    command: [full-sync, serve]
+    restart: on-failure:5
+    read_only: true
+    tmpfs: ['/tmp:mode=1777,size=134217728']
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=256
+      HD_DATABASE_NAME: ${HD_DATABASE_NAME:?retain the current production database}
+      HD_DEPLOYMENT_ENV: production
+      HD_RELEASE_ID: ${RELEASE_ID}
+      DB_POOL_MAX: '2'
+      EXTERNAL_SYNC_MODE: 'off'
+      TRANSLATION_PROVIDER: disabled
+      CHINACARAPI_KEY_FILE: /run/secrets/chinacarapi_key
+      FULL_SYNC_ARCHIVE_ROOT: /private/full-sync
+      FULL_SYNC_CAPACITY_DECISION_FILE: /private/capacity/decision.json
+      FULL_SYNC_CAPACITY_APPROVED_BYTES: ${FULL_SYNC_CAPACITY_APPROVED_BYTES:-0}
+    volumes:
+      - type: bind
+        source: ${FULL_SYNC_DATA_ROOT:?use a dedicated directory on the mounted data disk}
+        target: /private/full-sync
+        bind: {create_host_path: false}
+      - type: bind
+        source: /srv/hd-auto/data/full-sync-capacity
+        target: /private/capacity
+        read_only: true
+        bind: {create_host_path: false}
+    secrets:
+      - {source: release_app_db_password, target: app_db_password}
+      - chinacarapi_key
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks:
+      default: {}
+      full_worker_egress: {gw_priority: 1}
+    logging:
+      driver: local
+      options: {max-size: '10m', max-file: '3'}
+networks:
+  full_worker_egress:
+    internal: false
+secrets:
+  chinacarapi_key:
+    file: ${CHINACARAPI_KEY_FILE:?use the existing restricted provider key file}

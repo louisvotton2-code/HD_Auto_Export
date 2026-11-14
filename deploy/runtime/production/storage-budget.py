@@ -1,0 +1,85 @@
+"""Conservative EXT07 checkpoint estimate; index bytes are included in database bytes."""
+import argparse
+import json
+import math
+from pathlib import Path
+
+
+def nonnegative(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f'{name} must be a nonnegative integer')
+    return value
+
+
+def estimate(baseline, current, *, processed, target):
+    processed = nonnegative(processed, 'processed')
+    target = nonnegative(target, 'target')
+    if processed < 10000 or target < processed:
+        raise ValueError('Estimate requires at least 10000 measured source identities and target >= processed')
+    fields = ('diskTotalBytes', 'diskUsedBytes', 'databaseBytes', 'indexBytes', 'sqlStagingBytes', 'walBytes', 'archiveBytes', 'stagingBytes', 'backupBytes')
+    for sample in (baseline, current):
+        for field in fields:
+            nonnegative(sample[field], field)
+        if not sample['diskTotalBytes'] or sample['diskUsedBytes'] > sample['diskTotalBytes']:
+            raise ValueError('Invalid disk capacity sample')
+        if sample['indexBytes'] > sample['databaseBytes'] or sample['sqlStagingBytes'] > sample['databaseBytes']:
+            raise ValueError('Indexes and SQL staging must be included within database bytes')
+    if baseline['diskTotalBytes'] != current['diskTotalBytes']:
+        raise ValueError('Checkpoint must use the same filesystem capacity')
+    # All measured sources count, including failed/withdrawn, so the checkpoint
+    # denominator must come from the worker, never the current public count.
+    business = current['databaseBytes'] - current['sqlStagingBytes']
+    # The complete CSV SQL stage is already present for the whole target. It
+    # must never be divided by the 10000-detail sample and extrapolated again.
+    # Use the observed current business mean so initial compaction of legacy
+    # raw JSON cannot hide the actual new per-source cost.
+    per_source = {'databaseBytes': business / processed,
+                  'archiveBytes': current['archiveBytes'] / processed}
+    remaining = target - processed
+    growth = math.ceil(sum(per_source.values()) * remaining)
+    if baseline.get('archivesInDatabase', False) != current.get('archivesInDatabase', False):
+        raise ValueError('Archive accounting mode changed between samples')
+    history_fields = ('databaseBytes', 'archiveBytes') if current.get('archivesInDatabase', False) else ('archiveBytes',)
+    archive_history_reserve = sum((business if field=='databaseBytes' else current[field]) + math.ceil(per_source[field] * remaining) for field in history_fields)
+    sql_stage = current['sqlStagingBytes']
+    fixed_stage_extra = 2*sql_stage + current['stagingBytes']
+    # Current + recent SQL snapshot + one in-progress snapshot, and current +
+    # recent CSV files are fixed whole-export costs, including future backups.
+    active = business + current['archiveBytes'] + growth + archive_history_reserve + 3*sql_stage + 2*current['stagingBytes']
+    # Current filesystem usage already includes staging, old backups and WAL.
+    # Reserve two future full recovery points, each with retained verified components
+    # and a ciphertext copy, plus one additional
+    # observed WAL window. Existing release-point backups remain accounted for.
+    media = nonnegative(current.get('mediaBytes', 0), 'mediaBytes')
+    recovery_reserve = 4 * (active + media)
+    wal_reserve = max(current['walBytes'], baseline['walBytes'], 2 * 1024**3)
+    projected = current['diskUsedBytes'] + growth + archive_history_reserve + fixed_stage_extra + recovery_reserve + wal_reserve
+    used_ratio = current['diskUsedBytes'] / current['diskTotalBytes']
+    projected_ratio = projected / current['diskTotalBytes']
+    return {
+        'processedSources': processed, 'targetSources': target,
+        'measured': current, 'bytesPerSource': per_source,
+        'remainingGrowthBytes': growth, 'fixedAdditionalStagingBytes': fixed_stage_extra, 'futureRecoveryReserveBytes': recovery_reserve,
+        'archiveHistoryReserveBytes': archive_history_reserve, 'additionalWalReserveBytes': wal_reserve, 'projectedPeakBytes': projected,
+        'currentRatio': used_ratio, 'projectedPeakRatio': projected_ratio,
+        'warning': used_ratio >= .60 or projected_ratio >= .60,
+        'pauseHeavyWork': used_ratio >= .70 or projected_ratio >= .70,
+        'reason': 'capacity_limit' if used_ratio >= .70 or projected_ratio >= .70 else 'within_budget',
+        'assumptions': 'linear measured business/archive mean; complete SQL stage excluded from per-source growth; 3 SQL and 2 filesystem snapshot generations reserved as fixed costs; one extra business archive version (whole business DB reserved if archives are embedded); two future backups with verified components and ciphertext copies; WAL reserve at least 2 GiB; indexes not double counted; current staging and existing backups already in disk usage',
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--baseline', type=Path, required=True)
+    parser.add_argument('--current', type=Path, required=True)
+    parser.add_argument('--processed', type=int, required=True)
+    parser.add_argument('--target', type=int, required=True)
+    args = parser.parse_args()
+    result = estimate(json.loads(args.baseline.read_text()), json.loads(args.current.read_text()), processed=args.processed, target=args.target)
+    print(json.dumps(result, indent=2))
+    return 2 if result['pauseHeavyWork'] else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

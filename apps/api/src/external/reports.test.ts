@@ -28,6 +28,12 @@ test('report presence survives missing and unsafe links and never depends on ver
   assert.deepEqual(projectSourceReport({ ...source, external_id: 'different' }), { hasReport: false, url: null });
 });
 
+test('formal provider reports keep their presence without exposing an untrusted link',()=>{
+  const source=fixture();source.provider='chinacarapi';source.platform_id='che168';source.source_data!.platformId='che168';
+  assert.deepEqual(projectSourceReport(source),{hasReport:true,url:null});
+  assert.deepEqual(projectSourceReport({...source,external_id:'mismatched'}),{hasReport:false,url:null});
+});
+
 test('offline presence enrichment is bound to every exact current source identifier and revision', () => {
   const source = fixture(); source.source_data!.inspection = null;
   const binding = { listingId: source.id, provider: source.provider, platformId: source.platform_id, externalId: source.external_id,

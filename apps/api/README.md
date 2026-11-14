@@ -167,3 +167,58 @@ node dist/external/fx-cli.js --formal-health
 ```
 
 health须为fresh/retained且source=exchange_rate_api，检查CNY率与expiresAt。实际刷新失败退出非零，即使仍有有效旧报价；health可单独确认retained。失败不会清空仍有效的旧报价，也不会退还24小时请求预算；超过有效期自动待询。原--seed/--refresh测试入口仍限原有合成隔离库，不能对生产seed。以上命令由OPS在已备份、受限环境执行，文档不是实际已执行的证据。
+
+## EXT07 全量及持续同步
+
+EXT07 新增 `external:full-sync`（生产入口 `node dist/external/full-sync/cli.js`），接续正式来源身份与人工覆盖。旧 `external:ingest` 保留固定名单恢复用途，旧 `external:sync` 仍仅合成模式；三者不能同时写同一正式来源。先应用0022任务表、0023压缩原档/公开证据及0024固定容量样本索引迁移；API readiness检查必要表与列，0024索引另由迁移流程确认。新进程不会自行迁移数据库。
+
+```sh
+node dist/external/full-sync/cli.js configure --mode continuous --actor EXISTING_ADMIN_ID
+node dist/external/full-sync/cli.js status
+node dist/external/full-sync/cli.js run --max-ticks 1
+node dist/external/full-sync/cli.js serve
+node dist/external/full-sync/cli.js control --action pause --version CURRENT_VERSION --actor EXISTING_ADMIN_ID --key IDEMPOTENCY_UUID
+```
+
+`configure --mode full` 执行一次全量；`continuous` 在首次全量后继续5分钟增量、每日完整CSV对账、每日账户/字典和7天详情轮巡。`run`有界执行后退出，`serve`持续调度，单进程持有数据库锁78291333；冲突退出75，命令失败1，run未完成2，成功/状态读取0。退出0不是全量完成的证明：须核状态、失败和待补齐计数。管理接口的暂停仅暂停重任务；读取和明确撤回继续工作，恢复不创建任意来源任务。
+
+必要环境：`DATABASE_URL_FILE`、`CHINACARAPI_KEY_FILE` 指向只读私有凭据文件；`FULL_SYNC_ARCHIVE_ROOT` 是新数据盘内的绝对持久目录，不是系统临时目录。进程内部连接池2、网络并发1、总速率至多2请求/秒并持久遵守Retry-After；部署另限制0.5 CPU/512MiB。bulk从500开始，超时/响应过大递归减半，成功分批即入库。原文先压缩共享存档，事件/工作只保存引用；整页持久后才推进接收游标，实际应用独立计数。CSV先流式校验完整性，单次缺行只触发核查；明确撤回优先处理，有效备用来源可接替代表，稳定挂牌ID和人工覆盖不搬移。
+
+容量检查区分CSV暂存与业务详情样本：下载/暂存始终受70%磁盘硬限制；首批最多1万条的三语详情与报告实际完成后才能申请扩量。样本满额等待报告/判定时停止推进CSV快照和获取新身份详情，继续撤回及被增量事件更新的已有样本补齐。进入 `capacity_pending` 后，仅允许SQL筛选为已有样本的详情/报告任务（至多500详情及20报告/轮）及所需当日账户额度刷新；匹配裁决通过后的下一轮恢复新增身份和快照。此路径仍受管理员暂停、70%硬限制及供应商配额约束，不把报告未查当无报告。
+
+`external_full_sync.capacity_estimate` 仅供内部测量与裁决绑定，不进入公开API。`snapshotId/targetRows` 取最新已完整验证的CSV；`sampleRows/detailSampleRows` 是首批固定样本数，首次放行后新增身份不再加入，撤回不补替身。门槛为CSV目标与1万的较小值。`detailSampleRows=activeDetailSampleRows+withdrawnSampleRows`；撤回单列终态，不计入 `threeLocaleCompleted/reportCompleted/confirmedNoReport`，重新挂牌须重新补齐三语及报告。`distinctProcessed` 是全库取得过详情的身份数，供后续增长时计算真实业务均值，不能一直用1万除增长后的全库大小。
+
+`businessBytes` 是业务关系含索引/TOAST/压缩原文的实占，排除完整SQL暂存关系；`sqlStagingBytes` 单列该暂存表、索引/TOAST。`archiveDirectoryBytes/walBytes` 为观测值，`fixedBytes` 只是三项之和；`csvBytes` 是导出原始大小元数据，不重复加入文件实占。`capacity_baseline.detailSample` 只保存全体非撤回、三语与报告完整的固定样本实测，带成员/状态摘要和来源快照。相同样本后续撤回可复用该历史证据；新CSV须重新裁决，不要求重复采集已完成的同一组样本。`actualBytesPerDetail=businessBytes/distinctProcessed`，`projectedBytesPerDetail` 取当前业务均值与可信历史均值的较大者，`historicalBytesPerDetail` 给出后者。三者仅为实测单价观测，不是整盘峰值；没有128KiB默认值或6倍系数。没有完整样本或有效历史时 `sampleEvidenceSufficient=false`、预测为null。
+
+峰值模型只有OPS的 `hd-ext07-peak-v1` 一套，逐项计当前实占、剩余增长、历史、暂存、WAL、媒体及备份/密文峰值，避免重复固定项。BE 的 `estimatedBytes` 只回显合法且匹配裁决的 `projectedPeakBytes`，不能用BE观测的 `fixedBytes` 再加一次。`FULL_SYNC_CAPACITY_APPROVED_BYTES` 如设置，仅为最终整盘峰值的额外上限，0表示不额外设限；它不能替代裁决或放行样本不足。60%告警由部署监控负责。
+
+### 容量裁决文件与证据绑定
+
+OPS每60秒有锁测量并原子替换宿主 `/srv/hd-auto/data/full-sync-capacity/decision.json`；整个目录只读挂载至worker的 `/private/capacity`，设置 `FULL_SYNC_CAPACITY_DECISION_FILE=/private/capacity/decision.json`。worker只读，不创建/修改裁决。文件须为私有普通文件（建议0600或0640，禁止组写/其他用户权限和符号链接），不超过64KiB。原子替换目录挂载可让每次读取看到完整的新/旧文件；不能挂载单个被替换的inode。
+
+JSON严格字段：`schemaVersion:1`、`model:"hd-ext07-peak-v1"`、`snapshotId`（UUID）、`targetRows/sampleRows`、`evidenceHash`（64位小写SHA-256）、UTC `measuredAt/expiresAt`、`decision:"allow"|"wait"|"blocked"`、`reason`、`projectedPeakBytes`（证据不足可为null）、`diskTotalBytes/currentUsedBytes`、`components`。所有字节/数量是非负安全整数，磁盘总量必须为正且与worker实际盘相同；非null峰值不得小于当前实占。`reason` 严格采用OPS控制器四个大写固定枚举：allow对应 `SYNC_CAPACITY_VERIFIED`，blocked对应 `SYNC_CAPACITY_LIMIT`，wait对应 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE` 或 `SYNC_CAPACITY_WAITING_MEASUREMENT`；未知码、大小写变化和状态不匹配均拒绝。`components` 为至多64项的平面键值，键至多64字符且字母开头，值只接受非负安全整数或至多64字符的小写字母开头的字母/数字/下划线/连字符模型代码，不接收正文、车辆信息、URL或凭据。JSON不接受额外字段。
+
+BE唯一生成 `evidenceHash`，OPS原样回写。SQL按 `source,external_id COLLATE "C"` 取固定样本，最多10001行（多一行用于拒绝超量）。每个身份 `[source,external_id]` 与状态 `[source,external_id,canonical_id,state,event_order,desired_generation,applied_generation,sortedLocales,report_state,lastDetailEpoch,reportCheckedEpoch]` 分别用PostgreSQL的JSONB文本、UTF-8、SHA-256转成64位小写摘要；代次/事件序号和非null时间使用文本，语言按C排序。依身份C顺序拼接定长摘要后分别SHA-256，形成 `cohortHash/stateHash`，无成员身份离开SQL。外层对 `{model:"hd-ext07-evidence-v1",snapshotId,targetRows,cohortHash,stateHash,history}` 使用仓库 `jsonHash`：对象key递归按字典序，数组保序，UTF-8无空白JSON；`history` 是有效基线的model、cohortHash、stateHash、sampleRows、来源snapshotId/targetRows及bytesPerDetail，或null。轮询时间、基线at、易变磁盘/WAL字节不进入绑定。相同状态不重写历史单价，新增非样本身份不改绑定；快照、样本成员/代次/语言/报告/撤回/重新挂牌改变会使旧绑定失效。
+
+裁决最长有效10分钟，未来时差最多60秒；每次重任务前重新读取核对时效、快照和样本绑定，不永久缓存allow。下一每日CSV尚未完整验证时仍绑定上一已验证快照，相关暂存峰值由OPS预留；新CSV验证后立即重新绑定，未取得新裁决不推进业务扩量。只有合法匹配的allow且 `projectedPeakBytes < diskTotalBytes*0.7`、当前真实磁盘占用<70%、未人工暂停且额度可用时才放行。
+
+错误区分：样本/历史不足为 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE`；缺文件、非法JSON、过期、错批次/hash或wait/blocked为 `SYNC_CAPACITY_AWAITING_DECISION`；真实预测或当前磁盘达到70%为 `SYNC_CAPACITY_LIMIT`；额外峰值上限不足为 `SYNC_CAPACITY_BUDGET_CAP`。已有pending阻断一般重任务为 `SYNC_CAPACITY_PENDING`，人工暂停/当前磁盘守卫仍可能返回 `SYNC_HEAVY_PAUSED`。新的匹配allow能自动恢复，无需重启或修改环境。等待期间仍保持上述受控样本修复与撤回。
+
+组合回归 `test/full-sync-capacity-ops.test.ts` 必须在包含BE与OPS控制器的集成版本、提供Python 3的隔离检查环境执行。它直接导入仓库 `deploy/runtime/production/capacity-decision.py` 的纯判定/原子写文件函数，用合成测量生成真实控制器输出，再交BE读取；覆盖allow、70%限制、样本不足和测量失败，不调用生产main/测量器或外部来源。不复制控制器/输出样例，也不在缺少控制器时跳过。测量失败的空绑定/零磁盘结果按等待处理，不能沿用旧allow。
+
+### 原文保留与公开资料
+
+0023替代EXT06的长期原文保留规则：保留当前原文和最近一版历史，历史最多7天；待处理引用、备份点及员工审计证据受保护。已有未压缩内容可读，后台有界压缩，公开请求不解压整份来源。备份必须先保护blob和document引用及CSV归档快照，保留点删除后再释放；归档、数据库与配置须一并恢复。准确备份操作及服务器实测结果由本轮OPS交付，不能以文档视为已执行。
+
+公开API增加卡片投影、排序/出口状态、实际语言名称、完整有效VIN、生产日期依据、直接马力、分页检测与原币价格历史，见[接口第21节](../../docs/开发/车辆接口.md#21-ext07-全量同步与公开资料)。俄语返回英文时如实标contentLocale=en；供应商只给登记天数/over180Days不推断出口资格，缺少明确status保持unknown。AI仍只读取同一公开白名单，不读取原档或数据库连接。
+
+备份引用命令（仅数据库，不调用供应商；reference限160字符的字母、数字、点、下划线、冒号、连字符）：
+
+```sh
+node dist/external/full-sync/cli.js archive-pin --reference BACKUP_NAME
+node dist/external/full-sync/cli.js archive-release --reference BACKUP_NAME
+```
+
+pin保护来源document/blob和未清理CSV快照，与CSV清理共用归档锁；须在备份开始前执行。release只解除指定reference，不删除数据。备份读取与恢复仍由OPS流程执行。
+
+批次运行日志使用 `event=external.full_sync.bulk_attempt`：只含 `source/locale/requestedCount/elapsedMs/responseBytes/resultCode/splitCode`。计时从实际发送开始，不含限速和额度等待；成功字节数取实际响应流，传输失败为null；拆批前失败与成功子批分别记录。日志不含车辆ID、URL、凭据、正文或供应商异常消息，记录失败不会触发重打请求。OPS结合容器内存峰值和持久容量样本判断500及拆批效果，无需额外探测供应商。

@@ -1,11 +1,11 @@
 'use client';
 
-import { useMemo, useRef, type MouseEvent } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   PublicVehicleFiltersSchema,
   type PublicVehicleFilters,
-  type PublicVehicleList as CatalogResult,
+  type PublicVehicleCardList as CatalogResult,
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -18,7 +18,7 @@ import {
   publicUsdCatalogQuery,
   publicUsdFilterQuery,
 } from '../public-query';
-import { localizedListSchema } from '../localized-projection';
+import { localizedCardListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
 import { PublicVehicleFiltersForm } from './public-vehicle-filters';
@@ -43,6 +43,13 @@ export function PublicVehicleList({
 }) {
   const t = publicVehicleMessages(locale),
     search = useSearchParams();
+  const pathname = usePathname();
+  const locationKey = `${pathname}${search.size ? `?${search.toString()}` : ''}`;
+  // Next commits native history updates in a transition. Keep click feedback urgent while it does.
+  const [navigationFrom, setNavigationFrom] = useState<string | null>(null);
+  useEffect(() => {
+    if (navigationFrom !== null && navigationFrom !== locationKey) setNavigationFrom(null);
+  }, [locationKey, navigationFrom]);
   const query = useMemo(() => {
     const input: Record<string, string | string[]> = {};
     for (const key of new Set(search.keys())) {
@@ -54,7 +61,7 @@ export function PublicVehicleList({
   const selected = query ?? initialQuery;
   const url = `/api/v1/vehicles/?${publicQueryString(publicUsdCatalogQuery(selected))}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, result, localizedListSchema(locale, 'usd'), {
+  const resource = usePublicResource(url, result, localizedCardListSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/`,
     initialRetryAfter,
     cooldown,
@@ -68,9 +75,10 @@ export function PublicVehicleList({
     cooldown,
   });
   const data = resource.data;
+  const phase = navigationFrom !== null ? 'checking' : resource.phase;
   const tiltLayout = useMemo(
-    () => ({ data, phase: resource.phase, url }),
-    [data, resource.phase, url],
+    () => ({ data, phase, url }),
+    [data, phase, url],
   );
   const pointerTilt = usePointerTilt(tiltLayout);
   function reloadCatalog() {
@@ -78,9 +86,14 @@ export function PublicVehicleList({
     if (facets.phase === 'error' && resource.retryAfter <= 0) void facets.reload();
   }
   function navigate(href: string) {
-    if (href !== `${window.location.pathname}${window.location.search}`)
-      window.history.pushState(null, '', href);
-    else reloadCatalog();
+    const destination = new URL(href, window.location.href);
+    const next = `${destination.pathname}${destination.search}`;
+    if (next === `${window.location.pathname}${window.location.search}`) {
+      reloadCatalog();
+      return;
+    }
+    setNavigationFrom(locationKey);
+    window.history.pushState(null, '', next);
   }
   function pageClick(event: MouseEvent<HTMLAnchorElement>) {
     if (
@@ -99,7 +112,7 @@ export function PublicVehicleList({
   }
   const appliedKey = publicCatalogHref(locale, selected);
   return (
-    <PublicFreshnessBoundary phase={resource.phase} url={url}>
+    <PublicFreshnessBoundary phase={phase} url={url}>
       <main id="main" className={styles.page} data-testid="public-vehicle-catalog">
         <div className={styles.shell}>
           <h1 className={styles.srOnly}>{t.title}</h1>
@@ -110,7 +123,7 @@ export function PublicVehicleList({
                 locale={locale}
                 filters={facets.dataCurrent ? (facets.data?.data ?? null) : null}
                 query={selected}
-                pending={resource.phase === 'checking'}
+                pending={phase === 'checking'}
                 retryAfter={resource.retryAfter}
                 navigate={navigate}
                 onRetry={reloadCatalog}
@@ -119,15 +132,17 @@ export function PublicVehicleList({
             <section
               className={styles.results}
               id="catalog-results"
-              aria-busy={resource.phase === 'checking'}
+              aria-busy={phase === 'checking'}
             >
-              <PublicResourceStatus
-                locale={locale}
-                phase={resource.phase}
-                retry={reloadCatalog}
-                retryAfter={resource.retryAfter}
-                fallbackHref={publicCatalogHref(locale, selected)}
-              />
+              <div className={styles.catalogStatus}>
+                <PublicResourceStatus
+                  locale={locale}
+                  phase={phase}
+                  retry={reloadCatalog}
+                  retryAfter={resource.retryAfter}
+                  fallbackHref={publicCatalogHref(locale, selected)}
+                />
+              </div>
               {!query || !data ? (
                 <div className={styles.state} role="alert" data-testid="public-catalog-error">
                   <p>{t.unavailable}</p>

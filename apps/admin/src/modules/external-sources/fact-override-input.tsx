@@ -18,7 +18,7 @@ const optionLabels: Record<string, string> = {
 };
 
 const numericUnits: Partial<Record<FactField, string>> = {
-  modelYear: ' 款', mileageKm: ' 公里', engineCc: ' cc', powerKw: ' kW',
+  modelYear: ' 款', mileageKm: ' 公里', engineCc: ' cc', powerKw: ' kW', powerHp: ' hp',
 };
 
 export function formatExternalFact(field: FactField, value: unknown): string {

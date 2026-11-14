@@ -9,7 +9,7 @@ import { moneyCents } from '@/shared/lib/public-vehicle-price';
 
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
 
-export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;
+export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency' | 'exportStatus'>;
 
 /** Website whole-dollar limits match the rounded displayed value. Precise API limits stay exact. */
 function wholeDollarBound(amount: string | undefined, edge: 'min' | 'max') {
@@ -32,15 +32,17 @@ function websitePriceBounds(scope: UsdFilterScope) {
 }
 
 export function publicUsdFilterQuery(locale: Locale, scope: UsdFilterScope = {}) {
-  return { catalog: 'curated', locale, q: scope.q, ...websitePriceBounds(scope), ...publicUsdView };
+  return { catalog: 'curated', locale, q: scope.q, exportStatus: scope.exportStatus, ...websitePriceBounds(scope), ...publicUsdView };
 }
 
 export function publicUsdCatalogQuery(query: PublicVehicleQuery) {
-  return { ...query, ...websitePriceBounds(query), ...publicUsdView };
+  return { ...query, ...websitePriceBounds(query), ...publicUsdView, projection: 'card' as const };
 }
 
 export const catalogFilterKeys = [
   'q',
+  'exportStatus',
+  'sort',
   'make',
   'model',
   'generation',
@@ -60,6 +62,7 @@ export const catalogQueryKeys = [
   'locale',
   'view',
   'priceView',
+  'projection',
   ...catalogFilterKeys,
   'page',
   'pageSize',
@@ -72,7 +75,7 @@ export function parseCatalogQuery(
   locale: Locale,
 ) {
   const input: Record<string, unknown> = { locale, catalog: 'curated' };
-  for (const key of [...catalogFilterKeys, 'view', 'priceView', 'page', 'pageSize']) {
+  for (const key of [...catalogFilterKeys, 'view', 'priceView', 'projection', 'page', 'pageSize']) {
     const value = params[key];
     if (value === undefined || (value === '' && key !== 'priceView')) continue;
     if (Array.isArray(value)) return null;
@@ -134,7 +137,7 @@ export function parseFilterQuery(
 ) {
   const query = parseCatalogQuery(params, locale);
   if (!query) return null;
-  const { page: _page, pageSize: _size, ...filters } = query;
+  const { page: _page, pageSize: _size, projection: _projection, ...filters } = query;
   const parsed = PublicFilterQuerySchema.safeParse(filters);
   return parsed.success ? parsed.data : null;
 }

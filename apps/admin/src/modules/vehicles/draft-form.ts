@@ -10,7 +10,7 @@ export function emptyDraft(): VehicleDraftInput {
   const text = () => ({ sourceLanguage: 'zh', sourceText: null, sourceVersion: 1, translations: { zh: null, en: null, ru: null } });
   return {
     source: { kind: 'manual' }, configuration: null,
-    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'registered', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, body: null, transmission: null, location: null },
+    facts: { make: null, model: null, trim: null, modelYear: null, manufacturedAt: null, firstRegistration: null, registrationStatus: 'registered', mileageKm: null, powertrain: 'unknown', engineCc: null, powerKw: null, powerHp: null, body: null, transmission: null, location: null },
     price: { kind: 'on_request', money: null, includes: [] },
     content: { title: text(), description: text() }, media: [],
     internal: { purchaseCost: null, notes: null, supplierContact: null, vin: null },
@@ -31,7 +31,7 @@ export function draftToForm(draft: VehicleDraftInput) {
     trimId: facts.trim?.id ?? '', trimName: facts.trim?.name ?? '',
     configuration: configurationToText(draft.configuration),
     modelYear: facts.modelYear?.toString() ?? '', mileageKm: facts.mileageKm?.toString() ?? '',
-    engineCc: facts.engineCc?.toString() ?? '', powerKw: facts.powerKw?.toString() ?? '',
+    engineCc: facts.engineCc?.toString() ?? '', powerKw: facts.powerKw?.toString() ?? '', powerHp: facts.powerHp?.toString() ?? '',
     manufacturedAt: facts.manufacturedAt?.value ?? '', manufacturedPrecision: facts.manufacturedAt?.precision ?? 'month',
     firstRegistration: facts.firstRegistration?.value ?? '', registrationPrecision: facts.firstRegistration?.precision ?? 'month',
     registrationStatus: facts.registrationStatus, powertrain: facts.powertrain,
@@ -58,7 +58,7 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
   result.facts = {
     ...result.facts,
     make: named(form.makeId, form.makeName), model: named(form.modelId, form.modelName), trim: named(form.trimId, form.trimName),
-    modelYear: numeric(form.modelYear), mileageKm: numeric(form.mileageKm), engineCc: numeric(form.engineCc), powerKw: numeric(form.powerKw),
+    modelYear: numeric(form.modelYear), mileageKm: numeric(form.mileageKm), engineCc: numeric(form.engineCc), powerKw: numeric(form.powerKw), powerHp: numeric(form.powerHp),
     manufacturedAt: partialDate(form.manufacturedAt, form.manufacturedPrecision) as PartialDate | null,
     firstRegistration: partialDate(form.firstRegistration, form.registrationPrecision) as PartialDate | null,
     registrationStatus: form.registrationStatus, powertrain: form.powertrain,
@@ -67,12 +67,14 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
   };
   const factFields: Record<keyof VehicleDraftInput['facts'], (keyof DraftForm)[]> = {
     make: ['makeId', 'makeName'], model: ['modelId', 'modelName'], trim: ['trimId', 'trimName'],
-    modelYear: ['modelYear'], mileageKm: ['mileageKm'], engineCc: ['engineCc'], powerKw: ['powerKw'],
+    modelYear: ['modelYear'], mileageKm: ['mileageKm'], engineCc: ['engineCc'], powerKw: ['powerKw'], powerHp: ['powerHp'],
     manufacturedAt: ['manufacturedAt', 'manufacturedPrecision'], firstRegistration: ['firstRegistration', 'registrationPrecision'],
     registrationStatus: ['registrationStatus'], powertrain: ['powertrain'], body: ['body'], transmission: ['transmission'], location: ['country'],
   };
   for (const [key, keys] of Object.entries(factFields)) {
-    if (unchanged(...keys)) Object.assign(result.facts, { [key]: structuredClone(base.facts[key as keyof typeof base.facts]) });
+    if (!unchanged(...keys)) continue;
+    if (Object.hasOwn(base.facts, key)) Object.assign(result.facts, { [key]: structuredClone(base.facts[key as keyof typeof base.facts]) });
+    else Reflect.deleteProperty(result.facts, key);
   }
   const includes = result.price.includes;
   result.price = form.priceKind === 'on_request' ? { kind: 'on_request', money: null, includes }
@@ -96,7 +98,7 @@ export const fieldLabels: Record<keyof DraftForm, string> = {
   sourceExternalId: '原始挂牌编号', sourceCollectedAt: '资料采集时间（UTC）', sourceUpdatedAt: '来源更新时间（UTC）',
   makeId: '品牌标识', makeName: '品牌名称', modelId: '车型标识', modelName: '车型名称', trimId: '配置标识', trimName: '配置名称',
   configuration: '车辆详细配置',
-  modelYear: '年款', mileageKm: '里程（公里）', engineCc: '排量（cc）', powerKw: '功率（kW）',
+  modelYear: '年款', mileageKm: '里程（公里）', engineCc: '排量（cc）', powerKw: '功率（kW）', powerHp: '原始马力（hp）',
   manufacturedAt: '制造日期', manufacturedPrecision: '制造日期精度', firstRegistration: '首次登记日期', registrationPrecision: '首次登记日期精度',
   registrationStatus: '登记状态', powertrain: '动力类型', body: '车身形式', transmission: '变速箱',
   country: '所在地国家代码', city: '所在地城市', locationName: '公开所在地描述',
@@ -110,7 +112,7 @@ const pathFields: Record<string, keyof DraftForm> = {
   'source.externalId': 'sourceExternalId', 'source.collectedAt': 'sourceCollectedAt', 'source.sourceUpdatedAt': 'sourceUpdatedAt',
   'facts.make.id': 'makeId', 'facts.make.name': 'makeName', 'facts.model.id': 'modelId', 'facts.model.name': 'modelName',
   'facts.trim.id': 'trimId', 'facts.trim.name': 'trimName', 'facts.modelYear': 'modelYear', 'facts.mileageKm': 'mileageKm',
-  'facts.engineCc': 'engineCc', 'facts.powerKw': 'powerKw', 'facts.manufacturedAt': 'manufacturedAt', 'facts.firstRegistration': 'firstRegistration',
+  'facts.engineCc': 'engineCc', 'facts.powerKw': 'powerKw', 'facts.powerHp': 'powerHp', 'facts.manufacturedAt': 'manufacturedAt', 'facts.firstRegistration': 'firstRegistration',
   'facts.location.country': 'country', 'facts.location.city': 'city', 'facts.location.displayName': 'locationName',
   'facts.make': 'makeName', 'facts.model': 'modelName', 'facts.trim': 'trimName',
   'configuration': 'configuration',

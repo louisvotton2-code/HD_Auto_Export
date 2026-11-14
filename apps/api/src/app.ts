@@ -14,6 +14,8 @@ import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './a
 import { InventoryService, type Actor } from './vehicles/service.js';
 import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
+import { VehicleEvidence } from './vehicles/evidence.js';
+import {markFullSyncAccess} from './external/full-sync/engine.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { MediaService } from './media/service.js';
@@ -134,7 +136,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       if(changesExternalListing && !member.permissions.includes('vehicles:write')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle write permission is required.');
       }
-      if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath].includes(route))) {
+      if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath,'/api/v1/admin/external/sync-control'].includes(route))) {
         throw new ApiError(403,'FORBIDDEN','Administrator role is required for this external catalog operation.');
       }
     }
@@ -213,11 +215,11 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,ss.revision,state.revision,f.locale_mask,o.text_source_identities FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,ve.export_status,ev.source_revision FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
-          LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false WHERE state.id=1`);
+          LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false LEFT JOIN external_full_sync fs ON fs.id=1 LEFT JOIN external_vehicle_extras ve ON false LEFT JOIN external_vehicle_evidence_sets ev ON false WHERE state.id=1 AND fs.id=1`);
         if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
       }
       return {status:'ready' as const};
@@ -247,7 +249,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   for (const prefix of ['/api/v1',SSR_CATALOG_PREFIX]) {
   const publicSchema=(operation:string,options:Record<string,unknown>)=>prefix===SSR_CATALOG_PREFIX?{...options,hide:true}:schema('public',operation,options);
   const routeConfig=prefix===SSR_CATALOG_PREFIX?{rateLimit:false as const}:undefined;
-  app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:pub.PublicVehicleListSchema,...errorResponses}})},
+  app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([pub.PublicVehicleCardListSchema,pub.PublicVehicleListSchema]),...errorResponses}})},
     async request=>{
       const query=request.query as pub.PublicVehicleQuery;
       const {value:loaded,stamp}=await cached('list',query,async()=>{
@@ -257,7 +259,14 @@ export async function buildApp(config:Config=readConfig(), options:{
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return publicResponse('detail',{id:p.id,...q},()=>inventory.getPublic(p.id,q.locale,q.view,q.priceView),request);});
+    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
+      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView);
+      const identity=vehicle.identifiers;
+      if(p.id.startsWith('ext-')&&identity?.sourceId&&(identity.source==='che168'||identity.source==='dongchedi')) {
+        try{await markFullSyncAccess(db,identity.source,identity.sourceId);}catch{request.log.debug('Full-sync access hint unavailable');}
+      }
+      return vehicle;
+    },request);});
   app.get(`${prefix}/vehicle-filters`,{config:routeConfig,schema:publicSchema('vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>{
     const query=request.query as pub.PublicFilterQuery;return publicResponse('filters',query,()=>inventory.filters(query),request);
   });
@@ -274,6 +283,11 @@ export async function buildApp(config:Config=readConfig(), options:{
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
   const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
   app.get('/api/v1/admin/vehicles/:id/translation-bundle',{schema:adminSchema('getVehicleTranslationBundle',{params:IdParams,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.getTranslationBundle((request.params as {id:string}).id,actor(request)),request));
+  const evidence=new VehicleEvidence(db,inventory);
+  app.get('/api/v1/vehicles/:id/inspection',{schema:{operationId:'getVehicleInspection',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleInspectionResponseSchema,...errorResponses}}},
+    async request=>response(pub.PublicVehicleInspectionResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'inspection',request.query as pub.PublicVehicleSegmentQuery)),request));
+  app.get('/api/v1/vehicles/:id/price-history',{schema:{operationId:'getVehiclePriceHistory',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehiclePriceHistoryResponseSchema,...errorResponses}}},
+    async request=>response(pub.PublicVehiclePriceHistoryResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'price-history',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/vehicles/:id/gallery',{schema:{operationId:'getVehicleGallery',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleGalleryResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleGalleryResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'gallery',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/vehicles/:id/configuration',{schema:{operationId:'getVehicleConfiguration',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleConfigurationResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleConfigurationResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'configuration',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/admin/vehicles/:id/activity',{schema:adminSchema('getVehicleActivity',{params:IdParams,querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.staff((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));

@@ -97,9 +97,9 @@ class DomainCacheHeaders(unittest.TestCase):
         for path in ['/api/v1/vehicles','/zh/cars/']:
             status,headers,body=self.request('cars.hongdingauto.com',path,{'X-HD-SSR-Key':'synthetic-forgery','X-Forwarded-For':'203.0.113.55'});self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');origin=json.loads(body)['headers'];self.assertFalse(any(k.lower()=='x-hd-ssr-key' for k in origin));self.assertNotEqual(origin.get('X-Forwarded-For'),'203.0.113.55')
         self.assertEqual(self.request('cars.hongdingauto.com','/zh/guide/')[1]['cache-control'],'public, max-age=600')
-    def test_only_public_gallery_configuration_segments_are_added_to_the_public_allowlist(self):
+    def test_only_bounded_public_segments_are_added_to_the_public_allowlist(self):
         vehicle='11111111-1111-4111-8111-111111111111'
-        for kind in ['gallery','configuration']:
+        for kind in ['gallery','configuration','inspection','price-history']:
             path='/api/v1/vehicles/'+vehicle+'/'+kind
             status,headers,body=self.request('cars.hongdingauto.com',path+'/?locale=ru&limit=20',{'X-HD-SSR-Key':'synthetic-forgery','X-HD-Visitor-IP':'203.0.113.55'})
             self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store')
@@ -108,16 +108,16 @@ class DomainCacheHeaders(unittest.TestCase):
             self.assertFalse(any(k.lower() in ['x-hd-ssr-key','x-hd-visitor-ip'] for k in origin['headers']))
             self.assertEqual(self.request('cars.hongdingauto.com',path,method='HEAD')[0],200)
             Origin.calls.clear();self.assertEqual(self.request('cars.hongdingauto.com',path,method='POST')[0],405);self.assertEqual(Origin.calls,[])
-        for suffix in ['activity','private','gallery/private']:
+        for suffix in ['activity','private','gallery/private','inspection/private','price-history/private']:
             Origin.calls.clear();self.assertEqual(self.request('cars.hongdingauto.com','/api/v1/vehicles/'+vehicle+'/'+suffix)[0],404);self.assertEqual(Origin.calls,[])
     def test_public_segments_share_the_unchanged_direct_peer_request_limit(self):
         time.sleep(2.3)
-        paths=['/api/v1/vehicles/11111111-1111-4111-8111-111111111111/'+kind for kind in ['gallery','configuration']]
+        paths=['/api/v1/vehicles/11111111-1111-4111-8111-111111111111/'+kind for kind in ['gallery','configuration','inspection','price-history']]
         try:
             with ThreadPoolExecutor(max_workers=16) as pool:
-                replies=list(pool.map(lambda i:self.request('cars.hongdingauto.com',paths[i%2],{'X-Forwarded-For':'203.0.113.'+str(i)},paced=False),range(80)))
+                replies=list(pool.map(lambda i:self.request('cars.hongdingauto.com',paths[i%len(paths)],{'X-Forwarded-For':'203.0.113.'+str(i)},paced=False),range(80)))
             rejected=[headers for status,headers,_ in replies if status==429]
-            self.assertTrue(rejected,'Both public segment routes must hit the real12r/s burst24 bucket')
+            self.assertTrue(rejected,'All bounded public segment routes must hit the real12r/s burst24 bucket')
             self.assertTrue(all(status in [200,429] for status,_,_ in replies),{status:sum(x[0]==status for x in replies) for status,_,_ in replies})
             self.assertTrue(all(headers.get('x-hd-test-family')=='public-api' and headers.get('x-hd-test-limit')=='REJECTED' for headers in rejected))
         finally:time.sleep(2.3)

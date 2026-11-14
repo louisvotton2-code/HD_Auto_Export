@@ -37,14 +37,24 @@ describe('explicit vehicle calculator fragment handoff', () => {
     expect(readVehicleEstimateFragment('#hd-estimate=' + 'x'.repeat(6000), 'RU')).toBeNull();
   });
 
-  it('keeps the validated January estimate marker without changing older fragments', () => {
+  it('removes an old guessed January date while retaining other known draft facts', () => {
     const value = seed();
     expect(parseVehicleEstimateSeed(value)).toEqual(value);
     value.manufactureEstimate = 'model_year';
     expect(parseVehicleEstimateSeed(value)).toBeNull();
     value.input.manufactureDate = '2024-01';
     const fragment = createVehicleEstimateFragment(value)!;
-    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual(value);
+    const { manufactureEstimate: _old, ...expected } = value;
+    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual({ ...expected, input: { ...value.input, manufactureDate: '' } });
+  });
+
+  it('retains a bounded source range, with unchanged clearance date and FX, through the full calculator link', () => {
+    const value = seed();
+    value.input.manufactureDate = '';
+    value.manufactureRange = { from: '2020-11', to: '2026-11' };
+    expect(readVehicleEstimateFragment(createVehicleEstimateFragment(value)!, 'RU')?.seed).toEqual(value);
+    expect(parseVehicleEstimateSeed({ ...value, manufactureRange: { from: '2024-12', to: '2024-01' } })).toBeNull();
+    expect(parseVehicleEstimateSeed({ ...value, input: { ...value.input, manufactureDate: '2024-01' } })).toBeNull();
   });
 
   it.each([

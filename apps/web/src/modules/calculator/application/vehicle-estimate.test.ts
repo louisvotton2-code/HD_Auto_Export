@@ -7,34 +7,57 @@ import { vehicleManufacturePrefill } from './manufacture-estimate';
 
 const date = '2026-11-08';
 const rates = createReferenceSnapshot();
+function knownVehicle() {
+  const vehicle = makePublicVehicleFixture();
+  vehicle.facts.powerHp = 150;
+  return vehicle;
+}
 
 describe('vehicle facts to import estimate', () => {
-  it('prefills known facts and converts actual kW without copying reference placeholders', () => {
-    const vehicle = makePublicVehicleFixture();
+  it('prefills actual hp without deriving or mixing other power measurements', () => {
+    const vehicle = knownVehicle();
     const input = createVehicleEstimateDraft(vehicle, 'RU', date, rates);
     expect(input).toMatchObject({
       price: '23500.00', currency: 'USD', displacementCc: '1998',
-      powerHp: '149.558378', manufactureDate: '2024-02', customsDate: date,
+      powerHp: '150', manufactureDate: '2024-02', customsDate: date,
       freight: '', insurance: '', steering: '', condition: '',
     });
     expect(calculateImportEstimate(vehicleEstimateInput(input)).status).toBe('reference');
   });
 
-  it('uses a real manufacture month first and marks January assumptions by their source', () => {
+  it('uses real manufacture evidence and never turns a manufacture/model year into January', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.facts.firstRegistration = { precision: 'day', value: '2024-05-15' };
     vehicle.facts.manufacturedAt = null;
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2024-01', estimate: 'model_year' });
-    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-01');
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '' });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.facts.manufacturedAt = { precision: 'year', value: '2023' };
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2023-01', estimate: 'manufacture_year' });
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '' });
     vehicle.facts.manufacturedAt = { precision: 'day', value: '2024-03-28' };
     expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2024-03' });
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03');
   });
 
+  it('uses formal ranges as ranges, expands year endpoints, and prioritizes exact evidence', () => {
+    const vehicle = knownVehicle();
+    vehicle.facts.manufacturedAt = null;
+    vehicle.manufacture = { date: null, range: {
+      earliest: { precision: 'year', value: '2021' }, latest: { precision: 'year', value: '2024' },
+    }, source: 'supplier', basis: null };
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '', range: { from: '2021-01', to: '2024-12' } });
+    vehicle.manufacture.date = { precision: 'day', value: '2023-04-15' };
+    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2023-04' });
+  });
+
+  it('does not substitute a kW or another scope when direct hp is missing', () => {
+    const vehicle = knownVehicle();
+    vehicle.facts.powerHp = null;
+    vehicle.facts.powerKw = 400;
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
+  });
+
   it('leaves the month empty for missing or future year estimates, even if first registration is known', () => {
-    const vehicle = makePublicVehicleFixture();
+    const vehicle = knownVehicle();
     vehicle.facts.firstRegistration = { precision: 'day', value: '2024-05-15' };
     vehicle.facts.manufacturedAt = null;
     for (const year of [null, 2027]) {
@@ -49,7 +72,7 @@ describe('vehicle facts to import estimate', () => {
 
   it.each(['unknown', 'lpg', 'other'] as const)('keeps unsupported %s and missing numeric facts unselected', (powertrain) => {
     const vehicle = makePublicVehicleFixture();
-    Object.assign(vehicle.facts, { powertrain, engineCc: null, powerKw: null });
+    Object.assign(vehicle.facts, { powertrain, engineCc: null, powerKw: null, powerHp: null });
     const input = createVehicleEstimateDraft(vehicle, 'RU', date, rates);
     expect(input).toMatchObject({ powertrain: '', displacementCc: '', powerHp: '' });
     expect(calculateImportEstimate(vehicleEstimateInput(input))).toMatchObject({ status: 'incomplete', total: null });
@@ -62,7 +85,9 @@ describe('vehicle facts to import estimate', () => {
       status: 'ready', kind: 'reference', money: { amount: '9900.00', currency: 'USD' },
       conversion: { asOf: '2026-11-09T00:00:00Z', source: 'synthetic' },
     };
-    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).price).toBe('10000.00');
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates)).toMatchObject({ price: '9900.00', currency: 'USD' });
+    vehicle.displayPrice = { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates)).toMatchObject({ price: '69000', currency: 'CNY' });
     vehicle.price.money!.currency = 'KRW';
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).price).toBe('');
     vehicle.price = { kind: 'on_request', money: null, includes: [] };
@@ -83,7 +108,7 @@ describe('vehicle facts to import estimate', () => {
 
   it.each(['RU', 'KZ', 'UZ', 'GE', 'AM', 'KG', 'AL'] as CountryCode[])(
     'passes completed known facts to the existing %s core without a separate tax algorithm', (country) => {
-      const vehicle = makePublicVehicleFixture();
+      const vehicle = knownVehicle();
       vehicle.facts.registrationStatus = 'registered';
       const input = { ...createVehicleEstimateDraft(vehicle, country, date, rates), steering: 'left' as const };
       const result = calculateImportEstimate(vehicleEstimateInput(input));
@@ -102,5 +127,8 @@ describe('vehicle facts to import estimate', () => {
     const afterFacts = vehicleEstimateIdentity(vehicle);
     vehicle.price = { kind: 'on_request', money: null, includes: [] };
     expect(vehicleEstimateIdentity(vehicle)).not.toBe(afterFacts);
+    const beforeProjection = vehicleEstimateIdentity(vehicle);
+    vehicle.displayPrice = { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
+    expect(vehicleEstimateIdentity(vehicle)).not.toBe(beforeProjection);
   });
 });

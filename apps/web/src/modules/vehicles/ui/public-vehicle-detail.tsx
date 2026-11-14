@@ -4,10 +4,11 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
+import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
-import { externalDetailCopy } from '../external-detail-copy';
+import { publicVehicleRecordsCopy } from '../public-vehicle-records-copy';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
   publicAvailabilityLabel,
@@ -21,8 +22,7 @@ import { VehiclePriceValues } from './vehicle-price-values';
 import { VehicleHistory } from './vehicle-history';
 import { PublicVehicleConfiguration } from './public-vehicle-configuration';
 import { PublicVehicleGallery } from './public-vehicle-gallery';
-import { VehicleInspectionReport, VehicleReportLink } from './vehicle-inspection-report';
-import { hasInspectionContent } from '../vehicle-inspection';
+import { PublicVehicleInspection, PublicVehiclePriceHistory } from './public-vehicle-records';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -43,6 +43,8 @@ export function PublicVehicleDetail({
 }) {
   const t = publicVehicleMessages(locale);
   const copy = detailContent[locale];
+  const recordsCopy = publicVehicleRecordsCopy[locale];
+  const reference = publicVehicleReference(vehicle);
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
   const availability = fresh ? publicAvailabilityLabel(vehicle, locale) : '';
@@ -53,13 +55,10 @@ export function PublicVehicleDetail({
       ? title.slice(make.length + 1)
       : null;
   const mileage = vehicle.facts.mileageKm?.toLocaleString(locale);
-  const knownDate = vehicle.facts.manufacturedAt?.value;
+  const manufactureDate = vehicle.manufacture?.date?.value ?? (vehicle.manufacture?.range
+    ? `${vehicle.manufacture.range.earliest.value} – ${vehicle.manufacture.range.latest.value}` : vehicle.facts.manufacturedAt?.value);
   const contactId = `vehicle-contact-${vehicle.id}`;
-  const inspection = vehicle.external?.detail?.inspection;
-  const hasReport = vehicle.report?.hasReport === true;
-  const reportId = hasInspectionContent(inspection)
-    ? `vehicle-report-${vehicle.id}`
-    : undefined;
+  const reportId = `vehicle-public-inspection-${vehicle.id}`;
 
   return (
     <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id}>
@@ -83,12 +82,12 @@ export function PublicVehicleDetail({
               {vehicle.facts.transmission ? t.transmissions[vehicle.facts.transmission] : t.unknown}
             </p>
             <div className={styles.chips}>
-              {knownDate && (
+              {manufactureDate && (
                 <span className={styles.dateChip}>
-                  {t.manufactureLabel}: {knownDate}
+                  {t.manufactureLabel}: {manufactureDate}
                 </span>
               )}
-              {!knownDate && vehicle.facts.modelYear !== null && (
+              {!manufactureDate && vehicle.facts.modelYear !== null && (
                 <span className={styles.dateChip}>
                   {t.yearLabel}: {vehicle.facts.modelYear}
                 </span>
@@ -104,7 +103,8 @@ export function PublicVehicleDetail({
             <div className={styles.tiles}>
               <div className={styles.tile}>
                 <p><span className={styles.tileIcon}><Icon name="document" size={16} /></span>{copy.inquiry}</p>
-                <bdi>{vehicle.stockCode}</bdi>
+                <bdi>{reference.code}</bdi>
+                {reference.source && <small className={styles.referenceSource}>{reference.source}</small>}
               </div>
               <div className={`${styles.tile} ${styles.mileageTile}`}>
                 <p><span className={styles.tileIcon}><Icon name="gauge" size={16} /></span>{copy.mileage}</p>
@@ -138,14 +138,22 @@ export function PublicVehicleDetail({
                       <dd lang={fact.lang} dir="auto">{fact.value}</dd>
                     </div>
                   ))}
+                  {vehicle.identifiers?.vin && <div data-public-vehicle-vin>
+                    <dt>{recordsCopy.vin}</dt><dd className={styles.vinCode}><bdi>{vehicle.identifiers.vin}</bdi></dd>
+                  </div>}
+                  {vehicle.vehicleClass?.status === 'ready' && <div data-public-vehicle-class>
+                    <dt>{recordsCopy.vehicleClass}</dt><dd lang={vehicle.vehicleClass.contentLocale} dir="auto">{vehicle.vehicleClass.text}</dd>
+                  </div>}
+                  {vehicle.exportStatus && <div data-public-export-status={vehicle.exportStatus}>
+                    <dt>{recordsCopy.exportStatus}</dt><dd>{recordsCopy.exportStatuses[vehicle.exportStatus]}</dd>
+                  </div>}
                 </dl>
               </details>
             </section>
 
             <VehicleHistory vehicle={vehicle} locale={locale} />
-            {inspection && reportId && (
-              <VehicleInspectionReport id={reportId} inspection={inspection} locale={locale} />
-            )}
+            <PublicVehicleInspection vehicle={vehicle} locale={locale} />
+            <PublicVehiclePriceHistory vehicle={vehicle} locale={locale} />
             {vehicle.content.description && (
               <section className={styles.card}>
                 <h2 className={styles.cardHeading}>
@@ -223,18 +231,9 @@ export function PublicVehicleDetail({
                 <p>{copy.consultBody}</p>
                 <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" />
                 <p className={styles.smallNote}>{t.contactNote}</p>
-                {hasReport && (
-                  <section className={styles.reportRequest} data-vehicle-report-request>
-                    <h3>
-                      <Icon name="document" size={17} />
-                      {externalDetailCopy[locale].requestReport}
-                    </h3>
-                    <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" purpose="inspection" />
-                  </section>
-                )}
               </div>
             </section>
-            {reportId && <VehicleReportLink reportId={reportId} locale={locale} />}
+            <a className={styles.reportLink} href={`#${reportId}`}><Icon name="document" size={16} />{recordsCopy.viewReport}</a>
           </aside>
         </div>
       </div>

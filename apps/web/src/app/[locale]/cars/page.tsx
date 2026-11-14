@@ -36,6 +36,7 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!request) notFound();
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
+  // Native GET and script-free clients need the form and results in the initial HTML.
   const [result, filters] = await Promise.allSettled([
     getPublicCatalog(query),
     getPublicFilters(locale, query),

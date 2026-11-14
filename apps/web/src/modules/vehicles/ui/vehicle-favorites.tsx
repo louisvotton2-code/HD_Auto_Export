@@ -5,6 +5,7 @@ import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
 import type { PublicVehicle } from '@hd/contracts/public';
 import { NavigationLink } from '@/shared/ui/navigation-link';
+import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import {
   readFavoriteVehicle,
@@ -72,7 +73,7 @@ function SavedCar({
           {title.text}
         </PublicCatalogLink>
         <small>
-          {vehicle.stockCode}
+          {publicVehicleReference(vehicle).code}
           {vehicle.facts.modelYear !== null ? ` · ${vehicle.facts.modelYear}` : ''}
         </small>
         {status && (

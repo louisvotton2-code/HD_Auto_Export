@@ -1,6 +1,8 @@
 import {
   PublicHomeSectionsSchema,
   PublicVehicleListSchema,
+  PublicVehicleCardListSchema,
+  type PublicVehicleCard,
   PublicVehicleResponseSchema,
   type PublicVehicle,
 } from '@hd/contracts/public';
@@ -33,6 +35,8 @@ function validateVehicle(vehicle: PublicVehicle, locale: Locale, priceView?: 'us
     ...Object.values(fields),
     ...priceIncludes.map((x) => x.value),
     ...mediaAlt.map((x) => x.value),
+    ...(vehicle.vehicleClass ? [vehicle.vehicleClass] : []),
+    ...(vehicle.manufacture?.basis ? [vehicle.manufacture.basis] : []),
     ...vehicle.images.flatMap(image => image.altText === undefined ? [] : [image.altText]),
     ...(vehicle.configuration?.items.flatMap((item) => [item.name, item.value]) ?? []),
   ])
@@ -53,6 +57,27 @@ export const localizedListSchema = (locale: Locale, priceView?: 'usd') => ({
     return result;
   },
 });
+/** Explicit card projection rejects descriptions, full galleries and all detail-only collections. */
+export const localizedCardListSchema = (locale: Locale, priceView?: 'usd') => ({
+  parse(value: unknown) {
+    const result = PublicVehicleCardListSchema.parse(value);
+    for (const vehicle of result.data.items) {
+      validateCard(vehicle, locale, priceView);
+    }
+    return result;
+  },
+});
+function validateCard(vehicle: PublicVehicleCard, locale: Locale, priceView?: 'usd') {
+  if (!vehicle.display || vehicle.content.title.requestedLocale !== locale ||
+      vehicle.detailPath !== `/${locale}/cars/${vehicle.id}/` ||
+      Boolean(vehicle.displayPrice) !== (priceView === 'usd')) throw new Error('Localized card unavailable');
+  const { priceIncludes, mediaAlt, ...fields } = vehicle.display;
+  for (const field of [...Object.values(fields), ...priceIncludes.map(item => item.value),
+    ...mediaAlt.map(item => item.value), ...vehicle.images.flatMap(image => image.altText ? [image.altText] : []),
+    ...(vehicle.vehicleClass ? [vehicle.vehicleClass] : []), ...(vehicle.manufacture?.basis ? [vehicle.manufacture.basis] : [])]) {
+    if (field.requestedLocale !== locale) throw new Error('Localized card mismatch');
+  }
+}
 export const localizedHomeSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicHomeSectionsSchema.parse(value);

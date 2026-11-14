@@ -7,12 +7,8 @@ test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Requires the health-marked isola
 test.beforeEach(async ({ request }) => { await resetPublicFixture(request); });
 test.afterEach(async ({ request }) => { await resetPublicFixture(request); });
 
-const inspectionTitles = { zh: '车辆检测信息', en: 'Vehicle inspection details', ru: 'Данные осмотра автомобиля' };
-const reportNotices = {
-  zh: '详细报告请联系销售人员获取',
-  en: 'Contact our sales team for the detailed report',
-  ru: 'Для получения подробного отчёта свяжитесь с отделом продаж',
-};
+const inspectionTitles = { zh: '车辆检测报告', en: 'Vehicle inspection report', ru: 'Отчёт об осмотре автомобиля' };
+const openReport = { zh: '查看检测报告', en: 'View inspection report', ru: 'Посмотреть отчёт об осмотре' };
 async function configurationFields(configuration: Locator) {
   return configuration.locator('[data-configuration-field]').evaluateAll((nodes) => nodes.map((node) => ({
     field: node.getAttribute('data-configuration-field'), text: node.textContent, lang: node.getAttribute('lang'),
@@ -39,22 +35,12 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await expect(page.locator('[data-history-kind="transfers"] dd')).toHaveText('0');
     const inspection = page.getByRole('region', { name: inspectionTitles[locale], exact: true });
     await expect(inspection).toBeVisible();
-    await expect(inspection).toContainText('Body inspection');
-    const checkCategory = inspection.locator('[data-inspection-check-category]').first();
-    await expect(checkCategory.locator('details').first()).not.toHaveAttribute('open');
-    await expect(inspection.locator('[data-inspection-check-item]')).toHaveCount(0);
-    await checkCategory.locator('[data-inspection-section="check-category"] > summary').click();
-    const group = checkCategory.locator('[data-inspection-check-group]').first();
-    await group.locator('[data-inspection-section="check-group"] > summary').click();
-    await expect(group.locator('[data-inspection-check-item]')).toHaveCount(2);
-    await expect(group.locator('[data-inspection-ok="false"]')).toBeVisible();
-    await expect(group.locator('[data-inspection-ok="unknown"]')).toBeVisible();
-    await expect(group).toContainText('Surface scratch observed');
-    const defectCategory = inspection.locator('[data-inspection-defect-category]').first();
-    await defectCategory.locator('[data-inspection-section="defect-category"] > summary').click();
-    await expect(defectCategory.locator('[data-inspection-defect-item]')).toHaveCount(1);
-    await defectCategory.locator('[data-inspection-section="defect-details"] > summary').click();
-    await expect(defectCategory).toContainText(locale === 'zh' ? '表面划痕说明' : 'Synthetic surface scratch description');
+    await expect(inspection).toHaveAttribute('data-report-status', 'unread');
+    await expect(inspection.locator('[data-public-inspection-item]')).toHaveCount(0);
+    await inspection.getByRole('button', { name: openReport[locale], exact: true }).click();
+    await expect(inspection).toHaveAttribute('data-report-status', 'available');
+    await expect(inspection.locator('[data-public-inspection-item]').first()).toBeVisible();
+    await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
     // A checked part and its defect count must never become historical accident events.
     await expect(page.locator('[data-history-kind="accidents"]')).toHaveCount(0);
     await expect(page.locator('main a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
@@ -104,42 +90,36 @@ test('a vehicle without configuration does not create a blank configuration card
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
   for (const [presence, inspectionMode] of [['known', 'empty'], ['known', 'structured'], ['false', 'structured'], ['absent', 'structured']] as const) {
-    test(`${locale}: ${presence}/${inspectionMode} reports offer sales contact solely from the published existence fact`, async ({ page, request }) => {
+    test(`${locale}: ${presence}/${inspectionMode} reports use the bounded public projection without a sales-contact gate`, async ({ page, request }) => {
       await setPublicFixtureState(request, { importedPublished: true, inspectionMode, reportPresenceMode: presence });
       await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
       const id = externalFixtureId(1);
-      const api = await request.get(`/api/v1/vehicles/${id}/?locale=${locale}&view=localized`);
+      const api = await request.get(`/api/v1/vehicles/${id}/inspection/?locale=${locale}&limit=50`);
       expect(api.status()).toBe(200);
       const body = await api.json();
-      expect(body.data.report?.hasReport).toBe(presence === 'known' ? true : presence === 'false' ? false : undefined);
-      expect(JSON.stringify(body)).not.toContain('reports.example.invalid');
-      expect(body.data.external.detail.inspection.reportUrl).toBeNull();
-      if (inspectionMode === 'structured') expect(body.data.external.detail.inspection.reportAccess?.status).not.toBe('available');
+      expect(['available', 'no_report', 'unavailable', 'pending']).toContain(body.data.status);
+      expect(body.data.items.length).toBeLessThanOrEqual(50);
+      expect(JSON.stringify(body)).not.toMatch(/reports\.example\.invalid|PRIVATE_SELLER_SENTINEL|PRIVATE_RAW_MARKER/);
       const response = await page.goto(`/${locale}/cars/${id}/`);
       expect(await response!.text()).not.toContain('reports.example.invalid');
-      const notice = page.locator('[data-vehicle-report-request]');
-      if (presence === 'known') {
-        await expect(notice.getByRole('heading', { name: reportNotices[locale], exact: true })).toBeVisible();
-        const contacts = notice.locator('[data-vehicle-report-contacts] a');
-        await expect(contacts).toHaveCount(2);
-        for (const link of await contacts.all()) {
-          const url = new URL((await link.getAttribute('href'))!);
-          expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
-          expect(url.searchParams.get('text')).toContain('EXT-000001');
-          expect(url.searchParams.get('text')).toContain(`/${locale}/cars/${id}/`);
-        }
-      } else await expect(notice).toHaveCount(0);
+      const section = page.locator('[data-public-vehicle-inspection]');
+      await expect(section).toHaveAttribute('data-report-status', 'unread');
+      await section.getByRole('button', { name: openReport[locale], exact: true }).click();
+      await expect(section).toHaveAttribute('data-report-status', body.data.status);
+      await expect(section.locator('[data-public-inspection-item]')).toHaveCount(body.data.status === 'available' ? body.data.items.filter((item: { name: { status: string } }) => item.name.status === 'ready').length : 0);
+      await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
       await expect(page.locator('main a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
-      if (inspectionMode === 'structured') await expect(page.getByRole('region', { name: inspectionTitles[locale], exact: true })).toBeVisible();
     });
   }
 }
 
-test('a bound staff vehicle can offer the report enquiry without external inspection content', async ({ page, request }) => {
+test('a staff vehicle uses the report endpoint without requiring an external listing', async ({ page, request }) => {
   await setPublicFixtureState(request, { reportPresenceMode: 'known' });
   await page.goto('/en/cars/fixture_car_1/');
-  await expect(page.locator('[data-vehicle-report-request]')).toContainText(reportNotices.en);
-  await expect(page.getByRole('region', { name: inspectionTitles.en, exact: true })).toHaveCount(0);
+  const inspection = page.locator('[data-public-vehicle-inspection]');
+  await inspection.getByRole('button', { name: openReport.en, exact: true }).click();
+  await expect(inspection).toHaveAttribute('data-report-status', 'available');
+  await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
   await expect(page.locator('main a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
 });
 
@@ -167,7 +147,7 @@ for (const mode of ['wrong_name_locale', 'wrong_value_locale'] as const) {
 }
 
 for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const) {
-  test(`${locale}: without JavaScript the bounded inspection summary stays readable and deeper content explains its requirement`, async ({ browser, request, baseURL }) => {
+  test(`${locale}: without JavaScript initial parameters stay readable and report loading explains its requirement`, async ({ browser, request, baseURL }) => {
     await setPublicFixtureState(request, { importedPublished: true, configurationMode: 'ready', inspectionMode: 'large', reportPresenceMode: 'known' });
     const context = await browser.newContext({ javaScriptEnabled: false, baseURL, viewport: { width, height: 1000 } });
     try {
@@ -175,47 +155,31 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
       await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
       await page.goto(`/${locale}/cars/${externalFixtureId(1)}/`);
       await expect(page.locator('[data-vehicle-configuration]')).toContainText('1989');
-      await expect(page.locator('[data-vehicle-report-request]')).toContainText(reportNotices[locale]);
       const inspection = page.getByRole('region', { name: inspectionTitles[locale], exact: true });
       await expect(inspection).toBeVisible();
-      await expect(inspection).toContainText('Inspection summary 1');
-      await expect(inspection.locator('[data-inspection-check-category]')).toHaveCount(6);
+      await expect(inspection.locator('[data-public-inspection-item]')).toHaveCount(0);
       await expect(inspection.locator('button')).toHaveCount(0);
-      const category = inspection.locator('[data-inspection-check-category]').first();
-      await category.locator('summary').click();
-      await expect(category.getByText(/JavaScript/)).toBeVisible();
-      await expect(inspection.locator('[data-inspection-check-item]')).toHaveCount(0);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-      await setPublicFixtureState(request, { inspectionMode: 'legacy-large' });
-      await page.reload();
-      await expect(inspection.locator('[data-inspection-check-category]')).toHaveCount(0);
-      await expect(inspection).toContainText('Inspection summary 6');
-      await expect(inspection).not.toContainText('Inspection summary 7');
       await expect(inspection.getByText(/JavaScript/)).toBeVisible();
-      await expect(inspection.getByText(/JavaScript/)).toContainText('(2)');
-      await expect(inspection.locator('button')).toHaveCount(0);
+      await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
+      const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
+      expect(events.requests.filter((event: { path: string }) => /\/(inspection|configuration)$/.test(event.path))).toHaveLength(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     } finally { await context.close(); }
   });
 }
 
-test('large inspection content expands in bounded category and item batches', async ({ page, request }) => {
-  await setPublicFixtureState(request, { importedPublished: true, inspectionMode: 'large' });
+test('large inspection content loads only a bounded requested page', async ({ page, request }) => {
+  await setPublicFixtureState(request, { importedPublished: true, inspectionMode: 'large', reportPresenceMode: 'known' });
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
   await page.goto(`/en/cars/${externalFixtureId(1)}/`);
   const inspection = page.getByRole('region', { name: inspectionTitles.en, exact: true });
-  const categories = inspection.locator('[data-inspection-check-category]');
-  await expect(categories).toHaveCount(6);
-  await expect(inspection.locator('[data-inspection-check-item]')).toHaveCount(0);
-  const first = categories.first();
-  await first.locator('[data-inspection-section="check-category"] > summary').click();
-  const group = first.locator('[data-inspection-check-group]').first();
-  await group.locator('[data-inspection-section="check-group"] > summary').click();
-  await expect(group.locator('[data-inspection-check-item]')).toHaveCount(12);
-  await group.locator('button').click();
-  await expect(group.locator('[data-inspection-check-item]')).toHaveCount(24);
-  await expect(group.locator('button')).toHaveCount(0);
-  const checks = inspection.getByRole('region', { name: 'Inspection checks', exact: true });
-  await checks.locator(':scope > button').click();
-  await expect(categories).toHaveCount(8);
-  await expect(checks.locator(':scope > button')).toHaveCount(0);
+  await expect(inspection.locator('[data-public-inspection-item]')).toHaveCount(0);
+  const loaded = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/inspection/'));
+  await inspection.getByRole('button', { name: openReport.en, exact: true }).click();
+  const body = await (await loaded).json();
+  expect(body.data.items.length).toBeGreaterThan(0);
+  expect(body.data.items.length).toBeLessThanOrEqual(50);
+  await expect(inspection.locator('[data-public-inspection-item]')).toHaveCount(body.data.items.filter((item: { name: { status: string } }) => item.name.status === 'ready').length);
+  const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
+  expect(events.requests.filter((event: { path: string }) => event.path.endsWith('/inspection'))).toHaveLength(1);
 });

@@ -1,0 +1,17 @@
+[Unit]
+Description=HD Auto daily compressed recovery point
+Requires=docker.service
+After=docker.service
+RequiresMountsFor=/srv/hd-auto/data /srv/hd-auto/backups /srv/hd-auto/staging /srv/hd-auto/secrets
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/hd-auto/staging/ext07/current-source/deploy/runtime/production/routine-backup.py --config /srv/hd-auto/secrets/ext07/backup.json
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=512M
+TasksMax=128
+TimeoutStartSec=2h

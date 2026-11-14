@@ -8,7 +8,7 @@ import {
   legacyListSchema,
   legacyVehicleSchema,
   localizedHomeSchema,
-  localizedListSchema,
+  localizedCardListSchema,
   localizedVehicleSchema,
 } from '../localized-projection';
 export { parseCatalogQuery, parseCatalogPageQuery } from '../public-query';
@@ -96,7 +96,7 @@ export function getPublicFilters(locale: Locale, scope?: UsdFilterScope) {
 export function getPublicCatalog(query: PublicVehicleQuery) {
   return readPublicJson(
     `/api/v1/vehicles?${queryString(publicUsdCatalogQuery(query))}`,
-    localizedListSchema(query.locale, 'usd'),
+    localizedCardListSchema(query.locale, 'usd'),
   );
 }
 /** Keep sitemap traversal on the bounded editorial catalog when localized browsing includes imports. */

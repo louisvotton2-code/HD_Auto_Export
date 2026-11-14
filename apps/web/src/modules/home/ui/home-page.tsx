@@ -18,6 +18,7 @@ import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
+import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { HeroCanvas } from './hero-canvas';
@@ -143,7 +144,7 @@ function VehicleRail({
                   <h3 lang={lang} title={name}>{name}</h3>
                   <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
                   <p className={styles.stockCode}>
-                    {vehicleCopy.stockCodeLabel}: {v.stockCode}
+                    {vehicleCopy.stockCodeLabel}: {publicVehicleReference(v).code}{publicVehicleReference(v).source ? ` · ${publicVehicleReference(v).source}` : ''}
                   </p>
                   {trusted && v.availability !== 'unknown' && (
                     <p className={styles.availability} data-availability={v.availability}>

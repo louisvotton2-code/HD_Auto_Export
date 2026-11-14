@@ -218,8 +218,10 @@ const ingestionJob: NonNullable<ExternalIngestionStatus['latestJob']> = {
 test('activity fixed import status keeps raw canonical public and received applied counts distinct', async ({ page }) => {
   await installApi(page, { permissions: ['vehicles:read'] });
   await page.route('**/api/v1/admin/external/ingestion-status', route => reply(route, envelope({ mode: 'fixed_once', continuous: false, latestJob: ingestionJob })));
-  await page.goto('/admin/external-sources');
-  const card = page.locator('.ant-card').filter({ has: page.getByText('正式车源导入与同步', { exact: true }) });
+  await page.route('**/api/v1/admin/external/status', route => reply(route, envelope({ catalogRevision: '1', sync: 'manual_import_only', translation: 'dry_run', lastBatch: null, batchCharacterLimit: 100000, accountFreeRemaining: null })));
+  await page.route('**/api/v1/admin/external/batches?*', route => reply(route, envelope({ items: [], total: 0, page: 1, pageSize: 25 })));
+  await page.goto('/admin/external-sources/batches');
+  const card = page.locator('.ant-card').filter({ has: page.getByText('历史固定名单导入任务', { exact: true }) });
   await expect(card.getByText('已暂停，待处理', { exact: true })).toBeVisible();
   await expect(card.getByText('持续调度关闭', { exact: true })).toBeVisible();
   for (const value of ['345', '300', '298', '12', '7', '18', '2', '0']) await expect(card.getByText(value, { exact: true })).toBeVisible();

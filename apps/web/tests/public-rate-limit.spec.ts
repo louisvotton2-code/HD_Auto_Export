@@ -71,11 +71,14 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
       page.on('request', collect);
       try {
         const limitedResponse = page.waitForResponse((response) => pathOf(response.url()) === '/api/v1/vehicles');
+        // The first submit also refreshes facets when the explicit default export scope is added.
+        const initialFacets = page.waitForResponse((response) => pathOf(response.url()) === '/api/v1/vehicle-filters');
         await form.locator('[type="submit"]').last().click();
         const response = await limitedResponse;
         const limitedAt = Date.now();
         expect(response.status()).toBe(429);
         expect(response.headers()['retry-after']).toBe('2');
+        expect((await initialFacets).status()).toBe(200);
         await expect(current).toHaveAttribute('data-freshness', 'error');
         const status = current.getByTestId('public-resource-status');
         await expect(status).toContainText(scenario.rateMessage);
@@ -85,6 +88,9 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
         const retry = status.getByRole('button');
         await expect(retry).toBeVisible();
         const scroll = await page.evaluate(() => scrollY);
+        const businessUrls = () => outgoing.filter(isBusiness).map((entry) => entry.url());
+        const initialBusiness = businessUrls();
+        expect(initialBusiness.map(pathOf).sort()).toEqual(['/api/v1/vehicle-filters', '/api/v1/vehicles']);
 
         // Recovery of the fixture alone must not bypass the browser's retained Retry-After.
         await setRateLimited(request, false);
@@ -93,7 +99,7 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
         // An explicit DOM event also checks the guard if a UI variant leaves retry enabled.
         await retry.dispatchEvent('click');
         await page.waitForTimeout(180);
-        expect(outgoing.filter(isBusiness)).toHaveLength(1);
+        expect(businessUrls()).toEqual(initialBusiness); // Neither lists nor facets may add a cooldown request.
         await expect(current).toHaveAttribute('data-freshness', 'error');
         await expect(status).toContainText(scenario.rateMessage);
         await expect(page.locator('main')).toBeVisible();
@@ -106,14 +112,14 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
         await expect(form.locator('select[name="powertrain"]')).toHaveValue('bev');
 
         await page.waitForTimeout(Math.max(0, 2150 - (Date.now() - limitedAt)));
-        expect(outgoing.filter(isBusiness)).toHaveLength(1); // No automatic request at expiry.
+        expect(businessUrls()).toEqual(initialBusiness); // No automatic list or facet request at expiry.
         const recovered = page.waitForResponse((entry) => pathOf(entry.url()) === '/api/v1/vehicles' && entry.status() === 200);
         await retry.click();
-        await recovered;
+        const recoveredResponse = await recovered;
         await expect(current).toHaveAttribute('data-freshness', 'fresh');
         expect(await contacts(current).count()).toBeGreaterThan(0);
         await expect(status).not.toBeVisible();
-        expect(outgoing.filter(isBusiness)).toHaveLength(2);
+        expect(businessUrls()).toEqual([...initialBusiness, recoveredResponse.url()]); // Exactly one explicit recovery read.
         expect(outgoing.filter((entry) => entry.resourceType() === 'document' || entry.headers().rsc === '1')).toHaveLength(0);
       } finally { page.off('request', collect); }
     });

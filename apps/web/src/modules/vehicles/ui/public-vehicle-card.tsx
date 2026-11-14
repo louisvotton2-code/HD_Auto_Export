@@ -1,5 +1,6 @@
 'use client';
-import type { PublicVehicle } from '@hd/contracts/public';
+import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
+import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import type { Locale } from '@/i18n/routing';
 import type { PointerTiltHandlers } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
@@ -21,7 +22,7 @@ export function PublicVehicleCard({
   locale,
   pointerTilt,
 }: {
-  vehicle: PublicVehicle;
+  vehicle: PublicVehicleSummary;
   locale: Locale;
   pointerTilt: PointerTiltHandlers;
 }) {
@@ -65,7 +66,7 @@ export function PublicVehicleCard({
           </h2>
           <p className={styles.make}>{vehicle.facts.make?.name ?? t.unknown}</p>
           <p className={styles.stockCode}>
-            {t.stockCodeLabel}: <bdi>{vehicle.stockCode}</bdi>
+            {t.stockCodeLabel}: <bdi>{publicVehicleReference(vehicle).code}</bdi>{publicVehicleReference(vehicle).source ? ` · ${publicVehicleReference(vehicle).source}` : ''}
           </p>
           {availability && (
             <p className={styles.status} data-availability={vehicle.availability}>

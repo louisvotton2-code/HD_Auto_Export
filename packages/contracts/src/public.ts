@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import {VehicleIdentifiersSchema,ManufactureEvidenceSchema,ExportStatusSchema,PublicInspectionEntrySchema,PublicPriceHistoryEntrySchema} from './catalog-enhancements.js';
+export * from './catalog-enhancements.js';
 import { ConfigurationDisplaySchema } from './configuration-display.js';
 import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from './catalog-cache.js';
 export * from './catalog-cache.js';
@@ -62,6 +64,8 @@ export type PublicUsdPrice=z.infer<typeof PublicUsdPriceSchema>;
 export const PublicVehicleSchema = z.strictObject({
   id: IdSchema,
   stockCode: z.string().min(1).max(60),
+  identifiers:VehicleIdentifiersSchema.optional(),manufacture:ManufactureEvidenceSchema.optional(),
+  exportStatus:ExportStatusSchema.optional(),vehicleClass:DisplayTextSchema.nullable().optional(),
   source: SourceSchema,
   facts: VehicleFactsSchema.extend({generation:NamedValueSchema.nullable().optional(),drivetrain:DrivetrainSchema.nullable().optional()}),
   display:VehicleDisplaySchema.optional(),
@@ -132,6 +136,8 @@ const catalogQueryFields={
   yearMin:z.number().int().min(1886).max(9999).optional(),yearMax:z.number().int().min(1886).max(9999).optional(),
   powertrain: PowertrainSchema.optional(),
   q: SearchTextSchema.optional(),
+  exportStatus:z.enum(['all','eligible','restricted','unknown']).optional(),
+  sort:z.enum(['newest','price_asc','price_desc','mileage_asc','year_desc']).optional(),
 };
 const cents=(value:string)=>{const [whole,fraction='']=value.split('.');return BigInt(whole!)*100n+BigInt(fraction.padEnd(2,'0'));};
 function validateCatalogQuery(value:z.infer<z.ZodObject<typeof catalogQueryFields>>,ctx:z.RefinementCtx) {
@@ -145,6 +151,7 @@ function validateCatalogQuery(value:z.infer<z.ZodObject<typeof catalogQueryField
 }
 export const PublicCatalogCursorSchema = z.string().min(1).max(2048).regex(/^[A-Za-z0-9_-]+$/);
 export const PublicVehicleQuerySchema = z.strictObject({...catalogQueryFields,
+  projection:z.literal('card').optional(),
   cursor:PublicCatalogCursorSchema.optional(),pagination:z.literal('cursor').optional(),
   page:z.number().int().min(1).max(1_000_000).default(1),pageSize:z.number().int().min(1).max(48).default(24),
 }).superRefine((value,ctx)=>{
@@ -184,6 +191,18 @@ export const PublicVehicleListSchema = z.strictObject({
   meta: CatalogMetaSchema,
 });
 export type PublicVehicleList = z.infer<typeof PublicVehicleListSchema>;
+/** Explicit projection=card: no descriptions, configuration, reports or full galleries. */
+export const PublicVehicleCardSchema=z.strictObject({
+ id:IdSchema,stockCode:PublicVehicleSchema.shape.stockCode,source:SourceSchema,
+ identifiers:VehicleIdentifiersSchema.optional(),manufacture:ManufactureEvidenceSchema.optional(),exportStatus:ExportStatusSchema.optional(),vehicleClass:DisplayTextSchema.nullable().optional(),
+ facts:PublicVehicleSchema.shape.facts,display:VehicleDisplaySchema.optional(),price:PublicPriceSchema,displayPrice:PublicUsdPriceSchema.optional(),
+ content:z.strictObject({title:PublicTextSchema}),images:z.array(PublicMediaSchema).max(1),availability:AvailabilitySchema,availabilityCheckedAt:TimestampSchema.nullable(),
+ sourceUpdatedAt:TimestampSchema.nullable(),fetchedAt:TimestampSchema.nullable(),publishedAt:TimestampSchema,detailPath:PublicVehicleSchema.shape.detailPath,
+});
+export type PublicVehicleCard=z.infer<typeof PublicVehicleCardSchema>;
+export const PublicVehicleCardListSchema=PublicVehicleListSchema.extend({data:PublicVehicleListSchema.shape.data.extend({items:z.array(PublicVehicleCardSchema).max(48)})});
+export type PublicVehicleCardList=z.infer<typeof PublicVehicleCardListSchema>;
+
 
 export const PublicHomeSectionSchema = z.strictObject({
   id: IdSchema, title: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'), vehicles: z.array(PublicVehicleSchema).min(1).max(30),
@@ -226,3 +245,8 @@ export const PublicVehicleConfigurationResponseSchema = responseSchema(z.strictO
   ...segmentFields, items: z.array(PublicConfigurationEntrySchema).max(100),
 }));
 export type PublicVehicleConfigurationResponse = z.infer<typeof PublicVehicleConfigurationResponseSchema>;
+
+export const PublicVehicleInspectionResponseSchema=responseSchema(z.strictObject({...segmentFields,status:z.enum(['available','no_report','unavailable','pending']),items:z.array(PublicInspectionEntrySchema).max(100)}));
+export type PublicVehicleInspectionResponse=z.infer<typeof PublicVehicleInspectionResponseSchema>;
+export const PublicVehiclePriceHistoryResponseSchema=responseSchema(z.strictObject({...segmentFields,items:z.array(PublicPriceHistoryEntrySchema).max(100)}));
+export type PublicVehiclePriceHistoryResponse=z.infer<typeof PublicVehiclePriceHistoryResponseSchema>;

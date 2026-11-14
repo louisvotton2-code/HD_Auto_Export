@@ -1,10 +1,9 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
 import { ExternalProviderStatusResponseSchema, type ExternalProviderAccount } from '@hd/contracts/admin';
 import { formatTime } from '../vehicles/draft-form';
 import { externalRoot, platformName } from './external-labels';
-import { IngestionStatusCard } from './ingestion-status-card';
+import { FullSyncStatusCard } from './full-sync-status-card';
 import { ResourceContent } from './resource-content';
 import { useExternalResource } from './use-external-resource';
 import styles from './external-sources.module.css';
@@ -20,7 +19,6 @@ const accountLabels: Record<ExternalProviderAccount['state'], string> = {
 };
 
 export function ExternalStatusPage() {
-  const [refresh, setRefresh] = useState(0);
   const resource = useExternalResource(`${externalRoot}/provider-status`, ExternalProviderStatusResponseSchema);
   const status = resource.data?.data;
   const account = status?.account;
@@ -29,11 +27,11 @@ export function ExternalStatusPage() {
     <header className={styles.heading}>
       <Typography.Title level={2}>三方 API 状态</Typography.Title>
       <Space wrap>
-        <Button onClick={() => { resource.reload(); setRefresh(value => value + 1); }} loading={resource.loading}>刷新状态</Button>
+        <Button onClick={resource.reload} loading={resource.loading}>刷新账户状态</Button>
         <Link to="/external-sources/batches">历史导入批次</Link>
       </Space>
     </header>
-    <IngestionStatusCard key={refresh} />
+    <FullSyncStatusCard />
     <ResourceContent {...resource} retry={resource.reload}>
       {status && account && <>
         <Card title="ChinaCarAPI">

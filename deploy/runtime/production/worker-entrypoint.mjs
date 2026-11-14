@@ -9,7 +9,7 @@ export function workerEnvironment(input, password, uid = process.getuid?.()) {
     throw new Error('Worker requires an explicit production release');
   }
   if (input.EXTERNAL_SYNC_MODE !== 'off' || input.TRANSLATION_PROVIDER !== 'disabled') {
-    throw new Error('Continuous sync and translation must be disabled');
+    throw new Error('Legacy synthetic sync and translation must be disabled');
   }
   if (!password || /[\u0000\r\n]/.test(password)) throw new Error('Invalid database secret');
   const {database, user} = deploymentDatabaseIdentity(input.HD_DATABASE_NAME);
@@ -19,6 +19,12 @@ export function workerEnvironment(input, password, uid = process.getuid?.()) {
 }
 
 export function workerInvocation(args) {
+  if (args[0] === 'full-sync') {
+    if (!['configure', 'run', 'serve', 'status', 'control', 'archive-pin', 'archive-release'].includes(args[1])) {
+      throw new Error('Full sync requires an explicit supported operation');
+    }
+    return {argv: ['dist/external/full-sync/cli.js', ...args.slice(1)], formalFx: false, fullSync: true};
+  }
   if (['fx-refresh', 'fx-health'].includes(args[0])) {
     if (args.length !== 1) throw new Error('Formal FX operation accepts no extra arguments');
     return {argv: ['dist/external/fx-cli.js', args[0] === 'fx-refresh' ? '--formal-refresh' : '--formal-health'], formalFx: true};
@@ -31,6 +37,9 @@ export async function main(args = process.argv.slice(2)) {
   const operation = workerInvocation(args);
   const {readLocalSecret} = await import('/app/apps/api/dist/local-secrets.js');
   const env = workerEnvironment(process.env, readLocalSecret('/run/secrets/app_db_password'));
+  if (operation.fullSync && env.FULL_SYNC_ARCHIVE_ROOT !== '/private/full-sync') {
+    throw new Error('Full sync requires the dedicated persistent archive mount');
+  }
   if (operation.formalFx) {
     env.EXTERNAL_CATALOG_MODE = 'disabled';
     env.EXTERNAL_FX_NETWORK = 'enabled';

@@ -3,7 +3,7 @@ export const languageLabels = { zh: '中文', en: '英文', ru: '俄文' };
 export const fieldLabels: Record<string, string> = {
   make: '品牌', model: '车型', trim: '配置', generation: '代际', modelYear: '年款',
   manufacturedAt: '生产日期', firstRegistration: '首次登记', registrationStatus: '登记状态',
-  mileageKm: '里程', powertrain: '动力', engineCc: '排量', powerKw: '功率', body: '车身',
+  mileageKm: '里程', powertrain: '动力', engineCc: '排量', powerKw: '功率', powerHp: '原始马力（hp）', body: '车身',
   transmission: '变速箱', drivetrain: '驱动', location: '所在地', price: '价格',
   title: '标题', description: '描述', images: '图片', specifications: '规格',
   inspection: '检测', relatedListingUrls: '相关挂牌',

@@ -61,6 +61,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function CarPage({ params }: Props) {
   const { locale, slug, vehicle, retryAfter } = await load(params);
   setRequestLocale(locale);
+  // Resolve primary SSR content before returning; it must not require a client-side reveal.
   const t = await getTranslations({ locale, namespace: 'Countries' });
   const calculatorMessages = getVehicleCalculatorMessages(await getMessages());
   return (

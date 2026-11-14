@@ -3,6 +3,7 @@ import { makeExternalAdminFixture, makeExternalCandidateFixture, makeExternalImp
 import { ExternalBulkVisibilityRequestSchema, ExternalTrialRequestSchema, SaveExternalOverridesSchema, type ExternalProviderStatus } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, staff } from './api-fixture';
 import { select } from './ui-helpers';
+import { syncStatus } from './sync-fixture';
 
 const fixture = makeExternalAdminFixture();
 const { batch, records, listing, trial } = fixture;
@@ -25,6 +26,7 @@ async function setup(page: Page, role: 'admin' | 'editor' = 'editor') {
   await installApi(page);
   await page.route('**/api/v1/admin/me', route => reply(route, envelope({ ...staff, role })));
   await page.route(`**${root}/provider-status`, route => reply(route, envelope(providerStatus)));
+  await page.route(`**${root}/sync-status`, route => reply(route, envelope(syncStatus({ state: 'disabled', lastSuccessAt: null }))));
   await page.route(`**${root}/ingestion-status`, route => reply(route, envelope({ mode: 'fixed_once', continuous: false, latestJob: null })));
   await page.route(`**${root}/listings/overview*`, route => reply(route, envelope({
     total: 200, published: 170, hidden: 20, withdrawn: 10, platforms: ['dongchedi', 'che168'],
@@ -57,16 +59,17 @@ test('external provider status keeps account probe, local import and supplier ti
   await expect(page.getByRole('heading', { name: '三方 API 状态' })).toBeVisible();
   await expect(page.getByText('连接正常', { exact: true })).toBeVisible();
   await expect(page.getByText('Fixture Starter', { exact: true })).toBeVisible();
-  for (const value of ['懂车帝', '车168', '0']) await expect(page.getByText(value, { exact: true })).toBeVisible();
+  const accountCard = page.locator('.ant-card').filter({ has: page.getByText('ChinaCarAPI', { exact: true }) });
+  for (const value of ['懂车帝', '车168', '0']) await expect(accountCard.getByText(value, { exact: true })).toBeVisible();
   for (const time of ['11/11 10:00', '11/30 14:00', '11/10 13:00', '11/9 11:00', '11/8 09:00']) {
     await expect(page.getByText(new RegExp(time))).toBeVisible();
   }
-  await expect(page.getByText('持续调度关闭', { exact: true })).toBeVisible();
+  await expect(page.getByText('正式同步未启用', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '导入批次' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '测算试译用量' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: '历史导入批次' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
-  await page.getByRole('button', { name: '刷新状态' }).click();
+  await page.getByRole('button', { name: '刷新账户状态' }).click();
   await expect(page.getByText('未配置', { exact: true })).toHaveCount(1);
   await expect(page.getByText('尚未记录', { exact: true })).toHaveCount(2);
   await expect(page.getByText('Fixture Starter', { exact: true })).toHaveCount(0);

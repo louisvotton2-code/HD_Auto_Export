@@ -43,7 +43,7 @@ function actualText(value: unknown, hinted: Locale, limit: number): Tagged | nul
   const cyrillic = /\p{Script=Cyrillic}/u.test(text);
   const markedPinyin = /\b(?:yongci|tongbu|fuzhubocheruwei|chukongyejingping|yaoshilei|zuoyi)\b/i.test(text);
   const contentLocale = han && !cyrillic ? 'zh' : cyrillic && !han && hinted === 'ru' ? 'ru' :
-    !han && !cyrillic && hinted === 'en' && /[A-Za-z]/.test(text) && !markedPinyin ? 'en' : 'und';
+    !han && !cyrillic && /[A-Za-z]/.test(text) && !markedPinyin ? 'en' : 'und';
   return { text, contentLocale };
 }
 
@@ -96,7 +96,7 @@ const bodies = new Map<string, NonNullable<Fact['body']>>([
 ]);
 function named(value: unknown, category: string) {
   const row = object(value);
-  const name = str(row.nameZh, 120) ?? str(row.name, 120);
+  const name = str(row.name, 120) ?? str(row.nameZh, 120);
   const id = IdSchema.safeParse(`cca-${category}-${String(row.id)}`);
   return name && id.success && (typeof row.id === 'string' || typeof row.id === 'number') && isPublicText(name) ? { id: id.data, name } : null;
 }

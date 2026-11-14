@@ -14,6 +14,15 @@ const current = (input: unknown, manualRates: unknown = false) => ({
 });
 
 describe('pure calculator draft restoration', () => {
+  it('retains the exact source range only in its own country draft and never restores guessed January', () => {
+    const input = { ...defaults, manufactureDate: '' };
+    const manufactureRange = { from: '2020-11', to: '2026-11' };
+    const raw = { current: JSON.stringify({ input, manualRates: false, manufactureRange }) };
+    expect(restoreCalculatorDraft(raw, ru, date, rates)).toMatchObject({ input, manufactureRange });
+    expect(restoreCalculatorDraft(raw, kg, date, rates)).not.toHaveProperty('manufactureRange');
+    const old = { current: JSON.stringify({ input: { ...defaults, manufactureDate: '2024-01' }, manufactureEstimate: 'model_year' }) };
+    expect(restoreCalculatorDraft(old, ru, date, rates).input.manufactureDate).toBe('');
+  });
   it('preserves explicit missing vehicle enums only in the current UI format', () => {
     const unknown = { ...defaults, powertrain: '', condition: '', steering: '' };
     expect(restoreCalculatorDraft(current(unknown), ru, date, rates).input)

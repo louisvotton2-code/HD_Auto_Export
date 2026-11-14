@@ -9,20 +9,21 @@ import styles from './public-vehicles.module.css';
 function PendingLabel({ locale }: { locale: Locale }) {
   const { pending } = useLinkStatus();
   return (
-    <span className={styles.linkPending} role="status">
-      {pending ? publicVehicleMessages(locale).loading : ''}
+    <span className={styles.linkPending} role="status" data-link-pending={pending || undefined}>
+      <span aria-hidden="true" className={styles.linkPendingDot} />
+      <span className={styles.srOnly}>{pending ? publicVehicleMessages(locale).loading : ''}</span>
     </span>
   );
 }
 
-/** Localized URLs already come from the public contract. Avoid stale prefetched inventory. */
+/** Inventory prefetch has a zero background budget; intent navigation gets immediate inline feedback. */
 export function PublicCatalogLink({
   locale,
   children,
   ...props
 }: Omit<ComponentProps<typeof Link>, 'children'> & { locale: Locale; children: ReactNode }) {
   return (
-    <Link {...props} prefetch={false}>
+    <Link {...props} scroll={props.scroll ?? true} prefetch={false}>
       {children}
       <PendingLabel locale={locale} />
     </Link>

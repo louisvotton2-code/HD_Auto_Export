@@ -10,7 +10,7 @@ test.afterEach(async ({ request }) => resetPublicFixture(request));
 const path = '/en/cars/fixture_car_3/';
 const gallery = (page: Page) => page.locator('[data-public-vehicle-gallery]');
 const inlineGallery = (page: Page) => gallery(page).locator('[data-public-gallery-pagination="inline"]');
-const configuration = (page: Page) => page.locator('[data-public-configuration-segment]');
+const configuration = (page: Page) => page.locator('[data-vehicle-configuration]');
 async function reads(request: APIRequestContext, kind: 'gallery' | 'configuration') {
   const response = await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`);
   expect(response.status()).toBe(200);
@@ -18,7 +18,6 @@ async function reads(request: APIRequestContext, kind: 'gallery' | 'configuratio
   expect(data.suite).toBe('hd-web-public-catalog-v1');
   return data.requests.filter((row: { path: string }) => row.path.endsWith(`/${kind}`));
 }
-const loadedConfiguration = async (page: Page) => Number(await configuration(page).locator('[data-configuration-loaded]').getAttribute('data-configuration-loaded'));
 
 test('full gallery replaces the old 30-photo preview, then reads the bounded final page', async ({ page, request }) => {
   await setPublicFixtureState(request, { segmentGalleryCount: 65, segmentFallback: true });
@@ -52,28 +51,23 @@ test('full gallery replaces the old 30-photo preview, then reads the bounded fin
   await page.keyboard.press('Escape');
 });
 
-test('configuration exceeds the old 500-item projection without duplicate rows or altered source values', async ({ page, request }) => {
+test('normal configuration retains the bounded seed and its source values without a complete-configuration request', async ({ page, request }) => {
   await setPublicFixtureState(request, { segmentConfigurationCount: 525, segmentFallback: true, segmentOverlap: true });
   await page.goto('/ru/cars/fixture_car_3/');
   await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(3);
   expect(await reads(request, 'configuration')).toHaveLength(0);
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-loaded]')).toHaveAttribute('data-configuration-loaded', '50');
-  for (let pageNumber = 0; pageNumber < 11 && await loadedConfiguration(page) < 525; pageNumber++) {
-    const previous = await loadedConfiguration(page);
-    await configuration(page).getByRole('button').click();
-    await expect.poll(() => loadedConfiguration(page)).toBeGreaterThan(previous);
-  }
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(525);
-  await expect(configuration(page).locator('[data-configuration-total]')).toHaveAttribute('data-configuration-total', '525');
+  await expect(configuration(page).getByRole('button')).toHaveCount(0);
+  await expect(page.locator('[data-public-configuration-segment]')).toHaveCount(0);
   const first = configuration(page).locator('[data-configuration-item="cfg-0001"]');
   await expect(first.locator('[data-configuration-field="name"]')).toHaveText('排量(cc)');
   await expect(first.locator('[data-configuration-field="name"]')).toHaveAttribute('lang', 'zh');
   await expect(first.locator('[data-configuration-field="value"]')).toHaveText('0 cm³ / 8 AT');
   await expect(configuration(page).locator('[data-configuration-item="cfg-0002"] [data-configuration-field="value"]')).toHaveText('0');
   await expect(configuration(page).locator('[data-configuration-item="cfg-0003"] [data-configuration-field="value"]')).toHaveText('false');
-  await expect(configuration(page).locator('[data-configuration-item="cfg-020d"] [data-configuration-field="value"]')).toHaveText('Value 525');
-  expect(await configuration(page).locator('[data-configuration-item]').evaluateAll(nodes => new Set(nodes.map(node => node.getAttribute('data-configuration-item'))).size)).toBe(525);
+  await configuration(page).locator('summary').first().click();
+  await configuration(page).locator('summary').first().click();
+  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(3);
+  expect(await reads(request, 'configuration')).toHaveLength(0);
 });
 
 test('a changed gallery cursor discards the old revision and restarts only on explicit action', async ({ page, request }) => {
@@ -107,36 +101,38 @@ test('withdrawal during a segment request removes the whole vehicle and its cons
   await expect(page.locator('main')).not.toContainText('Newly published vehicle');
 });
 
-test('429 cooldown and temporary segment failures retain valid rows and require manual retry', async ({ page, request }) => {
-  await setPublicFixtureState(request, { segmentConfigurationCount: 125 });
+test('429 cooldown and temporary gallery failures retain valid photos and require manual retry', async ({ page, request }) => {
+  await setPublicFixtureState(request, { segmentGalleryCount: 125 });
   await page.goto(path);
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-loaded]')).toHaveAttribute('data-configuration-loaded', '50');
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(50);
   await setPublicFixtureState(request, { segmentFailure: 'rate_limit' });
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).getByRole('button')).toBeDisabled();
-  const limitedReads = (await reads(request, 'configuration')).length;
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(inlineGallery(page).locator('[data-gallery-load-more]')).toBeDisabled();
+  const limitedReads = (await reads(request, 'gallery')).length;
   await page.waitForTimeout(2_150); // The fixture's Retry-After is exactly two seconds.
-  expect(await reads(request, 'configuration')).toHaveLength(limitedReads);
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(50);
+  expect(await reads(request, 'gallery')).toHaveLength(limitedReads);
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(50);
   await setPublicFixtureState(request, { segmentFailure: 'none' });
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-loaded]')).toHaveAttribute('data-configuration-loaded', '100');
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(100);
   await setPublicFixtureState(request, { segmentFailure: 'unavailable' });
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page)).toHaveAttribute('data-segment-phase', 'error');
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(100);
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(inlineGallery(page).getByRole('status')).toBeVisible();
+  await expect(inlineGallery(page).locator('[data-gallery-load-more]')).toBeEnabled();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(100);
   await setPublicFixtureState(request, { segmentFailure: 'none' });
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(125);
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(125);
+  expect(await reads(request, 'configuration')).toHaveLength(0);
 });
 
 test('a delayed old segment cannot append after same-document history or language navigation', async ({ page, request }) => {
-  await setPublicFixtureState(request, { segmentConfigurationCount: 75 });
+  await setPublicFixtureState(request, { segmentGalleryCount: 75, segmentConfigurationCount: 75 });
   await page.goto(path);
   await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(50);
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(50);
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-segment-document-marker', 'same-document');
     history.pushState(null, '', '#segment-pending');
@@ -146,12 +142,12 @@ test('a delayed old segment cannot append after same-document history or languag
     if (request.isNavigationRequest() && request.resourceType() === 'document') documents.push(request.url());
   });
   await setPublicFixtureState(request, { segmentDelayMs: 1_200 });
-  const started = page.waitForRequest(request => /\/configuration\/?$/.test(new URL(request.url()).pathname) && new URL(request.url()).searchParams.has('cursor'));
-  await configuration(page).getByRole('button').click();
+  const started = page.waitForRequest(request => /\/gallery\/?$/.test(new URL(request.url()).pathname) && new URL(request.url()).searchParams.has('cursor'));
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
   const oldRequest = await started;
   // Wait until the upstream fixture has captured the old revision before changing it.
-  await expect.poll(async () => (await reads(request, 'configuration')).filter((row: { query: { cursor?: string } }) => row.query.cursor).length).toBe(1);
-  await setPublicFixtureState(request, { segmentConfigurationCount: 76, segmentRevision: 2, segmentDelayMs: 0 });
+  await expect.poll(async () => (await reads(request, 'gallery')).filter((row: { query: { cursor?: string } }) => row.query.cursor).length).toBe(1);
+  await setPublicFixtureState(request, { segmentGalleryCount: 76, segmentRevision: 2, segmentDelayMs: 0 });
   const aborted = page.waitForEvent('requestfailed', { predicate: request => request === oldRequest });
   const refreshed = page.waitForResponse(response => {
     const url = new URL(response.url());
@@ -160,23 +156,23 @@ test('a delayed old segment cannot append after same-document history or languag
   // Native same-document Back is an actual supported PublicNavigationFreshness trigger.
   await page.evaluate(() => history.back());
   const [, freshDetail] = await Promise.all([aborted, refreshed]);
-  expect((await freshDetail.json()).data.configurationTotal).toBe(76);
+  expect((await freshDetail.json()).data.mediaTotal).toBe(76);
   await expect(page.locator('html')).toHaveAttribute('data-segment-document-marker', 'same-document');
   expect(documents).toHaveLength(0);
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(3);
-  await expect(configuration(page).locator('[data-configuration-loaded]')).toHaveCount(0);
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(30);
   await page.waitForTimeout(1_250); // Outlast the old response while this document is still alive.
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(3);
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(50);
-  expect((await reads(request, 'configuration')).at(-1).query.cursor).toBeUndefined();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(30);
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(50);
+  expect((await reads(request, 'gallery')).at(-1).query.cursor).toBeUndefined();
 
   await page.goto('/ru/cars/fixture_car_4/');
   await expect(page.locator('[data-public-vehicle-detail]')).toHaveAttribute('data-public-vehicle-detail', 'fixture_car_4');
   await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(3);
-  await configuration(page).getByRole('button').click();
-  await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(50);
+  await inlineGallery(page).locator('[data-gallery-load-more]').click();
+  await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(50);
   expect(await configuration(page).locator('[data-configuration-field]').evaluateAll(nodes => nodes.every(node => node.getAttribute('data-requested-locale') === 'ru'))).toBe(true);
+  expect(await reads(request, 'configuration')).toHaveLength(0);
 });
 
 test('segment BFF validates scope and privacy instead of exposing private upstream fields', async ({ request }) => {
@@ -204,7 +200,7 @@ test('segment BFF validates scope and privacy instead of exposing private upstre
   }
 });
 
-test('three-language source fallback and USD remain consistent after segmented data is read', async ({ page, request }, testInfo) => {
+test('three-language source fallback and USD remain consistent in the normal configuration seed', async ({ page, request }, testInfo) => {
   await setPublicFixtureState(request, { importedPublished: true, segmentGalleryCount: 65, segmentConfigurationCount: 55, segmentFallback: true, reportPresenceMode: 'known' });
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
   await page.route('https://photos.example.invalid/**', route => route.fulfill({ contentType: 'image/png', body: image }));
@@ -216,23 +212,27 @@ test('three-language source fallback and USD remain consistent after segmented d
     await expect(page.locator('main [data-vehicle-original-price]').first()).toContainText('¥');
     await expect(page.locator('main [data-vehicle-usd-approx]').first()).toContainText('USD');
     await expect(page.locator('main a[href="https://www.exchangerate-api.com"]').filter({ visible: true }).first()).toBeVisible();
-    await configuration(page).getByRole('button').click();
-    await expect(configuration(page).locator('[data-configuration-item]')).toHaveCount(50);
-    await expect(configuration(page).locator('[data-configuration-item="cfg-0001"] [data-configuration-field="name"]')).toHaveAttribute('lang', 'zh');
+    const equipment = page.locator('[data-vehicle-equipment]');
+    await expect(equipment).toBeVisible();
+    await expect(equipment.locator('dl > div')).toHaveCount(3);
+    await expect(equipment.locator('dt[lang="zh"]').first()).toContainText('排量');
+    await expect(equipment.getByRole('button')).toHaveCount(0);
+    expect(await reads(request, 'configuration')).toHaveLength(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await inlineGallery(page).screenshot({ path: testInfo.outputPath(`gallery-controls-${locale}.png`) });
-    await configuration(page).locator(':scope > div').last().screenshot({ path: testInfo.outputPath(`configuration-controls-${locale}.png`) });
+    await equipment.screenshot({ path: testInfo.outputPath(`configuration-seed-${locale}.png`) });
     expect(await page.content()).not.toMatch(/PRIVATE_RAW_MARKER|PRIVATE_COST_SENTINEL|reports\.example\.invalid/);
     await setPublicFixtureState(request, { usdRateAvailable: false });
     await page.reload();
     await expect(page.locator('main [data-vehicle-usd-approx]')).toHaveCount(0);
     await expect(page.locator('main [data-vehicle-original-price]').first()).toContainText('¥');
   }
-  const list = await (await request.get('/api/v1/vehicles/?locale=en&view=localized&priceView=usd&pageSize=5')).json();
+  const list = await (await request.get('/api/v1/vehicles/?locale=en&view=localized&priceView=usd&projection=card&pageSize=5')).json();
   for (const row of list.data.items) {
     expect(row.configuration).toBeUndefined();
     expect(row.report).toBeUndefined();
     expect(row.external?.detail).toBeUndefined();
-    expect(row.images.length).toBeLessThanOrEqual(30);
+    expect(row.content.description).toBeUndefined();
+    expect(row.images.length).toBeLessThanOrEqual(1);
   }
 });

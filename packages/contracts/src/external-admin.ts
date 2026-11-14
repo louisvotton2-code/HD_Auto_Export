@@ -146,6 +146,7 @@ export const ExternalListingSchema = z.strictObject({
   vehicle: PublicVehicleSchema.nullable(),
   report: AdminReportSchema.optional(),
   activity: AdminActivitySummarySchema.optional(),
+  inquiryCode:z.string().min(1).max(400).optional(),
 });
 export type ExternalListing = z.infer<typeof ExternalListingSchema>;
 export const ExternalListingResponseSchema = responseSchema(ExternalListingSchema);
@@ -190,6 +191,7 @@ export const ExternalListingSummarySchema = ExternalIdentitySchema.extend({
   publishedAt: TimestampSchema.nullable(),
   hasOverrides: z.boolean(),
   activity: AdminActivitySummarySchema.optional(),
+  inquiryCode:z.string().min(1).max(400).optional(),
   facts: ExternalListingListFactsSchema.nullable().optional(),
 });
 export type ExternalListingSummary = z.infer<typeof ExternalListingSummarySchema>;
@@ -249,7 +251,7 @@ export const ExternalProviderAccountSchema = z.strictObject({
 export type ExternalProviderAccount = z.infer<typeof ExternalProviderAccountSchema>;
 export const ExternalProviderStatusSchema = z.strictObject({
   provider: z.literal('chinacarapi'),
-  worker: z.enum(['not_configured','fixed_once']),
+  worker: z.enum(['not_configured','fixed_once','full','continuous']),
   lastBatch: ExternalBatchSchema.nullable(),
   lastImportAt: TimestampSchema.nullable(),
   lastFetchedAt: TimestampSchema.nullable(),
@@ -281,3 +283,15 @@ export const ExternalSourceDocumentResponseSchema=responseSchema(ExternalSourceD
  payload:z.json(),rawText:z.string().nullable(),response:z.strictObject({hash:SourceHashSchema,shared:z.literal(true)}).nullable(),
 }));
 export type ExternalSourceDocumentSummary=z.infer<typeof ExternalSourceDocumentSummarySchema>;
+
+/** Formal full/continuous status; raw source text and provider credentials are excluded. */
+export const ExternalFullSyncStatusSchema=z.strictObject({
+ version:z.number().int().nonnegative(),mode:z.enum(['full','continuous']),state:z.enum(['disabled','idle','snapshot','syncing','paused','error','complete']),paused:z.boolean(),asOf:TimestampSchema,lastSuccessAt:TimestampSchema.nullable(),
+ lastError:z.strictObject({code:z.string().max(100),message:z.string().max(500),at:TimestampSchema}).nullable(),
+ counts:z.strictObject({raw:CountSchema,canonical:CountSchema,public:CountSchema,withdrawn:CountSchema,failed:CountSchema,pendingDetails:CountSchema,pendingLocales:CountSchema,pendingReports:CountSchema}),
+ snapshot:z.strictObject({id:z.uuid(),generatedAt:TimestampSchema.nullable(),rows:CountSchema,staged:CountSchema,complete:z.boolean()}).nullable(),receivedEvents:CountSchema,appliedEvents:CountSchema,nextRunAt:TimestampSchema.nullable(),
+});
+export type ExternalFullSyncStatus=z.infer<typeof ExternalFullSyncStatusSchema>;
+export const ExternalFullSyncStatusResponseSchema=responseSchema(ExternalFullSyncStatusSchema);
+export const ExternalFullSyncControlSchema=z.strictObject({version:z.number().int().nonnegative(),action:z.enum(['pause','resume'])});
+export type ExternalFullSyncControl=z.infer<typeof ExternalFullSyncControlSchema>;
