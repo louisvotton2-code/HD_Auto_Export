@@ -44,10 +44,22 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await expect(history).not.toContainText('0 / 18');
     const inspection = main.getByRole('region', { name: copy[locale].inspection, exact: true });
     await expect(inspection).toBeVisible();
-    const inspectLink = main.getByRole('link', { name: copy[locale].inspect, exact: true });
-    await expect(inspectLink).toHaveAttribute('href', `/${locale}/cars/${externalFixtureId(1)}/inspection/`);
-    await expect(inspectLink).toHaveAttribute('target', '_blank');
-    await expect(inspectLink).toHaveAttribute('rel', 'noopener noreferrer');
+    // The summary and sales sidebar intentionally offer separate report entry points.
+    const inspectLink = inspection.getByRole('link', { name: copy[locale].inspect, exact: true });
+    const sidebarLink = main.locator('aside').getByRole('link', { name: copy[locale].inspect, exact: true });
+    const reportPath = `/${locale}/cars/${externalFixtureId(1)}/inspection/`;
+    for (const link of [inspectLink, sidebarLink]) {
+      await expect(link).toHaveCount(1);
+      await expect(link).toBeVisible();
+      await expect(link).toHaveAttribute('href', reportPath);
+      await expect(link).toHaveAttribute('target', '_blank');
+      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    }
+    const [reportPage] = await Promise.all([page.waitForEvent('popup'), inspectLink.click()]);
+    try {
+      await expect(reportPage).toHaveURL(url => url.pathname === reportPath);
+      await expect(reportPage.locator(`[data-vehicle-inspection-page="${externalFixtureId(1)}"]`)).toBeVisible();
+    } finally { await reportPage.close(); }
     await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });
