@@ -26,10 +26,16 @@ function render(locale: Locale, disabled = false) {
 describe('detail calculator server enhancement boundary', () => {
   it.each(['zh', 'en', 'ru'] as Locale[])('keeps a native full-tool link and honest missing fields in %s SSR', (locale) => {
     const html = render(locale);
-    expect(html).toContain(`href="/${locale}/calculator/russia/"`);
+    expect(html).toContain(`href="/${locale}/calculator/"`);
     expect(html).toContain('data-testid="vehicle-full-calculator"');
     expect(html).not.toContain('#hd-estimate=');
     expect(html).not.toContain('data-testid="inline-estimate-total"');
+    expect(html).toContain('data-country-ready="false"');
+    expect(html).toContain('data-numeric-date="manufactureDate"');
+    expect(html).toContain('name="manufactureDateYear"');
+    expect(html).toContain('name="customsDateDay"');
+    expect(html).not.toContain('type="month"');
+    expect(html).not.toContain('type="date"');
     expect(html).toMatch(/name="powertrain"[^>]*><option value="" selected="">/);
     expect(html).toMatch(/name="manufactureDate" value=""/);
     expect(html).not.toContain(messages[locale].Calculator.manufactureYearEstimate.replace('{year}', '2024'));
@@ -44,6 +50,6 @@ describe('detail calculator server enhancement boundary', () => {
     expect(html).toContain('Vehicle details are unavailable.');
     expect(html).not.toContain('data-testid="inline-estimate-total"');
     expect(html).not.toContain('#hd-estimate=');
-    expect(html).toContain('href="/en/calculator/russia/"');
+    expect(html).toContain('href="/en/calculator/"');
   });
 });

@@ -9,6 +9,7 @@ const Env = z.object({
   HD_RELEASE_ID: z.string().regex(/^(?:[a-f0-9]{40,64}|sha256:[a-f0-9]{64})$/).optional(),
   HD_SSR_SERVICE_SECRET_FILE: z.string().min(1).max(1024).optional(),
   HD_SSR_SERVICE_PEERS: z.string().max(2048).optional(),
+  API_SERVING_MODE_FILE: z.string().refine(path.isAbsolute).optional(),
   HOST: z.string().default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3320),
   DATABASE_URL: z.string().url().refine((v) => /^postgres(?:ql)?:/.test(v)),
@@ -158,7 +159,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
     throw new Error('Invalid ChinaCarAPI account key');
   }
   return {
-    environment: e.NODE_ENV, deployment, ssrService, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
+    servingModeFile:e.API_SERVING_MODE_FILE, environment: e.NODE_ENV, deployment, ssrService, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
     trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog, externalScale,

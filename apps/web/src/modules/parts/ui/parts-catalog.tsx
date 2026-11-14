@@ -57,7 +57,7 @@ function PartsPagination({ locale, page }: { locale: Locale; page: number }) {
   } as const;
   return (
     <nav className={styles.pagination} aria-label={t.pagination}>
-      <button {...submitPage} value={page - 1} aria-label={t.previousPage} disabled={page === 1}>←</button>
+      <button {...submitPage} value={page - 1} aria-label={t.previousPage} disabled={page === 1}><Icon name="arrow-left" size={18} /></button>
       {pages.map((number, index) => (
         <Fragment key={number}>
           {index > 0 && number - pages[index - 1]! > 1 && <span aria-hidden="true">…</span>}
@@ -78,7 +78,7 @@ function PartsPagination({ locale, page }: { locale: Locale; page: number }) {
           )}
         </Fragment>
       ))}
-      <button {...submitPage} value={page + 1} aria-label={t.nextPage} disabled={page === catalogPageCount}>→</button>
+      <button {...submitPage} value={page + 1} aria-label={t.nextPage} disabled={page === catalogPageCount}><Icon name="arrow" size={18} /></button>
     </nav>
   );
 }
@@ -212,7 +212,7 @@ export function PartsCatalog({
                 <h3>{t.filters}</h3>
                 {query.subcategory && <input type="hidden" name="subcategory" value={query.subcategory} />}
                 <details className={styles.filterGroup} open>
-                  <summary>{t.brand}<span aria-hidden="true">⌃</span></summary>
+                  <summary>{t.brand}<span aria-hidden="true"><Icon name="chevron-up" size={16} /></span></summary>
                   <fieldset aria-label={t.brand}>
                     {catalogBrandFilters.map((brand) => (
                       <label key={brand.id}>
@@ -223,7 +223,7 @@ export function PartsCatalog({
                   </fieldset>
                 </details>
                 <details className={styles.filterGroup} open>
-                  <summary>{t.category}<span aria-hidden="true">⌃</span></summary>
+                  <summary>{t.category}<span aria-hidden="true"><Icon name="chevron-up" size={16} /></span></summary>
                   <fieldset aria-label={t.category}>
                     {catalogCategoryFilters.map((category) => (
                       <label key={category.id} aria-disabled={category.count === 0 ? true : undefined}>
@@ -240,7 +240,7 @@ export function PartsCatalog({
                   </fieldset>
                 </details>
                 <details className={styles.filterGroup} open>
-                  <summary>{t.price}<span aria-hidden="true">⌃</span></summary>
+                  <summary>{t.price}<span aria-hidden="true"><Icon name="chevron-up" size={16} /></span></summary>
                   <fieldset aria-label={t.price}>
                     <div className={styles.priceRange}>
                       <input name="min" inputMode="decimal" defaultValue={query.min} placeholder="0" aria-label={t.min} />

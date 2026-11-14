@@ -1,3 +1,4 @@
+import {changeBackupLease} from '../src/backup-lease.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';
@@ -23,6 +24,10 @@ test('archive maintenance resumes keyset batches beyond a pinned prefix and reta
   await db.pool.query(`INSERT INTO external_source_responses(document_id,response_hash,observed_at) VALUES($1,$2,'2001-01-01'),($1,$3,'2001-01-01'),($1,$4,now()-interval '1 minute'),($1,$5,now())`,[id(1001),...rows.slice(1001,1005).map(r=>r.hash)]);
   await db.pool.query(`INSERT INTO external_trim_documents(provider,trim_id,locale,hash,last_observed_at) VALUES('chinacarapi','trim-1','en',$1,'2001-01-01'),('chinacarapi','trim-1','en',$2,'2001-01-01'),('chinacarapi','trim-1','en',$3,now()-interval '1 minute'),('chinacarapi','trim-1','en',$4,now())`,rows.slice(1005,1009).map(r=>r.hash));
   await db.pool.query("INSERT INTO external_source_blob_refs(hash,kind,reference) VALUES($1,'pending','report-pending'),($2,'backup','trim-backup')",[rows[1002]!.hash,rows[1006]!.hash]);
+  await changeBackupLease(db,'acquire','backup:test:raw-history');
+  const paused=await runSourceMaintenance(db);assert.equal(paused.segments,0);assert.equal(paused.deleted,0);
+  assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM external_source_documents')).rows[0].n,1001);
+  await changeBackupLease(db,'release','backup:test:raw-history');
   const first=await runSourceMaintenance(db);assert.equal(first.segments,4);assert.equal(first.visited,800);assert.equal(first.deleted,797);
   const saved=(await db.pool.query('SELECT phase,cursor FROM external_source_maintenance WHERE id=1')).rows[0];assert.equal(saved.phase,'documents');assert.equal(saved.cursor.id,id(800));
   // A new invocation resumes the database checkpoint; no process-local continuation is required.

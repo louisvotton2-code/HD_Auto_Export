@@ -37,6 +37,9 @@
   margin-top: 8px;
 }
 .catalogLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   color: var(--gray);
   white-space: nowrap;
@@ -141,6 +144,9 @@
   line-height: 20px;
 }
 .modelMore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--copper);
 }
@@ -173,6 +179,8 @@
 }
 .modelPrevious,
 .modelNext {
+  display: grid;
+  place-items: center;
   width: 24px;
   height: 24px;
   border: 1px solid #b6774926;
@@ -514,6 +522,8 @@
   font-size: 14px;
 }
 .dialogToolbar button {
+  display: grid;
+  place-items: center;
   background: transparent;
   font-size: 24px;
   color: #ccc;
@@ -589,6 +599,9 @@
   margin-top: 16px;
 }
 .countries a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
   line-height: 16px;
   padding: 4px 8px;

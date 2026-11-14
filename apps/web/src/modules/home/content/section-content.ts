@@ -1,4 +1,5 @@
 import type { Locale } from '@/i18n/routing';
+import type { DestinationCountryCode } from '@/shared/lib/destination-country';
 
 type SectionCopy = {
   popular: string;
@@ -29,7 +30,7 @@ type SectionCopy = {
   calculator: string;
   calculatorBody: string;
   calculate: string;
-  countries: { name: string; slug: string; flag: string }[];
+  countries: { name: string; slug: string; countryCode: DestinationCountryCode }[];
   ready: string;
   readyBody: string;
   phone: string;
@@ -47,8 +48,8 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     popularBody: '按品牌和车型浏览，找到适合你的汽车。',
     modelScope: '查看车型配置与相关车源',
     modelRecords: '相关车源',
-    catalog: '完整车源目录 →',
-    learn: '了解更多 →',
+    catalog: '完整车源目录',
+    learn: '了解更多',
     previous: '上一组车型',
     next: '下一组车型',
     slide: '查看车型',
@@ -185,9 +186,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     calculatorBody: '按车辆参数查看俄罗斯、哈萨克斯坦或乌兹别克斯坦的关税、增值税及其他费用参考。',
     calculate: '计算费用',
     countries: [
-      { name: '俄罗斯', slug: 'russia', flag: '🇷🇺' },
-      { name: '哈萨克斯坦', slug: 'kazakhstan', flag: '🇰🇿' },
-      { name: '乌兹别克斯坦', slug: 'uzbekistan', flag: '🇺🇿' },
+      { name: '俄罗斯', slug: 'russia', countryCode: 'RU' },
+      { name: '哈萨克斯坦', slug: 'kazakhstan', countryCode: 'KZ' },
+      { name: '乌兹别克斯坦', slug: 'uzbekistan', countryCode: 'UZ' },
     ],
     ready: '准备好寻找你的汽车了吗？',
     readyBody: '告诉我们你的预算与需求，一起了解中国车源和出口方案。',
@@ -203,8 +204,8 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     popularBody: 'Explore models and find the right car for you.',
     modelScope: 'Explore specifications and related listings',
     modelRecords: 'Related listings',
-    catalog: 'Full catalog →',
-    learn: 'Learn more →',
+    catalog: 'Full catalog',
+    learn: 'Learn more',
     previous: 'Previous models',
     next: 'Next models',
     slide: 'View model',
@@ -362,9 +363,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
       'Explore indicative duties, VAT and other import costs for Russia, Kazakhstan or Uzbekistan using your vehicle details.',
     calculate: 'Calculate cost',
     countries: [
-      { name: 'Russia', slug: 'russia', flag: '🇷🇺' },
-      { name: 'Kazakhstan', slug: 'kazakhstan', flag: '🇰🇿' },
-      { name: 'Uzbekistan', slug: 'uzbekistan', flag: '🇺🇿' },
+      { name: 'Russia', slug: 'russia', countryCode: 'RU' },
+      { name: 'Kazakhstan', slug: 'kazakhstan', countryCode: 'KZ' },
+      { name: 'Uzbekistan', slug: 'uzbekistan', countryCode: 'UZ' },
     ],
     ready: 'Ready to find your car?',
     readyBody: 'Tell us your budget and preferences to explore cars from China and export options.',
@@ -380,8 +381,8 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     popularBody: 'Выберите модель под ваши задачи и бюджет.',
     modelScope: 'Комплектации и предложения по модели',
     modelRecords: 'Предложения',
-    catalog: 'Весь каталог →',
-    learn: 'Подробнее →',
+    catalog: 'Весь каталог',
+    learn: 'Подробнее',
     previous: 'Предыдущие модели',
     next: 'Следующие модели',
     slide: 'Посмотреть модель',
@@ -539,9 +540,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
       'Оцените пошлины, НДС и другие импортные расходы для России, Казахстана или Узбекистана по параметрам автомобиля.',
     calculate: 'Рассчитать стоимость',
     countries: [
-      { name: 'Россия', slug: 'russia', flag: '🇷🇺' },
-      { name: 'Казахстан', slug: 'kazakhstan', flag: '🇰🇿' },
-      { name: 'Узбекистан', slug: 'uzbekistan', flag: '🇺🇿' },
+      { name: 'Россия', slug: 'russia', countryCode: 'RU' },
+      { name: 'Казахстан', slug: 'kazakhstan', countryCode: 'KZ' },
+      { name: 'Узбекистан', slug: 'uzbekistan', countryCode: 'UZ' },
     ],
     ready: 'Готовы найти свой автомобиль?',
     readyBody:

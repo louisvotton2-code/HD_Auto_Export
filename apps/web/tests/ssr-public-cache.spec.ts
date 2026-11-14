@@ -211,7 +211,8 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
       // The detail BFF deliberately reconstructs public meta with its own requestId.
       expect(data.meta.requestId).toEqual(expect.any(String));
       expect(data.data.report.hasReport).toBe(true);
-      expect(data.data.external.detail.inspection.reportUrl).toBeNull();
+      expect(data.data.external.detail.inspection).toBeNull();
+      expect(data.data).not.toHaveProperty('inspectionInline');
       expect(JSON.stringify(data)).not.toContain('https://reports.example.invalid');
     }
     const reads = await recorded(request);

@@ -15,8 +15,8 @@
 .settings{border-top:1px solid #ffffff12;padding-top:12px;min-width:0}
 .settings summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;color:#c59a78;font-size:11px}
 .settings summary::-webkit-details-marker{display:none}
-.settings summary span{transition:transform .2s}
-.settings[open] summary span{transform:rotate(180deg)}
+.settings summary svg{transition:transform .2s}
+.settings[open] summary svg{transform:rotate(180deg)}
 .settingsFields{display:grid;gap:12px;padding-top:14px;min-width:0}
 .dateNote {
   color: #f3c98a;

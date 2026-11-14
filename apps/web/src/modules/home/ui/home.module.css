@@ -157,6 +157,8 @@
   opacity: 0.4;
 }
 .motionToggle {
+  display: grid;
+  place-items: center;
   position: absolute;
   right: 24px;
   bottom: 24px;
@@ -249,6 +251,8 @@
   gap: 8px;
 }
 .railControls button {
+  display: grid;
+  place-items: center;
   background: transparent;
   border: 1px solid #b6774933;
   color: var(--copper);

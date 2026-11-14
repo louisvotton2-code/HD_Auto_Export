@@ -1,11 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { fillNumericDate } from './helpers/numeric-date';
 
 // These checks exercise the public page. Financial fixtures remain in calculator.spec.ts;
 // this file verifies that the explanation, substituted formula and receipt stay in sync.
 async function openCalculator(page: Page, country: string, locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}`);
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await page.locator('#customsDate').fill('2026-10-22');
+  await fillNumericDate(page, 'customsDate', '2026-10-22');
   await expect(page.getByTestId('total')).toBeVisible();
   // Explanations are intentionally collapsed in the initial quote. These checks
   // exercise their contents; the default and independent controls live in fee-details.spec.ts.
@@ -80,7 +81,7 @@ test('Armenia explains both winners of the minimum comparison and copies the exp
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await openCalculator(page, 'armenia');
   await fixedValueInputs(page, '100');
-  await page.locator('#manufactureDate').fill('2020-01');
+  await fillNumericDate(page, 'manufactureDate', '2020-01');
   const duty = method(page, 'AM.dutyMiddle');
   await expect(duty.locator('.fee-method-description')).toContainText('20 AMD');
   await expect(duty.locator('.fee-method-description')).toContainText('取较大值 879.12 AMD');
@@ -110,7 +111,7 @@ test('Armenia environmental explanation and receipt switch through 0, 2, 10 and 
     ['2010-01', 'AM.environmental', 'environment20', '本车命中 20% 档'],
     ['2021-01', 'AM.environmentalYoung', 'environmentNone', '未超过 5 年'],
   ]) {
-    await page.locator('#manufactureDate').fill(manufacture);
+    await fillNumericDate(page, 'manufactureDate', manufacture);
     await expectStamp(stamp, { condition });
     const explanation = method(page, key).locator('.fee-method-description');
     await expect(explanation).toContainText(expected);
@@ -132,7 +133,7 @@ test('Russia receipt follows the exact 36 and 60 month boundaries and clears the
     ['2023-10', 'ruMiddle', 'RU.dutyMiddle'],
     ['2021-10', 'fivePlus', 'RU.dutyOld'],
   ]) {
-    await page.locator('#manufactureDate').fill(manufacture);
+    await fillNumericDate(page, 'manufactureDate', manufacture);
     await expectStamp(stamp, { title: 'personalTariff', band });
     await expect(method(page, dutyMethod)).toBeVisible();
   }
@@ -155,13 +156,13 @@ test('Uzbekistan switches never-registered 12-month bands and used-car methods w
 }) => {
   await openCalculator(page, 'uzbekistan', 'en');
   await page.locator('#condition').selectOption('new');
-  await page.locator('#manufactureDate').fill('2025-10');
+  await fillNumericDate(page, 'manufactureDate', '2025-10');
   const stamp = page.getByTestId('result-stamp');
   await expectStamp(stamp, { title: 'newUnder12', band: 'recyclingUpTo36', tone: 'green' });
   await expect(method(page, 'UZ.dutyNewYoung').locator('.fee-method-description')).toContainText(
     '12 months',
   );
-  await page.locator('#manufactureDate').fill('2025-09');
+  await fillNumericDate(page, 'manufactureDate', '2025-09');
   await expectStamp(stamp, { title: 'newOver12', tone: 'green' });
   await expect(method(page, 'UZ.dutyNewYoung')).toHaveCount(0);
   await expect(method(page, 'UZ.dutyNewOld').locator('.fee-method-description')).toContainText(
@@ -210,7 +211,7 @@ test('Georgia left-hand hybrid relief and right-hand tripling never leave confli
   page,
 }) => {
   await openCalculator(page, 'georgia');
-  await page.locator('#manufactureDate').fill('2020-01');
+  await fillNumericDate(page, 'manufactureDate', '2020-01');
   await page.getByRole('button', { name: '混合动力', exact: true }).click();
   const stamp = page.getByTestId('result-stamp');
   await expectStamp(stamp, { title: 'hybridRelief', condition: 'leftHand', tone: 'green' });
@@ -267,7 +268,7 @@ test('360px Russian Armenia keeps the long explanation, formula and changing rec
   await page.setViewportSize({ width: 360, height: 844 });
   await openCalculator(page, 'armenia', 'ru');
   await fixedValueInputs(page, '10000');
-  await page.locator('#manufactureDate').fill('2020-01');
+  await fillNumericDate(page, 'manufactureDate', '2020-01');
   await expect(method(page, 'AM.dutyMiddle').locator('.fee-method-description')).toHaveText(
     /.{200,}/,
   );

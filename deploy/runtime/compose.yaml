@@ -80,6 +80,7 @@ services:
       args:
         SITE_ORIGIN: ${SITE_ORIGIN}
         SITE_INDEXABLE: ${SITE_INDEXABLE:-false}
+        HD_DEPLOYMENT_ID: ${RELEASE_ID}
     platform: ${TARGET_PLATFORM:-linux/arm64}
     user: '${APP_UID:-1000}:${APP_GID:-1000}'
     init: true

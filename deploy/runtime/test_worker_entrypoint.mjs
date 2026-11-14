@@ -61,3 +61,9 @@ test('formal full sync has an explicit CLI and cannot select another program', (
     assert.throws(() => workerInvocation(args));
   }
 });
+
+
+test('backup lease uses only the database CLI without media scanning', () => {
+  assert.deepEqual(workerInvocation(['backup-lease', 'acquire', '--reference', 'backup:ext09:daily-20261114']), {argv: ['dist/backup-lease-cli.js', 'acquire', '--reference', 'backup:ext09:daily-20261114'], formalFx: false, fullSync: false});
+  for (const args of [['backup-lease'], ['backup-lease', 'serve', '--reference', 'backup:a'], ['backup-lease', 'release', '--reference', 'not-a-backup'], ['backup-lease', 'acquire', '--reference', 'backup:a', '--force']]) assert.throws(() => workerInvocation(args));
+});

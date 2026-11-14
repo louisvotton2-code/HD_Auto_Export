@@ -237,3 +237,23 @@ node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATAB
 读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。limit默认25、最大100，每次仅一批，返回 `{scanned,changed,nextCursor}`，nextCursor非null才沿同一命令续跑。失败退出1，不打印数据库连接/原文；成功0仅表示该批完成。末页nextCursor=null才表示该次有界遍历结束；重复运行相同内容不会重复改版本。只覆盖具有当前detail存档的ChinaCarAPI身份，缺档不虚构报告；现场处理数/异常和是否完成须由OPS另记，不能把本说明视为已经执行。
 
 本轮受影响检查为contracts/schema及合成fixtures、API类型/构建/OpenAPI、报告投影单测、来源映射深层单测，以及full-sync-http/full-sync-projection/report-evidence/external-catalog数据库回归。检查在服务器准确集成SHA运行，本机未运行应用检查；按已有统一门禁复用结果，不另重复全仓检查。公开OpenAPI生成命令仍为 `pnpm --filter @hd/api openapi`。
+
+
+## EXT09 双投影与运维守门
+
+新详情只在 `projection=detail-inline-v1&view=localized` 返回有界 `inspectionInline` 与统一 `configurationInline`；无 projection 保持原 strict DTO 和数据库存储形状。完整统计沿用 `inspectionSummary`；正常明细数不是全报告正常检查数。接口定义见车辆接口 EXT09 节。实现读取已有投影，不补抓/翻译，无需重写旧 overview。
+
+受控部署设置 `API_SERVING_MODE_FILE=/run/hd-slot/mode`。挂载目录（不单独绑定旧 inode），文件600权限，原子替换内容 `candidate`、`draining` 或 `active`；不可读/无效为candidate。未配置保持旧单槽active。非active拒绝所有非GET/HEAD以及全部auth/admin请求，包括可能续期的会话读取；拒绝早于鉴权、请求体解析及收费调用。`GET /health/serving` 的 `{mode,inFlight}` 统计已接纳的副作用请求，handler真正结束才减。先旧槽draining等0，再新槽active，不能两槽同时active；该门不代替OPS唯一writer编排。active保留公开访问热度写入并纳入inFlight；candidate/draining跳过该写入，非active缩略图请求读取原图，派生Redis缓存允许正常写入。worker仍单实例，不修改暂停状态。
+
+迁移0026创建持久 `backup_gc_leases`。在线备份先执行 `node dist/backup-lease-cli.js acquire --reference backup:<唯一任务>`，成功后才创建pg_dump快照并归档媒体/原档；完成或明确中止后 `release --reference`。CLI使用既有DATABASE_URL或DATABASE_URL_FILE，引用不含秘密。无自动过期、幂等、只释放本reference；多引用存在时任一个均阻止GC。PG锁78291335在acquire与所有物理清理之间串行；人工媒体删除仍逻辑生效，文件等release后下次cleanup再删。媒体purge/cleanup、原档滚动清理/维护、CSV压缩后原件删除及过期CSV清理均遵守同锁；备份期间压缩完成但不可删除时保留原路径，后续重试。先更新所有执行GC的API和worker，再启用在线备份；旧版本不识别新保护。恢复的备份中包含其lease，隔离恢复验证需显式释放对应引用，生产lease不可误删。
+
+OPS容量模型同时接受 `hd-ext07-peak-v1` 和 `hd-ext09-daily-two-v1`，样本绑定、10分钟有效期、70%硬上限与预算校验不变。本轮应用验证由OPS服务器隔离执行，本机仅编辑和Git静态检查。
+
+
+## 本地持久真实样本
+
+`pnpm --filter @hd/api external:local-preview --package <私有抓取包绝对路径>` 复用现有来源适配器，把固定名单的已抓取详情/报告写入专用 `hd_local_preview`。只允许 `NODE_ENV=development`、`HD_DEPLOYMENT_ENV=local`、回环数据库（可使用绝对路径 Unix socket）和关闭翻译；不会下载 CSV、调用供应商或启动同步 worker。
+
+包内 `selection.json` 保存 `version:1`、固定 `batchKey:local-real-*`、最多200个 `{source,externalId}`；`documents.jsonl` 沿用来源快照加载器的相对文件路径和 SHA-256 校验。原文、数据库、凭据与媒体保留在 Git 忽略的私有目录。重放相同包复用车辆ID与回执，保留员工覆盖；旧抓取跳过，撤车立即隐藏。缺少三语详情的在售记录计入 `missing`，不伪造补全。原文响应按哈希去重，整个导入事务失败则回滚。
+
+导入输出的 `selected/applied/unchanged/missing/withdrawn/stale` 是处理统计，`publicIds` 是本次有效在售来源记录，最终语言可见数量应读取公开目录/筛选接口。固定名单不得用同一批次名替换。实际样本、刷新时间、启动/停止与联调交接仅记录在根工作树 `docs/private/local-preview/README.md`；环境与进程按交接恢复，不能重建或清空旧库。

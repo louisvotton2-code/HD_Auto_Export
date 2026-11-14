@@ -308,6 +308,9 @@
   margin: 16px 0;
 }
 .destinationLinks a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid #b6774940;
   border-radius: 999px;
   padding: 6px 9px;

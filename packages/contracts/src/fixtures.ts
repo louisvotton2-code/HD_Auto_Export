@@ -2,6 +2,7 @@
 export * from './external-fixtures.js';
 export * from './publication-fixtures.js';
 export * from './inspection-fixtures.js';
+export * from './configuration-semantic-fixtures.js';
 import { ApiErrorSchema } from './common.js';
 import {
   AdminVehicleSchema, MediaAssetSchema, VehicleDraftInputSchema,

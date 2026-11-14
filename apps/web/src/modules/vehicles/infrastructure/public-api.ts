@@ -12,6 +12,7 @@ import {
   localizedHomeSchema,
   localizedCardListSchema,
   localizedVehicleSchema,
+  localizedInlineVehicleSchema,
 } from '../localized-projection';
 export { parseCatalogQuery, parseCatalogPageQuery } from '../public-query';
 export { publicQueryString as queryString } from '../public-query';
@@ -114,12 +115,14 @@ export async function getPublicVehicle(
   incoming?: Pick<Headers, 'get'>,
   view?: 'legacy' | 'localized',
   priceView?: 'usd',
+  projection?: 'detail-inline-v1',
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const result = await readPublicJson(
-      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView })}`,
-      view === 'localized' ? localizedVehicleSchema(locale, priceView) : legacyVehicleSchema,
+      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView, projection })}`,
+      projection === 'detail-inline-v1' ? localizedInlineVehicleSchema(locale, priceView)
+        : view === 'localized' ? localizedVehicleSchema(locale, priceView) : legacyVehicleSchema,
       incoming,
     );
     if (result.data.id !== id || result.data.detailPath !== `/${locale}/cars/${id}/`)

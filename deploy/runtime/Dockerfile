@@ -28,13 +28,15 @@ COPY --from=api-build /app/apps/api/package.json ./package.json
 COPY --from=api-build /app/apps/api/dist ./dist
 COPY --from=api-build /app/apps/api/migrations ./migrations
 COPY --from=api-build /app/packages/contracts /app/packages/contracts
-COPY deploy/runtime/api-entrypoint.mjs deploy/runtime/database-name.mjs /app/
+COPY deploy/runtime/api-entrypoint.mjs deploy/runtime/database-name.mjs deploy/runtime/media-ownership.mjs /app/
 COPY deploy/runtime/production/worker-entrypoint.mjs /app/production/worker-entrypoint.mjs
 ENTRYPOINT ["node", "/app/api-entrypoint.mjs"]
 CMD ["dist/main.js"]
 FROM build AS web-build
 ARG SITE_ORIGIN=https://localhost:3410
 ARG SITE_INDEXABLE=false
+ARG HD_DEPLOYMENT_ID
+ENV HD_DEPLOYMENT_ID=$HD_DEPLOYMENT_ID
 ENV NEXT_PUBLIC_SITE_URL=$SITE_ORIGIN SITE_INDEXABLE=$SITE_INDEXABLE NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @hd/web build
 FROM ${NODE_IMAGE} AS web

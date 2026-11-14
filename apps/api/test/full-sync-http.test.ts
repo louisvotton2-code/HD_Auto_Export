@@ -11,7 +11,7 @@ import {readConfig} from '../src/config.js';
 import {createStaff} from '../src/staff-cli.js';
 import {ExternalFullSyncStatusResponseSchema} from '@hd/contracts/admin';
 import {makeExternalImportFixture} from '@hd/contracts/fixtures';
-import {PublicVehicleInspectionResponseSchema,PublicVehiclePriceHistoryResponseSchema} from '@hd/contracts/public';
+import {PublicVehicleInlineResponseSchema,PublicVehicleResponseSchema,PublicVehicleInspectionResponseSchema,PublicVehiclePriceHistoryResponseSchema} from '@hd/contracts/public';
 import {projectInspectionReport} from '../src/external/sources/inspection-projection.js';
 import {refreshInspectionEvidence} from '../src/external/sources/public-evidence.js';
 test('full sync HTTP controls require an admin and preserve versioned idempotent status receipts',async()=>{
@@ -67,6 +67,12 @@ test('full sync HTTP controls require an admin and preserve versioned idempotent
    const detail=await app.inject({url:`/api/v1/vehicles/${publicId}?locale=${locale}&view=localized`});assert.equal(detail.statusCode,200,detail.body);
    assert.equal(detail.json().data.inspectionSummary.status,'available');assert.equal(detail.json().data.report.hasReport,true);
    assert.equal(detail.json().data.inspectionSummary.checked,76);assert.equal(detail.json().data.inspectionSummary.faults,1);assert.equal(detail.json().data.inspectionSummary.contentLocale,'en');
+   PublicVehicleResponseSchema.parse(detail.json());assert.equal('inspectionInline' in detail.json().data,false);
+   const inline=await app.inject({url:`/api/v1/vehicles/${publicId}?locale=${locale}&view=localized&projection=detail-inline-v1`});assert.equal(inline.statusCode,200,inline.body);
+   const compact=PublicVehicleInlineResponseSchema.parse(inline.json()).data;
+   assert.equal(PublicVehicleResponseSchema.safeParse(inline.json()).success,false);
+   assert.equal(compact.inspectionInline.defects[0]!.part?.text,'Door');assert.equal(compact.inspectionInline.conclusions.length,1);
+   assert.equal(compact.inspectionInline.normalItemCount,1);assert.equal(compact.inspectionSummary.checked,76);
    assert.equal(detail.json().data.external.detail.inspection,null);assert.doesNotMatch(detail.body,/Synthetic complete inspection conclusion|Repair noted|PRIVATE_REPORT_MARKER|private\.invalid/);
    const filtered=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&category=accident&order=faults_first&limit=1`});assert.equal(filtered.statusCode,200,filtered.body);assert.equal(filtered.headers['cache-control'],'no-store');
    const data=PublicVehicleInspectionResponseSchema.parse(filtered.json()).data;
@@ -78,6 +84,20 @@ test('full sync HTTP controls require an admin and preserve versioned idempotent
    for(const query of ['category=flood&order=faults_first','category=accident&order=source','category=accident&order=faults_first&outcome=defect'])assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&${query}&cursor=${scopeCursor}`})).statusCode,400);
    const byPart=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&part=${data.items[0]!.partId}&outcome=defect`});assert.equal(byPart.statusCode,200,byPart.body);assert.equal(byPart.json().data.total,1);assert.equal(byPart.json().data.summary.checked,76);
   }
+  // Same category + part + exact finding merges; different parts/results and unidentified categories survive.
+  const expanded={...sourceReport,summary:Array.from({length:5},(_,i)=>({area:`Conclusion ${i}`,result:`Stored conclusion ${i}`})),
+   checks:[{category:'Major accident check',groups:[{name:'Body',items:[
+    ...Array.from({length:11},(_,i)=>({part:`Panel ${i}`,result:'Repair noted',ok:false})),
+    {part:'Panel 0',result:'Repair noted',ok:false},{part:'Panel 0',result:'Different finding',ok:false}
+   ]}]}]};
+  await runtime.db.transaction(tx=>refreshInspectionEvidence(tx,listing,'en',projectInspectionReport(expanded,'en')));
+  const bounded=await app.inject({url:`/api/v1/vehicles/${publicId}?locale=en&view=localized&projection=detail-inline-v1`});assert.equal(bounded.statusCode,200,bounded.body);
+  const boundedData=PublicVehicleInlineResponseSchema.parse(bounded.json()).data;
+  assert.equal(boundedData.inspectionInline.conclusions.length,3);assert.equal(boundedData.inspectionInline.hasMoreConclusions,true);
+  assert.equal(boundedData.inspectionInline.defects.length,8);assert.equal(boundedData.inspectionInline.hasMoreDefects,true);
+  assert.deepEqual(boundedData.inspectionInline.defects.map(v=>v.part?.text),Array.from({length:8},(_,i)=>`Panel ${i}`));
+  assert.equal(boundedData.inspectionSummary.checked,76);
+  assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}?projection=detail-inline-v1`})).statusCode,400);
   for(const status of ['no_report','unavailable','pending','unknown'] as const){
    const summary={status,contentLocale:null,checked:null,faults:null,categories:[]};
    await runtime.db.transaction(tx=>refreshInspectionEvidence(tx,listing,'en',{status,summary,items:[],conclusions:[]}));

@@ -1,3 +1,4 @@
+import {ServingGate} from './serving-gate.js';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import Fastify, { LogController, type FastifyRequest, type FastifyReply } from 'fastify';
@@ -67,6 +68,7 @@ const capacityRoutes = new Set<string>(['/api/v1/vehicles','/api/v1/vehicle-filt
 export async function buildApp(config:Config=readConfig(), options:{
   logger?:boolean;translator?:VehicleTranslator;onPublicFailure?:(event:PublicFailureDiagnostic)=>void;
 }={}) {
+  const serving=new ServingGate(config.servingModeFile);
   const db=createDatabase(config.databaseUrl,config.poolMax,Boolean(options.onPublicFailure));
   let catalogCache;
   try { catalogCache = await createPublicCatalogCache(db, {
@@ -87,6 +89,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.headers.x-hd-ssr-key','req.body','res.headers.set-cookie']} : false,
     genReqId:()=>randomUUID(),requestIdHeader:false,bodyLimit:100_000,requestTimeout:30_000,trustProxy:config.trustProxy,
     logController:new LogController({disableRequestLogging:true})}).withTypeProvider<ZodTypeProvider>();
+  app.addHook('onRoute',route=>{const handler=route.handler;route.handler=async function(request,reply){
+    serving.handling(request);try{return await handler.call(this,request,reply);}finally{serving.finish(request);}
+  };});
   app.setValidatorCompiler(validatorCompiler);app.setSerializerCompiler(serializerCompiler);
   await app.register(swagger,{openapi:{openapi:'3.0.3',info:{title:'HD Auto API',version:pub.CONTRACT_VERSION},
     components:{securitySchemes:{staffSession:{type:'apiKey',in:'cookie',name:config.environment==='production'?'__Secure-hd-auto.session_token':'hd-auto.session_token'}}}},transform:jsonSchemaTransform});
@@ -97,6 +102,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const requestSignals=new WeakMap<object,AbortSignal>();
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
+    serving.enter(request,request.method,request.routeOptions.url??'');
     // Only Fastify's explicitly trusted peers may supply forwarding metadata.
     // Reject malformed resolved identities before they reach auth or business handlers.
     if(!isIP(request.ip) || request.ip.includes('%')) throw new ApiError(400,'INVALID_REQUEST','Client address is invalid.');
@@ -150,6 +156,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     }
   });
   app.addHook('onResponse',async(request,reply)=>{
+    serving.response(request);
     app.log.info({requestId:request.id,method:request.method,route:request.routeOptions.url,statusCode:reply.statusCode,elapsedMs:reply.elapsedTime},'Request completed');
   });
   app.setErrorHandler((error,request,reply)=>{
@@ -203,15 +210,16 @@ export async function buildApp(config:Config=readConfig(), options:{
 
   app.get('/health/live',{schema:schema('health','liveness',{response:{200:z.object({status:z.literal('ok')})}})},async()=>({status:'ok' as const}));
   if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:config.publicCache.enabled,metrics:catalogCache.metrics()}));
+  app.get('/health/serving',{schema:{hide:true}},async()=>serving.status());
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
+      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
         JOIN public_catalog_state cs ON cs.id=1 JOIN translation_budget_state bs ON bs.id=1
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
         LEFT JOIN publication_preview_confirmations pc ON false
         LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
-        LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
+        LEFT JOIN backup_gc_leases bg ON false LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
@@ -258,12 +266,12 @@ export async function buildApp(config:Config=readConfig(), options:{
       },request);
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
-  app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicVehicleResponseSchema,...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicLocaleQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
-      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView);
+  app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([pub.PublicVehicleResponseSchema,pub.PublicVehicleInlineResponseSchema]),...errorResponses}})},
+    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
+      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection);
       const identity=vehicle.identifiers;
       if(p.id.startsWith('ext-')&&identity?.sourceId&&(identity.source==='che168'||identity.source==='dongchedi')) {
-        try{await markFullSyncAccess(db,identity.source,identity.sourceId);}catch{request.log.debug('Full-sync access hint unavailable');}
+        try{await serving.optionalEffect(()=>markFullSyncAccess(db,identity.source as 'che168'|'dongchedi',identity.sourceId!));}catch{request.log.debug('Full-sync access hint unavailable');}
       }
       return vehicle;
     },request);});
@@ -275,7 +283,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
   }
   app.get('/api/v1/media/:id',{schema:schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema})},async(request,reply)=>{
-    const id=(request.params as {id:string}).id;const variant=(request.query as pub.PublicMediaQuery).variant;
+    const id=(request.params as {id:string}).id;const variant=serving.mode()==='active'?(request.query as pub.PublicMediaQuery).variant:undefined;
     if(config.mediaDelivery==='nginx') return sendInternalMedia(reply,await media.publicFile(id,variant));
     return reply.type('image/webp').send(await media.publicRead(id,variant));
   });

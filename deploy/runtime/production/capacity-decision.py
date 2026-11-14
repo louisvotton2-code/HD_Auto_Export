@@ -19,7 +19,7 @@ def integer(value, positive=False):
 
 
 def decision(measurement, now):
-    result = dict(schemaVersion=1, model='hd-ext07-peak-v1', snapshotId=None,
+    result = dict(schemaVersion=1, model='hd-ext09-daily-two-v1', snapshotId=None,
                   targetRows=0, sampleRows=0, evidenceHash=None,
                   measuredAt=now.isoformat().replace('+00:00', 'Z'),
                   expiresAt=(now + dt.timedelta(minutes=10)).isoformat().replace('+00:00', 'Z'),

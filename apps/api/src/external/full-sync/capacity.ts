@@ -9,7 +9,7 @@ const bytes=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const token=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const reason=z.enum(['SYNC_CAPACITY_VERIFIED','SYNC_CAPACITY_LIMIT','SYNC_CAPACITY_INSUFFICIENT_SAMPLE','SYNC_CAPACITY_WAITING_MEASUREMENT']);
 const utc=z.iso.datetime().refine(value=>value.endsWith('Z'));
-const decisionSchema=z.strictObject({schemaVersion:z.literal(1),model:z.literal('hd-ext07-peak-v1'),
+const decisionSchema=z.strictObject({schemaVersion:z.literal(1),model:z.enum(['hd-ext07-peak-v1','hd-ext09-daily-two-v1']),
  snapshotId:z.uuid(),targetRows:bytes,sampleRows:bytes,evidenceHash:z.string().regex(/^[a-f0-9]{64}$/),
  measuredAt:utc,expiresAt:utc,decision:z.enum(['allow','wait','blocked']),reason,
  projectedPeakBytes:bytes.nullable(),diskTotalBytes:bytes.positive(),currentUsedBytes:bytes,

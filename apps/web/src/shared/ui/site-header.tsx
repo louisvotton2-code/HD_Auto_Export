@@ -61,7 +61,7 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
         {t('Nav.parts')}
       </Link>
       <Link
-        href="/calculator/russia/"
+        href="/calculator/"
         className={calculatorActive ? 'nav-active' : undefined}
         aria-current={calculatorActive ? 'page' : undefined}
         onClick={closeMenu}

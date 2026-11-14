@@ -1,3 +1,4 @@
+import {inlineDetail} from './inline-detail.js';
 import { recordAudit as audit, staffActivitySql } from '../activity/service.js';
 export { recordAudit as audit } from '../activity/service.js';
 import { activityChanges, draftChanges, localizationActivity, sameValue } from '../activity/changes.js';
@@ -612,14 +613,14 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd') {
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1') {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       if(id.startsWith('ext-')) {
         const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote);
-        if(!item)throw notFound();return item;
+        if(!item)throw notFound();return projection?inlineDetail(tx,item,locale):item;
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
       const result=await tx.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
@@ -627,7 +628,7 @@ export class InventoryService {
       const vehicle=toPublic(result.rows[0],locale,view,priceView,quote,true);
       const report=await getStaffReport(tx,result.rows[0].publication_data!.source);
       vehicle.report={hasReport:report.hasReport};
-      return vehicle;
+      return projection?inlineDetail(tx,vehicle,locale):vehicle;
     });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string) {

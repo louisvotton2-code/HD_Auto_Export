@@ -46,5 +46,117 @@ class RoutineBackupTests(unittest.TestCase):
             with self.assertRaises(ValueError): routine.regular_files([root/'missing'])
 
 
+class OnlineInputs(unittest.TestCase):
+    def test_known_temporaries_and_thumbnails_are_not_archived(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'media';root.mkdir()
+            (root/(uid+'.webp')).write_bytes(b'original')
+            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp',uid+'.thumb.webp']:
+                (root/name).write_bytes(b'changing')
+            files=routine.pack_roots(Path(temp)/'media.tar.gz',[root],'media')
+            self.assertEqual({Path(p).name for p in files},{'media',uid+'.webp'})
+            (root/'unknown.tmp').write_bytes(b'unknown')
+            with self.assertRaises(ValueError):routine.regular_files([root],'media')
+
+    def test_csv_partial_excluded_but_controls_not_filtered(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'archive';root.mkdir()
+            (root/(uid+'.csv')).write_bytes(b'complete')
+            (root/(uid+'.csv.partial')).write_bytes(b'incomplete')
+            self.assertEqual(len(routine.regular_files([root],'archive',{root/(uid+'.csv')})),2)
+            self.assertEqual(len(routine.regular_files([root],'controls')),3)
+
+
+    def test_only_committed_gzip_selected_and_missing_refused(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        other='22345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'archives';root.mkdir()
+            (root/(uid+'.csv.gz')).write_bytes(b'complete')
+            (root/(other+'.csv.gz')).write_bytes(b'in-progress')
+            self.assertEqual(routine.archive_selection([dict(path='/private/full-sync/'+other+'.csv',state='downloading')],root),set())
+            selected=routine.archive_selection([dict(path='/private/full-sync/'+uid+'.csv.gz',state='failed')],root)
+            files=routine.regular_files([root],'archive',selected)
+            self.assertIn(str(root/(uid+'.csv.gz')).lstrip('/'),files)
+            self.assertNotIn(str(root/(other+'.csv.gz')).lstrip('/'),files)
+            (root/(uid+'.csv.gz')).unlink()
+            with self.assertRaises(ValueError):routine.regular_files([root],'archive',selected)
+            (root/'unknown.csv.gz').write_bytes(b'bad')
+            with self.assertRaises(ValueError):routine.regular_files([root],'archive',set())
+
+
+class IncompleteJobs(unittest.TestCase):
+    def test_pack_encrypt_and_interrupted_jobs_block_next_copy(self):
+        import json
+        for phase in ['dump-and-pack','encrypting',None]:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);point=root/'daily-20261114T000000Z';point.mkdir()
+                (point/'database.dump').write_bytes(b'partial-owned-material')
+                if phase is not None:
+                    (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=False,phase=phase)))
+                with self.assertRaises(ValueError):routine.require_no_incomplete_points(root)
+                self.assertEqual((point/'database.dump').read_bytes(),b'partial-owned-material')
+
+    def test_unfinished_retention_blocks_another_point(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for n in range(3):
+                point=root/f'daily-20261114T00000{n}Z';point.mkdir()
+                (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=True)))
+            with self.assertRaises(ValueError):routine.require_no_incomplete_points(root)
+
+    def test_successful_point_does_not_block_next_job(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);point=root/'daily-20261114T000000Z';point.mkdir()
+            (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=True)))
+            routine.require_no_incomplete_points(root)
+
+
+class Envelope(unittest.TestCase):
+    def test_corrupt_survivor_blocks_retention(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); point=root/'daily-20261114T000000Z'; point.mkdir()
+            (point/'recovery.cms').write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                routine.verify_completed_points(root,[dict(name=point.name,complete=True,ciphertextSha256='0'*64)])
+
+    def test_envelope_rejects_path_traversal(self):
+        import tarfile, io
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); bundle=root/'bad.tar'
+            with tarfile.open(bundle,'w') as archive:
+                info=tarfile.TarInfo('../escape');info.size=1
+                archive.addfile(info,io.BytesIO(b'x'))
+            with self.assertRaises(ValueError): routine.unpack_verified_bundle(bundle,root/'restore')
+            self.assertFalse((root/'escape').exists())
+
+    def test_cleanup_preserves_all_components_when_one_changed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);names=['database.dump','media.tar.gz','source-archives.tar.gz','controls.tar.gz']
+            for name in names:(root/name).write_bytes(b'fixture')
+            manifest=dict(format=2,files={name:dict(bytes=7,sha256=routine.digest(root/name)) for name in names})
+            (root/'controls.tar.gz').write_bytes(b'changed')
+            with self.assertRaises(ValueError):routine.remove_verified_components(root,manifest)
+            self.assertTrue(all((root/name).exists() for name in names))
+
+    def test_verified_format_two_roundtrip(self):
+        import json, tarfile
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); names=['database.dump','media.tar.gz','source-archives.tar.gz','controls.tar.gz']
+            for name in names:(root/name).write_bytes(b'synthetic-'+name.encode())
+            manifest=dict(format=2,files={name:dict(bytes=(root/name).stat().st_size,sha256=routine.digest(root/name)) for name in names})
+            (root/'manifest.json').write_text(json.dumps(manifest))
+            with tarfile.open(root/'bundle.tar','w') as archive:
+                for name in [*names,'manifest.json']: archive.add(root/name,arcname=name)
+            self.assertEqual(routine.unpack_verified_bundle(root/'bundle.tar',root/'restore'),manifest)
+            routine.remove_verified_components(root/'restore',manifest)
+            self.assertTrue((root/'restore/manifest.json').exists())
+            self.assertFalse((root/'restore/database.dump').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

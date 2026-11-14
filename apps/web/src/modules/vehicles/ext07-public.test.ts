@@ -53,10 +53,11 @@ describe('EXT07 public projections and records', () => {
     expect(draft.message).toContain(full.detailPath);
     expect(draft.message).not.toContain(`ID: ${full.id}`);
   });
-  it('roundtrips export conditions and ordering while explicitly requesting card projection', () => {
+  it('ignores obsolete export filtering while retaining ordering and card projection', () => {
     const query = parseCatalogQuery({ exportStatus: 'restricted', sort: 'price_asc' }, 'ru')!;
-    expect(publicUsdCatalogQuery(query)).toMatchObject({ projection: 'card', exportStatus: 'restricted', sort: 'price_asc' });
-    expect(parseCatalogQuery({ exportStatus: 'everything' }, 'ru')).toBeNull();
+    expect(publicUsdCatalogQuery(query)).toMatchObject({ projection: 'card', sort: 'price_asc' });
+    expect(publicUsdCatalogQuery(query)).not.toHaveProperty('exportStatus');
+    expect(parseCatalogQuery({ exportStatus: 'everything' }, 'ru')).not.toBeNull();
   });
   it('preserves the actual report language and rejects scope drift and private unknown fields', () => {
     const report = { ...page([{ id: 'entry', category: null, part: null, name: text('Accidents'), value: text('0'), outcome: 'ok' }]) };

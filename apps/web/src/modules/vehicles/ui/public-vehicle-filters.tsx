@@ -146,13 +146,6 @@ export function PublicVehicleFiltersForm({
         {c.search}
       </button>
       <label>
-        <span>{c.exportStatus}</span>
-        <select name="exportStatus" defaultValue={query.exportStatus ?? 'all'}>
-          {(Object.keys(c.exportStatuses) as (keyof typeof c.exportStatuses)[]).map(value =>
-            <option key={value} value={value}>{c.exportStatuses[value]}</option>)}
-        </select>
-      </label>
-      <label>
         <span>{c.sort}</span>
         <select name="sort" defaultValue={query.sort ?? 'newest'}>
           {(Object.keys(c.sorts) as (keyof typeof c.sorts)[]).map(value =>

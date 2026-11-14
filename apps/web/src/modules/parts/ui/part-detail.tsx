@@ -2,6 +2,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { partsContent } from '../content/parts-content';
 import { buildPartContactLinks } from '../contact';
@@ -34,7 +35,7 @@ export function PartDetail({ part, related, locale, knownPartIds, initialQuantit
           <div className={styles.detailPrice}><p>{t.referencePrice}</p><strong>{part.referencePriceUsd === null ? t.priceOnRequest : `$${part.referencePriceUsd.toLocaleString(locale)}`}</strong><small>{t.priceNote}</small></div>
           <form className={styles.quantityForm} method="get" action={partHref(locale, part.slug)} onSubmit={update}>
             <label htmlFor="part-quantity">{t.quantity}</label>
-            <div>{enhanced && <button type="button" aria-label={t.decrease} disabled={(parsed ?? quantity) <= 1} onClick={() => step(-1)}>−</button>}<input id="part-quantity" name="quantity" type="number" min="1" max="999" step="1" required value={draft} onChange={(event) => { setDraft(event.target.value); const next = parsePartQuantity(event.target.value); if (next !== null) setQuantity(next); }} />{enhanced && <button type="button" aria-label={t.increase} disabled={(parsed ?? quantity) >= 999} onClick={() => step(1)}>+</button>}<button className={styles.secondary} type="submit">{t.updateQuantity}</button></div>
+            <div>{enhanced && <button type="button" aria-label={t.decrease} disabled={(parsed ?? quantity) <= 1} onClick={() => step(-1)}><Icon name="minus" size={16} /></button>}<input id="part-quantity" name="quantity" type="number" min="1" max="999" step="1" required value={draft} onChange={(event) => { setDraft(event.target.value); const next = parsePartQuantity(event.target.value); if (next !== null) setQuantity(next); }} />{enhanced && <button type="button" aria-label={t.increase} disabled={(parsed ?? quantity) >= 999} onClick={() => step(1)}><Icon name="plus" size={16} /></button>}<button className={styles.secondary} type="submit">{t.updateQuantity}</button></div>
             <small>{t.quantityHelp}</small>{invalid && <p className={styles.error} role="alert">{t.invalidQuantity}</p>}
           </form>
           <div className={styles.detailContacts} data-part-contacts={part.slug}>

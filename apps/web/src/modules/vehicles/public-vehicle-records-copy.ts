@@ -6,7 +6,6 @@ type RecordsCopy = {
   exportStatus: string;
   exportStatuses: Record<'eligible' | 'restricted' | 'unknown', string>;
   report: string;
-  viewReport: string;
   reportUnavailable: string;
   reportAbsent: string;
   reportPending: string;
@@ -37,7 +36,6 @@ export const publicVehicleRecordsCopy = {
     exportStatus: '出口条件',
     exportStatuses: { eligible: '符合出口条件', restricted: '出口受限', unknown: '出口条件未确认' },
     report: '车辆检测报告',
-    viewReport: '查看检测报告',
     reportUnavailable: '检测报告暂时无法获取，请稍后重试。',
     reportAbsent: '该车源没有检测报告。',
     reportPending: '检测报告资料正在补齐。',
@@ -66,7 +64,6 @@ export const publicVehicleRecordsCopy = {
     exportStatus: 'Export conditions',
     exportStatuses: { eligible: 'Eligible for export', restricted: 'Export restricted', unknown: 'Export conditions unconfirmed' },
     report: 'Vehicle inspection report',
-    viewReport: 'View inspection report',
     reportUnavailable: 'The inspection report is temporarily unavailable. Please try again later.',
     reportAbsent: 'This listing has no inspection report.',
     reportPending: 'Inspection report details are being prepared.',
@@ -95,7 +92,6 @@ export const publicVehicleRecordsCopy = {
     exportStatus: 'Условия экспорта',
     exportStatuses: { eligible: 'Допущен к экспорту', restricted: 'Экспорт ограничен', unknown: 'Условия экспорта не подтверждены' },
     report: 'Отчёт об осмотре автомобиля',
-    viewReport: 'Посмотреть отчёт об осмотре',
     reportUnavailable: 'Отчёт об осмотре временно недоступен. Попробуйте позже.',
     reportAbsent: 'Для этого автомобиля нет отчёта об осмотре.',
     reportPending: 'Данные отчёта об осмотре дополняются.',

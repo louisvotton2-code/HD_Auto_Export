@@ -50,7 +50,7 @@ DATA_ROOT/
    dc up -d --wait api web proxy
    ```
 
-   **迁移先于API，仅执行一次显式迁移步骤。** 新版发布前先停写并备份；迁移失败不启动新版。`/health/ready`不替代核对migration表及版本。官网origin和索引开关在构建时写入，换域名须重建web；API运行时origin同步修改，web的SITE_INDEXABLE和站点origin也显式传到运行时，不能带`/admin`。数据库专用hd_app不是超级用户，持有本应用schema所有权以执行迁移；进一步分离迁移与运行角色尚未实施。
+   **迁移先于API，仅执行一次显式迁移步骤。** 生产常规发布按EXT09兼容迁移和独占写入交接；不再逐次整库备份。迁移失败不切新版。`/health/ready`不替代核对migration表及版本。官网origin和索引开关在构建时写入，换域名须重建web；API运行时origin同步修改，web的SITE_INDEXABLE和站点origin也显式传到运行时，不能带`/admin`。数据库专用hd_app不是超级用户，持有本应用schema所有权以执行迁移；进一步分离迁移与运行角色尚未实施。
 4. 首个员工通过受控CLI创建，密码经stdin输入，不能放命令参数或仓库。以私有600文件为输入：
 
    ```sh
@@ -61,7 +61,9 @@ DATA_ROOT/
 
 Docker秘密以文件按服务授权挂载，API入口运行时读入进程环境；镜像不含值。容器管理员仍能读取秘密，这不是对主机管理员的加密保护。[Docker秘密说明](https://docs.docker.com/compose/how-tos/use-secrets/)。
 
-## 一致备份与恢复演练
+## 历史隔离环境备份与恢复工具
+
+以下runtime.py停写路径仅用于历史恢复/明确维护场景；生产日常改用文末EXT09在线备份，不在每次发布调用。
 
 `runtime.py` 对同一数据根加独占操作锁。**备份窗口须先停止该项目所有外部SQL、员工CLI、导入、清理和迁移写入**；脚本只能自动暂停本Compose的API，无法阻止另一个项目或直接数据库写入。真实3320/55432正在录入时，先由PM与BE/项目助理约定窗口，不能直接套用隔离项目命令。
 
@@ -220,3 +222,7 @@ curl --cacert "$DATA_ROOT/tls/server.crt" -fsS https://127.0.0.1:3440/health/pro
 美元场景用 `fx-cli.js --seed a`、`--seed b` 与 `--seed expired` 写入固定合成快照。运行 `--health` 采集时效状态，与 USD 区间查询、缓存命中和旧游标拒绝结果并列。将健康 JSON 送入 `ops-ext/fx-health.py` 可映射退出码：新鲜且最近尝试未失败为 0，保留或最近刷新失败为 1，缺失、过期或无法读取为 2。该探针不输出汇率，也不发送外部通知。生产式 API 和隔离容量容器均保持外呼关闭。
 
 真实参考汇率的定时模板只供另行授权的原生预览实例。`ops-ext/hd-auto-fx-preview.service` 和 `.timer` 要求专用非特权用户 `hd-fx-preview`、冻结 Node 24／API 产物、loopback 的 `hd_ext_fx_preview_*` 数据库，以及归该服务用户所有的 0400／0600 数据库 URL 文件。安装后的 Node、API 产物、环境配置和启用标记由运维管理，对服务用户只读。示例环境默认 `EXTERNAL_FX_NETWORK=disabled`，服务也要求显式启用标记 `/etc/hd-auto/fx-preview.enabled`。启用后每小时唤醒 `fx-cli.js --refresh`，数据库的 24 小时持久限次确保预算未到时跳过外呼。用同一私有配置运行 `--health` 观察新鲜、保留或过期状态；容量测试不安装模板、不启用外连。预览库的参考快照不会自动写入生产。
+
+## EXT09 精简发布与日备份
+
+实现入口见[单机平滑发布](production/ext09-release.md)与[在线每日备份](production/ext09-backups.md)。这两份维护说明描述操作边界；实际是否上线、一次恢复验证及离机状态须核对本轮交付日志。正常发布不再调用旧停站备份路径，旧runtime恢复工具仅保留兼容历史恢复点。

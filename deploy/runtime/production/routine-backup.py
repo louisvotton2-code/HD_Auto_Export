@@ -1,11 +1,10 @@
-"""EXT07 daily compressed recovery points; only configured backup points are pruned.
+"""EXT09 online daily compressed recovery points; only configured backup points are pruned.
 
 The root-owned private configuration supplies the existing compose/runtime argument
 arrays and public encryption certificate. No password values belong in this file.
 Off-host transfer is explicitly pending until separately verified by OPS.
 """
 import argparse
-import importlib.util
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -17,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import time
 
 ROOT = Path('/srv/hd-auto')
 
@@ -31,8 +31,13 @@ def atomic_json(path, value):
     with temp.open('x') as out:
         json.dump(value, out, indent=2)
         out.write('\n')
+        out.flush()
+        os.fsync(out.fileno())
     temp.chmod(0o600)
     temp.rename(path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
 
 
 def selected_old_points(points, keep=2):
@@ -42,14 +47,144 @@ def selected_old_points(points, keep=2):
     return completed[keep:]
 
 
-def regular_files(roots):
+def verify_completed_points(root, points):
+    for point in points:
+        if point.get('complete') is not True:
+            continue
+        cipher = root/point['name']/'recovery.cms'
+        if cipher.is_symlink() or not cipher.is_file() or digest(cipher) != point.get('ciphertextSha256'):
+            raise ValueError('Completed recovery point failed checksum; retain all points')
+
+
+def remove_verified_components(point, manifest):
+    """Remove only known, checksum-matching temporary components, never proofs."""
+    allowed = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz'}
+    if manifest.get('format') != 2 or set(manifest.get('files', {})) != allowed:
+        raise ValueError('Invalid cleanup manifest')
+    # Validate all first: a failure preserves every remaining component.
+    for name, expected in manifest['files'].items():
+        path = point/name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != expected['bytes'] or digest(path) != expected['sha256']:
+            raise ValueError('Temporary component changed; refuse cleanup')
+    for name in allowed:
+        (point/name).unlink()
+
+
+def unpack_verified_bundle(bundle, destination):
+    """After authenticated CMS decryption, extract only the format-2 envelope.
+
+    Does not restore DB or unpack root-addressed nested archives. Those require
+    an isolated restore target; never extract these directly over production.
+    """
+    names = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz', 'manifest.json'}
+    destination = Path(destination)
+    destination.mkdir(mode=0o700, exist_ok=False)
+    with tarfile.open(bundle, 'r:*') as archive:
+        members = archive.getmembers()
+        if len(members) != len(names) or {m.name for m in members} != names or any(not m.isfile() for m in members):
+            raise ValueError('Invalid recovery envelope')
+        for member in members:
+            with archive.extractfile(member) as src, (destination/member.name).open('xb') as dst:
+                shutil.copyfileobj(src, dst)
+    manifest = json.loads((destination/'manifest.json').read_text())
+    if manifest.get('format') != 2 or set(manifest.get('files', {})) != names-{'manifest.json'}:
+        raise ValueError('Unsupported recovery manifest')
+    for name, expected in manifest['files'].items():
+        path = destination/name
+        if path.stat().st_size != expected['bytes'] or digest(path) != expected['sha256']:
+            raise ValueError('Recovered component checksum mismatch')
+    return manifest
+
+
+def require_no_incomplete_points(root):
+    """Lock must be held. Never pile a new dump on an unresolved failed job.
+
+    Do not infer that a timed-out docker exec's server-side dump has stopped.
+    Operator recovery must verify processes/FDs, clean only owned components,
+    then release that exact pin/lease and archive the failed job evidence.
+    """
+    completed_count = 0
+    for point in root.iterdir():
+        if not re.fullmatch(r'daily-[0-9TZ.]+(?:\.partial)?', point.name):
+            continue
+        if point.is_symlink() or not point.is_dir():
+            raise ValueError('Unresolved daily backup path; no new backup created')
+        proof = point/'routine.json'
+        if proof.is_symlink() or not proof.is_file():
+            raise ValueError('Incomplete daily backup requires explicit recovery')
+        try:
+            state = json.loads(proof.read_text())
+        except (ValueError, OSError) as error:
+            raise ValueError('Unreadable daily proof; no new backup created') from error
+        if state.get('name') != point.name or state.get('kind') != 'daily' or state.get('complete') is not True:
+            raise ValueError('Incomplete daily backup requires explicit recovery')
+        if state.get('format') == 2 and state.get('phase') != 'finalized':
+            raise ValueError('Backup cleanup/protection finalization requires explicit recovery')
+        if state.get('plaintextRetention') == 'temporary-for-one-time-restore':
+            # An intentionally retained verification copy must be resolved too.
+            raise ValueError('One-time restore components still require explicit cleanup')
+        completed_count += 1
+    if completed_count > 2:
+        raise ValueError('Previous retention incomplete; resolve before creating another point')
+
+
+def archive_selection(paths, root):
+    if not isinstance(paths, list):
+        raise ValueError('Invalid archive SQL result')
+    pattern = r'/private/full-sync/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.csv(?:\.gz)?'
+    selected = set()
+    for item in paths:
+        if not isinstance(item, dict) or not isinstance(item.get('path'), str) or not re.fullmatch(pattern, item['path']):
+            raise ValueError('Unexpected worker archive path')
+        path = root/Path(item['path']).name
+        if not path.exists() and item.get('state') in ('downloading', 'failed'):
+            continue
+        if not path.exists():
+            raise ValueError('Referenced archive missing')
+        selected.add(path)
+    return selected
+
+
+def regular_files(roots, profile='controls', selected=None):
+    if profile not in ('controls', 'media', 'archive'):
+        raise ValueError('Unknown archive profile')
+    uuid = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+    if profile == 'archive' and selected is None:
+        raise ValueError('Archive SQL selection required')
+    selected = set(selected or [])
     files = {}
     for root in roots:
         root = Path(root)
         if not root.is_absolute() or not root.exists() or root.is_symlink():
             raise ValueError('Configured archive root is missing or is a symlink')
         for path in ([root, *root.rglob('*')] if root.is_dir() else [root]):
+            if path != root and profile != 'controls':
+                # Only known in-flight names and regenerable thumbnails are
+                # omitted. Unknown files/directories fail closed.
+                if profile == 'media':
+                    if re.fullmatch(rf'\.{uuid}\.{uuid}(?:\.thumb)?\.tmp|{uuid}\.thumb\.webp', path.name):
+                        continue
+                    valid = re.fullmatch(rf'{uuid}\.webp', path.name)
+                else:
+                    if re.fullmatch(rf'{uuid}\.csv\.partial', path.name):
+                        continue
+                    valid = re.fullmatch(rf'{uuid}\.csv(?:\.gz)?', path.name)
+                    if valid and path.parent == root and path not in selected:
+                        continue
+                if path.parent != root or not valid:
+                    raise ValueError('Unexpected immutable archive input')
             st = path.lstat()
+            if profile != 'controls' and path != root and not stat.S_ISREG(st.st_mode):
+                raise ValueError('Immutable source must be a regular file')
+            if profile == 'media' and path != root:
+                # Upload publishes an immutable original via link then unlinks
+                # its private temporary name. Wait only for this bounded window.
+                for attempt in range(10):
+                    if st.st_nlink != 2: break
+                    time.sleep(0.05)
+                    st = path.lstat()
+
             name = str(path).lstrip('/')
             common = dict(mode=stat.S_IMODE(st.st_mode), uid=st.st_uid, gid=st.st_gid)
             if stat.S_ISDIR(st.st_mode):
@@ -63,11 +198,13 @@ def regular_files(roots):
                 files[name] = dict(type='file', sha256=digest(path), bytes=st.st_size, **common)
             else:
                 raise ValueError('Archive input contains a hard link or special file')
+    if profile == 'archive' and not selected.issubset({Path('/'+name) for name in files}):
+        raise ValueError('Selected archive is missing')
     return files
 
 
-def pack_roots(output, roots):
-    files = regular_files(roots)
+def pack_roots(output, roots, profile='controls', selected=None):
+    files = regular_files(roots, profile, selected)
     with tarfile.open(output, 'x:gz', compresslevel=6) as archive:
         for name in sorted(files):
             archive.add('/'+name, arcname=name, recursive=False)
@@ -101,8 +238,8 @@ def pack_roots(output, roots):
 def reserve_bytes(database, files):
     if any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in (database, files)):
         raise ValueError('Invalid backup size measurement')
-    # Original verified components, temporary compressed container and ciphertext
-    # coexist briefly. Keep this transient peak below the same 70% data budget.
+    # Compressed components plus streaming ciphertext coexist. Conservative
+    # current-size headroom also covers WAL/growth; never use full-catalog demand.
     return (database + files) * 33 // 10 + 128 * 1024**2
 
 
@@ -123,7 +260,9 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('--kind', choices=['daily', 'release'], default='daily')
+    parser.add_argument('--kind', choices=['daily'], default='daily')
+    parser.add_argument('--retain-for-restore', action='store_true',
+                        help='Keep this point components for one explicit isolated restore; never the routine default')
     args = parser.parse_args()
     config_stat = args.config.lstat()
     if os.getuid() != 0 or not stat.S_ISREG(config_stat.st_mode) or config_stat.st_uid != 0 or stat.S_IMODE(config_stat.st_mode) & 0o077:
@@ -131,6 +270,8 @@ def main():
     config = json.loads(args.config.read_text())
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', config['database']):
         raise ValueError('Explicit current production database required')
+    if not re.fullmatch(r'[a-f0-9]{40}', config.get('releaseId', '')):
+        raise ValueError('Reviewed active release binding required')
     backup_root = Path(config['backupRoot'])
     if backup_root != ROOT/'backups/ext07' or backup_root.is_symlink():
         raise ValueError('Use the dedicated EXT07 backup root')
@@ -151,7 +292,8 @@ def main():
     backup_root.mkdir(mode=0o700, exist_ok=True)
     lock = (backup_root/'routine.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    require_no_incomplete_points(backup_root)
+    point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     point = backup_root/point_name
     if point.exists() or point.with_suffix('.partial').exists():
         raise ValueError('Recovery point already exists')
@@ -181,63 +323,97 @@ def main():
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
         fs = os.statvfs(backup_root)
         total, used = fs.f_blocks*fs.f_frsize, (fs.f_blocks-fs.f_bfree)*fs.f_frsize
-        if args.kind == 'daily':
-            spec = importlib.util.spec_from_file_location('capacity_measure', Path(__file__).with_name('capacity-measure.py'))
-            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-            if module.config()['database'] != config['database']:
-                raise ValueError('Capacity and recovery database bindings differ')
-            measured = module.measure()
-            if measured is None or not measured.get('sampleEvidenceSufficient'):
-                raise ValueError('Fresh measured capacity evidence required before daily backup')
-            if measured['diskTotalBytes'] != total:
-                raise ValueError('Backup filesystem changed')
-            reserve = max(0, measured['projectedPeakBytes'] - measured['currentUsedBytes'])
-        else:
-            # Initial release recovery point precedes the first detail sample.
-            # Conservative current-size preflight does not authorize full import.
-            reserve = reserve_bytes(database_bytes, file_bytes)
+        # Backup protects data that exists now. A future full-catalog budget
+        # must never prevent a current daily recovery point from being created.
+        reserve = reserve_bytes(database_bytes, file_bytes)
         if used + reserve >= total * .70:
             raise ValueError('Recovery point transient peak would exceed 70% disk budget')
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
-        paused = [name for name in ('full-worker', 'web') if name in running]
+        # The BE lease serializes acquisition with ALL physical media purges.
+        # Persisted until explicit release: a killed backup remains protective.
+        lease = config.get('mediaLeaseCommand')
+        if not isinstance(lease, list) or not lease or not all(isinstance(x, str) for x in lease):
+            raise ValueError('Reviewed media deletion lease command required')
+        point.mkdir(mode=0o700)
+        state.update(phase='acquiring-protection', ownerPid=os.getpid())
+        atomic_json(point/'routine.json', state)
+        call(lease+['acquire', '--reference', reference])
+        pinned = False
+        archive_finished = False
         try:
-            for service in paused:
-                call(compose+['stop', '--timeout', '90', service])
             archive_control('archive-pin', reference)
-            call(runtime+['backup', '--keep-stopped', '--backup', str(point)])
-            manifest = json.loads((point/'manifest.json').read_text())
-            if manifest['sourceDatabase'] != config['database']:
-                raise ValueError('Recovery point database mismatch')
-            for name, key in [('database.dump', 'databaseSha256'), ('media.tar', 'mediaTarSha256')]:
-                if digest(point/name) != manifest[key]:
-                    raise ValueError('Runtime backup checksum mismatch')
-            state['archives'] = pack_roots(point/'source-archives.tar.gz', [archive_root])
-            state['controls'] = pack_roots(point/'controls.tar.gz', controls)
-            # The legacy runtime emits an uncompressed media tar. Compress it here;
-            # preserve original until off-host decrypt/restore verification succeeds.
-            state['databaseSha256'] = manifest['databaseSha256']
-            state['mediaTarSha256'] = manifest['mediaTarSha256']
-            state['sourceArchivesSha256'] = digest(point/'source-archives.tar.gz')
-            state['controlsSha256'] = digest(point/'controls.tar.gz')
+            pinned = True
+            state['phase'] = 'dump-and-pack'
+            atomic_json(point/'routine.json', state)
+            # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
+            # comparison. The archive manifest belongs to this dump, not later SQL.
+            with (point/'database.dump').open('xb') as dump:
+                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
+                    '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
+                    '--lock-wait-timeout=5000'], check=True, stdout=dump, stderr=log, timeout=1800)
+            with (point/'database.dump').open('rb') as dump:
+                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
+                    check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
+            media = pack_roots(point/'media.tar.gz', media_roots, 'media')
+            paths = json.loads(subprocess.check_output(compose+['exec', '-T', 'postgres', 'psql', '-X',
+                '-U', 'postgres', '-d', config['database'], '-Atq', '-v', 'ON_ERROR_STOP=1', '-c',
+                "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
+            selected = archive_selection(paths, archive_root)
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected)
+            controls_manifest = pack_roots(point/'controls.tar.gz', controls)
+            manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
+                createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
+                files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
+                       for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
+            atomic_json(point/'manifest.json', manifest)
+            archive_finished = True
+            # Stream the outer tar directly into encryption: do not write another
+            # full plaintext container. Inputs remain until ciphertext is complete.
+            state['phase'] = 'encrypting'
+            atomic_json(point/'routine.json', state)
+            cipher = point/'recovery.cms'
+            encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
+                '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
+                stdout=log, stderr=log)
+            try:
+                with tarfile.open(fileobj=encryption.stdin, mode='w|') as tar:
+                    for name in [*manifest['files'], 'manifest.json']:
+                        tar.add(point/name, arcname=name, recursive=False)
+                encryption.stdin.close()
+                if encryption.wait(timeout=300) != 0:
+                    raise ValueError('Encryption failed')
+            finally:
+                if encryption.stdin and not encryption.stdin.closed:
+                    encryption.stdin.close()
+                if encryption.poll() is None:
+                    encryption.terminate()
+                    try: encryption.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        encryption.kill(); encryption.wait(timeout=10)
+            if cipher.stat().st_size <= 0:
+                raise ValueError('Empty encrypted point')
+            with cipher.open('rb') as persisted:
+                os.fsync(persisted.fileno())
+            state.update(complete=True, phase='encrypted', archiveValidation='checksums-and-dump-directory',
+                restoreValidation='not-run', offsite='pending', format=2,
+                plaintextRetention='temporary-for-one-time-restore' if args.retain_for_restore else 'remove-after-encryption',
+                ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size,
+                completedAt=datetime.now(timezone.utc).isoformat())
+            atomic_json(point/'routine.json', state)
+            # Successful ciphertext + independently checked source archive is a
+            # creation proof, NOT a decrypt/restore proof. Keep known baseline.
+            if not args.retain_for_restore:
+                remove_verified_components(point, manifest)
         finally:
-            failures = []
-            for service in ['api', *reversed(paused)]:
-                if service not in running:
-                    continue
-                try: call(compose+['start', service])
-                except subprocess.CalledProcessError: failures.append(service)
-            if failures:
-                raise RuntimeError('Failed to resume: '+', '.join(failures))
-        # Encryption happens after query services have resumed. The private key
-        # stays off host; this is not an off-host/decryption success claim.
-        payload = point/'recovery.tar.gz'
-        with tarfile.open(payload, 'x:gz', compresslevel=6) as tar:
-            for name in ['database.dump', 'media.tar', 'source-archives.tar.gz', 'controls.tar.gz', 'manifest.json']:
-                tar.add(point/name, arcname=name, recursive=False)
-        cipher = point/'recovery.cms'
-        call(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER', '-aes-256-gcm', '-in', str(payload), '-out', str(cipher), str(config['certificate'])])
-        payload.unlink()  # temporary outer container; original verified components remain
-        state.update(complete=True, ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size, completedAt=datetime.now(timezone.utc).isoformat())
+            # Release only our lease; stale references from an interrupted job
+            # require explicit recovery, never automatic expiry during a dump.
+            if archive_finished:
+                call(lease+['release', '--reference', reference])
+        # Retained point embeds the sources. Pins can now be released; failed
+        # jobs retain their archive pin until partial recovery material is handled.
+        if pinned:
+            archive_control('archive-release', reference)
+        state['phase'] = 'finalized'
         atomic_json(point/'routine.json', state)
         # Retention is narrow: failed/incomplete/unknown and release points stay.
         points = []
@@ -248,6 +424,9 @@ def main():
                     item = json.loads(proof.read_text())
                     if item.get('name') == child.name and item.get('reference') == 'backup:ext07:'+child.name:
                         points.append(item)
+        # Verify every survivor before considering an old point for deletion. A
+        # complete flag alone must never retire the last usable recovery point.
+        verify_completed_points(backup_root, points)
         for old in selected_old_points(points):
             old_point = backup_root/old['name']
             if digest(old_point/'recovery.cms') != old['ciphertextSha256']:

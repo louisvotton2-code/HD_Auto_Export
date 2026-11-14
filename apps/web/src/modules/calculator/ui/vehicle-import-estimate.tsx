@@ -5,6 +5,8 @@ import { useTranslations } from 'next-intl';
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
+import { useDestinationCountry } from '@/shared/ui/use-destination-country';
+import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
 import { calculateImportEstimate, type CalculationLine, type CountryCode } from '../index';
 import { countries, getCountryByCode } from '../config/countries';
 import { CALCULATOR_POWERTRAINS } from '../application/draft';
@@ -23,6 +25,7 @@ import { vehicleEstimateCopy } from '../application/vehicle-estimate-copy';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { FeeLine } from './fee-line';
 import { ManufactureRangeResult } from './manufacture-range-result';
+import { NumericDateInput } from './numeric-date-input';
 import styles from './vehicle-import-estimate.module.css';
 
 type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate' | 'customsDate'
@@ -52,12 +55,13 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const ta = useTranslations('Assumptions');
   const td = useTranslations('FeeDisplay');
   const copy = vehicleEstimateCopy[locale];
+  const preference = useDestinationCountry(undefined, vehicle.id);
   const prefix = useId();
   const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), initialDate, initialRates]);
   const manufactureRange = useMemo(() => vehicleManufacturePrefill(vehicle, initialDate).range, [identity]);
   const [state, setState] = useState(() => ({
     identity,
-    input: createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates),
+    input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates),
     manufactureEdited: false,
   }));
   const [ready, setReady] = useState(false);
@@ -65,9 +69,9 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // A changed DTO never renders an old result/seed, including before this effect runs.
   const current = state.identity === identity;
-  const input = current ? state.input : createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates);
+  const input = current ? state.input : createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates);
   const country = getCountryByCode(input.country)!;
-  const active = ready && !disabled && current;
+  const active = ready && preference.ready && !disabled && current && input.country === preference.country;
   const sourceRange = current && !state.manufactureEdited && input.manufactureDate === ''
     && isManufactureMonthRange(manufactureRange) ? manufactureRange : undefined;
   const activeRange = country.needsManufactureDate ? sourceRange : undefined;
@@ -88,15 +92,17 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   };
 
   useEffect(() => {
-    setState((previous) => previous.identity === identity ? previous : {
-      identity, input: createVehicleEstimateDraft(vehicle, 'RU', initialDate, initialRates),
-      manufactureEdited: false,
-    });
+    if (!preference.ready) return;
+    setState(previous => previous.identity === identity
+      ? previous.input.country === preference.country ? previous : {
+        ...previous, input: { ...previous.input, country: preference.country, importerType: 'individual', ...deriveRates(initialRates, preference.country, previous.input.currency) },
+      }
+      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates), manufactureEdited: false });
     setExpanded(new Set());
     setManualRates(false);
     setReady(true);
     // identity includes all consumed facts/date/rates; equal DTO objects retain edits and the manual label.
-  }, [identity]);
+  }, [identity, preference.country, preference.ready]);
 
   function update<K extends keyof VehicleEstimateDraft>(key: K, value: VehicleEstimateDraft[K]) {
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
@@ -111,6 +117,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     }));
   }
   function changeCountry(code: CountryCode) {
+    preference.selectCountry(code);
     setManualRates(false);
     setState((previous) => ({ ...previous, input: {
       ...previous.input, country: code, importerType: 'individual',
@@ -134,11 +141,14 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
-      <input id={id} name={key} value={input[key] ?? ''} type={type ?? 'text'}
+      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale}
+        onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
+        <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
+        <input id={id} name={key} value={input[key] ?? ''} type="text"
         inputMode={type ? undefined : 'decimal'} autoComplete="off" spellCheck={false}
         aria-invalid={Boolean(error)} aria-describedby={describedBy || undefined}
         onChange={(event) => update(key, event.target.value)} />
+      </>}
       {error && <small id={`${id}-error`} className={styles.error}>{te(errors[error] ?? 'invalid_number')}</small>}
       {note && <small id={`${id}-note`} className={styles.dateNote}>{note}</small>}
     </div>;
@@ -188,7 +198,8 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       })} />;
   }
 
-  return <div className={styles.panel} data-testid="vehicle-import-estimate" data-country={country.code}>
+  return <div className={styles.panel} data-testid="vehicle-import-estimate" data-country={country.code} data-country-ready={preference.ready}>
+    <DestinationCountryUrlObserver />
     <p className={styles.intro}>{copy.facts}</p>
     {country.personalReference && <p className={styles.note}>{t('personal')}</p>}
     <fieldset className={styles.fields} disabled={!active}>
@@ -196,7 +207,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         <label htmlFor={`${prefix}-country`}>{t('destination')}</label>
         <select id={`${prefix}-country`} name="country" value={country.code}
           onChange={(event) => changeCountry(event.target.value as CountryCode)}>
-          {countries.map((item) => <option key={item.code} value={item.code}>{item.flag} {tc(item.code)}</option>)}
+          {countries.map((item) => <option key={item.code} value={item.code}>{tc(item.code)}</option>)}
         </select>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>
@@ -229,7 +240,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       {country.needsSteering && select('steering', t('steering'), <>{emptyOption}
         <option value="left">{t('left')}</option><option value="right">{t('right')}</option></>)}
       <details className={styles.settings} open>
-        <summary>{t('advanced')}<span aria-hidden="true">⌄</span></summary>
+        <summary>{t('advanced')}<Icon name="chevron" size={14} /></summary>
         <div className={styles.settingsFields}>
           {field('customsDate', t('customsDate'), { type: 'date' })}
           {country.needsPrice && field('transactionRate', t('transactionRate'), { unit: `${country.currency}/${input.currency}` })}
@@ -287,7 +298,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         )}
       </div>
     </div>}
-    <a className={styles.fullTool} href={toolHref} data-testid="vehicle-full-calculator">{copy.completeTool}<span aria-hidden="true">↗</span></a>
+    <a className={styles.fullTool} href={preference.ready ? toolHref : `/${locale}/calculator/`} data-testid="vehicle-full-calculator">{copy.completeTool}<Icon name="diagonal" size={15} /></a>
     {active && !seed && <p className={styles.note}>{copy.seedHint}</p>}
   </div>;
 }

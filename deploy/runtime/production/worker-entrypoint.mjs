@@ -19,6 +19,14 @@ export function workerEnvironment(input, password, uid = process.getuid?.()) {
 }
 
 export function workerInvocation(args) {
+  if (args[0] === 'backup-lease') {
+    if (args.length !== 4 || !['acquire', 'release'].includes(args[1]) || args[2] !== '--reference' || !/^backup:[A-Za-z0-9:_-]{1,180}$/.test(args[3])) {
+      throw new Error('Backup lease requires an explicit bounded operation and reference');
+    }
+    // No HTTP server or media ownership scan. Reuse the non-root, disabled-
+    // translation worker credential boundary for this one database-only CLI.
+    return {argv: ['dist/backup-lease-cli.js', ...args.slice(1)], formalFx: false, fullSync: false};
+  }
   if (args[0] === 'full-sync') {
     if (!['configure', 'run', 'serve', 'status', 'control', 'archive-pin', 'archive-release'].includes(args[1])) {
       throw new Error('Full sync requires an explicit supported operation');

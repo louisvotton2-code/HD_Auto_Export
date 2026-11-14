@@ -71,14 +71,13 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
       page.on('request', collect);
       try {
         const limitedResponse = page.waitForResponse((response) => pathOf(response.url()) === '/api/v1/vehicles');
-        // The first submit also refreshes facets when the explicit default export scope is added.
-        const initialFacets = page.waitForResponse((response) => pathOf(response.url()) === '/api/v1/vehicle-filters');
+        // Make and page changes leave the q/price facet scope unchanged, so only
+        // the vehicle list is read; no implicit export scope is added on submit.
         await form.locator('[type="submit"]').last().click();
         const response = await limitedResponse;
         const limitedAt = Date.now();
         expect(response.status()).toBe(429);
         expect(response.headers()['retry-after']).toBe('2');
-        expect((await initialFacets).status()).toBe(200);
         await expect(current).toHaveAttribute('data-freshness', 'error');
         const status = current.getByTestId('public-resource-status');
         await expect(status).toContainText(scenario.rateMessage);
@@ -90,7 +89,7 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
         const scroll = await page.evaluate(() => scrollY);
         const businessUrls = () => outgoing.filter(isBusiness).map((entry) => entry.url());
         const initialBusiness = businessUrls();
-        expect(initialBusiness.map(pathOf).sort()).toEqual(['/api/v1/vehicle-filters', '/api/v1/vehicles']);
+        expect(initialBusiness.map(pathOf)).toEqual(['/api/v1/vehicles']);
 
         // Recovery of the fixture alone must not bypass the browser's retained Retry-After.
         await setRateLimited(request, false);

@@ -4,6 +4,7 @@ import {
   PublicVehicleCardListSchema,
   type PublicVehicleCard,
   PublicVehicleResponseSchema,
+  PublicVehicleInlineResponseSchema,
   type PublicVehicle,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -48,6 +49,22 @@ export const localizedVehicleSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicVehicleResponseSchema.parse(value);
     validateVehicle(result.data, locale, priceView, true);
+    return result;
+  },
+});
+/** New fields are accepted only for the explicit inline detail projection. */
+export const localizedInlineVehicleSchema = (locale: Locale, priceView?: 'usd') => ({
+  parse(value: unknown) {
+    const result = PublicVehicleInlineResponseSchema.parse(value);
+    validateVehicle(result.data, locale, priceView, true);
+    const inline = result.data.inspectionInline;
+    const fields = [
+      ...inline.conclusions.flatMap(item => [item.name, item.value]),
+      ...inline.defects.flatMap(item => [item.category, item.part, item.group, item.name, item.value]),
+      ...result.data.configurationInline.flatMap(item => [item.name, item.value]),
+    ];
+    for (const field of fields) if (field && field.requestedLocale !== locale)
+      throw new Error('Localized inline detail mismatch');
     return result;
   },
 });

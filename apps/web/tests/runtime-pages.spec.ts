@@ -1,3 +1,4 @@
+import { fillNumericDate } from './helpers/numeric-date';
 import { expect, test } from '@playwright/test';
 
 const destinations = [
@@ -82,8 +83,11 @@ test('home and calculator entries remain usable with JavaScript disabled', async
   await homeLink.click();
   await expect(page.getByTestId('home-page')).toBeVisible();
   await page.goto('/zh/calculator/');
-  const calculatorLink = page.getByRole('link', { name: '前往计算器', exact: true });
+  const countryChoices = page.locator('main').getByRole('navigation');
+  await expect(countryChoices.getByRole('link')).toHaveCount(7);
+  const calculatorLink = countryChoices.getByRole('link', { name: '俄罗斯', exact: true });
   await expect(calculatorLink).toHaveAttribute('href', '/zh/calculator/russia/');
+  await expect(countryChoices.getByRole('link', { name: '哈萨克斯坦', exact: true })).toHaveAttribute('href', '/zh/calculator/kazakhstan/');
   await calculatorLink.click();
   await expect(page).toHaveURL(/\/zh\/calculator\/russia\/$/);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
@@ -169,7 +173,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-11');
   await expect(page.getByTestId('total')).toBeVisible();
-  await page.locator('#customsDate').fill('2026-09-30');
+  await fillNumericDate(page, 'customsDate', '2026-09-30');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-09-30');

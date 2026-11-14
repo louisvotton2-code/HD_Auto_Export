@@ -1,6 +1,7 @@
 import type { MouseEvent } from 'react';
 import type { PublicVehicleCardList, PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
 import { catalogPagination } from '../catalog-pagination';
 import { publicCatalogHref } from '../public-presentation';
 import { publicVehicleMessages } from '../public-messages';
@@ -55,9 +56,9 @@ export function CatalogPagination({ result, query, locale, onPageClick }: {
     <nav className={styles.pagination} aria-label={t.pagination} data-catalog-pagination>
       {pager.previous !== null ? (
         <a className={styles.pageButton} href={publicCatalogHref(locale, query, pager.previous)} rel="prev" aria-label={t.previous} onClick={onPageClick}>
-          <span aria-hidden="true">←</span>
+          <Icon name="arrow-left" size={18} />
         </a>
-      ) : <span className={styles.pageButton} aria-disabled="true" aria-label={t.previous}><span aria-hidden="true">←</span></span>}
+      ) : <span className={styles.pageButton} aria-disabled="true" aria-label={t.previous}><Icon name="arrow-left" size={18} /></span>}
       {pager.items.map((item) => item === 'ellipsis' ? (
         <span key="ellipsis" className={styles.pageDots} aria-hidden="true">…</span>
       ) : item === page ? (
@@ -67,9 +68,9 @@ export function CatalogPagination({ result, query, locale, onPageClick }: {
       ))}
       {pager.next !== null ? (
         <a className={styles.pageButton} href={publicCatalogHref(locale, query, pager.next)} rel="next" aria-label={t.next} onClick={onPageClick}>
-          <span aria-hidden="true">→</span>
+          <Icon name="arrow" size={18} />
         </a>
-      ) : <span className={styles.pageButton} aria-disabled="true" aria-label={t.next}><span aria-hidden="true">→</span></span>}
+      ) : <span className={styles.pageButton} aria-disabled="true" aria-label={t.next}><Icon name="arrow" size={18} /></span>}
       <span className={styles.pageInfo} aria-label={pageInfoLabel} data-catalog-page-count={pager.totalPages ?? 'unknown'}>
         {pager.outOfRange ? labels.outOfRange(page, pager.totalPages!) : (
           <>{pager.totalKind === 'accessible' && `${labels.accessible} `}{page.toLocaleString(locale)}{pager.totalPages !== null && <> / {pager.totalPages.toLocaleString(locale)}</>}</>

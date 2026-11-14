@@ -1,15 +1,15 @@
 'use client';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { VehicleSegmentContext } from '../application/use-public-vehicle-segment';
-import { type PublicVehicle } from '@hd/contracts/public';
+import { type PublicVehicleInline } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { liveVehicleCopy } from '../live-copy';
 import { publicVehicleMessages } from '../public-messages';
 import { PublicVehicleDetail } from './public-vehicle-detail';
 import { PublicResourceStatus } from './public-resource-status';
-import { localizedVehicleSchema } from '../localized-projection';
-import { publicQueryString, publicUsdView } from '../public-query';
+import { localizedInlineVehicleSchema } from '../localized-projection';
+import { publicQueryString, publicInlineDetailView } from '../public-query';
 import { PublicCatalogLink } from './public-catalog-link';
 import type { VehicleDestination } from './vehicle-gallery';
 
@@ -22,19 +22,19 @@ export function PublicDetailResource({
   renderBudget,
 }: {
   locale: Locale;
-  vehicle: PublicVehicle | null;
+  vehicle: PublicVehicleInline | null;
   id: string;
   destinations: VehicleDestination[];
   initialRetryAfter?: number;
-  renderBudget?: (vehicle: PublicVehicle, current: boolean) => ReactNode;
+  renderBudget?: (vehicle: PublicVehicleInline, current: boolean) => ReactNode;
 }) {
   const initial = useMemo(
     () => (vehicle ? { data: vehicle, meta: { requestId: 'server-rendered' } } : null),
     [vehicle],
   );
-  const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicUsdView })}`;
+  const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicInlineDetailView })}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
-  const resource = usePublicResource(url, initial, localizedVehicleSchema(locale, 'usd'), {
+  const resource = usePublicResource(url, initial, localizedInlineVehicleSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/${id}/`,
     initialRetryAfter,
     cooldown,

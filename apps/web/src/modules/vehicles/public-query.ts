@@ -8,8 +8,9 @@ import type { Locale } from '@/i18n/routing';
 import { moneyCents } from '@/shared/lib/public-vehicle-price';
 
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
+export const publicInlineDetailView = { ...publicUsdView, projection: 'detail-inline-v1' } as const;
 
-export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency' | 'exportStatus'>;
+export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;
 
 /** Website whole-dollar limits match the rounded displayed value. Precise API limits stay exact. */
 function wholeDollarBound(amount: string | undefined, edge: 'min' | 'max') {
@@ -32,16 +33,16 @@ function websitePriceBounds(scope: UsdFilterScope) {
 }
 
 export function publicUsdFilterQuery(locale: Locale, scope: UsdFilterScope = {}) {
-  return { catalog: 'curated', locale, q: scope.q, exportStatus: scope.exportStatus, ...websitePriceBounds(scope), ...publicUsdView };
+  return { catalog: 'curated', locale, q: scope.q, ...websitePriceBounds(scope), ...publicUsdView };
 }
 
 export function publicUsdCatalogQuery(query: PublicVehicleQuery) {
-  return { ...query, ...websitePriceBounds(query), ...publicUsdView, projection: 'card' as const };
+  const { exportStatus: _ignored, ...allListings } = query;
+  return { ...allListings, ...websitePriceBounds(query), ...publicUsdView, projection: 'card' as const };
 }
 
 export const catalogFilterKeys = [
   'q',
-  'exportStatus',
   'sort',
   'make',
   'model',

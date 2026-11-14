@@ -1,3 +1,4 @@
+import {physicalCleanupAllowed} from '../backup-lease.js';
 import { activityChanges } from '../activity/changes.js';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
@@ -107,6 +108,7 @@ export class MediaService {
   }
   private async purgeDeleted(id:string,vehicleId:string) {
     return this.db.transaction(async tx=>{
+      if(!await physicalCleanupAllowed(tx))return false;
       const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[vehicleId]);
       if(!vehicle.rowCount) return false;
       const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];

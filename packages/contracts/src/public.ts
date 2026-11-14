@@ -5,6 +5,7 @@ import { ConfigurationDisplaySchema } from './configuration-display.js';
 import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from './catalog-cache.js';
 export * from './catalog-cache.js';
 export * from './configuration-display.js';
+export * from './configuration-semantics.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
@@ -123,6 +124,20 @@ export type PublicVehicle = z.infer<typeof PublicVehicleSchema>;
 export const PublicVehicleResponseSchema = responseSchema(PublicVehicleSchema).extend({ meta: PublicCatalogResponseMetaSchema });
 export type PublicVehicleResponse = z.infer<typeof PublicVehicleResponseSchema>;
 
+/** Explicit opt-in detail contract; legacy strict schemas and stored projections stay unchanged. */
+export const PublicInspectionInlineSchema=z.strictObject({
+  conclusions:z.array(PublicInspectionConclusionSchema).max(3),defects:z.array(PublicInspectionEntrySchema).max(8),
+  normalItemCount:z.number().int().nonnegative(),hasMoreConclusions:z.boolean(),hasMoreDefects:z.boolean(),
+});
+export const PublicConfigurationInlineItemSchema=z.strictObject({id:z.string().min(1).max(450),semanticKey:z.string().regex(/^[a-z][A-Za-z0-9]{0,79}$/).nullable(),name:DisplayTextSchema,value:DisplayTextSchema});
+export const PublicVehicleInlineSchema=PublicVehicleSchema.safeExtend({projection:z.literal('detail-inline-v1'),
+  inspectionSummary:PublicInspectionSummarySchema,inspectionInline:PublicInspectionInlineSchema,
+  configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200)});
+export type PublicVehicleInline=z.infer<typeof PublicVehicleInlineSchema>;
+export const PublicVehicleInlineResponseSchema=responseSchema(PublicVehicleInlineSchema).extend({meta:PublicCatalogResponseMetaSchema});
+export type PublicVehicleInlineResponse=z.infer<typeof PublicVehicleInlineResponseSchema>;
+
+
 /** HTTP adapters convert query integers explicitly before parsing this logical query. */
 const catalogQueryFields={
   locale: LocaleSchema.default('ru'),
@@ -166,6 +181,11 @@ export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.def
   if(value.priceView&&value.view!=='localized')ctx.addIssue({code:'custom',path:['priceView'],message:'USD display requires localized view'});
 });
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
+export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({projection:z.literal('detail-inline-v1').optional()}).superRefine((value,ctx)=>{
+  if(value.projection && value.view!=='localized')ctx.addIssue({code:'custom',path:['view'],message:'Inline detail requires localized view'});
+});
+export type PublicVehicleDetailQuery=z.infer<typeof PublicVehicleDetailQuerySchema>;
+
 export const PublicFilterQuerySchema = z.strictObject(catalogQueryFields).superRefine(validateCatalogQuery);
 export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
 export const CatalogMetaSchema = PublicCatalogResponseMetaSchema.extend({

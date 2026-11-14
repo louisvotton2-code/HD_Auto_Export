@@ -70,3 +70,22 @@
     font-size:17px
   }
 }
+
+.service { scroll-margin-top: 110px; }
+.findings { margin-block: 22px; }
+.findings h3 { color: #f0e9df; font-size: 15px; margin-bottom: 12px; }
+.findings dl { margin: 0; }
+.findings dl > div { padding-block: 10px; border-bottom: 1px solid #ffffff14; }
+.findings dt { color: #c4b39e; font-size: 12px; }
+.findings dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.findings ul { list-style: none; padding: 0; display: grid; gap: 12px; }
+.findings li { padding: 14px; border-left: 3px solid #dcad7b; background: #d5a66b0a; overflow-wrap: anywhere; }
+.findings li > strong { display: block; color: #f0d3b1; }
+.findings li > small,
+.findings li > span { display: block; margin-top: 4px; }
+.findings li > span { font-size: 12px; }
+.findings li p { margin: 6px 0 0; }
+.salesNote { padding: 14px; border: 1px solid #ac85595c; border-radius: 8px; color: #e8c99f; }
+.policy { padding: 12px 14px; background: #ffffff06; border-radius: 8px; }
+.refund { color: #b7f0ca; font-weight: 750; }
+.customer { color: #ffdaa0; font-weight: 750; }

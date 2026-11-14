@@ -1,0 +1,4 @@
+.status{display:flex;align-items:center;gap:12px;margin:0;padding:20px;border:1px solid #ffffff1a;border-radius:12px;background:#201c18;color:#e9d5bc;line-height:1.6}
+.status svg{flex:none;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.status svg{animation:none}}

@@ -2,13 +2,14 @@ import { equipmentIconName } from '../equipment-icon';
 import { equipmentIconSvg, type EquipmentSvg } from '../equipment-icon-svg';
 
 /** Decorative item geometry only; the adjacent configuration name remains the accessible label. */
-export function EquipmentIcon({ label, fieldId, size = 18, className }: {
+export function EquipmentIcon({ label, fieldId, semanticKey, size = 18, className }: {
   label?: string | null;
   fieldId?: string;
+  semanticKey?: string | null;
   size?: number;
   className?: string;
 }) {
-  const name = equipmentIconName(label, fieldId);
+  const name = equipmentIconName(label, fieldId, semanticKey);
   const glyph: EquipmentSvg = equipmentIconSvg[name];
   return <svg
     data-equipment-icon={name}

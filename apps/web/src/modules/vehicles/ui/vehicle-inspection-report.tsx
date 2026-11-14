@@ -139,7 +139,3 @@ export function VehicleInspectionReport({ id, inspection, locale }: { id: string
     </section>}
   </section>;
 }
-
-export function VehicleReportLink({ reportId, locale }: { reportId: string; locale: Locale }) {
-  return <a className={styles.reportLink} href={`#${reportId}`}><Icon name="document" size={16} />{externalDetailCopy[locale].report}</a>;
-}

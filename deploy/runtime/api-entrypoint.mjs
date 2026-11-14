@@ -1,5 +1,5 @@
-import {readFile, readdir, lstat, chown} from 'node:fs/promises';
-import path from 'node:path';
+import {readFile, lstat, chown} from 'node:fs/promises';
+import {prepareMediaOwnership} from './media-ownership.mjs';
 import {deploymentDatabaseIdentity} from './database-name.mjs';
 import {spawn} from 'node:child_process';
 const scale=process.env.EXTERNAL_CATALOG_MODE==='synthetic-scale';
@@ -21,12 +21,7 @@ if(!Number.isSafeInteger(uid)||uid<=0||!Number.isSafeInteger(gid)||gid<0) throw 
 const root=process.env.MEDIA_ROOT;
 const rootStat=await lstat(root);
 if(!rootStat.isDirectory()||rootStat.isSymbolicLink()) throw new Error('Invalid media root');
-for(const name of await readdir(root)) {
-  if(!/^[0-9a-f-]{36}(?:\.thumb)?\.webp$/.test(name)) throw new Error('Unexpected media entry');
-  const file=path.join(root,name),stat=await lstat(file);
-  if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1) throw new Error('Invalid media entry');
-  await chown(file,uid,gid);
-}
+await prepareMediaOwnership(root,uid,gid);
 await chown(root,uid,gid);
 process.setgroups([]);process.setgid(gid);process.setuid(uid);
 const child=spawn(process.execPath,process.argv.slice(2),{stdio:'inherit',env:process.env});

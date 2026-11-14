@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
+import { fillNumericDate } from './helpers/numeric-date';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Requires isolated public data fixtures.');
@@ -10,6 +11,10 @@ test.afterEach(async ({ request }) => {
 });
 const compact = (text: string) => text.replace(/\s+/g, '');
 async function fillIfVisible(scope: Locator, name: string, value: string) {
+  if (name === 'manufactureDate' || name === 'customsDate') {
+    if (await scope.locator(`[data-numeric-date="${name}"]`).isVisible()) await fillNumericDate(scope, name, value);
+    return;
+  }
   const field = scope.locator(`[name="${name}"]`);
   if (await field.isVisible()) await field.fill(value);
 }
@@ -122,7 +127,7 @@ test('the full calculator, reload and copied quote retain both complete range sc
   await setPublicFixtureState(request, { estimateDateRange: true });
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
-  await budget.locator('[name="customsDate"]').fill('2026-11-14');
+  await fillNumericDate(budget, 'customsDate', '2026-11-14');
   const bounds = budget.getByTestId('manufacture-range-total');
   await expect(bounds).toBeVisible();
   const before = compact(await bounds.innerText());
@@ -142,7 +147,7 @@ test('the full calculator, reload and copied quote retain both complete range sc
   await page.getByRole('button', { name: 'Copy estimate' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Lower-cost scenario');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Higher-cost scenario');
-  await month.fill('2024-02');
+  await fillNumericDate(page, 'manufactureDate', '2024-02');
   await expect(month).not.toHaveAttribute('aria-describedby');
   await expect(page.getByTestId('manufacture-range-result')).toHaveCount(0);
   await expect(page.getByTestId('total')).toBeVisible();
@@ -169,7 +174,10 @@ test('Russian detail budget fits a 320px screen and works without inventing miss
 test('the import calculator stays usable on both sides of the two-column breakpoints', async ({ page }) => {
   await page.goto('/en/cars/fixture_car_1/');
   const calculator = page.getByRole('complementary', { name: 'Import cost calculator' });
-  const contacts = page.locator('[data-vehicle-contacts="fixture_car_1"]');
+  const contacts = page.locator('#vehicle-contact-fixture_car_1 [data-vehicle-contacts="fixture_car_1"]');
+  await expect(contacts).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://t.me/HD_Auto_CN?"]')).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://wa.me/8618215932610?"]')).toHaveCount(1);
   const heading = page.locator('main h1');
   const destination = calculator.locator('[name="country"]');
   for (const width of [1023, 1024, 1180, 1279, 1280]) {
@@ -185,7 +193,7 @@ test('the import calculator stays usable on both sides of the two-column breakpo
   }
   await page.setViewportSize({ width: 1180, height: 1000 });
   await destination.selectOption('KZ');
-  await calculator.locator('[name="manufactureDate"]').fill('2024-02');
+  await fillNumericDate(calculator, 'manufactureDate', '2024-02');
   await expect(calculator.getByTestId('inline-estimate-total')).toContainText('KZT');
 
   const summary = page.locator('main summary').filter({ hasText: 'Detailed vehicle information' });
