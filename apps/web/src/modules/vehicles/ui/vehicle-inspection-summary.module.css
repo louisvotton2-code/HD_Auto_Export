@@ -81,6 +81,8 @@
 .findings ul { list-style: none; padding: 0; display: grid; gap: 12px; }
 .findings li { padding: 14px; border-left: 3px solid #dcad7b; background: #d5a66b0a; overflow-wrap: anywhere; }
 .findings li > strong { display: block; color: #f0d3b1; }
+.findings li > small,
+.findings li > span { display: block; margin-top: 4px; }
 .findings li > span { font-size: 12px; }
 .findings li p { margin: 6px 0 0; }
 .salesNote { padding: 14px; border: 1px solid #ac85595c; border-radius: 8px; color: #e8c99f; }
