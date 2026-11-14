@@ -1,3 +1,4 @@
+import { fillNumericDate } from './helpers/numeric-date';
 import { expect, test, type Page } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
@@ -125,7 +126,7 @@ test('expanded details recalculate branch explanations and formulas while a coll
   await page.locator('#price').fill('100');
   await page.locator('#transactionRate').fill('1');
   await page.locator('#euroRate').fill('1');
-  await page.locator('#manufactureDate').fill('2020-01');
+  await fillNumericDate(page, 'manufactureDate', '2020-01');
   const duty = page
     .locator('.fee-line')
     .filter({ has: page.locator('[data-method-key="AM.dutyMiddle"]') });
@@ -142,7 +143,7 @@ test('expanded details recalculate branch explanations and formulas while a coll
   await duty.getByTestId('fee-detail-toggle').click();
   await expect(duty.getByTestId('fee-method')).toContainText('取较大值 879.12 AMD');
   await expect(duty.getByTestId('fee-method')).not.toContainText('取较大值 2,000 AMD');
-  await page.locator('#manufactureDate').fill('2024-01');
+  await fillNumericDate(page, 'manufactureDate', '2024-01');
   const young = page.locator('[data-method-key="AM.dutyYoung"]');
   await expect(young).toBeVisible();
   await expect(page.locator('[data-method-key="AM.dutyMiddle"]')).toHaveCount(0);

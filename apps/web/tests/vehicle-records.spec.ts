@@ -1,3 +1,4 @@
+import { expectInlineInspection } from './helpers/inline-inspection';
 import { expect, test } from '@playwright/test';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
@@ -35,19 +36,17 @@ test('detail renders same-response inspection states without probing and keeps c
     if (status === 'available') {
       const summary = page.locator('[data-inspection-summary]');
       await expect(summary).toHaveAttribute('data-inspection-status', status);
-      const reportLink = summary.getByRole('link', { name: 'Посмотреть отчёт об осмотре', exact: true });
-      await expect(reportLink).toHaveAttribute('href', `/${locale}/cars/${vehicleId}/inspection/`);
-      await expect(reportLink).toHaveAttribute('target', '_blank');
-      await expect(reportLink).toHaveAttribute('rel', 'noopener noreferrer');
+      await expectInlineInspection(summary);
       await expect(summary.locator('button')).toHaveCount(0);
-      await expect(summary.locator('dl dd')).toHaveText(['32', '1']);
+      await expect(summary.locator('[data-inspection-complete-counts] dd')).toHaveText(['32', '1']);
       await expect(summary.locator('[data-inspection-category="accident"] small')).toHaveText('Проверено пунктов: 24 · Выявлено замечаний: 0');
     } else {
       const service = page.locator('[data-inspection-service]');
       await expect(service).toHaveAttribute('data-inspection-status', status);
       await expect(service).toContainText('Для этого объявления сейчас нет доступного исторического отчёта об осмотре.');
       await expect(service).toContainText('задаток возвращается полностью');
-      await expect(service).toContainText('клиент не оплачивает осмотр');
+      await expect(service).toContainText('осмотр оплачивает продавец');
+      await expect(service.locator('strong')).toHaveText(['задаток возвращается полностью', 'оплачивает клиент']);
       await expect(service).toContainText('осмотр оплачивает клиент');
       await expect(page.locator('[data-inspection-summary]')).toHaveCount(0);
       await expect(page.locator('main a[href*="/inspection/"]')).toHaveCount(0);

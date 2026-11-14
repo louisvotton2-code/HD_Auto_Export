@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleResponseSchema,
+  PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleResponseSchema, PublicVehicleInlineResponseSchema,
   type PublicCatalogCacheStamp, type PublicHomeSections,
 } from '@hd/contracts/public';
-import { makeImportedPublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { PublicApiError } from './public-http';
 import { SsrDtoCache } from './ssr-dto-cache';
 import { anonymousPublicEnvelope, canonicalPublicPath, createSsrPublicReader, type SsrPublicDescriptor, type SsrPublicEnvelope, type SsrAnonymousReader } from './ssr-public-reader';
@@ -84,6 +84,50 @@ describe('SSR-only versioned anonymous data reader', () => {
     expect(state.readAnonymous).toHaveBeenCalledTimes(6);
     expect(canonicalPublicPath('/api/v1/vehicles', { page: 2, locale: 'ru', make: 'byd' }))
       .toBe(canonicalPublicPath('/api/v1/vehicles', { make: 'byd', locale: 'ru', page: 2 }));
+  });
+
+  it('does not merge in-flight old/inline detail loads or reuse their cache values at the same public version', async () => {
+    const state = setup();
+    const vehicle = makeLocalizedPublicVehicleFixture('en');
+    vehicle.displayPrice = { status: 'ready', kind: 'asking', money: { amount: '23500.00', currency: 'USD' }, conversion: null };
+    const oldDetail = {
+      path: canonicalPublicPath(`/api/v1/vehicles/${vehicle.id}`, { locale: 'en', view: 'localized', priceView: 'usd' }),
+      priceView: 'usd' as const, schema: PublicVehicleResponseSchema,
+    };
+    const inlineDetail = {
+      path: canonicalPublicPath(`/api/v1/vehicles/${vehicle.id}`, { locale: 'en', view: 'localized', priceView: 'usd', projection: 'detail-inline-v1' }),
+      priceView: 'usd' as const, schema: PublicVehicleInlineResponseSchema,
+    };
+    const inlineVehicle = {
+      ...vehicle, projection: 'detail-inline-v1', configurationInline: [],
+      inspectionSummary: { status: 'no_report', contentLocale: null, checked: null, faults: null, categories: [] },
+      inspectionInline: { conclusions: [], defects: [], normalItemCount: 0, hasMoreConclusions: false, hasMoreDefects: false },
+    };
+    let release!: () => void;
+    const pendingLoad = new Promise<void>(resolve => { release = resolve; });
+    state.readAnonymous.mockImplementation(async request => {
+      await pendingLoad;
+      const data = request.path === inlineDetail.path ? inlineVehicle : vehicle;
+      return anonymousPublicEnvelope(request.schema.parse({ data, meta: { requestId: 'ignored', catalogCache: stamp() } }));
+    });
+    const pending = [state.read(oldDetail), state.read(inlineDetail), state.read(oldDetail), state.read(inlineDetail)];
+    try {
+      await vi.waitFor(() => expect(state.readAnonymous).toHaveBeenCalledTimes(2));
+    } finally {
+      release();
+    }
+    const values = await Promise.all(pending);
+    expect(values[0]!.data).not.toHaveProperty('projection');
+    expect(values[1]!.data).toMatchObject({ projection: 'detail-inline-v1', configurationInline: [] });
+    expect(values[2]!.data).not.toHaveProperty('projection');
+    expect(values[3]!.data).toMatchObject({ projection: 'detail-inline-v1' });
+    expect(state.cache.stats.entries).toBe(2);
+    expect(state.cache.loaded).toHaveLength(2);
+    const [oldWarm, inlineWarm] = await Promise.all([state.read(oldDetail), state.read(inlineDetail)]);
+    expect(oldWarm.data).not.toHaveProperty('projection');
+    expect(inlineWarm.data.projection).toBe('detail-inline-v1');
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.readVersion).toHaveBeenCalledTimes(6);
   });
 
   it('does not reuse an old public version or a different FX identity', async () => {

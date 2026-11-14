@@ -3,7 +3,9 @@
  * https://www.kmotors.shop/en/catalog/42713792 on 2026-11-14.
  * 44 labelled rows share 34 distinct item glyphs. Only path/circle geometry and
  * fixed currentColor paint are retained; no HTML, classes, scripts or URLs render.
- * The neutral fallback reuses HD Auto's shared information glyph.
+ * The neutral fallback reuses HD Auto's shared information glyph. The named core
+ * parameter glyphs below (engine through wheel) are HD Auto's local SVG additions,
+ * not reference-site extractions; keep their semantics in equipment-icon.ts.
  */
 export type EquipmentSvg = {
   fill: 'none' | 'currentColor';
@@ -13,6 +15,35 @@ export type EquipmentSvg = {
 };
 
 export const equipmentIconSvg = {
+  engine: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M7 8h9l3 3v7H8l-3-3v-5h2V8Z', 'M10 8V5h4M3 11v5M19 11h2v5h-2M10 11h5m-5 3h5'], circles: [],
+  },
+  motor: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M6 7h12v12H6V7ZM9 7V4h6v3M3 11h3m12 0h3M3 16h3m12 0h3', 'm13 9-4 5h4l-2 3 5-5h-4l1-3Z'], circles: [],
+  },
+  battery: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M4 7h16v13H4V7ZM7 7V4h3v3m4 0V4h3v3', 'M7 12h4m-2-2v4m5-2h3'], circles: [],
+  },
+  drivetrain: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M4 4h4v6H4V4Zm12 0h4v6h-4V4ZM4 14h4v6H4v-6Zm12 0h4v6h-4v-6Z', 'M8 7h8M8 17h8M12 7v10'], circles: [],
+  },
+  dimensions: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M8 4h12v12H8V4ZM4 4v12m-2-2 2 2 2-2M2 6l2-2 2 2M8 20h12m-2-2 2 2-2 2M10 18l-2 2 2 2'], circles: [],
+  },
+  door: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M5 20V9l6-6h8v17H5ZM8 10l5-5h4v5H8ZM14 14h3'], circles: [],
+  },
+  wheel: {
+    fill: 'none', strokeWidth: 1.7,
+    paths: ['M12 6v4m5.2-1L14 11m1.2 6-2-3.3M8.8 17l2-3.3M6.8 9l3.2 2'],
+    circles: [{ cx: 12, cy: 12, r: 9 }, { cx: 12, cy: 12, r: 6 }, { cx: 12, cy: 12, r: 2 }],
+  },
   "seat": {
     "fill": "none",
     "strokeWidth": 2,

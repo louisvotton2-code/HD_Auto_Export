@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VehiclePhoto } from './vehicle-photo';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
 import type { PublicVehicle } from '@hd/contracts/public';
 import { NavigationLink } from '@/shared/ui/navigation-link';
 import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
@@ -227,7 +228,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
             <p>{t.savedOnBrowser}</p>
           </div>
           <button type="button" className={styles.close} aria-label={t.close} onClick={close}>
-            ×
+            <Icon name="close" size={20} />
           </button>
         </div>
         <div
@@ -266,7 +267,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
                       aria-label={`${t.remove} — ${row?.kind === 'vehicle' ? publicVehicleTitle(row.vehicle, locale).text : id}`}
                       onClick={() => remove(id)}
                     >
-                      ×
+                      <Icon name="close" size={20} />
                     </button>
                   </li>
                 );
@@ -290,7 +291,7 @@ export function VehicleFavorites({ locale }: { locale: Locale }) {
         </div>
         <div className={styles.foot}>
           <NavigationLink href="/cars/" onClick={close}>
-            {t.browse} <span aria-hidden="true">→</span>
+            {t.browse} <Icon name="arrow" size={16} />
           </NavigationLink>
         </div>
       </dialog>

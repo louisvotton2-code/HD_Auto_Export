@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
+import { CountryFlag } from '@/shared/ui/country-flag';
 import { VehiclePhoto } from '@/modules/vehicles';
 import { sectionContent } from '../content/section-content';
 import styles from './home-sections.module.css';
@@ -152,7 +153,7 @@ export function HomeSections({
                 <p>{t.popularBody}</p>
               </div>
               <Link className={styles.catalogLink} href={`/${locale}/cars/`}>
-                {t.catalog}
+                {t.catalog}<Icon name="arrow" size={16} />
               </Link>
             </div>
             <div
@@ -196,7 +197,7 @@ export function HomeSections({
                         <small>{t.modelRecords}</small>
                         <strong>{model.count.toLocaleString(locale)}</strong>
                       </span>
-                      <span className={styles.modelMore}>{t.learn}</span>
+                      <span className={styles.modelMore}>{t.learn}<Icon name="arrow" size={16} /></span>
                     </span>
                   </span>
                 </Link>
@@ -210,7 +211,7 @@ export function HomeSections({
                   aria-label={t.previous}
                   onClick={() => goToModel((activeModel - 1 + models.length) % models.length)}
                 >
-                  ‹
+                  <Icon name="chevron-left" size={20} />
                 </button>
                 <div className={styles.dots}>
                   {models.map((model, index) => (
@@ -230,7 +231,7 @@ export function HomeSections({
                   aria-label={t.next}
                   onClick={() => goToModel((activeModel + 1) % models.length)}
                 >
-                  ›
+                  <Icon name="chevron-right" size={20} />
                 </button>
               </div>
             )}
@@ -242,12 +243,12 @@ export function HomeSections({
                 onClick={() => setPaused(!paused)}
                 aria-label={paused ? t.play : t.pause}
               >
-                {paused ? '▶' : 'Ⅱ'}
+                <Icon name={paused ? "play" : "pause"} size={16} />
                 <span>{paused ? t.play : t.pause}</span>
               </button>
             )}
             <Link className={styles.mobileCatalog} href={`/${locale}/cars/`}>
-              {t.catalog}
+              {t.catalog}<Icon name="arrow" size={16} />
             </Link>
           </div>
         </section>
@@ -345,7 +346,7 @@ export function HomeSections({
           <div className={styles.dialogToolbar}>
             <h3 id="home-consultation-title">{t.chats[selectedChat].title}</h3>
             <button type="button" onClick={() => dialogRef.current?.close()} aria-label={t.close}>
-              ×
+              <Icon name="close" size={20} />
             </button>
           </div>
           <ConsultationCard locale={locale} index={selectedChat} expanded />
@@ -369,12 +370,12 @@ export function HomeSections({
               <div className={styles.countries}>
                 {t.countries.map((country) => (
                   <Link href={`/${locale}/calculator/${country.slug}/`} key={country.slug}>
-                    {country.flag} {country.name}
+                    <CountryFlag countryCode={country.countryCode} /> {country.name}
                   </Link>
                 ))}
               </div>
             </div>
-            <Link className={styles.calculateButton} href={`/${locale}/calculator/russia/`}>
+            <Link className={styles.calculateButton} href={`/${locale}/calculator/`}>
               <Icon name="calculator" size={16} />
               {t.calculate}
             </Link>
@@ -411,7 +412,7 @@ export function HomeSections({
             />
             <button type="submit">
               {t.send}
-              <span aria-hidden="true">→</span>
+              <Icon name="arrow" size={18} />
             </button>
           </form>
           <small className={styles.formHint} id="home-form-hint">

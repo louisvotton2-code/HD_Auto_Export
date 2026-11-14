@@ -1,3 +1,4 @@
+import { expectInlineInspection } from './helpers/inline-inspection';
 import { expect, test, type Locator } from '@playwright/test';
 import { externalFixtureId } from '@hd/contracts/fixtures';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
@@ -7,9 +8,9 @@ test.beforeEach(async ({ request }) => { await resetPublicFixture(request); });
 test.afterEach(async ({ request }) => { await resetPublicFixture(request); });
 
 const copy = {
-  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测摘要', inspect: '查看检测报告', no: '无' },
-  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection summary', inspect: 'View inspection report', no: 'No' },
-  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Результаты осмотра автомобиля', inspect: 'Посмотреть отчёт об осмотре', no: 'Нет' },
+  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测摘要', no: '无' },
+  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection summary', no: 'No' },
+  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Результаты осмотра автомобиля', no: 'Нет' },
 };
 const kinds = ['accidents', 'transfers', 'owners', 'plateChanges'];
 const inspectionOnlyKinds = ['theft', 'flood', 'waterDamage', 'fire', 'totalLoss'];
@@ -44,22 +45,8 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await expect(history).not.toContainText('0 / 18');
     const inspection = main.getByRole('region', { name: copy[locale].inspection, exact: true });
     await expect(inspection).toBeVisible();
-    // The summary and sales sidebar intentionally offer separate report entry points.
-    const inspectLink = inspection.getByRole('link', { name: copy[locale].inspect, exact: true });
-    const sidebarLink = main.locator('aside').getByRole('link', { name: copy[locale].inspect, exact: true });
-    const reportPath = `/${locale}/cars/${externalFixtureId(1)}/inspection/`;
-    for (const link of [inspectLink, sidebarLink]) {
-      await expect(link).toHaveCount(1);
-      await expect(link).toBeVisible();
-      await expect(link).toHaveAttribute('href', reportPath);
-      await expect(link).toHaveAttribute('target', '_blank');
-      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
-    }
-    const [reportPage] = await Promise.all([page.waitForEvent('popup'), inspectLink.click()]);
-    try {
-      await expect(reportPage).toHaveURL(url => url.pathname === reportPath);
-      await expect(reportPage.locator(`[data-vehicle-inspection-page="${externalFixtureId(1)}"]`)).toBeVisible();
-    } finally { await reportPage.close(); }
+    await expectInlineInspection(inspection);
+    await expect(main.locator('[data-public-inspection-link]')).toHaveCount(0);
     await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });

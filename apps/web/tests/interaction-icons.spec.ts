@@ -1,0 +1,79 @@
+import { expect, test, type Locator } from '@playwright/test';
+import { resetPublicFixture } from './helpers/public-fixture';
+
+test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Uses the isolated public catalog fixture.');
+test.beforeEach(async ({ request }) => resetPublicFixture(request));
+test.afterEach(async ({ request }) => resetPublicFixture(request));
+
+async function decorativeControlIcon(control: Locator) {
+  await expect(control.locator('svg')).toHaveCount(1);
+  await expect(control.locator('svg')).toHaveAttribute('aria-hidden', 'true');
+  await expect(control.locator('svg')).toHaveAttribute('focusable', 'false');
+}
+
+test('SVG controls retain their labels, keyboard actions and state while flags use local assets', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/en/');
+  const pause = page.getByRole('button', { name: 'Pause autoplay', exact: true });
+  await decorativeControlIcon(pause);
+  await expect(pause).toHaveText('');
+  await pause.press('Enter');
+  const resume = page.getByRole('button', { name: 'Resume autoplay', exact: true });
+  await expect(resume).toHaveAttribute('aria-pressed', 'true');
+  await decorativeControlIcon(resume);
+  const catalog = page.getByRole('link', { name: 'Full catalog', exact: true });
+  await decorativeControlIcon(catalog);
+  await expect(catalog).toHaveAttribute('href', '/en/cars/');
+  const russia = page.locator('[data-home-section="calculator"]').getByRole('link', { name: 'Russia', exact: true });
+  await expect(russia.locator('img')).toHaveAttribute('src', '/flags/ru.svg');
+  await expect(russia.locator('img')).toHaveAttribute('aria-hidden', 'true');
+  await expect.poll(() => russia.locator('img').evaluate(node => (node as HTMLImageElement).complete && (node as HTMLImageElement).naturalWidth > 0)).toBe(true);
+
+  const favorites = page.getByRole('button', { name: 'View saved cars', exact: true });
+  await favorites.press('Enter');
+  const drawer = page.getByRole('dialog', { name: 'Saved cars', exact: true });
+  await expect(drawer).toBeVisible();
+  const closeSaved = drawer.getByRole('button', { name: 'Close saved cars', exact: true });
+  await decorativeControlIcon(closeSaved);
+  await expect(closeSaved).toHaveText('');
+  await closeSaved.press('Enter');
+  await expect(drawer).not.toBeVisible();
+  await expect(favorites).toBeFocused();
+
+  await page.goto('/en/parts/52910k2200/');
+  const partPanel = page.getByTestId('part-detail').locator('aside');
+  const save = partPanel.getByRole('button', { name: 'Save part', exact: true });
+  await decorativeControlIcon(save);
+  await save.press('Enter');
+  const unsave = partPanel.getByRole('button', { name: 'Unsave part', exact: true });
+  await expect(unsave).toHaveAttribute('aria-pressed', 'true');
+  await decorativeControlIcon(unsave);
+  const increase = page.getByRole('button', { name: 'Increase quantity', exact: true });
+  const decrease = page.getByRole('button', { name: 'Decrease quantity', exact: true });
+  await decorativeControlIcon(increase);
+  await decorativeControlIcon(decrease);
+  await increase.press('Enter');
+  await expect(page.locator('input[name="quantity"]')).toHaveValue('2');
+  await decrease.press('Enter');
+  await expect(page.locator('input[name="quantity"]')).toHaveValue('1');
+  const openImage = page.getByRole('link', { name: 'Open full image', exact: true });
+  await openImage.press('Enter');
+  const photos = page.getByRole('dialog', { name: 'Part images', exact: true });
+  await expect(photos).toBeVisible();
+  const closeImage = photos.getByRole('button', { name: 'Close full image', exact: true });
+  await decorativeControlIcon(closeImage);
+  await expect(closeImage).toHaveText('');
+  await closeImage.press('Enter');
+  await expect(photos).not.toBeVisible();
+  await expect(openImage).toBeFocused();
+
+  await page.goto('/en/cars/?pageSize=5');
+  const pagination = page.locator('[data-catalog-pagination]');
+  const next = pagination.getByRole('link', { name: 'Next', exact: true });
+  await decorativeControlIcon(next);
+  await expect(next).toHaveText('');
+  await next.press('Enter');
+  await expect(page).toHaveURL(url => url.searchParams.get('page') === '2');
+  await expect(pagination.locator('[aria-current="page"]')).toHaveText('2');
+  await decorativeControlIcon(pagination.getByRole('link', { name: 'Previous', exact: true }));
+});

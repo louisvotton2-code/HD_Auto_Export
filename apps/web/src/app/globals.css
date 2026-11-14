@@ -1797,3 +1797,17 @@ svg {
 .public-resource-missing { min-height:60vh; width:min(900px,100%); margin:auto; padding:80px 24px; }
 [data-vehicle-contacts] [aria-disabled='true'] { opacity:.4; cursor:progress; }
 .public-resource-status button:disabled { color: #929292; cursor: wait; text-decoration: none; }
+
+/* Real request feedback stays local and preserves the results underneath. */
+.public-resource-status[data-phase="checking"] {
+  gap: 12px;
+  padding: 16px 20px;
+  border-color: #c79a63;
+  background: #35281c;
+  color: #fff1d9;
+  font-size: 14px;
+  box-shadow: 0 5px 24px #0005;
+}
+.public-resource-spinner { display: inline-flex; flex: none; color: #f4ca90; animation: publicResourceSpin .9s linear infinite; }
+@keyframes publicResourceSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .public-resource-spinner { animation: none; } }

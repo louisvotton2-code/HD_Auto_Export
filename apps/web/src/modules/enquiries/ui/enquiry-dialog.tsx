@@ -159,7 +159,7 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
         onClick={(event) => { if (event.target === event.currentTarget) close(); }}
       >
         <div className={styles.card}>
-          <button className={styles.close} type="button" aria-label={t.close} onClick={close}>×</button>
+          <button className={styles.close} type="button" aria-label={t.close} onClick={close}><Icon name="close" size={20} /></button>
           <span className={styles.brand}>{siteConfig.name}</span>
           <h2 id="site-enquiry-title">{t.title}</h2>
           <p id="site-enquiry-intro" className={styles.intro}>{t.intro}</p>

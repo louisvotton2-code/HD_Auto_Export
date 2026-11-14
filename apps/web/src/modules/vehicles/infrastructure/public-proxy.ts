@@ -1,6 +1,7 @@
 import {
   IdSchema,
   PublicLocaleQuerySchema,
+  PublicVehicleDetailQuerySchema,
   PublicMediaQuerySchema,
   PublicVehicleFiltersSchema,
   PublicVehicleSegmentQuerySchema,
@@ -73,13 +74,15 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail && !isSegment)
     return failure(404);
   const params = new URL(request.url).searchParams;
+  // Old website bookmarks must query all valid listings, even with an obsolete value.
+  if (path === 'vehicles' || path === 'vehicle-filters') params.delete('exportStatus');
   const allowed = isSegment ? (parts[2] === 'inspection' ? ['locale', 'limit', 'cursor', 'category', 'part', 'outcome', 'order'] : ['locale', 'limit', 'cursor']) : isMedia
     ? ['variant']
     : path === 'vehicles'
       ? catalogQueryKeys
       : path === 'vehicle-filters'
         ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize' && key !== 'projection')
-        : ['locale', 'view', 'priceView'];
+        : isDetail ? ['locale', 'view', 'priceView', 'projection'] : ['locale', 'view', 'priceView'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
@@ -98,7 +101,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         const parsed = parseFilterQuery(raw, locale);
         if (!parsed || (raw.catalog && raw.catalog !== 'curated')) return failure(400);
         query = parsed;
-      } else query = PublicLocaleQuerySchema.parse(raw);
+      } else query = (isDetail ? PublicVehicleDetailQuerySchema : PublicLocaleQuerySchema).parse(raw);
     }
     if (isDetail || isSegment) IdSchema.parse(parts[1]);
     if (isSegment) {
@@ -114,6 +117,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         request.headers,
         query.view as 'legacy' | 'localized' | undefined,
         query.priceView as 'usd' | undefined,
+        query.projection as 'detail-inline-v1' | undefined,
       );
       return vehicle
         ? Response.json({ data: vehicle, meta: { requestId: crypto.randomUUID() } }, { headers })

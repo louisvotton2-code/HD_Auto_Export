@@ -1,3 +1,4 @@
+import { fillNumericDate } from './helpers/numeric-date';
 import { expect, test } from '@playwright/test';
 
 const destinations = [
@@ -169,7 +170,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-11');
   await expect(page.getByTestId('total')).toBeVisible();
-  await page.locator('#customsDate').fill('2026-09-30');
+  await fillNumericDate(page, 'customsDate', '2026-09-30');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-09-30');

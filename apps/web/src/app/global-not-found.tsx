@@ -23,13 +23,13 @@ export default function GlobalNotFound() {
             aria-label="Choose a calculator language"
             style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 12 }}
           >
-            <a className="primary-button" href="/zh/calculator/russia/" lang="zh-Hans">
+            <a className="primary-button" href="/zh/calculator/" lang="zh-Hans">
               中文计算器
             </a>
-            <a className="primary-button" href="/en/calculator/russia/" lang="en">
+            <a className="primary-button" href="/en/calculator/" lang="en">
               Open calculator
             </a>
-            <a className="primary-button" href="/ru/calculator/russia/" lang="ru">
+            <a className="primary-button" href="/ru/calculator/" lang="ru">
               Калькулятор
             </a>
           </nav>

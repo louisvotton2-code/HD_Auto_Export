@@ -102,3 +102,9 @@ pnpm --filter @hd/web test:e2e
 筛选共享`public-query.ts`解析、BFF白名单与`publicCatalogHref`；价格边界是精确十进制字符串+显式原币，不隐式换汇；0里程是有效值，年款为modelYear。代次/配置/驱动仅展示真实facets；品牌与车型变化清下游。无JS可原生GET，model-only链接不丢条件，清除也重置未提交草稿。首页/目录复用shared指针3D能力，减少动效/触屏保持平面。
 
 验收入口为`tests/catalog-filters.spec.ts`及`tests/catalog-motion.spec.ts`；运行范围与独立review见[本轮日志](../../docs/日志/2026-11-08/前端-FE-UX-04-目录筛选与共享卡片动效.md)。源码、冻结成品、隔离API和真实车辆库的验收分别记录；临时合成资料不迁入公开车源。
+
+### EXT09详情投影与部署版本
+
+官网详情使用显式 `projection=detail-inline-v1` 和新严格schema，同响应有界检测说明／配置。旧无projection响应保持原结构；新旧响应不可共用缓存项，服务器先上双投影API再切官网。旧报告链接跳回详情`#inspection`。当前实现及接手约定见[首页与车源](../../docs/开发/模块/首页与车源.md#fe-ext-09-当前详情与交互)。
+
+构建时由OPS注入 `HD_DEPLOYMENT_ID=<准确源码SHA>`，映射Next `deploymentId`；同一版本各实例必须一致。此变量不替代既有匿名DTO缓存的release identity。`?dpl=`仅用于资源cache busting，Next不据其路由；混版导航由Next检测后整页导航。OPS需保留当前／上版静态hash资源并平滑reload，不能只设置此变量就删除旧资源。无值的日常开发不制造部署编号。本轮没有变更依赖或共享锁文件。

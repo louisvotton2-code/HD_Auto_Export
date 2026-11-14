@@ -2,6 +2,13 @@ import type { EquipmentIconName } from './equipment-icon-svg';
 
 /** Stable field keys and three-language labels resolve to the same decorative item glyph. */
 const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
+  engine: ['engine', 'displacementCc', 'engineCc', 'engineKw', 'enginePowerKw', 'cylinders', 'Engine', 'Engine capacity (cc)', 'Engine displacement', 'Engine power (kW)', 'Cylinders', '发动机', '排量（cc）', '发动机排量', '发动机功率（kW）', '气缸数', 'Двигатель', 'Объём двигателя (см³)', 'Мощность двигателя (кВт)', 'Цилиндры'],
+  motor: ['motorKw', 'motorPowerKw', 'motorTorqueNm', 'motorLayout', 'motorType', 'motors', 'Motor power (kW)', 'Motor torque (N·m)', 'Motor layout', 'Motor type', 'Number of motors', '电机功率（kW）', '电机扭矩（N·m）', '电机布局', '电机类型', '电机数量', 'Мощность электромотора (кВт)', 'Крутящий момент электромотора (Н·м)', 'Расположение электромоторов', 'Тип электромотора', 'Количество электромоторов'],
+  battery: ['batteryKwh', 'batteryType', 'batteryWarranty', 'Battery capacity (kWh)', 'Battery type', 'Battery warranty', '电池容量（kWh）', '电池类型', '电池质保', 'Ёмкость батареи (кВт·ч)', 'Тип батареи', 'Гарантия на батарею'],
+  drivetrain: ['driveType', 'drivetrain', 'Drive type', 'Drivetrain', '驱动形式', '驱动方式', 'Тип привода', 'Привод'],
+  dimensions: ['lengthMm', 'widthMm', 'heightMm', 'wheelbaseMm', 'Length (mm)', 'Width (mm)', 'Height (mm)', 'Wheelbase (mm)', '车长（mm）', '车宽（mm）', '车高（mm）', '轴距（mm）', 'Длина (мм)', 'Ширина (мм)', 'Высота (мм)', 'Колёсная база (мм)'],
+  door: ['doors', 'doorCount', 'Doors', 'Number of doors', '车门数', '车门数量', 'Двери', 'Количество дверей'],
+  wheel: ['alloyWheels', 'wheelSize', 'rimSize', 'tyreSize', 'tireSize', 'Alloy wheels', 'Wheel size', 'Rim size', 'Tyre size', 'Tire size', '铝合金轮毂', '轮毂尺寸', '轮胎尺寸', 'Легкосплавные диски', 'Размер колёс', 'Размер дисков', 'Размер шин'],
   seat: ['seats', 'seatMaterial', 'leatherSeats', 'powerDriverSeat', 'powerPassengerSeat', 'Leather seats', 'Power driver seat', 'Power passenger seat', '座椅', '座椅材质', '真皮座椅', '皮革座椅', '主驾驶座椅电动调节', '副驾驶座椅电动调节', 'Кожаные сиденья', 'Кожаный салон', 'Сиденья', 'Электрорегулировка сиденья водителя', 'Электрорегулировка пассажирского сиденья'],
   'seat-heating': ['seatHeating', 'frontSeatHeating', 'rearSeatHeating', 'heatedFrontSeats', 'heatedRearSeats', 'Heated front seats', 'Heated rear seats', 'Heated seats', '座椅加热', '前排座椅加热', '后排座椅加热', 'Подогрев сидений', 'Подогрев передних сидений', 'Подогрев задних сидений'],
   'seat-ventilation': ['seatVentilation', 'frontSeatVentilation', 'driverSeatVentilation', 'passengerSeatVentilation', 'Ventilated driver seat', 'Ventilated passenger seat', 'Ventilated seats', '座椅通风', '前排座椅通风', '主驾驶座椅通风', '副驾驶座椅通风', 'Вентиляция сидений', 'Вентиляция передних сидений', 'Вентиляция сиденья водителя', 'Вентиляция пассажирского сиденья'],
@@ -9,7 +16,7 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   climate: ['airConditioning', 'climateControl', 'automaticAirConditioning', 'Automatic climate control', 'Air conditioning', '空调', '自动空调', '自动恒温空调', 'Климат-контроль', 'Автоматический климат-контроль', 'Кондиционер'],
   'steering-controls': ['steeringWheelControls', 'multiFunctionSteeringWheel', 'Steering wheel controls', 'Power-adjustable steering wheel', '多功能方向盘', '方向盘电动调节', 'Многофункциональный руль', 'Кнопки управления на руле', 'Электрорегулировка рулевой колонки'],
   'steering-wheel': ['heatedSteeringWheel', 'steeringWheelHeating', 'paddleShifters', 'powerSteering', 'Heated steering wheel', 'Paddle shifters', 'Power steering', '方向盘加热', '换挡拨片', '动力转向', 'Подогрев руля', 'Подрулевые лепестки', 'Усилитель руля'],
-  'cruise-control': ['cruiseControl', 'adaptiveCruiseControl', 'tractionControl', 'Adaptive cruise control', 'Cruise control', 'Traction control (TCS)', '定速巡航', '自适应巡航', '牵引力控制', 'Адаптивный круиз-контроль', 'Круиз-контроль', 'Антипробуксовочная система'],
+  'cruise-control': ['cruiseControl', 'adaptiveCruiseControl', 'Adaptive cruise control', 'Cruise control', '定速巡航', '自适应巡航', 'Адаптивный круиз-контроль', 'Круиз-контроль'],
   abs: ['abs', 'antiLockBrakingSystem', 'Anti-lock braking system (ABS)', '防抱死制动系统', '防抱死制动', 'Антиблокировочная система', 'Антиблокировочная система (ABS)'],
   'driver-airbag': ['driverAirbag', 'frontAirbags', 'airbags', 'Driver airbag', 'Airbags', '驾驶座安全气囊', '主驾驶安全气囊', '安全气囊', 'Подушка безопасности водителя', 'Подушки безопасности'],
   'passenger-airbag': ['passengerAirbag', 'Passenger airbag', '副驾驶安全气囊', '前排乘客安全气囊', 'Подушка безопасности пассажира'],
@@ -18,7 +25,7 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   'parking-sensors-rear': ['rearParkingSensors', 'parkingSensors', 'parkingRadar', 'Rear parking sensors', 'Parking sensors', '后驻车雷达', '后倒车雷达', '倒车雷达', 'Задние парктроники', 'Парктроники', 'Датчики парковки'],
   'parking-sensors-front': ['frontParkingSensors', 'Front parking sensors', '前驻车雷达', '前泊车雷达', 'Передние парктроники'],
   'tire-pressure': ['tpms', 'tirePressureMonitoring', 'tyrePressureMonitoring', 'Tire pressure monitoring (TPMS)', 'Tyre pressure monitoring', '胎压监测', '胎压显示', 'Контроль давления в шинах', 'Система контроля давления в шинах'],
-  'stability-control': ['esc', 'esp', 'electronicStabilityControl', 'Electronic stability control (ESC)', '车身稳定控制', '车身稳定系统', 'Электронная система стабилизации', 'Система курсовой устойчивости'],
+  'stability-control': ['esc', 'esp', 'electronicStabilityControl', 'tractionControl', 'Electronic stability control (ESC)', 'Traction control (TCS)', '车身稳定控制', '车身稳定系统', '牵引力控制', 'Электронная система стабилизации', 'Система курсовой устойчивости', 'Антипробуксовочная система'],
   camera: ['rearViewCamera', 'reversingCamera', 'surroundViewCamera', 'camera360', 'Rear-view camera', 'Reversing camera', 'Surround-view camera', '倒车影像', '后视摄像头', '全景影像', '360度全景影像', 'Камера заднего вида', 'Камеры кругового обзора', 'Круговой обзор'],
   'blind-spot': ['blindSpotMonitoring', 'blindSpotDetection', 'Blind spot monitoring', '盲点监测', '并线辅助', 'Мониторинг слепых зон', 'Контроль слепых зон', 'Контроль мёртвых зон'],
   'lane-departure': ['laneDepartureWarning', 'laneKeepingAssist', 'Lane departure warning (LDWS)', '车道偏离预警', '车道保持辅助', 'Предупреждение о выезде из полосы', 'Контроль полосы движения', 'Удержание в полосе'],
@@ -36,8 +43,40 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   'mirror-dimming': ['autoDimmingMirror', 'ecm', 'Auto-dimming mirror (ECM)', '自动防眩目后视镜', 'Автозатемнение зеркала', 'Автоматическое затемнение зеркала'],
   'rain-sensor': ['rainSensor', 'Rain sensor', '雨量感应', '雨量传感器', '感应雨刷', 'Датчик дождя'],
   'automatic-headlights': ['automaticHeadlights', 'lightSensor', 'Automatic headlights', '自动大灯', '自动头灯', '自动灯光', 'Датчик света', 'Автоматические фары'],
-  // The current glyph set has no wheel or toll-system icon; keep these known keys neutral.
-  neutral: ['alloyWheels', 'Alloy wheels', '铝合金轮毂', 'Легкосплавные диски', 'hiPass', 'Hi-Pass toll system', 'ETC', '自动收费系统'],
+  // A toll transponder is not keyless entry. Keep it neutral until its own glyph exists.
+  neutral: ['hiPass', 'Hi-Pass toll system', 'ETC', '自动收费系统'],
+};
+
+/** Only explicit, stable API semantics select an icon; a new/unknown key stays neutral. */
+const semanticIcons: Readonly<Record<string, EquipmentIconName>> = {
+  engine: 'engine', displacementCc: 'engine', engineCc: 'engine', engineKw: 'engine', enginePowerKw: 'engine', cylinders: 'engine',
+  motorKw: 'motor', motorPowerKw: 'motor', motorTorqueNm: 'motor', motorLayout: 'motor', motorType: 'motor', motors: 'motor',
+  batteryKwh: 'battery', batteryType: 'battery', batteryWarranty: 'battery',
+  driveType: 'drivetrain', drivetrain: 'drivetrain',
+  lengthMm: 'dimensions', widthMm: 'dimensions', heightMm: 'dimensions', wheelbaseMm: 'dimensions',
+  doors: 'door', doorCount: 'door',
+  alloyWheels: 'wheel', wheelSize: 'wheel', rimSize: 'wheel', tyreSize: 'wheel', tireSize: 'wheel',
+  seats: 'seat', seatMaterial: 'seat', leatherSeats: 'seat', powerDriverSeat: 'seat', powerPassengerSeat: 'seat',
+  seatHeating: 'seat-heating', frontSeatHeating: 'seat-heating', rearSeatHeating: 'seat-heating', heatedFrontSeats: 'seat-heating', heatedRearSeats: 'seat-heating',
+  seatVentilation: 'seat-ventilation', frontSeatVentilation: 'seat-ventilation', driverSeatVentilation: 'seat-ventilation', passengerSeatVentilation: 'seat-ventilation',
+  seatMemory: 'seat-memory', driverSeatMemory: 'seat-memory',
+  airConditioning: 'climate', climateControl: 'climate', automaticAirConditioning: 'climate',
+  steeringWheelControls: 'steering-controls', multiFunctionSteeringWheel: 'steering-controls',
+  heatedSteeringWheel: 'steering-wheel', steeringWheelHeating: 'steering-wheel', paddleShifters: 'steering-wheel', powerSteering: 'steering-wheel',
+  cruiseControl: 'cruise-control', adaptiveCruiseControl: 'cruise-control', tractionControl: 'stability-control',
+  abs: 'abs', antiLockBrakingSystem: 'abs',
+  airbags: 'driver-airbag', driverAirbag: 'driver-airbag', frontAirbags: 'driver-airbag', passengerAirbag: 'passenger-airbag', curtainAirbags: 'curtain-airbag', sideAirbags: 'side-airbag',
+  rearParkingSensors: 'parking-sensors-rear', parkingSensors: 'parking-sensors-rear', parkingRadar: 'parking-sensors-rear', frontParkingSensors: 'parking-sensors-front',
+  tpms: 'tire-pressure', tirePressureMonitoring: 'tire-pressure', tyrePressureMonitoring: 'tire-pressure',
+  esc: 'stability-control', esp: 'stability-control', electronicStabilityControl: 'stability-control',
+  rearViewCamera: 'camera', reversingCamera: 'camera', surroundViewCamera: 'camera', camera360: 'camera',
+  blindSpotMonitoring: 'blind-spot', blindSpotDetection: 'blind-spot', laneDepartureWarning: 'lane-departure', laneKeepingAssist: 'lane-departure',
+  electronicParkingBrake: 'parking-brake', epb: 'parking-brake', frontAvMonitor: 'monitor', displayScreen: 'monitor', touchscreen: 'monitor',
+  navigation: 'navigation', gps: 'navigation', navigationSystem: 'navigation', usbPort: 'usb', usb: 'usb', bluetooth: 'bluetooth',
+  keylessEntry: 'keyless-entry', smartKey: 'smart-key', keylessStart: 'smart-key', powerDoorLocks: 'door-lock', centralLocking: 'door-lock',
+  powerWindows: 'window', electricWindows: 'window', powerFoldingMirrors: 'mirror-folding', foldingMirrors: 'mirror-folding',
+  hidHeadlights: 'headlight-hid', xenonHeadlights: 'headlight-hid', headlights: 'headlight-hid', autoDimmingMirror: 'mirror-dimming', ecm: 'mirror-dimming',
+  rainSensor: 'rain-sensor', automaticHeadlights: 'automatic-headlights', lightSensor: 'automatic-headlights', hiPass: 'neutral',
 };
 
 function normalized(value: string) {
@@ -69,8 +108,11 @@ const patterns: readonly [EquipmentIconName, RegExp][] = [
   ['rain-sensor', /(?:rain.sensor|雨量|感应雨刷|датчик.дожд)/iu],
 ];
 
-/** An ID wins only when it is a known semantic key; arbitrary hashes never guess a feature. */
-export function equipmentIconName(label: string | null | undefined, fieldId?: string): EquipmentIconName {
+/** New projections are authoritative, including null/unknown semantics. Old DTOs keep label compatibility. */
+export function equipmentIconName(label: string | null | undefined, fieldId?: string, semanticKey?: string | null): EquipmentIconName {
+  if (semanticKey !== undefined) {
+    return semanticKey !== null && Object.hasOwn(semanticIcons, semanticKey) ? semanticIcons[semanticKey]! : 'neutral';
+  }
   if (fieldId) {
     const key = aliasIndex.get(normalized(fieldId)) ?? aliasIndex.get(normalized(fieldId.split(/[:/.]/u).at(-1) ?? ''));
     if (key) return key;

@@ -1,3 +1,4 @@
+import { expectInlineInspection } from './helpers/inline-inspection';
 import { expect, test } from '@playwright/test';
 import { externalFixtureId, makeImportedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
@@ -55,21 +56,19 @@ test('a direct photo error is reported once and detail shows only a report summa
   await expect(main.getByText('Compare original and displayed text')).toHaveCount(0);
   // Manufacturing / first-registration dates alone do not invent an accident or ownership history.
   await expect(main.locator('[data-vehicle-history]')).toHaveCount(0);
-  await expect(main.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
-  const group = main.locator('[data-equipment-group="other"]');
-  await group.locator('summary').click();
-  await expect(group.locator('summary svg')).toHaveCount(2);
-  await expect(group.locator('dd[lang="zh"]')).toHaveText('运动型多用途车');
+  await expect(main.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
+  const parameters = main.locator('[data-vehicle-parameters]');
+  await expect(parameters.locator('details')).toHaveCount(1);
+  await expect(parameters.locator('[data-equipment-group]')).toHaveCount(0);
+  await expect(parameters.getByText('Vehicle parameters and equipment', { exact: true })).toBeVisible();
+  await expect(parameters.locator('[data-configuration-field="value"]').filter({ hasText: /^运动型多用途车$/ })).toHaveAttribute('lang', 'zh');
   await expect(main.getByText('Listing platform', { exact: true })).toHaveCount(0);
   await expect(main.getByText('Synthetic Market', { exact: true })).toHaveCount(0);
   await expect(main.getByRole('heading', { name: 'HD Auto Export consultation' })).toHaveCount(0);
   const reportSection = main.locator('[data-inspection-summary]');
   await expect(reportSection).toHaveAttribute('data-inspection-status', 'available');
   await expect(main.locator('[data-public-inspection-item]')).toHaveCount(0);
-  const reportButton = reportSection.getByRole('link', { name: 'View inspection report', exact: true });
-  await expect(reportButton).toHaveAttribute('href', `/en/cars/${sample.id}/inspection/`);
-  await expect(reportButton).toHaveAttribute('target', '_blank');
-  await expect(reportButton).toHaveAttribute('rel', 'noopener noreferrer');
+  await expectInlineInspection(reportSection);
   await expect(main.locator('a[href^="#vehicle-public-inspection-"]')).toHaveCount(0);
   await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
   await expect(main.getByText('Related listings')).toHaveCount(0);
@@ -115,16 +114,12 @@ test('report links retain vehicle identity and destination flags without probing
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ contentType: 'image/png', body: image }));
   const id = externalFixtureId(1);
   await setPublicFixtureState(request, { reportPresenceMode: 'known' });
-  const openReport = { zh: '查看检测报告', en: 'View inspection report', ru: 'Посмотреть отчёт об осмотре' };
   for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.goto(`/${locale}/cars/${id}/`);
     const title = await page.locator('main h1').innerText();
     const reportSection = page.locator('[data-inspection-summary]');
     await expect(reportSection).toHaveAttribute('data-inspection-status', 'available');
-    const reportLink = reportSection.getByRole('link', { name: openReport[locale], exact: true });
-    await expect(reportLink).toHaveAttribute('href', `/${locale}/cars/${id}/inspection/`);
-    await expect(reportLink).toHaveAttribute('target', '_blank');
-    await expect(reportLink).toHaveAttribute('rel', 'noopener noreferrer');
+    await expectInlineInspection(reportSection);
     await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
     const links = page.locator(`[data-vehicle-contacts="${id}"] a`).filter({ visible: true });
     await expect(links).toHaveCount(2);
@@ -142,7 +137,7 @@ test('report links retain vehicle identity and destination flags without probing
     await destination.selectOption('KZ');
     await expect(destination.locator('option:checked')).toContainText('🇰🇿');
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
-    await expect(page.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
+    await expect(page.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
     const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
     expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
   }

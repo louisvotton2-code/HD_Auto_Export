@@ -7,6 +7,10 @@ import type { Locale } from '@/i18n/routing';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
+import { CountryFlag } from '@/shared/ui/country-flag';
+import { useDestinationCountry } from '@/shared/ui/use-destination-country';
+import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
+import { NumericDateInput } from './numeric-date-input';
 import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type CalculationResult, type Powertrain } from '../index';
@@ -93,6 +97,7 @@ export function CalculatorPage({
   const td = useTranslations('FeeDisplay');
   const tq = useTranslations('CopyQuote');
   const locale = useLocale();
+  const preference = useDestinationCountry(country.code);
   const [activeRates, setActiveRates] = useState(initialRates);
   const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
   const [manualRates, setManualRates] = useState(false);
@@ -398,8 +403,11 @@ export function CalculatorPage({
     const describedBy = [error && `${key}-error`, options.note && `${key}-note`].filter(Boolean).join(' ');
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
-        <label htmlFor={key}>{label}</label>
-        <div className="input-wrap">
+        {options.type === 'month' || options.type === 'date' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
+          precision={options.type} label={label} locale={locale as Locale} onChange={value => update(key, value)}
+          onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
+          <label htmlFor={key}>{label}</label>
+          <div className="input-wrap">
           <input
             id={key}
             name={key}
@@ -415,7 +423,8 @@ export function CalculatorPage({
           />
           {options.unit && <span className="input-unit">{options.unit}</span>}
           {options.children}
-        </div>
+          </div>
+        </>}
         {error && (
           <small className="field-error" id={`${key}-error`}>
             {error}
@@ -428,17 +437,19 @@ export function CalculatorPage({
 
   return (
     <main id="main" className="calculator-main calculator-simple calculator-reference">
+      <DestinationCountryUrlObserver />
       <section className="hero shell simple-hero" aria-labelledby="page-title">
         <nav className="country-nav" aria-label={t('destination')} ref={countryNavRef}>
           {countries.map((item) => (
             <Link
               key={item.code}
               href={`/calculator/${item.slug}/`}
+              onClick={() => preference.selectCountry(item.code)}
               className={`country-tab ${country.code === item.code ? 'active' : ''}`}
               aria-current={country.code === item.code ? 'page' : undefined}
             >
               <span className="country-flag" aria-hidden="true">
-                {item.flag}
+                <CountryFlag countryCode={item.code} />
               </span>
               <span>{tc(item.code)}</span>
             </Link>
@@ -683,7 +694,7 @@ export function CalculatorPage({
               </div>
               <div className="destination-summary">
                 <span className="country-flag" aria-hidden="true">
-                  {country.flag}
+                  <CountryFlag countryCode={country.code} />
                 </span>
                 <div>
                   <strong>{tc(country.code)}</strong>

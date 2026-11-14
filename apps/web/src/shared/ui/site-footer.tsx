@@ -54,7 +54,7 @@ export async function SiteFooter() {
               <Link href="/">{t('Nav.home')}</Link>
               <Link href="/cars/">{t('Nav.vehicles')}</Link>
               <Link href="/parts/">{t('Nav.parts')}</Link>
-              <Link href="/calculator/russia/">{t('Nav.calculator')}</Link>
+              <Link href="/calculator/">{t('Nav.calculator')}</Link>
               <Link href="/buy/">{t('BuyingGuide.navLabel')}</Link>
               <a href={siteConfig.companyWebsite}>{t('Nav.about')}</a>
               <a href="#contact">{t('Nav.contact')}</a>

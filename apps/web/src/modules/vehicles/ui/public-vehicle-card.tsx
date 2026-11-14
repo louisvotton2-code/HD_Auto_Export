@@ -2,6 +2,7 @@
 import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
 import type { PointerTiltHandlers } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { usePublicFreshness } from '../application/use-public-resource';
@@ -93,7 +94,7 @@ export function PublicVehicleCard({
               className={styles.detailsButton}
               href={vehicle.detailPath}
             >
-              {t.details} <span aria-hidden="true">↗</span>
+              {t.details} <Icon name="diagonal" size={16} />
             </PublicCatalogLink>
           </div>
         </div>

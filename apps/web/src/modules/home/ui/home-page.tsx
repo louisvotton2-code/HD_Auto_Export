@@ -89,10 +89,10 @@ function VehicleRail({
               onClick={() => advance(-1)}
               aria-label={`${title} — ${t.previous}`}
             >
-              ‹
+              <Icon name="chevron-left" size={20} />
             </button>
             <button type="button" onClick={() => advance(1)} aria-label={`${title} — ${t.next}`}>
-              ›
+              <Icon name="chevron-right" size={20} />
             </button>
           </div>
         )}
@@ -290,7 +290,7 @@ export function HomePage({
           aria-pressed={paused}
           onClick={() => setPaused((x) => !x)}
         >
-          {paused ? '▷' : 'Ⅱ'}
+          <Icon name={paused ? "play" : "pause"} size={20} />
         </button>
       </section>
       <section className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
@@ -306,7 +306,7 @@ export function HomePage({
           <span>{t.shortcutNotes[1]}</span>
           <Icon name="arrow" size={16} />
         </Link>
-        <Link href="/calculator/russia/" className={styles.shortcut}>
+        <Link href="/calculator/" className={styles.shortcut}>
           <Icon name="calculator" size={30} />
           <strong>{t.shortcuts[2]}</strong>
           <span>{t.shortcutNotes[2]}</span>

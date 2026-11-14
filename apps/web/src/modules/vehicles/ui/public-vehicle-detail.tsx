@@ -60,13 +60,12 @@ export function PublicVehicleDetail({
   const manufactureDate = vehicle.manufacture?.date?.value ?? (vehicle.manufacture?.range
     ? `${vehicle.manufacture.range.earliest.value} – ${vehicle.manufacture.range.latest.value}` : vehicle.facts.manufacturedAt?.value);
   const contactId = `vehicle-contact-${vehicle.id}`;
-  const reportAvailable = vehicle.inspectionSummary?.status === 'available';
 
   return (
     <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id}>
       <div className={styles.container}>
         <PublicCatalogLink locale={locale} className={styles.back} href={`/${locale}/cars/`}>
-          ← {t.back}
+          <Icon name="arrow-left" size={16} />{t.back}
         </PublicCatalogLink>
         <div className={styles.grid}>
           <div className={styles.mainColumn}>
@@ -120,7 +119,7 @@ export function PublicVehicleDetail({
                 {vehicle.price.kind !== 'on_request' && <span>{t.priceLabels[vehicle.price.kind]}</span>}
                 <VehiclePriceValues vehicle={vehicle} locale={locale} />
               </div>
-              <a href={`#${contactId}`}>{sold ? t.similar : copy.consultTitle} →</a>
+              <a href={`#${contactId}`}>{sold ? t.similar : copy.consultTitle}<Icon name="arrow" size={16} /></a>
             </div>
             <VehicleRateAttribution
               vehicles={[vehicle]}
@@ -132,7 +131,7 @@ export function PublicVehicleDetail({
               <details className={styles.information} open>
                 <summary>
                   {copy.basicInformation}
-                  <span aria-hidden="true">⌄</span>
+                  <Icon name="chevron" size={16} />
                 </summary>
                 <dl className={styles.specifications}>
                   {publicVehicleFacts(vehicle, locale).map((fact) => (
@@ -233,9 +232,7 @@ export function PublicVehicleDetail({
                 <p className={styles.smallNote}>{t.contactNote}</p>
               </div>
             </section>
-            {reportAvailable && <a className={styles.reportLink} href={fresh ? `${vehicle.detailPath}inspection/` : undefined}
-              target="_blank" rel="noopener noreferrer" data-public-inspection-link aria-disabled={!fresh || undefined} tabIndex={fresh ? undefined : -1}>
-              <Icon name="document" size={16} />{recordsCopy.viewReport}</a>}
+
           </aside>
         </div>
       </div>

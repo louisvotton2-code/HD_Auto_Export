@@ -52,7 +52,7 @@
 .filterGroup { border-top:1px solid var(--border); padding-top:16px; }
 .filterGroup summary { display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; list-style:none; font-size:13px; font-weight:600; }
 .filterGroup summary::-webkit-details-marker { display:none; }
-.filterGroup summary > span { color:#817a74; transform:rotate(180deg); transition:transform .2s; }
+.filterGroup summary > span { display:inline-flex; align-items:center; color:#817a74; transform:rotate(180deg); transition:transform .2s; }
 .filterGroup[open] summary > span { transform:none; }
 .filterGroup fieldset { padding:10px 0 0; margin:0; border:0; min-width:0; }
 .filterGroup label { display:flex; align-items:center; gap:9px; width:100%; padding:5px 0; font-size:14px; line-height:1.5; cursor:pointer; }
@@ -123,7 +123,7 @@ button.pageButton:disabled { opacity: .45; cursor: default; }
   .card:hover { transform:translateY(-4px); border-color:var(--copper); box-shadow:0 20px 40px #0007; }
   .card:hover .cardImage img { transform:scale(1.05); }
 }
-.save { position:absolute; right:10px; top:10px; width:34px; height:34px; border:1px solid #fff8; border-radius:50%; background:#151515d9; color:#eee; cursor:pointer; opacity:0; transition:opacity .2s,color .2s; }
+.save { display:grid; place-items:center; position:absolute; right:10px; top:10px; width:34px; height:34px; border:1px solid #fff8; border-radius:50%; background:#151515d9; color:#eee; cursor:pointer; opacity:0; transition:opacity .2s,color .2s; }
 .card:hover .save,.card:focus-within .save,.save[aria-pressed=true] { opacity:1; }
 @media (hover:none) { .save { opacity:1; } }
 .save[aria-pressed=true] { color:#e4aa78; }
@@ -196,9 +196,9 @@ button.pageButton:disabled { opacity: .45; cursor: default; }
 .photoDialog { width:min(850px,calc(100vw - 28px)); max-height:94dvh; border:1px solid #705039; border-radius:16px; background:#171514; color:#eee; padding:30px; overflow:auto; }
 .photoDialog::backdrop { background:#000b; backdrop-filter:blur(5px); }
 .photoDialog > img { display:block; max-height:75dvh; width:100%; height:auto; object-fit:contain; }
-.closeImage { position:absolute; right:6px; top:4px; font-size:27px!important; border:0; background:transparent; color:#eee; cursor:pointer; width:30px; height:30px; }
+.closeImage { display:grid; place-items:center; position:absolute; right:6px; top:4px; font-size:27px!important; border:0; background:transparent; color:#eee; cursor:pointer; width:30px; height:30px; }
 .photoArrows { display:flex; gap:12px; justify-content:center; margin-top:10px; }
-.photoArrows button { color:#eee; background:#493326; border:1px solid #785037; border-radius:6px; min-width:40px; cursor:pointer; }
+.photoArrows button { display:inline-grid; place-items:center; min-height:40px; color:#eee; background:#493326; border:1px solid #785037; border-radius:6px; min-width:40px; cursor:pointer; }
 .noPhoto { min-height:250px; display:grid; place-items:center; border:1px solid var(--border); border-radius:14px; }
 .specifications { margin-top:30px; }
 .specifications h2,.fitment h2 { font-size:17px; margin:0 0 16px; }
@@ -218,7 +218,7 @@ button.pageButton:disabled { opacity: .45; cursor: default; }
 .quantityForm > label { display:block; font-size:13px; margin-bottom:10px; }
 .quantityForm > div { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .quantityForm input { width:74px; min-width:0; text-align:center; height:43px; background:#24211e; border:1px solid #4f4035; border-radius:7px; color:#eee; }
-.quantityForm button:not(.secondary) { background:#27231f; border:1px solid #4f4035; color:#ddd; border-radius:7px; min-width:35px; height:43px; cursor:pointer; }
+.quantityForm button:not(.secondary) { display:inline-grid; place-items:center; background:#27231f; border:1px solid #4f4035; color:#ddd; border-radius:7px; min-width:35px; height:43px; cursor:pointer; }
 .quantityForm button:disabled { opacity:.4; cursor:default; }
 .quantityForm > small,.note { display:block; color:#99918b; font-size:11px; line-height:1.7; margin-top:12px; }
 .detailContacts { display:grid; grid-template-columns:1fr 1fr; }

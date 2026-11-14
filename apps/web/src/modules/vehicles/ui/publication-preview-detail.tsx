@@ -104,7 +104,7 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
 
             <section className={detailStyles.card}>
               <details className={detailStyles.information} open>
-                <summary>{detail.basicInformation}<span aria-hidden="true">⌄</span></summary>
+                <summary>{detail.basicInformation}<span aria-hidden="true"><Icon name="chevron" size={18} /></span></summary>
                 <dl className={`${detailStyles.specifications} ${styles.facts}`}>
                   {facts.map(({ label, value, field }) => (
                     <div key={label}>
@@ -134,7 +134,7 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
             {vehicle.display.mediaAlt.length > 0 && (
               <section className={detailStyles.card}>
                 <details className={detailStyles.information}>
-                  <summary>{copy.imageAltTexts}<span aria-hidden="true">⌄</span></summary>
+                  <summary>{copy.imageAltTexts}<span aria-hidden="true"><Icon name="chevron" size={18} /></span></summary>
                   <dl className={`${detailStyles.specifications} ${styles.facts}`}>
                     {vehicle.display.mediaAlt.map(({ mediaId, value }) => (
                       <div key={mediaId}>

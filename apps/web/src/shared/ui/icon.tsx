@@ -6,8 +6,19 @@ const paths = {
   pin: 'M20 10c0 5-8 11-8 11s-8-6-8-11a8 8 0 1 1 16 0ZM15 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   phone: 'M21 17v3a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3l2 5-2 2a13 13 0 0 0 7 7l2-2 5 2Z',
   arrow: 'M4 12h16M14 6l6 6-6 6',
+  'arrow-left': 'M20 12H4m6-6-6 6 6 6',
   diagonal: 'M6 18 18 6M6 6h12v12',
   chevron: 'm6 9 6 6 6-6',
+  'chevron-left': 'm15 6-6 6 6 6',
+  'chevron-right': 'm9 6 6 6-6 6',
+  'chevron-up': 'm6 15 6-6 6 6',
+  close: 'M6 6l12 12M6 18 18 6',
+  play: 'm8 5 11 7-11 7V5Z',
+  pause: 'M8 5v14M16 5v14',
+  share: 'M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm12 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8.6 10.5l6.8-4m-6.8 7 6.8 4',
+  heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z',
+  minus: 'M5 12h14',
+  loader: 'M21 12a9 9 0 1 0-9 9',
   globe: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z',
   car: 'm5 7 2-3h10l2 3 2 3v7h-3v-2H6v2H3v-7l2-3ZM5 7h14M3 11h18M7 12v1m10-1v1',
   box: 'm3 7 9-5 9 5v10l-9 5-9-5V7Zm0 0 9 5 9-5M12 12v10M7.5 4.5l9 5',
@@ -41,6 +52,7 @@ export function Icon({
   return (
     <svg
       aria-hidden="true"
+      focusable="false"
       width={size}
       height={size}
       viewBox="0 0 24 24"
@@ -50,7 +62,7 @@ export function Icon({
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
-      style={style}
+      style={{ flexShrink: 0, ...style }}
     >
       <path d={paths[name]} />
     </svg>

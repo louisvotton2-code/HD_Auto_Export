@@ -14,6 +14,9 @@ import {
   type TouchEvent,
 } from 'react';
 import type { Locale } from '@/i18n/routing';
+import { Icon } from '@/shared/ui/icon';
+import { CountryFlag } from '@/shared/ui/country-flag';
+import { destinationCountryFromLocation } from '@/shared/lib/destination-country';
 import { siteConfig } from '@/shared/config/site';
 import { publicMediaUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
@@ -359,7 +362,7 @@ export function VehicleGallery({
               disabled={staffLocked}
               onClick={() => choose(index - 1)}
             >
-              ‹
+              <Icon name="chevron-left" size={24} />
             </button>
             <button
               type="button"
@@ -368,7 +371,7 @@ export function VehicleGallery({
               disabled={staffLocked}
               onClick={() => choose(index + 1)}
             >
-              ›
+              <Icon name="chevron-right" size={24} />
             </button>
           </>
         )}
@@ -429,7 +432,7 @@ export function VehicleGallery({
               aria-label={t.closeGallery}
               onClick={closeViewer}
             >
-              ×
+              <Icon name="close" size={22} />
             </button>
           </div>
           <div className={styles.viewerImage}>
@@ -456,7 +459,7 @@ export function VehicleGallery({
                   disabled={staffLocked}
                   onClick={() => choose(index - 1)}
                 >
-                  ‹
+                  <Icon name="chevron-left" size={24} />
                 </button>
                 <button
                   type="button"
@@ -465,7 +468,7 @@ export function VehicleGallery({
                   disabled={staffLocked}
                   onClick={() => choose(index + 1)}
                 >
-                  ›
+                  <Icon name="chevron-right" size={24} />
                 </button>
               </>
             )}
@@ -523,7 +526,7 @@ export function VehicleDetailActions({
           }
         }}
       >
-        <span aria-hidden="true">↗</span> {t.share}
+        <Icon name="share" size={16} /> {t.share}
       </button>
       <FavoriteVehicleButton vehicleId={vehicleId} title={title} locale={locale} />
       <span className={styles.actionStatus} role="status">
@@ -557,7 +560,7 @@ export function VehicleBudgetPanel({
           <select value={current} onChange={(event) => setSelected(event.target.value)}>
             {choices.map((item) => (
               <option key={item.slug} value={item.slug}>
-                {item.flag} {item.label}
+                {item.label}
               </option>
             ))}
           </select>
@@ -566,14 +569,14 @@ export function VehicleBudgetPanel({
         <nav className={styles.destinationLinks} aria-label={t.destination}>
           {choices.map((item) => (
             <a key={item.slug} href={`/${locale}/calculator/${item.slug}/`}>
-              <span aria-hidden="true">{item.flag}</span> {item.label}
+              <CountryFlag countryCode={destinationCountryFromLocation(`/calculator/${item.slug}/`)} /> {item.label}
             </a>
           ))}
         </nav>
       ) : null}
       <a className={styles.calculatorLink} href={`/${locale}/calculator/${current}/`}>
         {t.fullCalculator}
-        <span aria-hidden="true"> →</span>
+        <Icon name="arrow" size={16} />
       </a>
     </>
   );

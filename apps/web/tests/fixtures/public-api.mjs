@@ -23,6 +23,8 @@ import {
   PublicVehicleInspectionResponseSchema,
   PublicVehiclePriceHistoryResponseSchema,
   PublicVehicleResponseSchema,
+  PublicVehicleInlineResponseSchema,
+  PublicVehicleDetailQuerySchema,
   PublicVehicleSchema,
   PublicVehicleQuerySchema,
   PublicVehicleSegmentQuerySchema,
@@ -297,6 +299,26 @@ function inspectionEntries(state, row, locale) {
       name: segmentDisplay(`Inspection item ${index + 1}`,locale,'en'), value: segmentDisplay(defect ? 'Recorded issue' : index === 0 ? '0' : 'No issue recorded',locale,'en'),
       kind: defect ? 'defect' : index >= 32 ? 'summary' : 'check', outcome: defect ? 'defect' : index >= 32 ? 'unknown' : 'ok' };
   });
+}
+// Synthetic opt-in detail payload; old response schemas remain strict and unchanged.
+function inlineDetail(row, locale, state) {
+  const available = row.inspectionSummary?.status === 'available';
+  const rawItems = row.configuration?.items ?? row.external?.detail?.specifications?.map((item,index) => ({
+    id: `config-${index}`, name: segmentDisplay(item.name.text,locale,item.name.contentLocale),
+    value: segmentDisplay(item.value.text,locale,item.value.contentLocale),
+  })) ?? [];
+  const semanticKeys = { displacementCc: 'displacementCc', engineKw: 'engineKw', motorKw: 'motorKw', batteryKwh: 'batteryKwh', driveType: 'driveType', lengthMm: 'lengthMm', doors: 'doors', wheelbaseMm: 'wheelbaseMm' };
+  return { ...row, projection: 'detail-inline-v1',
+    inspectionSummary: row.inspectionSummary ?? { status: 'unknown', contentLocale: null, checked: null, faults: null, categories: [] },
+    inspectionInline: {
+      conclusions: available ? [{ id: 'stored-fire', name: segmentDisplay('Fire inspection',locale,'en'), value: segmentDisplay('Recorded issue',locale,'en') }] : [],
+      defects: available ? [1,2].map(part => ({ id: `stored-defect-${part}`, categoryId: 'fire', partId: `part-${part}`, groupId: 'body',
+        category: segmentDisplay('Fire inspection',locale,'en'), part: segmentDisplay(`Body part ${part}`,locale,'en'),
+        group: segmentDisplay('Body',locale,'en'), name: segmentDisplay('Surface inspection',locale,'en'),
+        value: segmentDisplay('Recorded issue',locale,'en'), outcome: 'defect', kind: 'defect' })) : [],
+      normalItemCount: available ? 31 : 0, hasMoreConclusions: false, hasMoreDefects: available && state.inspectionMode === 'large',
+    }, configurationInline: rawItems.slice(0,200).map(item => ({ ...item, semanticKey: semanticKeys[item.id] ?? null })),
+  };
 }
 function segmentSeed(state, row, locale) {
   row.inspectionSummary = inspectionOverview(state, row, locale);
@@ -815,7 +837,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           } else if (url.pathname === '/api/v1/vehicle-filters') {
             filterQuery = PublicFilterQuerySchema.parse(filterInput(raw));
             locale = filterQuery.locale;
-          } else locale = PublicLocaleQuerySchema.parse(raw).locale;
+          } else locale = (/^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname) ? PublicVehicleDetailQuerySchema : PublicLocaleQuerySchema).parse(raw).locale;
         } catch {
           return send(res, 400, error('INVALID_REQUEST'));
         }
@@ -1110,8 +1132,11 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       }
       const detailId = url.pathname.match(/^\/api\/v1\/vehicles\/([A-Za-z0-9_-]+)$/)?.[1];
       if (detailId) {
+        const inline = url.searchParams.get('projection') === 'detail-inline-v1';
+        const detailSchema = inline ? PublicVehicleInlineResponseSchema : PublicVehicleResponseSchema;
+        const detailProjection = row => inline ? inlineDetail(row, locale, state) : row;
         const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
-        if (kind) return send(res,200,PublicVehicleResponseSchema.parse({data:makeImport(kind,true),meta:catalogMeta('fixture-import-detail')}));
+        if (kind) return send(res,200,detailSchema.parse({data:detailProjection(makeImport(kind,true)),meta:catalogMeta('fixture-import-detail')}));
         const found =
           all.find((v) => v.id === detailId) ??
           (detailId === 'fixture_sold'
@@ -1123,8 +1148,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           ? send(
               res,
               200,
-              PublicVehicleResponseSchema.parse({
-                data: segmentSeed(state, withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode), locale),
+              detailSchema.parse({
+                data: detailProjection(segmentSeed(state, withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode), locale)),
                 meta: catalogMeta('fixture-detail'),
               }),
             )
