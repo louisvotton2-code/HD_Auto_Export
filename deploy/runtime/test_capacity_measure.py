@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
+from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('measure',Path(__file__).parent/'production/capacity-measure.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Peak(unittest.TestCase):
@@ -37,6 +39,40 @@ class DumpBoundary(unittest.TestCase):
         self.assertFalse(any('PGPASSWORD=' in x for x in args))
         self.assertTrue(any('statement_timeout=600000' in x and 'default_transaction_read_only=on' in x for x in args))
         self.assertNotIn('-p',args)
+
+class MeasurementRoots(unittest.TestCase):
+    def test_exact_controls_and_site_paths_count_real_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve(); site=root/'site'; site.mkdir()
+            control=root/'system-control'; control.mkdir()
+            data=site/'data'; data.mkdir()
+            (control/'config').write_bytes(b'x'*8192)
+            (data/'payload').write_bytes(b'x'*8192)
+            with patch.object(m,'ROOT',site), patch.object(m,'SYSTEM_CONTROL_ROOTS',frozenset([control])):
+                self.assertGreaterEqual(m.allocated(control),8192)
+                self.assertGreaterEqual(m.allocated(data),8192)
+                # A named directory is allowed as one measured root, not a
+                # blanket permission to add unrelated sibling/child roots.
+                for invalid in [root,site,control/'config',root/'missing',Path('relative')]:
+                    with self.assertRaises(ValueError):m.allocated(invalid)
+
+    def test_links_parent_escape_and_traversal_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve(); site=root/'site'; site.mkdir()
+            outside=root/'outside'; outside.mkdir(); (outside/'secret').write_text('fixture')
+            (site/'escape').symlink_to(outside,target_is_directory=True)
+            control=root/'control'; control.symlink_to(outside,target_is_directory=True)
+            with patch.object(m,'ROOT',site), patch.object(m,'SYSTEM_CONTROL_ROOTS',frozenset([control])):
+                for invalid in [site/'escape',site/'escape'/'secret',control,site/'..'/'outside']:
+                    with self.assertRaises(ValueError):m.allocated(invalid)
+
+    def test_host_allowlist_is_exact_and_bounded(self):
+        self.assertEqual(m.SYSTEM_CONTROL_ROOTS,frozenset(map(Path,[
+            '/etc/hd-auto','/etc/letsencrypt','/etc/fstab',
+            '/etc/systemd/system/docker.service.d/hd-auto-storage.conf',
+            '/usr/local/sbin/hd-auto-storage-check'])))
+        for invalid in ['/','/etc','/usr','/etc/passwd','/etc/ssh','/tmp']:
+            with self.assertRaises(ValueError):m.allocated(invalid)
 
 class ProducerConsumer(unittest.TestCase):
     def test_shrinking_target_accepts_fixed_historical_sample(self):

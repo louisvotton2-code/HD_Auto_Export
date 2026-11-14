@@ -17,6 +17,13 @@ ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
 MODEL = 'hd-ext07-peak-v1'
+# Exact host controls used by the release/backup configuration. Do not admit
+# arbitrary /etc or /usr trees merely because the private config names them.
+SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
+    '/etc/hd-auto', '/etc/letsencrypt', '/etc/fstab',
+    '/etc/systemd/system/docker.service.d/hd-auto-storage.conf',
+    '/usr/local/sbin/hd-auto-storage-check',
+)))
 
 
 def private_json(path):
@@ -45,8 +52,10 @@ def evidence(c):
 
 def allocated(path):
     path=Path(path)
-    if not path.is_absolute() or '..' in path.parts or path.is_symlink() or not path.exists() or ROOT not in path.parents:
+    trusted = ROOT in path.parents or path in SYSTEM_CONTROL_ROOTS
+    if not path.is_absolute() or '..' in path.parts or not trusted or not path.exists() or path.resolve() != path:
         raise ValueError('Invalid measurement root')
+    # du's default physical traversal counts links themselves, never targets.
     return int(subprocess.check_output(['du','-s','-B1','--',str(path)],text=True,timeout=30).split()[0])
 
 
