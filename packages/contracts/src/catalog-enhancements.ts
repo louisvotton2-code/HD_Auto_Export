@@ -1,10 +1,20 @@
 import {z} from 'zod';
-import {PartialDateSchema,TimestampSchema,MoneySchema} from './common.js';
+import {PartialDateSchema,TimestampSchema,MoneySchema,LanguageTagSchema} from './common.js';
 import {DisplayTextSchema} from './localization.js';
 export const ExportStatusSchema=z.enum(['eligible','restricted','unknown']);
 export const VehicleIdentifiersSchema=z.strictObject({sourceId:z.string().min(1).max(300).nullable(),source:z.string().min(1).max(80).nullable(),inquiryCode:z.string().min(1).max(400),vin:z.string().regex(/^[A-HJ-NPR-Z0-9]{17}$/).nullable()});
 export type VehicleIdentifiers=z.infer<typeof VehicleIdentifiersSchema>;
 export const ManufactureEvidenceSchema=z.strictObject({date:PartialDateSchema.nullable(),range:z.strictObject({earliest:PartialDateSchema,latest:PartialDateSchema}).nullable(),source:z.string().max(100).nullable(),basis:DisplayTextSchema.nullable()});
 export type ManufactureEvidence=z.infer<typeof ManufactureEvidenceSchema>;
-export const PublicInspectionEntrySchema=z.strictObject({id:z.string().min(1).max(450),category:DisplayTextSchema.nullable(),part:DisplayTextSchema.nullable(),name:DisplayTextSchema,value:DisplayTextSchema,outcome:z.enum(['ok','defect','unknown'])});
+export const InspectionStatusSchema=z.enum(['available','no_report','unavailable','pending','unknown']);
+export const InspectionOutcomeSchema=z.enum(['ok','defect','unknown']);
+export const InspectionKeySchema=z.string().regex(/^[a-z][a-z0-9_.-]{0,79}$/);
+const InspectionCountSchema=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable();
+export const PublicInspectionCategorySchema=z.strictObject({id:InspectionKeySchema,label:DisplayTextSchema,checked:InspectionCountSchema,faults:InspectionCountSchema,outcome:InspectionOutcomeSchema});
+export const PublicInspectionSummarySchema=z.strictObject({status:InspectionStatusSchema,contentLocale:LanguageTagSchema.nullable(),checked:InspectionCountSchema,faults:InspectionCountSchema,categories:z.array(PublicInspectionCategorySchema).max(30)});
+export type PublicInspectionSummary=z.infer<typeof PublicInspectionSummarySchema>;
+export const PublicInspectionConclusionSchema=z.strictObject({id:z.string().min(1).max(450),name:DisplayTextSchema,value:DisplayTextSchema});
+export const PublicInspectionEntrySchema=z.strictObject({id:z.string().min(1).max(450),category:DisplayTextSchema.nullable(),part:DisplayTextSchema.nullable(),name:DisplayTextSchema,value:DisplayTextSchema,outcome:InspectionOutcomeSchema,
+ categoryId:InspectionKeySchema.nullable().optional(),partId:InspectionKeySchema.nullable().optional(),groupId:InspectionKeySchema.nullable().optional(),group:DisplayTextSchema.nullable().optional(),kind:z.enum(['summary','check','defect']).optional()});
+export type PublicInspectionEntry=z.infer<typeof PublicInspectionEntrySchema>;
 export const PublicPriceHistoryEntrySchema=z.strictObject({id:z.string().min(1).max(450),at:TimestampSchema.nullable(),money:MoneySchema,kind:z.enum(['asking','seller','unknown'])});
