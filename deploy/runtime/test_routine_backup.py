@@ -46,6 +46,29 @@ class RoutineBackupTests(unittest.TestCase):
             with self.assertRaises(ValueError): routine.regular_files([root/'missing'])
 
 
+class OnlineInputs(unittest.TestCase):
+    def test_known_temporaries_and_thumbnails_are_not_archived(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'media';root.mkdir()
+            (root/(uid+'.webp')).write_bytes(b'original')
+            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp',uid+'.thumb.webp']:
+                (root/name).write_bytes(b'changing')
+            files=routine.pack_roots(Path(temp)/'media.tar.gz',[root],'media')
+            self.assertEqual({Path(p).name for p in files},{'media',uid+'.webp'})
+            (root/'unknown.tmp').write_bytes(b'unknown')
+            with self.assertRaises(ValueError):routine.regular_files([root],'media')
+
+    def test_csv_partial_excluded_but_controls_not_filtered(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'archive';root.mkdir()
+            (root/(uid+'.csv')).write_bytes(b'complete')
+            (root/(uid+'.csv.partial')).write_bytes(b'incomplete')
+            self.assertEqual(len(routine.regular_files([root],'archive')),2)
+            self.assertEqual(len(routine.regular_files([root],'controls')),3)
+
+
 class Envelope(unittest.TestCase):
     def test_corrupt_survivor_blocks_retention(self):
         with tempfile.TemporaryDirectory() as temp:

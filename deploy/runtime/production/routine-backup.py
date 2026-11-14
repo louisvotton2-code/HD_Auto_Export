@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import time
 
 ROOT = Path('/srv/hd-auto')
 
@@ -95,14 +96,41 @@ def unpack_verified_bundle(bundle, destination):
     return manifest
 
 
-def regular_files(roots):
+def regular_files(roots, profile='controls'):
+    if profile not in ('controls', 'media', 'archive'):
+        raise ValueError('Unknown archive profile')
+    uuid = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
     files = {}
     for root in roots:
         root = Path(root)
         if not root.is_absolute() or not root.exists() or root.is_symlink():
             raise ValueError('Configured archive root is missing or is a symlink')
         for path in ([root, *root.rglob('*')] if root.is_dir() else [root]):
+            if path != root and profile != 'controls':
+                # Only known in-flight names and regenerable thumbnails are
+                # omitted. Unknown files/directories fail closed.
+                if profile == 'media':
+                    if re.fullmatch(rf'\.{uuid}\.{uuid}(?:\.thumb)?\.tmp|{uuid}\.thumb\.webp', path.name):
+                        continue
+                    valid = re.fullmatch(rf'{uuid}\.webp', path.name)
+                else:
+                    if re.fullmatch(rf'{uuid}\.csv\.partial', path.name):
+                        continue
+                    valid = re.fullmatch(rf'{uuid}\.csv', path.name)
+                if path.parent != root or not valid:
+                    raise ValueError('Unexpected immutable archive input')
             st = path.lstat()
+            if profile != 'controls' and path != root and not stat.S_ISREG(st.st_mode):
+                raise ValueError('Immutable source must be a regular file')
+            if profile == 'media' and path != root:
+                # Upload publishes an immutable original via link then unlinks
+                # its private temporary name. Wait only for this bounded window.
+                for attempt in range(10):
+                    if st.st_nlink != 2: break
+                    time.sleep(0.05)
+                    st = path.lstat()
+
             name = str(path).lstrip('/')
             common = dict(mode=stat.S_IMODE(st.st_mode), uid=st.st_uid, gid=st.st_gid)
             if stat.S_ISDIR(st.st_mode):
@@ -119,8 +147,8 @@ def regular_files(roots):
     return files
 
 
-def pack_roots(output, roots):
-    files = regular_files(roots)
+def pack_roots(output, roots, profile='controls'):
+    files = regular_files(roots, profile)
     with tarfile.open(output, 'x:gz', compresslevel=6) as archive:
         for name in sorted(files):
             archive.add('/'+name, arcname=name, recursive=False)
@@ -264,8 +292,8 @@ def main():
             with (point/'database.dump').open('rb') as dump:
                 subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
                     check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
-            media = pack_roots(point/'media.tar.gz', media_roots)
-            archives = pack_roots(point/'source-archives.tar.gz', [archive_root])
+            media = pack_roots(point/'media.tar.gz', media_roots, 'media')
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive')
             controls_manifest = pack_roots(point/'controls.tar.gz', controls)
             manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
                 createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
