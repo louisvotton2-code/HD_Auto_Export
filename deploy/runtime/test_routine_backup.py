@@ -46,5 +46,47 @@ class RoutineBackupTests(unittest.TestCase):
             with self.assertRaises(ValueError): routine.regular_files([root/'missing'])
 
 
+class Envelope(unittest.TestCase):
+    def test_corrupt_survivor_blocks_retention(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); point=root/'daily-20261114T000000Z'; point.mkdir()
+            (point/'recovery.cms').write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                routine.verify_completed_points(root,[dict(name=point.name,complete=True,ciphertextSha256='0'*64)])
+
+    def test_envelope_rejects_path_traversal(self):
+        import tarfile, io
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); bundle=root/'bad.tar'
+            with tarfile.open(bundle,'w') as archive:
+                info=tarfile.TarInfo('../escape');info.size=1
+                archive.addfile(info,io.BytesIO(b'x'))
+            with self.assertRaises(ValueError): routine.unpack_verified_bundle(bundle,root/'restore')
+            self.assertFalse((root/'escape').exists())
+
+    def test_cleanup_preserves_all_components_when_one_changed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);names=['database.dump','media.tar.gz','source-archives.tar.gz','controls.tar.gz']
+            for name in names:(root/name).write_bytes(b'fixture')
+            manifest=dict(format=2,files={name:dict(bytes=7,sha256=routine.digest(root/name)) for name in names})
+            (root/'controls.tar.gz').write_bytes(b'changed')
+            with self.assertRaises(ValueError):routine.remove_verified_components(root,manifest)
+            self.assertTrue(all((root/name).exists() for name in names))
+
+    def test_verified_format_two_roundtrip(self):
+        import json, tarfile
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); names=['database.dump','media.tar.gz','source-archives.tar.gz','controls.tar.gz']
+            for name in names:(root/name).write_bytes(b'synthetic-'+name.encode())
+            manifest=dict(format=2,files={name:dict(bytes=(root/name).stat().st_size,sha256=routine.digest(root/name)) for name in names})
+            (root/'manifest.json').write_text(json.dumps(manifest))
+            with tarfile.open(root/'bundle.tar','w') as archive:
+                for name in [*names,'manifest.json']: archive.add(root/name,arcname=name)
+            self.assertEqual(routine.unpack_verified_bundle(root/'bundle.tar',root/'restore'),manifest)
+            routine.remove_verified_components(root/'restore',manifest)
+            self.assertTrue((root/'restore/manifest.json').exists())
+            self.assertFalse((root/'restore/database.dump').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,26 @@
+# Apply to the established hd-auto proxy project when rebuilding its container.
+# Routine releases reload the existing public Nginx; this file makes that state
+# reproducible after a restart/rebuild. Never run `up` on database/Redis here.
+services:
+  proxy:
+    volumes:
+      - type: bind
+        source: ${HD_GATEWAY_ROOT:?persistent reviewed gateway state}/conf.d
+        target: /etc/nginx/conf.d
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HD_GATEWAY_ROOT}/hd-domains
+        target: /etc/nginx/hd-domains
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HD_GATEWAY_ROOT}/assets
+        target: /srv/hd-assets
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HD_GATEWAY_ROOT}/admin
+        target: /srv/admin
+        read_only: true
+        bind: {create_host_path: false}

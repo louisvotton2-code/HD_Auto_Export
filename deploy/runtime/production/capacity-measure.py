@@ -16,7 +16,7 @@ import uuid
 ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
-MODEL = 'hd-ext07-peak-v1'
+MODEL = 'hd-ext09-daily-two-v1'
 # Exact host controls used by the release/backup configuration. Do not admit
 # arbitrary /etc or /usr trees merely because the private config names them.
 SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
@@ -95,7 +95,10 @@ def project(e, probe, *, used, total, media, controls, daily, raw):
     full_dump=math.ceil((probe['businessDumpBytes']+probe['rawDumpBytes'])*max(n,target,probe['processedRows'])/probe['processedRows'])
     point=full_dump+3*stage+3*csv+media+controls
     protected=max(0,used-e['businessBytes']-stage-csv-media-e['walBytes']-daily)
-    recovery=math.ceil(point*73/10)
+    # Existing fixed baseline is already in protectedBytes. Two successful
+    # encrypted daily points remain while the next point's compressed components
+    # and ciphertext coexist. No per-release clone/restore reservation.
+    recovery=point*4
     components=dict(protectedBytes=protected,businessBytes=business,historyBytes=history,
                     sqlSnapshotsBytes=3*stage,csvSnapshotsBytes=3*csv,mediaBytes=media,
                     controlsBytes=controls,walBytes=wal,recoveryPeakBytes=recovery,
@@ -120,7 +123,7 @@ def measure():
     if not e or not e.get('sampleEvidenceSufficient'): return None
     try: cached=private_json(STATE/'probe.json')
     except (OSError,ValueError): cached={}
-    if cached.get('model')!=MODEL or cached.get('evidenceHash')!=e['evidenceHash'] or cached.get('snapshotId')!=e['snapshotId'] or time.time()-cached.get('measuredEpoch',0)>86400:
+    if cached.get('model') not in ('hd-ext07-peak-v1', MODEL) or cached.get('evidenceHash')!=e['evidenceHash'] or cached.get('snapshotId')!=e['snapshotId'] or time.time()-cached.get('measuredEpoch',0)>86400:
         subprocess.run(['systemctl','start','--no-block','hd-auto-ext07-capacity-probe.service'],check=True,timeout=5)
         return None
     fs=os.statvfs(ROOT/'data'); total=fs.f_blocks*fs.f_frsize; used=(fs.f_blocks-fs.f_bfree)*fs.f_frsize

@@ -1,11 +1,10 @@
-"""EXT07 daily compressed recovery points; only configured backup points are pruned.
+"""EXT09 online daily compressed recovery points; only configured backup points are pruned.
 
 The root-owned private configuration supplies the existing compose/runtime argument
 arrays and public encryption certificate. No password values belong in this file.
 Off-host transfer is explicitly pending until separately verified by OPS.
 """
 import argparse
-import importlib.util
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -31,8 +30,13 @@ def atomic_json(path, value):
     with temp.open('x') as out:
         json.dump(value, out, indent=2)
         out.write('\n')
+        out.flush()
+        os.fsync(out.fileno())
     temp.chmod(0o600)
     temp.rename(path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
 
 
 def selected_old_points(points, keep=2):
@@ -40,6 +44,55 @@ def selected_old_points(points, keep=2):
     completed = sorted((p for p in points if p.get('kind') == 'daily' and p.get('complete') is True),
                        key=lambda p: p['createdAt'], reverse=True)
     return completed[keep:]
+
+
+def verify_completed_points(root, points):
+    for point in points:
+        if point.get('complete') is not True:
+            continue
+        cipher = root/point['name']/'recovery.cms'
+        if cipher.is_symlink() or not cipher.is_file() or digest(cipher) != point.get('ciphertextSha256'):
+            raise ValueError('Completed recovery point failed checksum; retain all points')
+
+
+def remove_verified_components(point, manifest):
+    """Remove only known, checksum-matching temporary components, never proofs."""
+    allowed = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz'}
+    if manifest.get('format') != 2 or set(manifest.get('files', {})) != allowed:
+        raise ValueError('Invalid cleanup manifest')
+    # Validate all first: a failure preserves every remaining component.
+    for name, expected in manifest['files'].items():
+        path = point/name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != expected['bytes'] or digest(path) != expected['sha256']:
+            raise ValueError('Temporary component changed; refuse cleanup')
+    for name in allowed:
+        (point/name).unlink()
+
+
+def unpack_verified_bundle(bundle, destination):
+    """After authenticated CMS decryption, extract only the format-2 envelope.
+
+    Does not restore DB or unpack root-addressed nested archives. Those require
+    an isolated restore target; never extract these directly over production.
+    """
+    names = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz', 'manifest.json'}
+    destination = Path(destination)
+    destination.mkdir(mode=0o700, exist_ok=False)
+    with tarfile.open(bundle, 'r:*') as archive:
+        members = archive.getmembers()
+        if len(members) != len(names) or {m.name for m in members} != names or any(not m.isfile() for m in members):
+            raise ValueError('Invalid recovery envelope')
+        for member in members:
+            with archive.extractfile(member) as src, (destination/member.name).open('xb') as dst:
+                shutil.copyfileobj(src, dst)
+    manifest = json.loads((destination/'manifest.json').read_text())
+    if manifest.get('format') != 2 or set(manifest.get('files', {})) != names-{'manifest.json'}:
+        raise ValueError('Unsupported recovery manifest')
+    for name, expected in manifest['files'].items():
+        path = destination/name
+        if path.stat().st_size != expected['bytes'] or digest(path) != expected['sha256']:
+            raise ValueError('Recovered component checksum mismatch')
+    return manifest
 
 
 def regular_files(roots):
@@ -101,8 +154,8 @@ def pack_roots(output, roots):
 def reserve_bytes(database, files):
     if any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in (database, files)):
         raise ValueError('Invalid backup size measurement')
-    # Original verified components, temporary compressed container and ciphertext
-    # coexist briefly. Keep this transient peak below the same 70% data budget.
+    # Compressed components plus streaming ciphertext coexist. Conservative
+    # current-size headroom also covers WAL/growth; never use full-catalog demand.
     return (database + files) * 33 // 10 + 128 * 1024**2
 
 
@@ -123,7 +176,9 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('--kind', choices=['daily', 'release'], default='daily')
+    parser.add_argument('--kind', choices=['daily'], default='daily')
+    parser.add_argument('--retain-for-restore', action='store_true',
+                        help='Keep this point components for one explicit isolated restore; never the routine default')
     args = parser.parse_args()
     config_stat = args.config.lstat()
     if os.getuid() != 0 or not stat.S_ISREG(config_stat.st_mode) or config_stat.st_uid != 0 or stat.S_IMODE(config_stat.st_mode) & 0o077:
@@ -181,64 +236,83 @@ def main():
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
         fs = os.statvfs(backup_root)
         total, used = fs.f_blocks*fs.f_frsize, (fs.f_blocks-fs.f_bfree)*fs.f_frsize
-        if args.kind == 'daily':
-            spec = importlib.util.spec_from_file_location('capacity_measure', Path(__file__).with_name('capacity-measure.py'))
-            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-            if module.config()['database'] != config['database']:
-                raise ValueError('Capacity and recovery database bindings differ')
-            measured = module.measure()
-            if measured is None or not measured.get('sampleEvidenceSufficient'):
-                raise ValueError('Fresh measured capacity evidence required before daily backup')
-            if measured['diskTotalBytes'] != total:
-                raise ValueError('Backup filesystem changed')
-            reserve = max(0, measured['projectedPeakBytes'] - measured['currentUsedBytes'])
-        else:
-            # Initial release recovery point precedes the first detail sample.
-            # Conservative current-size preflight does not authorize full import.
-            reserve = reserve_bytes(database_bytes, file_bytes)
+        # Backup protects data that exists now. A future full-catalog budget
+        # must never prevent a current daily recovery point from being created.
+        reserve = reserve_bytes(database_bytes, file_bytes)
         if used + reserve >= total * .70:
             raise ValueError('Recovery point transient peak would exceed 70% disk budget')
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
-        paused = [name for name in ('full-worker', 'web') if name in running]
+        # The BE lease serializes acquisition with ALL physical media purges.
+        # Persisted until explicit release: a killed backup remains protective.
+        lease = config.get('mediaLeaseCommand')
+        if not isinstance(lease, list) or not lease or not all(isinstance(x, str) for x in lease):
+            raise ValueError('Reviewed media deletion lease command required')
+        point.mkdir(mode=0o700)
+        call(lease+['acquire', '--reference', reference])
+        pinned = False
         try:
-            for service in paused:
-                call(compose+['stop', '--timeout', '90', service])
             archive_control('archive-pin', reference)
-            call(runtime+['backup', '--keep-stopped', '--backup', str(point)])
-            manifest = json.loads((point/'manifest.json').read_text())
-            if manifest['sourceDatabase'] != config['database']:
-                raise ValueError('Recovery point database mismatch')
-            for name, key in [('database.dump', 'databaseSha256'), ('media.tar', 'mediaTarSha256')]:
-                if digest(point/name) != manifest[key]:
-                    raise ValueError('Runtime backup checksum mismatch')
-            state['archives'] = pack_roots(point/'source-archives.tar.gz', [archive_root])
-            state['controls'] = pack_roots(point/'controls.tar.gz', controls)
-            # The legacy runtime emits an uncompressed media tar. Compress it here;
-            # preserve original until off-host decrypt/restore verification succeeds.
-            state['databaseSha256'] = manifest['databaseSha256']
-            state['mediaTarSha256'] = manifest['mediaTarSha256']
-            state['sourceArchivesSha256'] = digest(point/'source-archives.tar.gz')
-            state['controlsSha256'] = digest(point/'controls.tar.gz')
+            pinned = True
+            # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
+            # comparison. The archive manifest belongs to this dump, not later SQL.
+            with (point/'database.dump').open('xb') as dump:
+                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
+                    '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
+                    '--lock-wait-timeout=5000'], check=True, stdout=dump, stderr=log, timeout=1800)
+            with (point/'database.dump').open('rb') as dump:
+                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
+                    check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
+            media = pack_roots(point/'media.tar.gz', media_roots)
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root])
+            controls_manifest = pack_roots(point/'controls.tar.gz', controls)
+            manifest = dict(format=2, sourceDatabase=config['database'], snapshot='pg_dump-mvcc',
+                createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
+                files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
+                       for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
+            atomic_json(point/'manifest.json', manifest)
+            # Stream the outer tar directly into encryption: do not write another
+            # full plaintext container. Inputs remain until ciphertext is complete.
+            cipher = point/'recovery.cms'
+            encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
+                '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
+                stdout=log, stderr=log)
+            try:
+                with tarfile.open(fileobj=encryption.stdin, mode='w|') as tar:
+                    for name in [*manifest['files'], 'manifest.json']:
+                        tar.add(point/name, arcname=name, recursive=False)
+                encryption.stdin.close()
+                if encryption.wait(timeout=300) != 0:
+                    raise ValueError('Encryption failed')
+            finally:
+                if encryption.stdin and not encryption.stdin.closed:
+                    encryption.stdin.close()
+                if encryption.poll() is None:
+                    encryption.terminate()
+                    try: encryption.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        encryption.kill(); encryption.wait(timeout=10)
+            if cipher.stat().st_size <= 0:
+                raise ValueError('Empty encrypted point')
+            with cipher.open('rb') as persisted:
+                os.fsync(persisted.fileno())
+            state.update(complete=True, archiveValidation='checksums-and-dump-directory',
+                restoreValidation='not-run', offsite='pending', format=2,
+                plaintextRetention='temporary-for-one-time-restore' if args.retain_for_restore else 'remove-after-encryption',
+                ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size,
+                completedAt=datetime.now(timezone.utc).isoformat())
+            atomic_json(point/'routine.json', state)
+            # Successful ciphertext + independently checked source archive is a
+            # creation proof, NOT a decrypt/restore proof. Keep known baseline.
+            if not args.retain_for_restore:
+                remove_verified_components(point, manifest)
         finally:
-            failures = []
-            for service in ['api', *reversed(paused)]:
-                if service not in running:
-                    continue
-                try: call(compose+['start', service])
-                except subprocess.CalledProcessError: failures.append(service)
-            if failures:
-                raise RuntimeError('Failed to resume: '+', '.join(failures))
-        # Encryption happens after query services have resumed. The private key
-        # stays off host; this is not an off-host/decryption success claim.
-        payload = point/'recovery.tar.gz'
-        with tarfile.open(payload, 'x:gz', compresslevel=6) as tar:
-            for name in ['database.dump', 'media.tar', 'source-archives.tar.gz', 'controls.tar.gz', 'manifest.json']:
-                tar.add(point/name, arcname=name, recursive=False)
-        cipher = point/'recovery.cms'
-        call(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER', '-aes-256-gcm', '-in', str(payload), '-out', str(cipher), str(config['certificate'])])
-        payload.unlink()  # temporary outer container; original verified components remain
-        state.update(complete=True, ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size, completedAt=datetime.now(timezone.utc).isoformat())
-        atomic_json(point/'routine.json', state)
+            # Release only our lease; stale references from an interrupted job
+            # require explicit recovery, never automatic expiry during a dump.
+            call(lease+['release', '--reference', reference])
+        # Retained point embeds the sources. Pins can now be released; failed
+        # jobs retain their archive pin until partial recovery material is handled.
+        if pinned:
+            archive_control('archive-release', reference)
         # Retention is narrow: failed/incomplete/unknown and release points stay.
         points = []
         for child in backup_root.iterdir():
@@ -248,6 +322,9 @@ def main():
                     item = json.loads(proof.read_text())
                     if item.get('name') == child.name and item.get('reference') == 'backup:ext07:'+child.name:
                         points.append(item)
+        # Verify every survivor before considering an old point for deletion. A
+        # complete flag alone must never retire the last usable recovery point.
+        verify_completed_points(backup_root, points)
         for old in selected_old_points(points):
             old_point = backup_root/old['name']
             if digest(old_point/'recovery.cms') != old['ciphertextSha256']:
