@@ -1,3 +1,4 @@
+import {physicalCleanupAllowed} from '../../backup-lease.js';
 import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
 import {persistSourceBlob} from '../sources/archive.js';
@@ -8,6 +9,7 @@ type State={phase:Phase;cursor:Cursor;due:boolean};
 const bounds={segments:4,candidates:200,compressions:20} as const;
 /** Every candidate advances the persisted cursor, including heads/pinned rows. No filtered full-table retry loop. */
 async function segment(tx:PoolClient){
+ if(!await physicalCleanupAllowed(tx))return null;
  const state=(await tx.query<State>(`SELECT phase,cursor,due_at<=clock_timestamp() AS due FROM external_source_maintenance WHERE id=1 FOR UPDATE SKIP LOCKED`)).rows[0];
  if(!state||!state.due)return null;
  const c=state.cursor;let cursor:Cursor={},visited=0,deleted=0,compressed=0;

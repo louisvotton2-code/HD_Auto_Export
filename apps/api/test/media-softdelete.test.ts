@@ -1,3 +1,4 @@
+import {changeBackupLease,physicalCleanupAllowed} from '../src/backup-lease.js';
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
@@ -154,4 +155,28 @@ test('unlink failure leaves an invisible retryable record, and the next cleanup 
   await assert.rejects(store.readThumbnail(image.id));
   assert.ok(!(await readdir(path.join(root,'media'))).some(name=>name.startsWith(image.id)));
   assert.equal((await media.cleanupExpired()).removed,0);
+});
+
+
+test('online backup leases preserve manually deleted media and only the owning reference releases protection',async()=>{
+ const vehicleId=await vehicle(),image=await ready(vehicleId),a='backup:test:a',b='backup:test:b';
+ await changeBackupLease(db,'acquire',a);await changeBackupLease(db,'acquire',b);
+ try{
+  await media.remove(image.id,image.version,actor);
+  assert.equal((await db.pool.query('SELECT state FROM media_assets WHERE id=$1',[image.id])).rows[0].state,'deleted');
+  assert.ok((await store.read(image.id)).length);assert.equal((await media.cleanupExpired()).removed,0);
+  await changeBackupLease(db,'release',a);assert.equal(await db.transaction(physicalCleanupAllowed),false);
+  await changeBackupLease(db,'release',a);assert.equal(await db.transaction(physicalCleanupAllowed),false);
+ }finally{await changeBackupLease(db,'release',a);await changeBackupLease(db,'release',b);}
+ assert.equal((await media.cleanupExpired()).removed,1);await assert.rejects(store.read(image.id));
+});
+
+test('backup acquire waits until an already admitted physical deletion transaction ends',async()=>{
+ const tx=await db.pool.connect();let acquiring:Promise<unknown>|undefined;
+ try{
+  await tx.query('BEGIN');assert.equal(await physicalCleanupAllowed(tx),true);
+  let done=false;acquiring=changeBackupLease(db,'acquire','backup:test:serialized').then(value=>{done=true;return value;});
+  await delay(40);assert.equal(done,false);await tx.query('COMMIT');await acquiring;
+  assert.equal(await db.transaction(physicalCleanupAllowed),false);
+ }finally{await tx.query('ROLLBACK');tx.release();await acquiring;await changeBackupLease(db,'release','backup:test:serialized');}
 });

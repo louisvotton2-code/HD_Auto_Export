@@ -1,3 +1,4 @@
+import {physicalCleanupAllowed} from '../../backup-lease.js';
 import {randomUUID} from 'node:crypto';
 import {createReadStream,createWriteStream} from 'node:fs';
 import {createGzip} from 'node:zlib';
@@ -139,7 +140,12 @@ export class FullSyncWorker{
     if((index+1)%10_000===0){await this.receiveDelta();await this.applyEvents(true);}
    });await flush();
    await this.alive();const compressed=snapshot.path+'.gz';await pipeline(createReadStream(snapshot.path),createGzip(),createWriteStream(compressed,{mode:0o600}));
-   await this.transaction(tx=>tx.query("UPDATE external_full_snapshots SET state='verified',rows=$2,source_counts=$3,path=$4 WHERE id=$1",[snapshot.id,proof.rows,JSON.stringify(proof.sourceCounts),compressed]));await unlink(snapshot.path);
+   const finalized=await this.transaction(async tx=>{
+    if(!await physicalCleanupAllowed(tx))return false;
+    await tx.query("UPDATE external_full_snapshots SET state='verified',rows=$2,source_counts=$3,path=$4 WHERE id=$1",[snapshot.id,proof.rows,JSON.stringify(proof.sourceCounts),compressed]);
+    await unlink(snapshot.path);return true;
+   });
+   if(!finalized)return; // Retain the original path and retry after the backup lease is explicitly released.
   }
   return this.promoteSnapshot(snapshot.id);
  }
@@ -171,7 +177,7 @@ export class FullSyncWorker{
   const allowed=admission.allowed&&state.enabled&&!state.paused;
   const code=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':admission.code;
   const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
-    estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
+    estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 or hd-ext09-daily-two-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
   await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2,
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);
   if(!allowed)throw new FullSyncError(code!);
@@ -325,6 +331,7 @@ export class FullSyncWorker{
  }
  async pruneStaging(){
   await this.transaction(async tx=>{
+   if(!await physicalCleanupAllowed(tx))return;
    await tx.query('SELECT pg_advisory_xact_lock(78291334)');
    const obsolete=(await tx.query(`SELECT s.id,s.path FROM external_full_snapshots s WHERE s.archive_pruned_at IS NULL AND s.state IN('complete','failed') AND
     (s.created_at<now()-interval '7 days' OR s.id NOT IN(SELECT id FROM external_full_snapshots ORDER BY created_at DESC LIMIT 2)) AND

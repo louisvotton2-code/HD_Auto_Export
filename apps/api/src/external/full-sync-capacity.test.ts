@@ -15,6 +15,7 @@ test('capacity decisions fail closed for missing, stale, mismatched and unsafe f
  const read=(at=now,cap=0)=>readCapacityDecision(file,binding,disk,cap,at);
  try{
   assert.equal((await read()).code,'SYNC_CAPACITY_AWAITING_DECISION');
+  await replace({...good,model:'hd-ext09-daily-two-v1'});assert.equal((await read()).allowed,true);
   for(const patch of [{evidenceHash:'b'.repeat(64)},{snapshotId:randomUUID()},{sampleRows:9999},{targetRows:1},{schemaVersion:2},{model:'other'},{extra:'private'},{projectedPeakBytes:null},{projectedPeakBytes:-1},{projectedPeakBytes:1},{projectedPeakBytes:Number.MAX_SAFE_INTEGER+1},{currentUsedBytes:disk.total+1},{diskTotalBytes:disk.total+1},{components:{url:'https://private.example'}},{decision:'wait'},{decision:'blocked'},{measuredAt:new Date(now+60001).toISOString()},{expiresAt:new Date(now+600001).toISOString()},{expiresAt:new Date(now).toISOString()}]){
    await replace({...good,...patch});assert.equal((await read()).allowed,false,JSON.stringify(patch));
   }

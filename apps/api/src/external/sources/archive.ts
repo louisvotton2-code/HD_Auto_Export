@@ -1,3 +1,4 @@
+import {physicalCleanupAllowed} from '../../backup-lease.js';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import type {PoolClient} from 'pg';
 import {canonicalJson,isDatabaseJson,sha256} from '../normalize.js';
@@ -47,6 +48,7 @@ export async function protectSourceBackup(tx:PoolClient,reference:string){
 }
 /** A bounded sweep also covers obsolete events that never advanced a head. */
 export async function pruneSourceHistory(tx:PoolClient,limit=200){
+ if(!await physicalCleanupAllowed(tx))return 0;
  if(!Number.isInteger(limit)||limit<1||limit>200)throw new Error('Invalid retention bound.');
  const deleted=(await tx.query(`DELETE FROM external_source_documents WHERE id IN(
  SELECT d.id FROM external_source_documents d WHERE NOT EXISTS(SELECT 1 FROM external_source_heads h WHERE h.document_id=d.id)

@@ -1,3 +1,4 @@
+import {physicalCleanupAllowed} from '../../backup-lease.js';
 import { randomUUID } from 'node:crypto';
 import {persistSourceBlob} from './archive.js';
 import type { PoolClient } from 'pg';
@@ -34,7 +35,7 @@ export async function persistSourceDocument(tx:PoolClient,document:SourceDocumen
   const id=result.rows[0]!.id;
   if(document.rawResponse){
     await tx.query('INSERT INTO external_source_responses(document_id,response_hash,observed_at) VALUES($1,$2,$3) ON CONFLICT(document_id,response_hash) DO UPDATE SET observed_at=greatest(external_source_responses.observed_at,excluded.observed_at)',[id,document.rawResponse.hash,document.observedAt]);
-    await tx.query(`DELETE FROM external_source_responses r WHERE r.document_id=$1
+    if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_source_responses r WHERE r.document_id=$1
       AND r.response_hash<>(SELECT response_hash FROM external_source_documents WHERE id=$1)
       AND (r.observed_at<now()-interval '7 days' OR r.response_hash NOT IN(SELECT response_hash FROM external_source_responses WHERE document_id=$1 AND response_hash<>(SELECT response_hash FROM external_source_documents WHERE id=$1) ORDER BY observed_at DESC,response_hash DESC LIMIT 1))
       AND NOT EXISTS(SELECT 1 FROM external_source_blob_refs p WHERE p.hash=r.response_hash)`,[id]);
@@ -48,7 +49,7 @@ export async function persistSourceDocument(tx:PoolClient,document:SourceDocumen
     ON CONFLICT(provider,source,external_id,kind,locale) DO UPDATE SET document_id=excluded.document_id,observed_at=excluded.observed_at,merged_payload=excluded.merged_payload
     WHERE external_source_heads.observed_at<excluded.observed_at RETURNING document_id`,[...identity,document.kind,document.locale,id,document.observedAt,JSON.stringify(merged)]);
   // Current plus one recent historical version; pending work, backup and staff-audit pins are exempt.
-  await tx.query(`DELETE FROM external_source_documents d WHERE d.provider=$1 AND d.source=$2 AND d.external_id=$3 AND d.kind=$4 AND d.locale=$5
+  if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_source_documents d WHERE d.provider=$1 AND d.source=$2 AND d.external_id=$3 AND d.kind=$4 AND d.locale=$5
     AND NOT EXISTS(SELECT 1 FROM external_source_heads h WHERE h.document_id=d.id)
     AND (d.last_observed_at<now()-interval '7 days' OR d.id NOT IN(SELECT x.id FROM external_source_documents x WHERE x.provider=$1 AND x.source=$2 AND x.external_id=$3 AND x.kind=$4 AND x.locale=$5 AND NOT EXISTS(SELECT 1 FROM external_source_heads h WHERE h.document_id=x.id) ORDER BY x.last_observed_at DESC,x.id DESC LIMIT 1))
     AND NOT EXISTS(SELECT 1 FROM external_source_document_refs p WHERE p.document_id=d.id)
@@ -65,7 +66,7 @@ export async function persistTrimDocument(tx:PoolClient,trimId:string,locale:Sou
   const hash=jsonHash(payload);
   await persistSourceBlob(tx,hash,payload);
   await tx.query(`INSERT INTO external_trim_documents(provider,trim_id,locale,hash,last_observed_at) VALUES('chinacarapi',$1,$2,$3,$4) ON CONFLICT(provider,trim_id,locale,hash) DO UPDATE SET last_observed_at=greatest(external_trim_documents.last_observed_at,excluded.last_observed_at)`,[trimId,locale,hash,observedAt]);
-  await tx.query(`DELETE FROM external_trim_documents d WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2
+  if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_trim_documents d WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2
     AND hash<>(SELECT hash FROM external_trim_documents WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2 ORDER BY last_observed_at DESC,hash DESC LIMIT 1)
     AND (last_observed_at<now()-interval '7 days' OR hash NOT IN(SELECT hash FROM external_trim_documents WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2 ORDER BY last_observed_at DESC,hash DESC LIMIT 2))
     AND NOT EXISTS(SELECT 1 FROM external_source_blob_refs p WHERE p.hash=d.hash)`,[trimId,locale]);
@@ -83,6 +84,7 @@ export function mergePresent(before:unknown,after:unknown):unknown {
 
 /** Maintenance entry point: bounded orphan cleanup after rolling evidence retention. No active reference can be removed. */
 export async function pruneSourceBlobs(tx:PoolClient){
+  if(!await physicalCleanupAllowed(tx))return 0;
   return (await tx.query(`DELETE FROM external_source_blobs WHERE hash IN(SELECT b.hash FROM external_source_blobs b WHERE b.created_at<now()-interval '7 days' AND NOT EXISTS(SELECT 1 FROM external_source_blob_refs p WHERE p.hash=b.hash) AND NOT EXISTS(SELECT 1 FROM external_source_documents d WHERE d.hash=b.hash OR d.response_hash=b.hash) AND NOT EXISTS(SELECT 1 FROM external_trim_documents t WHERE t.hash=b.hash) AND NOT EXISTS(SELECT 1 FROM external_source_responses r WHERE r.response_hash=b.hash) ORDER BY b.created_at LIMIT 200) RETURNING hash`)).rowCount??0;
 }
 

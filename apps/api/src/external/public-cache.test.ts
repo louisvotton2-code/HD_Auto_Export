@@ -244,3 +244,14 @@ test('cancelling the last waiter removes a queued key; one cancelled joiner cann
   release.resolve();await running;assert.deepEqual(await survivor,{id:3});assert.equal(queuedCalls,1);
   assert.equal(cache.metrics().queuedLoads,0);assert.equal(cache.metrics().activeLoads,0);
 });
+
+test('inline and legacy details cannot share cache entries or in-flight work',async()=>{
+ const cache=new PublicCatalogCache({namespace:'hd:test-inline'},{readRevision:async()=>version()});
+ const query={id:'vehicle',locale:'en',view:'localized'},release=deferred<void>();let oldLoads=0,newLoads=0;
+ const old=()=>cache.get('detail',query,async()=>{oldLoads++;await release.promise;return {shape:'legacy'};});
+ const inline=()=>cache.get('detail',{...query,projection:'detail-inline-v1'},async()=>{newLoads++;await release.promise;return {shape:'inline'};});
+ const pending=[old(),inline(),old(),inline()];release.resolve();
+ assert.deepEqual((await Promise.all(pending)).map(value=>value.shape),['legacy','inline','legacy','inline']);
+ assert.equal((await old()).shape,'legacy');assert.equal((await inline()).shape,'inline');
+ assert.equal(oldLoads,1);assert.equal(newLoads,1);await cache.close();
+});
