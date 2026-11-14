@@ -248,3 +248,12 @@ node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATAB
 迁移0026创建持久 `backup_gc_leases`。在线备份先执行 `node dist/backup-lease-cli.js acquire --reference backup:<唯一任务>`，成功后才创建pg_dump快照并归档媒体/原档；完成或明确中止后 `release --reference`。CLI使用既有DATABASE_URL或DATABASE_URL_FILE，引用不含秘密。无自动过期、幂等、只释放本reference；多引用存在时任一个均阻止GC。PG锁78291335在acquire与所有物理清理之间串行；人工媒体删除仍逻辑生效，文件等release后下次cleanup再删。媒体purge/cleanup、原档滚动清理/维护、CSV压缩后原件删除及过期CSV清理均遵守同锁；备份期间压缩完成但不可删除时保留原路径，后续重试。先更新所有执行GC的API和worker，再启用在线备份；旧版本不识别新保护。恢复的备份中包含其lease，隔离恢复验证需显式释放对应引用，生产lease不可误删。
 
 OPS容量模型同时接受 `hd-ext07-peak-v1` 和 `hd-ext09-daily-two-v1`，样本绑定、10分钟有效期、70%硬上限与预算校验不变。本轮应用验证由OPS服务器隔离执行，本机仅编辑和Git静态检查。
+
+
+## 本地持久真实样本
+
+`pnpm --filter @hd/api external:local-preview --package <私有抓取包绝对路径>` 复用现有来源适配器，把固定名单的已抓取详情/报告写入专用 `hd_local_preview`。只允许 `NODE_ENV=development`、`HD_DEPLOYMENT_ENV=local`、回环数据库（可使用绝对路径 Unix socket）和关闭翻译；不会下载 CSV、调用供应商或启动同步 worker。
+
+包内 `selection.json` 保存 `version:1`、固定 `batchKey:local-real-*`、最多200个 `{source,externalId}`；`documents.jsonl` 沿用来源快照加载器的相对文件路径和 SHA-256 校验。原文、数据库、凭据与媒体保留在 Git 忽略的私有目录。重放相同包复用车辆ID与回执，保留员工覆盖；旧抓取跳过，撤车立即隐藏。缺少三语详情的在售记录计入 `missing`，不伪造补全。原文响应按哈希去重，整个导入事务失败则回滚。
+
+导入输出的 `selected/applied/unchanged/missing/withdrawn/stale` 是处理统计，`publicIds` 是本次有效在售来源记录，最终语言可见数量应读取公开目录/筛选接口。固定名单不得用同一批次名替换。实际样本、刷新时间、启动/停止与联调交接仅记录在根工作树 `docs/private/local-preview/README.md`；环境与进程按交接恢复，不能重建或清空旧库。
