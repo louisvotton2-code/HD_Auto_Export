@@ -125,6 +125,10 @@
   gap: 12px;
   margin-top: 20px;
 }
+.tiles:has([data-public-vehicle-vin]) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+}
+.tiles:has([data-public-vehicle-vin]) > .mileageTile { grid-column: 1 / -1; }
 .tile {
   min-width: 0;
   border-radius: 12px;
@@ -605,6 +609,7 @@
   .tiles {
     gap: 8px;
   }
+  .tiles:has([data-public-vehicle-vin]) { grid-template-columns: minmax(0, 1fr); }
   .tile {
     padding: 12px 9px;
   }

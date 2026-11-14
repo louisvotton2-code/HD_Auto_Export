@@ -40,6 +40,20 @@
 .item dt {
   color: #a9a3a0;
 }
+.itemLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.itemIcon {
+  flex: 0 0 18px;
+  margin-top: 2px;
+  color: #c9956e;
+}
+.itemLabelText {
+  flex: 1;
+  min-width: 0;
+}
 .item dd {
   color: #f5f0eb;
 }

@@ -559,9 +559,16 @@
 }
 .brandMarquee {
   display: flex;
-  gap: 64px;
   width: max-content;
-  animation: marquee 60s linear infinite;
+  animation: marquee var(--brand-duration, 0s) linear infinite;
+  animation-play-state: paused;
+}
+.brandMarquee[data-marquee-ready='true'] { animation-play-state: running; }
+.brandGroup {
+  display: flex;
+  flex-shrink: 0;
+  gap: 64px;
+  padding-right: 64px;
 }
 .brandMarquee span {
   opacity: 0.4;
@@ -575,7 +582,8 @@
   align-items: center;
   justify-content: center;
 }
-.brandMarquee:hover {
+.brands:hover .brandMarquee,
+.brandMarquee[data-paused='true'] {
   animation-play-state: paused;
 }
 .comingSoon {
@@ -629,7 +637,7 @@
 }
 @keyframes marquee {
   to {
-    transform: translateX(calc(-50% - 32px));
+    transform: translateX(calc(-1 * var(--brand-distance, 0px)));
   }
 }
 @media (min-width: 640px) {

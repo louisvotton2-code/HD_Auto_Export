@@ -35,6 +35,7 @@ function validateVehicle(vehicle: PublicVehicle, locale: Locale, priceView?: 'us
     ...Object.values(fields),
     ...priceIncludes.map((x) => x.value),
     ...mediaAlt.map((x) => x.value),
+    ...(vehicle.inspectionSummary?.categories.map(category => category.label) ?? []),
     ...(vehicle.vehicleClass ? [vehicle.vehicleClass] : []),
     ...(vehicle.manufacture?.basis ? [vehicle.manufacture.basis] : []),
     ...vehicle.images.flatMap(image => image.altText === undefined ? [] : [image.altText]),

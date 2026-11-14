@@ -12,7 +12,6 @@ type GalleryCopy = {
   shown: (count: string) => string;
   progress: (loaded: string, total: string) => string;
   position: (position: string, loaded: string) => string;
-  browse: string;
   more: string;
   loading: string;
   retry: string;
@@ -29,7 +28,7 @@ const copy = {
     shown: (count: string) => `已显示 ${count} 张照片`,
     progress: (loaded: string, total: string) => `已加载 ${loaded} / ${total} 张照片`,
     position: (position: string, loaded: string) => `第 ${position} 张 · 已显示 ${loaded} 张`,
-    browse: '浏览相册', more: '加载更多照片', loading: '正在加载照片…', retry: '重试加载', restart: '重新加载相册',
+    more: '加载更多照片', loading: '正在加载照片…', retry: '重试加载', restart: '重新加载相册',
     unavailable: '照片暂时无法加载，请重试。', changed: '照片已更新，请重新加载相册。', missing: '此车辆的照片暂时无法查看。',
     wait: (seconds: string) => `请在 ${seconds} 秒后重试。`, noScript: '启用 JavaScript 后可分段浏览更多照片。',
   },
@@ -37,7 +36,7 @@ const copy = {
     shown: (count: string) => `${count} photos shown`,
     progress: (loaded: string, total: string) => `${loaded} of ${total} photos loaded`,
     position: (position: string, loaded: string) => `Photo ${position} · ${loaded} shown`,
-    browse: 'Browse photos', more: 'Load more photos', loading: 'Loading photos…', retry: 'Retry loading', restart: 'Reload photos',
+    more: 'Load more photos', loading: 'Loading photos…', retry: 'Retry loading', restart: 'Reload photos',
     unavailable: 'Photos could not be loaded. Please try again.', changed: 'The photos have changed. Reload the gallery.', missing: 'Photos for this vehicle are currently unavailable.',
     wait: (seconds: string) => `Try again in ${seconds} seconds.`, noScript: 'Enable JavaScript to browse more photos in sections.',
   },
@@ -45,7 +44,7 @@ const copy = {
     shown: (count: string) => `Показано фото: ${count}`,
     progress: (loaded: string, total: string) => `Загружено фото: ${loaded} из ${total}`,
     position: (position: string, loaded: string) => `Фото ${position} · показано ${loaded}`,
-    browse: 'Смотреть фотографии', more: 'Загрузить ещё фото', loading: 'Загрузка фотографий…', retry: 'Повторить загрузку', restart: 'Обновить фотографии',
+    more: 'Загрузить ещё фото', loading: 'Загрузка фотографий…', retry: 'Повторить загрузку', restart: 'Обновить фотографии',
     unavailable: 'Не удалось загрузить фотографии. Попробуйте ещё раз.', changed: 'Фотографии изменились. Обновите галерею.', missing: 'Фотографии этого автомобиля сейчас недоступны.',
     wait: (seconds: string) => `Повторите через ${seconds} сек.`, noScript: 'Включите JavaScript, чтобы просматривать остальные фотографии по частям.',
   },
@@ -67,7 +66,9 @@ export function PublicVehicleGallery({ vehicle, title, locale }: { vehicle: Publ
   const missing = resource.phase === 'missing';
   const error = resource.phase === 'error';
   const waiting = resource.retryAfter > 0;
-  const canLoad = !missing && !changed && resource.hasMore;
+  // Before the first page, an unknown count does not establish that additional photos exist.
+  const hasMore = resource.started ? resource.hasMore : total !== null && total > images.length;
+  const canLoad = !missing && !changed && (hasMore || error);
   const summary = total === null ? t.shown(number(images.length)) : t.progress(number(images.length), number(total));
 
   function open() {
@@ -89,10 +90,10 @@ export function PublicVehicleGallery({ vehicle, title, locale }: { vehicle: Publ
           <button type="button" className={styles.button} onClick={resource.restart} disabled={loading || waiting} data-gallery-restart>{t.restart}</button>
         ) : enhanced && canLoad ? (
           <button type="button" className={styles.button} onClick={resource.loadMore} disabled={loading || waiting} data-gallery-load-more>
-            {loading ? t.loading : error ? t.retry : resource.started ? t.more : t.browse}
+            {loading ? t.loading : error ? t.retry : t.more}
           </button>
         ) : null}
-        {placement === 'inline' && <noscript><p className={styles.message}>{t.noScript}</p></noscript>}
+        {placement === 'inline' && hasMore && <noscript><p className={styles.message}>{t.noScript}</p></noscript>}
       </div>
     );
   }

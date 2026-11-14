@@ -2,6 +2,7 @@ import type { ExternalPublicDetail } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import { groupVehicleEquipment } from '../vehicle-equipment';
+import { EquipmentIcon } from './equipment-icon';
 import styles from './public-detail.module.css';
 
 const icons = { comfort: 'seat', safety: 'shield', technology: 'chip', other: 'info' } as const;
@@ -38,7 +39,7 @@ export function VehicleEquipment({
               {entries.map(({ name, value }, index) => (
                 <div key={index}>
                   <dt lang={name.contentLocale} dir="auto">
-                    <span className={styles.equipmentIcon}><Icon name={icons[group]} size={14} /></span>
+                    <span className={styles.equipmentIcon}><EquipmentIcon label={name.text} size={16} /></span>
                     {name.text}
                   </dt>
                   <dd lang={value.contentLocale} dir="auto">{value.text}</dd>

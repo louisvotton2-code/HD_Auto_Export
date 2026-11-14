@@ -26,6 +26,7 @@ import {
   PublicVehicleSchema,
   PublicVehicleQuerySchema,
   PublicVehicleSegmentQuerySchema,
+  PublicVehicleInspectionQuerySchema,
   PublicVehicleGalleryResponseSchema,
   PublicVehicleConfigurationResponseSchema,
 } from '@hd/contracts/public';
@@ -144,6 +145,7 @@ function vehicle(id, locale, overrides = {}) {
   return PublicVehicleSchema.parse({
     ...base,
     id,
+    ...(id === 'fixture_car_3' ? { identifiers: { inquiryCode: 'DCD-357217151', sourceId: '357217151', source: 'dongchedi', vin: 'LHGCM82633A004352' } } : {}),
     stockCode: demo ? 'SHOW-ALPHA' : id === 'fixture_future' ? 'HD-FUTURE-01' : `HD-${id}`,
     source: external
       ? {
@@ -205,6 +207,7 @@ const resetState = () => ({
   configurationMode: 'none',
   inspectionMode: 'legacy',
   reportPresenceMode: 'default',
+  inspectionSummaryStatus: 'auto',
   responseDelayMs: 0,
   publicRateLimited: false,
   filtersRateLimited: false,
@@ -267,7 +270,39 @@ function segmentConfiguration(state, row, locale) {
     value: segmentDisplay(index === 0 ? '0 cm³ / 8 AT' : index === 1 ? '0' : index === 2 ? 'false' : `Value ${index + 1}`, locale, state.segmentFallback && index === 0 ? 'zh' : locale),
   }));
 }
+// Synthetic stored-report projections. The detail overview never contains a report body.
+function inspectionOverview(state, row, locale) {
+  const explicit = state.inspectionSummaryStatus;
+  const status = explicit !== 'auto' ? explicit
+    : state.inspectionMode === 'empty' ? state.reportPresenceMode === 'false' ? 'no_report' : 'unknown'
+      : row.source.kind === 'external' || state.reportPresenceMode === 'known' ? 'available' : 'unknown';
+  const labels = { zh: ['事故损伤', '水泡', '火烧'], en: ['Accident damage', 'Flood damage', 'Fire damage'], ru: ['Повреждения при ДТП', 'Затопление', 'Повреждения огнём'] };
+  return { status, contentLocale: status === 'available' ? 'en' : null,
+    checked: status === 'available' ? 32 : null, faults: status === 'available' ? 1 : null,
+    categories: status !== 'available' ? [] : ['accident','flood','fire'].map((id,index) => ({ id,
+      label: segmentDisplay(labels[locale][index], locale), checked: [24,5,3][index], faults: index === 2 ? 1 : 0,
+      outcome: index === 2 ? 'defect' : 'ok' })) };
+}
+function inspectionEntries(state, row, locale) {
+  const summary = inspectionOverview(state, row, locale);
+  if (summary.status !== 'available') return [];
+  const count = ['large','legacy-large'].includes(state.inspectionMode) ? 125 : 51;
+  return Array.from({length:count}, (_, index) => {
+    const categoryId = index < 24 ? 'accident' : index < 29 ? 'flood' : 'fire';
+    const partId = `part-${index % 4}`;
+    const defect = index === 31;
+    return { id: `inspection-${index + 1}`, categoryId, partId, groupId: `group-${categoryId}`,
+      category: segmentDisplay(categoryId === 'accident' ? 'Accident damage' : categoryId === 'flood' ? 'Flood damage' : 'Fire damage',locale,'en'),
+      part: segmentDisplay(`Body part ${index % 4 + 1}`,locale,'en'), group: segmentDisplay('Stored checks',locale,'en'),
+      name: segmentDisplay(`Inspection item ${index + 1}`,locale,'en'), value: segmentDisplay(defect ? 'Recorded issue' : index === 0 ? '0' : 'No issue recorded',locale,'en'),
+      kind: defect ? 'defect' : index >= 32 ? 'summary' : 'check', outcome: defect ? 'defect' : index >= 32 ? 'unknown' : 'ok' };
+  });
+}
 function segmentSeed(state, row, locale) {
+  row.inspectionSummary = inspectionOverview(state, row, locale);
+  if (row.external?.detail) row.external.detail.inspection = null;
+  // A contradictory legacy supplier flag remains visible to tests; the overview is authoritative.
+
   if (state.estimateDateRange && row.id === 'fixture_car_1') {
     row.facts.manufacturedAt = null;
     row.manufacture = { date: null, range: { earliest: { precision: 'month', value: '2020-11' }, latest: { precision: 'month', value: '2026-11' } }, source: 'supplier', basis: null };
@@ -574,7 +609,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   const changed = (patch = {}) => {
     catalogRevision++;
     if (Object.keys(patch).some(key => ['estimateDateRange', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
-      'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
+      'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
       fxVersion = randomUUID();
@@ -635,6 +670,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           historyScenario: (v) => ['default', 'complete', 'empty', 'conflict', 'structured-zero', 'structured-null', 'structured-two'].includes(v),
           configurationMode: (v) => ['none', 'ready', 'missing', 'fallback', 'long', 'wrong_name_locale', 'wrong_value_locale'].includes(v),
           inspectionMode: (v) => ['legacy', 'structured', 'large', 'legacy-large', 'empty'].includes(v),
+          inspectionSummaryStatus: (v) => ['auto','available','no_report','unknown','pending','unavailable'].includes(v),
           reportPresenceMode: (v) => ['default', 'known', 'false', 'absent'].includes(v),
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
@@ -770,7 +806,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (rawId !== undefined && !IdSchema.safeParse(rawId).success)
           return send(res, 400, error('INVALID_REQUEST'));
         try {
-          if (segmentMatch) { segmentQuery = PublicVehicleSegmentQuerySchema.parse(raw); locale = segmentQuery.locale; }
+          if (segmentMatch) { segmentQuery = (segmentMatch[2] === 'inspection' ? PublicVehicleInspectionQuerySchema : PublicVehicleSegmentQuerySchema).parse(raw); locale = segmentQuery.locale; }
           else if (url.pathname.startsWith('/api/v1/media/'))
             mediaQuery = PublicMediaQuerySchema.parse(raw);
           else if (url.pathname === '/api/v1/vehicles') {
@@ -848,7 +884,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
             specs.push(entry('Ownership transfers', 'unknown'), entry('accidentCount', '—'));
             inspection.entries.push(entry('theft history', 'not provided'), entry('Accident items', '0 / 24'), entry('Flood items', '0 / 18'));
           } else if (state.historyScenario === 'conflict') {
-            specs.push(entry('Ownership transfers', '0'), entry('accidentCount', '0'));
+            specs.push(entry('Ownership transfers', '0'), entry('accidentCount', '0'), entry('owner changes', '2'), entry('number of accidents', '1'));
             inspection.entries.push(entry('owner changes', '2'), entry('number of accidents', '1'), entry('waterDamage', 'unknown'));
           } else {
             item.external.detail.history = { ownershipTransfers: state.historyScenario === 'structured-null' ? null : state.historyScenario === 'structured-zero' ? 0 : 2 };
@@ -894,30 +930,35 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (state.segmentFailure === 'conflict') return send(res, 409, error('VERSION_CONFLICT'));
         if (state.segmentFailure === 'rate_limit') return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
         if (state.segmentFailure === 'unavailable') return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+        const filterScope = kind === 'inspection' ? JSON.stringify([segmentQuery.category ?? null, segmentQuery.part ?? null, segmentQuery.outcome ?? null, segmentQuery.order]) : '';
         const revision = createHash('sha256').update(`${catalogEpoch}:segments:${segmentRevision}:${state.segmentRevision}:${vehicleId}:${kind}:${locale}`).digest('hex');
         let offset = 0;
         if (segmentQuery.cursor) {
           let cursor;
           try { cursor = JSON.parse(Buffer.from(segmentQuery.cursor, 'base64url').toString('utf8')); }
           catch { return send(res, 400, error('INVALID_REQUEST')); }
-          if (cursor.vehicleId !== vehicleId || cursor.locale !== locale || cursor.kind !== kind || !Number.isInteger(cursor.offset) || cursor.offset < 1)
+          if (cursor.vehicleId !== vehicleId || cursor.locale !== locale || cursor.kind !== kind || (cursor.filterScope ?? '') !== filterScope || !Number.isInteger(cursor.offset) || cursor.offset < 1)
             return send(res, 400, error('INVALID_REQUEST'));
           if (cursor.revision !== revision) return send(res, 409, error('VERSION_CONFLICT'));
           offset = cursor.offset;
         }
         const snapshot = { ...state };
-        const complete = kind === 'gallery' ? segmentGallery(snapshot, found, locale)
+        let complete = kind === 'gallery' ? segmentGallery(snapshot, found, locale)
           : kind === 'configuration' ? segmentConfiguration(snapshot, found, locale)
-          : kind === 'inspection' ? snapshot.reportPresenceMode === 'known' ? [
-            { id: 'inspection-1', category: segmentDisplay('检查', locale, 'zh'), part: null, name: segmentDisplay('事故记录', locale, 'zh'), value: segmentDisplay('0', locale, 'zh'), outcome: 'ok' },
-          ] : [] : [{ id: 'history-1', at: '2026-10-01T00:00:00.000Z', money: { amount: '0.00', currency: 'CNY' }, kind: 'seller' }];
+          : kind === 'inspection' ? inspectionEntries(snapshot, found, locale)
+          : [{ id: 'history-1', at: '2026-10-01T00:00:00.000Z', money: { amount: '0.00', currency: 'CNY' }, kind: 'seller' }];
+        if (kind === 'inspection') {
+          complete = complete.filter(item => (!segmentQuery.category || item.categoryId === segmentQuery.category)
+            && (!segmentQuery.part || item.partId === segmentQuery.part) && (!segmentQuery.outcome || item.outcome === segmentQuery.outcome));
+          if (segmentQuery.order === 'faults_first') complete.sort((a,b) => ({defect:0,unknown:1,ok:2}[a.outcome] - {defect:0,unknown:1,ok:2}[b.outcome]));
+        }
         if (offset > complete.length) return send(res, 400, error('INVALID_REQUEST'));
         const start = snapshot.segmentOverlap && offset > 0 ? offset - 1 : offset;
         const nextOffset = Math.min(complete.length, start + segmentQuery.limit);
         const items = complete.slice(start, nextOffset);
-        const nextCursor = nextOffset < complete.length ? Buffer.from(JSON.stringify({ vehicleId, locale, kind, revision, offset: nextOffset })).toString('base64url') : null;
+        const nextCursor = nextOffset < complete.length ? Buffer.from(JSON.stringify({ vehicleId, locale, kind, revision, filterScope, offset: nextOffset })).toString('base64url') : null;
         const schema = { gallery: PublicVehicleGalleryResponseSchema, configuration: PublicVehicleConfigurationResponseSchema, inspection: PublicVehicleInspectionResponseSchema, 'price-history': PublicVehiclePriceHistoryResponseSchema }[kind];
-        const payload = schema.parse({ data: { vehicleId, locale, revision, total: complete.length, items, nextCursor, ...(kind === 'inspection' ? { status: complete.length ? 'available' : 'no_report' } : {}) }, meta: { requestId: `fixture-${kind}` } });
+        const payload = schema.parse({ data: { vehicleId, locale, revision, total: complete.length, items, nextCursor, ...(kind === 'inspection' ? { status: inspectionOverview(snapshot, found, locale).status, summary: inspectionOverview(snapshot, found, locale), conclusions: inspectionOverview(snapshot, found, locale).status === 'available' ? [{ id: 'conclusion-fire', name: segmentDisplay('Fire inspection',locale,'en'), value: segmentDisplay('Recorded issue',locale,'en') }] : [] } : {}) }, meta: { requestId: `fixture-${kind}` } });
         if (snapshot.segmentFailure === 'private_field') payload.data.internal = { vin: 'PRIVATE_VIN_SENTINEL', seller: 'PRIVATE_SELLER_SENTINEL', staff: 'PRIVATE_STAFF_SENTINEL', reportUrl: 'https://reports.example.invalid/private' };
         if (snapshot.segmentFailure === 'wrong_locale') payload.data.locale = locale === 'ru' ? 'en' : 'ru';
         if (snapshot.segmentFailure === 'wrong_vehicle') payload.data.vehicleId = 'fixture_wrong_vehicle';

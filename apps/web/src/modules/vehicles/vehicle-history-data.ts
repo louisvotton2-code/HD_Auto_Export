@@ -64,7 +64,7 @@ export function explicitHistoryEntries(entries: readonly Entry[], locale: Locale
 export function vehicleHistory(vehicle: Pick<PublicVehicle, 'external'>, locale: Locale) {
   const detail = vehicle.external?.detail;
   const modernHistory = detail !== undefined && Object.hasOwn(detail, 'history');
-  const legacy = explicitHistoryEntries([...(detail?.specifications ?? []), ...(detail?.inspection?.entries ?? [])], locale)
+  const legacy = explicitHistoryEntries(detail?.specifications ?? [], locale)
     .filter(({ kind }) => !modernHistory || kind !== 'transfers');
   const grouped = new Map(legacy.map((record) => [record.kind, record]));
   const transfers = detail?.history?.ownershipTransfers;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makePublicVehicleFixture, makeConfigurationDisplayFixture } from '@hd/contracts/fixtures';
-import { PublicVehicleSchema, type PublicVehicleGalleryResponse, type PublicVehicleConfigurationResponse } from '@hd/contracts/public';
-import { parseVehicleSegment, mergeVehicleSegment } from './public-segments';
+import { PublicVehicleSchema, type DisplayText, type PublicVehicleGalleryResponse, type PublicVehicleConfigurationResponse, type PublicVehicleInspectionResponse } from '@hd/contracts/public';
+import { parseVehicleSegment, mergeVehicleSegment, VehicleSegmentError } from './public-segments';
 
 const vehicle = makePublicVehicleFixture();
 const image = vehicle.images[0];
@@ -11,6 +11,18 @@ const gallery = (ids: string[], total: number, nextCursor: string | null): Publi
   items: ids.map((id, index) => ({ ...image, id, sortOrder: index + 35 })),
 });
 const envelope = (data: unknown) => ({ data, meta: { requestId: 'segment-test' } });
+const inspectionField = (text: string): DisplayText => ({
+  status: 'ready', text, requestedLocale: 'zh', contentLocale: 'en', provenance: 'supplier', reviewed: false,
+});
+const inspection = (): PublicVehicleInspectionResponse['data'] => ({
+  vehicleId: vehicle.id, locale: 'zh', revision, status: 'available', total: 1, nextCursor: null,
+  summary: { status: 'available', contentLocale: 'en', checked: 0, faults: null,
+    categories: [{ id: 'accident', label: inspectionField('Accident inspection'), checked: 0, faults: null, outcome: 'unknown' }] },
+  conclusions: [{ id: 'recorded-conclusion', name: inspectionField('Recorded conclusion'), value: inspectionField('No conclusion supplied') }],
+  items: [{ id: 'check-one', categoryId: 'accident', partId: 'body', groupId: 'body', kind: 'summary',
+    category: inspectionField('Accident inspection'), part: inspectionField('Body'), group: inspectionField('Stored checks'),
+    name: inspectionField('Structural inspection'), value: inspectionField('No observation supplied'), outcome: 'unknown' }],
+});
 
 describe('public segment identity, privacy and complete page merging', () => {
   it('keeps gallery alt provenance beyond the preview and rejects another requested locale', () => {
@@ -44,6 +56,27 @@ describe('public segment identity, privacy and complete page merging', () => {
     item.name.requestedLocale = 'en';
     expect(() => parseVehicleSegment('configuration', envelope(data), vehicle.id, 'ru')).toThrow();
   });
+  it('keeps inspection English content under the Chinese request locale and preserves complete zero and unknown statistics', () => {
+    const parsed = parseVehicleSegment('inspection', envelope(inspection()), vehicle.id, 'zh').data;
+    expect(parsed.locale).toBe('zh');
+    expect(parsed.summary).toMatchObject({ contentLocale: 'en', checked: 0, faults: null });
+    expect(parsed.summary?.categories[0]).toMatchObject({ checked: 0, faults: null,
+      label: { requestedLocale: 'zh', contentLocale: 'en' } });
+    expect(parsed.conclusions?.[0].name).toMatchObject({ requestedLocale: 'zh', contentLocale: 'en' });
+    expect(parsed.conclusions?.[0].value).toMatchObject({ requestedLocale: 'zh', contentLocale: 'en' });
+    expect(parsed.items[0].group).toMatchObject({ requestedLocale: 'zh', contentLocale: 'en' });
+    expect(parsed.total).toBe(1); // Itemized record count is separate from the stored check count.
+  });
+  it.each(['summary', 'conclusion-name', 'conclusion-value', 'group'] as const)(
+    'rejects a requested locale mismatch in the inspection %s', field => {
+      const data = inspection();
+      const fields = { summary: data.summary!.categories[0].label,
+        'conclusion-name': data.conclusions![0].name, 'conclusion-value': data.conclusions![0].value,
+        group: data.items[0].group! };
+      fields[field].requestedLocale = 'en';
+      expect(() => parseVehicleSegment('inspection', envelope(data), vehicle.id, 'zh')).toThrow(VehicleSegmentError);
+    },
+  );
   it('merges stable overlapping pages without treating the seed as a first page', () => {
     const first = gallery(['a', 'b'], 3, 'next');
     const second = gallery(['b', 'c'], 3, null);

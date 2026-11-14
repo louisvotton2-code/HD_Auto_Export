@@ -4,6 +4,7 @@ import {
   PublicMediaQuerySchema,
   PublicVehicleFiltersSchema,
   PublicVehicleSegmentQuerySchema,
+  PublicVehicleInspectionQuerySchema,
 } from '@hd/contracts/public';
 import {
   PublicApiError,
@@ -72,7 +73,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail && !isSegment)
     return failure(404);
   const params = new URL(request.url).searchParams;
-  const allowed = isSegment ? ['locale', 'limit', 'cursor'] : isMedia
+  const allowed = isSegment ? (parts[2] === 'inspection' ? ['locale', 'limit', 'cursor', 'category', 'part', 'outcome', 'order'] : ['locale', 'limit', 'cursor']) : isMedia
     ? ['variant']
     : path === 'vehicles'
       ? catalogQueryKeys
@@ -83,7 +84,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
     let query: Record<string, string | number | undefined> = {};
-    if (isSegment) query = PublicVehicleSegmentQuerySchema.parse(Object.fromEntries(params));
+    if (isSegment) query = (parts[2] === 'inspection' ? PublicVehicleInspectionQuerySchema : PublicVehicleSegmentQuerySchema).parse(Object.fromEntries(params));
     else if (isMedia) query = PublicMediaQuerySchema.parse(Object.fromEntries(params));
     else {
       const raw = Object.fromEntries(params);

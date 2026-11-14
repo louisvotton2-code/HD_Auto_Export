@@ -1,6 +1,7 @@
 'use client';
 
 import NextLink from 'next/link';
+import { BrandMarquee } from './brand-marquee';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
@@ -342,17 +343,7 @@ export function HomePage({
           )}
         </section>
       )}
-      {brands.length > 0 && (
-        <div className={styles.brands} aria-label={brands.join(', ')}>
-          <div className={styles.brandMarquee} data-paused={paused}>
-            {[...brands, ...brands].map((brand, i) => (
-              <span aria-hidden={i >= brands.length} key={`${brand}-${i}`}>
-                {brand}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <BrandMarquee brands={brands} paused={paused} />
       <HomeSections locale={locale} models={models} paused={paused} />
     </main>
   );
