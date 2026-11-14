@@ -9,7 +9,7 @@ import { CountryFlag } from '@/shared/ui/country-flag';
 import { VehiclePhoto } from '@/modules/vehicles';
 import { sectionContent } from '../content/section-content';
 import styles from './home-sections.module.css';
-import type { HomeModel } from '../types';
+import type { HomeDestination, HomeModel } from '../types';
 
 function BenefitIcon({ index }: { index: number }) {
   return (
@@ -84,10 +84,12 @@ function ConsultationCard({
 export function HomeSections({
   locale,
   models,
+  destinations,
   paused: globallyPaused = false,
 }: {
   locale: Locale;
   models: HomeModel[];
+  destinations: HomeDestination[];
   paused?: boolean;
 }) {
   const t = sectionContent[locale];
@@ -368,9 +370,9 @@ export function HomeSections({
               <h2 id="home-calculator-title">{t.calculator}</h2>
               <p>{t.calculatorBody}</p>
               <div className={styles.countries}>
-                {t.countries.map((country) => (
+                {destinations.map((country) => (
                   <Link href={`/${locale}/calculator/${country.slug}/`} key={country.slug}>
-                    <CountryFlag countryCode={country.countryCode} /> {country.name}
+                    <CountryFlag countryCode={country.code} /> {country.name}
                   </Link>
                 ))}
               </div>

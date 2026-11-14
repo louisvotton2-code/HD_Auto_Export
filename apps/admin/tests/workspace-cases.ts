@@ -4,6 +4,7 @@ import { TranslationPlanResultSchema, TranslationPlanStatusSchema, type AdminVeh
 import { envelope, error, installApi, localization, reply, translationBundle, translationResult, vehicle } from './api-fixture';
 import { bundleSave, confirmPlan, generateSuggestions, noReviewControls, openWorkspace, planButton, recoverResult, requestPlan, saveBundle } from './translation-test-helpers';
 import { tab } from './ui-helpers';
+import { fillRequiredEntry } from './draft-entry-test-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 const bundlePath = `/api/v1/admin/vehicles/${id}/translation-bundle`;
@@ -32,10 +33,8 @@ async function expectUnfilled(page: Page) {
 
 test('workspace Chinese-first save generates original Chinese and machine pending targets without automatically saving', async ({ page }) => {
   const api = await installApi(page, { createdId: id }); await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
-  await page.getByLabel('标题原文', { exact: true }).fill('中文权威原文');
-  await tab(page, '价格与内部信息'); await page.getByLabel('车况描述', { exact: true }).fill('这段中文只用于合成浏览器验证。');
-  await tab(page, '公开字段多语'); await expect(planButton(page)).toHaveCount(0);
+  await fillRequiredEntry(page, '中文权威原文'); await page.getByLabel('车况描述', { exact: true }).fill('这段中文只用于合成浏览器验证。');
+  await page.getByRole('tab', { name: /公开字段多语/ }).click(); await expect(planButton(page)).toHaveCount(0);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect(page).toHaveURL(new RegExp(`${id}$`));
   await tab(page, '公开字段多语');
   await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveValue('中文权威原文');

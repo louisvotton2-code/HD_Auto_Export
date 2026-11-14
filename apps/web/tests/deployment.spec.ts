@@ -16,7 +16,7 @@ test('the standalone server serves actual brand images and the decorative waterm
     .poll(() => watermark.evaluate((image) => (image as HTMLImageElement).naturalWidth))
     .toBeGreaterThan(0);
   await expect(watermark).toHaveCSS('pointer-events', 'none');
-  await expect(page.getByTestId('total')).toBeVisible();
+  await expect(page.getByTestId('january-estimates').locator('[data-january-month]')).toHaveCount(7);
   for (const image of await page.locator('img').all()) {
     await expect(image).not.toHaveAttribute('src', /\/_next\/image/);
     await expect

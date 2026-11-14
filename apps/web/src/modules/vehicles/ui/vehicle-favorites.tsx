@@ -53,6 +53,7 @@ function SavedCar({
   const cover = publicVehicleCover(vehicle);
   const copy = publicVehicleMessages(locale);
   const title = publicVehicleTitle(vehicle, locale);
+  const reference = publicVehicleReference(vehicle);
   const status =
     vehicle.availability === 'sold' || vehicle.availability === 'reserved'
       ? publicAvailabilityLabel(vehicle, locale)
@@ -74,8 +75,7 @@ function SavedCar({
           {title.text}
         </PublicCatalogLink>
         <small>
-          {publicVehicleReference(vehicle).code}
-          {vehicle.facts.modelYear !== null ? ` · ${vehicle.facts.modelYear}` : ''}
+          {[reference, vehicle.facts.modelYear].filter(value => value !== null).join(' · ')}
         </small>
         {status && (
           <span className={styles.availability} data-availability={vehicle.availability}>

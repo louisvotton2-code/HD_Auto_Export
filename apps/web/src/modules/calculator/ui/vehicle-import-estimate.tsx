@@ -11,6 +11,7 @@ import { calculateImportEstimate, type CalculationLine, type CountryCode } from 
 import { countries, getCountryByCode } from '../config/countries';
 import { CALCULATOR_POWERTRAINS } from '../application/draft';
 import { convertTransactionPrice } from '../application/defaults';
+import { formatCalculatorMoney } from '../application/fee-presentation';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
@@ -24,6 +25,8 @@ import {
 import { vehicleEstimateCopy } from '../application/vehicle-estimate-copy';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { FeeLine } from './fee-line';
+import { estimateJanuaryManufacture } from '../application/january-estimates';
+import { JanuaryEstimates } from './january-estimates';
 import { ManufactureRangeResult } from './manufacture-range-result';
 import { NumericDateInput } from './numeric-date-input';
 import styles from './vehicle-import-estimate.module.css';
@@ -77,15 +80,15 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const activeRange = country.needsManufactureDate ? sourceRange : undefined;
   const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
   const rangeResult = useMemo(() => activeRange ? calculateManufactureRange(normalized, activeRange) : null, [normalized, activeRange]);
+  const referenceYear = Number(initialDate.slice(0, 4));
+  const januaryScenarios = useMemo(
+    () => active && country.needsManufactureDate && !rangeResult && normalized.manufactureDate === ''
+      ? estimateJanuaryManufacture(normalized, referenceYear) : [],
+    [active, country.needsManufactureDate, normalized, rangeResult, referenceYear],
+  );
+  const hasJanuaryQuotes = januaryScenarios.some(scenario => scenario.result.total !== null);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
-  const formatter = useMemo(() => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, {
-    maximumFractionDigits: 2,
-  }), [locale]);
-  const separator = formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
-  const format = (value: string) => {
-    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(value);
-    return match ? `${formatter.format(BigInt(match[1]))}${match[2] ? separator + match[2] : ''}` : '—';
-  };
+  const format = (value: string) => formatCalculatorMoney(value, locale);
   const usd = (value: string) => {
     const converted = convertImportAmountToUsd(value, normalized, initialRates);
     return converted === null ? '— USD' : `≈ ${format(converted)} USD`;
@@ -141,7 +144,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale}
+      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} januaryPresets={key === 'manufactureDate'} referenceYear={referenceYear} label={label} locale={locale}
         onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
         <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
         <input id={id} name={key} value={input[key] ?? ''} type="text"
@@ -185,7 +188,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     usdRate: t(input.currency === 'USD' ? 'transactionRate' : 'usdRate'),
   };
   const missingLabels = active && result.status === 'incomplete'
-    ? [...new Set(result.missingFields.map((field) => labels[field as keyof VehicleEstimateDraft]).filter(Boolean))]
+    ? [...new Set(result.missingFields.filter(field => field !== 'manufactureDate' || !januaryScenarios.length).map((field) => labels[field as keyof VehicleEstimateDraft]).filter(Boolean))]
     : [];
   function renderLine(line: CalculationLine, additional = false) {
     const id = feeId(line, additional);
@@ -207,7 +210,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         <label htmlFor={`${prefix}-country`}>{t('destination')}</label>
         <select id={`${prefix}-country`} name="country" value={country.code}
           onChange={(event) => changeCountry(event.target.value as CountryCode)}>
-          {countries.map((item) => <option key={item.code} value={item.code}>{tc(item.code)}</option>)}
+          {countries.map((item) => <option key={item.code} value={item.code}>{item.flag} {tc(item.code)}</option>)}
         </select>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>
@@ -258,6 +261,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         </div>
       </details>
     </fieldset>
+    {januaryScenarios.length > 0 && <JanuaryEstimates scenarios={januaryScenarios} locale={locale} rates={initialRates} />}
     {active && rangeResult && result.status !== 'reference' && <ManufactureRangeResult calculation={rangeResult} locale={locale} rates={initialRates} />}
     {active && rangeResult && result.status === 'reference' ? <section className={styles.result} data-testid="inline-estimate-result">
       <ManufactureRangeResult calculation={rangeResult} locale={locale} rates={initialRates} />
@@ -285,7 +289,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       </ul>}
       <p className={styles.note}>{t('simpleReferenceNotice')}</p>
       <p className={styles.note}>{t('excludedDescription')}</p>
-    </section> : <div className={styles.status} data-testid="inline-estimate-status" role="status">
+    </section> : !hasJanuaryQuotes && <div className={styles.status} data-testid="inline-estimate-status" role="status">
       <Icon name="info" size={19} />
       <div>
         <strong>

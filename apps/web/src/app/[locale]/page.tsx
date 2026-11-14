@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import { hasLocale } from 'next-intl';
-import { setRequestLocale } from 'next-intl/server';
+import { getTranslations, setRequestLocale } from 'next-intl/server';
 import { notFound } from 'next/navigation';
 import { connection } from 'next/server';
 import { routing, type Locale } from '@/i18n/routing';
 import { localizedAlternates } from '@/shared/config/site';
+import { countries } from '@/modules/calculator/config/countries';
 import { PublicHome } from '@/modules/home';
 import { getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
 
@@ -40,16 +41,20 @@ export default async function Home({ params }: Props) {
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   await connection();
+  const countryName = await getTranslations({ locale, namespace: 'Countries' });
   const [home, filters] = await Promise.allSettled([
     getPublicHome(locale),
     getPublicFilters(locale),
   ]);
+  const destinations = countries.filter(country => country.referenceAvailable)
+    .map(({ code, slug }) => ({ code, slug, name: countryName(code) }));
   return (
     <PublicHome
       key={locale}
       locale={locale}
       home={home.status === 'fulfilled' ? home.value : null}
       filters={filters.status === 'fulfilled' ? filters.value.data : null}
+      destinations={destinations}
       initialRetryAfter={publicRetryAfter(home, filters)}
     />
   );

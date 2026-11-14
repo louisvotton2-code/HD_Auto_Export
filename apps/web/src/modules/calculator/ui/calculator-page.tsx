@@ -33,8 +33,10 @@ import { getCopyQuoteFacts, type CopyQuoteText } from '../application/copy-quote
 import { CountryPolicyNotes } from './country-policy-notes';
 import { FeeLine } from './fee-line';
 import { ResultStamp } from './result-stamp';
+import { estimateJanuaryManufacture } from '../application/january-estimates';
+import { JanuaryEstimates, januaryEstimateCopy } from './january-estimates';
 import { ManufactureRangeResult } from './manufacture-range-result';
-import { formatFeeFormula, formatMethodParameters } from '../application/fee-presentation';
+import { formatCalculatorMoney, formatFeeFormula, formatMethodParameters } from '../application/fee-presentation';
 import type { CalculationLine } from '../core/types';
 import {
   deriveRates,
@@ -102,6 +104,7 @@ export function CalculatorPage({
   const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
   const [manualRates, setManualRates] = useState(false);
   const [manufactureRange, setManufactureRange] = useState<ManufactureMonthRange>();
+  const [referenceYear, setReferenceYear] = useState(Number(initialDate.slice(0, 4)));
   const [ready, setReady] = useState(false);
   const [advanced, setAdvanced] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -126,12 +129,9 @@ export function CalculatorPage({
       ?? (pendingSeedRef.current?.seed.input.country === country.code ? pendingSeedRef.current : null);
     pendingSeedRef.current = fragment;
     const rates = fragment?.seed.rates ?? readStoredEstimateRates(raw.current, country.code) ?? initialRates;
-    const restored = restoreCalculatorDraft(
-      raw,
-      country,
-      getClearanceDate(new Date()),
-      rates,
-    );
+    const visitDate = getClearanceDate(new Date());
+    const restored = restoreCalculatorDraft(raw, country, visitDate, rates);
+    setReferenceYear(Number(visitDate.slice(0, 4)));
     setActiveRates(rates);
     setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
@@ -200,29 +200,24 @@ export function CalculatorPage({
   }, [input, country]);
   const rangeResult = useMemo(() => country.needsManufactureDate && manufactureRange && input.manufactureDate === ''
     ? calculateManufactureRange(normalized, manufactureRange) : null, [normalized, manufactureRange, country.needsManufactureDate, input.manufactureDate]);
+  const januaryScenarios = useMemo(
+    () => country.needsManufactureDate && !rangeResult && normalized.manufactureDate === ''
+      ? estimateJanuaryManufacture(normalized, referenceYear) : [],
+    [country.needsManufactureDate, normalized, rangeResult, referenceYear],
+  );
+  const hasJanuaryQuotes = januaryScenarios.some(scenario => scenario.result.total !== null);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
+  const missingFields = result.missingFields.filter(field => field !== 'manufactureDate' || !januaryScenarios.length);
   const rangeCopy = manufactureRangeCopy[locale as Locale];
   const manufactureNote = rangeResult
     ? rangeCopy.source.replace('{from}', rangeResult.range.from).replace('{to}', rangeResult.range.to)
       .replace('{count}', rangeResult.evaluatedMonths.toLocaleString(locale)) : undefined;
   const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
-  const formatter = useMemo(
-    () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 }),
-    [locale],
-  );
-  const decimalSeparator =
-    formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value || '.';
-  const format = (amount: string) => {
-    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(amount);
-    if (!match) return '—';
-    const whole = formatter.format(BigInt(match[1]));
-    return match[2] ? `${whole}${decimalSeparator}${match[2]}` : whole;
-  };
+  const format = (amount: string) => formatCalculatorMoney(amount, locale);
   function usdText(amount: string) {
     const converted = convertImportAmountToUsd(amount, normalized, activeRates);
     if (converted === null) return '— USD';
-    const [integer, decimals] = converted.split('.');
-    return `≈ ${formatter.format(BigInt(integer))}${decimalSeparator}${decimals.padEnd(2, '0')} USD`;
+    return `≈ ${format(converted)} USD`;
   }
   const isElectric = input.powertrain === 'bev';
   const needsDisplacement = !isElectric && !(country.code === 'KG' && input.powertrain === 'erev');
@@ -289,7 +284,9 @@ export function CalculatorPage({
   }
   function reset() {
     setActiveRates(initialRates);
-    setInput(defaultInput(country, getClearanceDate(new Date()), initialRates));
+    const visitDate = getClearanceDate(new Date());
+    setReferenceYear(Number(visitDate.slice(0, 4)));
+    setInput(defaultInput(country, visitDate, initialRates));
     setManualRates(false);
     setManufactureRange(undefined);
     setTouched(new Set());
@@ -332,7 +329,7 @@ export function CalculatorPage({
     });
   }
   async function copy() {
-    if (result.total === null) return;
+    if (result.total === null && !hasJanuaryQuotes) return;
     const quoteText = (value: CopyQuoteText) =>
       'text' in value
         ? value.text
@@ -355,10 +352,21 @@ export function CalculatorPage({
       ])] : []),
       ...quote.assumptions.map(key => ta(key)),
     ];
+    const januaryQuote = januaryScenarios.find(scenario => scenario.result.total !== null);
     const quotes = rangeResult?.minimum && rangeResult.maximum
       ? [rangeCopy.minimum, ...describe(rangeResult.minimum.input, rangeResult.minimum.result),
         rangeCopy.maximum, ...describe(rangeResult.maximum.input, rangeResult.maximum.result)]
-      : describe(normalized, result);
+      : januaryQuote ? [
+        januaryEstimateCopy[locale as Locale].note,
+        tq('parametersTitle'),
+        ...getCopyQuoteFacts(januaryQuote.input, januaryQuote.result, country, activeRates, manualRates)
+          .filter(fact => fact.label.key !== 'manufactureDate')
+          .map(fact => `${quoteText(fact.label)}: ${quoteText(fact.value)}`),
+        ...januaryScenarios.map(({ manufactureDate, result }) => result.total === null
+          ? `${manufactureDate}: ${t('unavailable')}`
+          : `${manufactureDate}: ${format(result.total)} ${result.currency} (${usdText(result.total)})`),
+        ...[...new Set(januaryScenarios.flatMap(({ result }) => result.assumptions))].map(key => ta(key)),
+      ] : describe(normalized, result);
     const text = [
       `${siteConfig.name} · ${tc(country.code)}`,
       ...(scopeLabel ? [scopeLabel] : []),
@@ -375,9 +383,9 @@ export function CalculatorPage({
     }
   }
   function showResult() {
-    setTouched(new Set(result.missingFields));
+    setTouched(new Set(missingFields));
     if (
-      result.missingFields.some((key) =>
+      missingFields.some((key) =>
         ['transactionRate', 'euroRate', 'usdRate', 'customsDate'].includes(key),
       )
     )
@@ -397,14 +405,14 @@ export function CalculatorPage({
     const code = result.fieldErrors[key];
     const error = code
       ? te(errorMap[code] || 'invalid_number')
-      : touched.has(key) && result.missingFields.includes(key)
+      : touched.has(key) && missingFields.includes(key)
         ? te('required')
         : '';
     const describedBy = [error && `${key}-error`, options.note && `${key}-note`].filter(Boolean).join(' ');
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
         {options.type === 'month' || options.type === 'date' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
-          precision={options.type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale as Locale} onChange={value => update(key, value)}
+          precision={options.type} januaryPresets={key === 'manufactureDate'} referenceYear={referenceYear} label={label} locale={locale as Locale} onChange={value => update(key, value)}
           onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
           <label htmlFor={key}>{label}</label>
           <div className="input-wrap">
@@ -690,7 +698,7 @@ export function CalculatorPage({
                   draggable={false}
                 />
                 <h2 id="result-title">{t('resultTitle')}</h2>
-                {!rangeResult && <ResultStamp input={normalized} result={result} />}
+                {!rangeResult && !januaryScenarios.length && <ResultStamp input={normalized} result={result} />}
               </div>
               <div className="destination-summary">
                 <span className="country-flag" aria-hidden="true">
@@ -710,7 +718,8 @@ export function CalculatorPage({
                 <span className="destination-code">{country.code}</span>
               </div>
               {rangeResult && <ManufactureRangeResult calculation={rangeResult} locale={locale as Locale} rates={activeRates} />}
-              {rangeResult && result.status === 'reference' ? null : result.status === 'reference' && result.total !== null ? (
+              {januaryScenarios.length > 0 && <JanuaryEstimates scenarios={januaryScenarios} locale={locale as Locale} rates={activeRates} />}
+              {hasJanuaryQuotes || rangeResult && result.status === 'reference' ? null : result.status === 'reference' && result.total !== null ? (
                 <>
                   <div className="fee-details-toolbar">
                     <span>{t('costBreakdown')}</span>
@@ -816,7 +825,7 @@ export function CalculatorPage({
               <button
                 type="button"
                 className="copy-button"
-                disabled={result.total === null}
+                disabled={result.total === null && !hasJanuaryQuotes}
                 onClick={copy}
               >
                 <Icon name={copyState === 'copied' ? 'check' : 'copy'} size={16} />
@@ -831,7 +840,7 @@ export function CalculatorPage({
               <span className="sr-only" role="status" aria-live="polite">
                 {result.total !== null
                   ? `${t('importTotal')}: ${format(result.total)}${rangeResult?.maximum ? ` – ${format(rangeResult.maximum.result.total!)}` : ''} ${result.currency}`
-                  : t('unavailable')}
+                  : hasJanuaryQuotes ? januaryEstimateCopy[locale as Locale].title : t('unavailable')}
               </span>
             </section>
           </aside>
@@ -855,12 +864,12 @@ export function CalculatorPage({
       </div>
       <div className={`mobile-result-bar ${keyboardOpen ? 'keyboard-open' : ''}`}>
         <div>
-          <span>{t('importTotal')}</span>
-          <strong>
+          <span>{hasJanuaryQuotes ? januaryEstimateCopy[locale as Locale].title : t('importTotal')}</span>
+          {!hasJanuaryQuotes && <strong>
             {result.total === null ? '—' : rangeResult?.maximum
               ? `${format(result.total)} – ${format(rangeResult.maximum.result.total!)}` : format(result.total)}{' '}
             <small>{result.total !== null ? result.currency : ''}</small>
-          </strong>
+          </strong>}
           {result.total !== null && (
             <small className="mobile-total-usd" data-testid="mobile-total-usd">
               {usdText(result.total)}{rangeResult?.maximum && ` – ${usdText(rangeResult.maximum.result.total!)}`}

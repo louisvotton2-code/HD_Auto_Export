@@ -1,6 +1,6 @@
 import { UtcDateTimeField } from '../../shared/ui/utc-date-time-field';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
+import { Alert, App, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Radio, Space, Tag, Typography, Upload } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CheckCircleOutlined, CloudUploadOutlined, DeleteOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
 import {
   MediaAssetResponseSchema, MediaUploadResponseSchema,
@@ -36,10 +36,10 @@ const stageText = { waiting: '等待上传', permit: '正在准备上传', uploa
 export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
   const { message } = App.useApp();
   const external = source.kind === 'external';
-  const [basis, setBasis] = useState<MediaRights['basis']>(external ? 'unverified' : 'owned');
+  const [basis, setBasis] = useState<MediaRights['basis']>();
+  const declarations = { owned: '我确认本批图片为公司自有图片，可用于车辆展示。', permission: '我确认本批图片已获授权用于车辆展示。', unverified: '本批图片使用许可待核验，仅供本地资料整理。' };
   const [imageUrls, setImageUrls] = useState('');
   const [collectedAt, setCollectedAt] = useState(() => new Date().toISOString().slice(0, 16));
-  const [note, setNote] = useState('');
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -190,7 +190,7 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
     if (!files.length || active.current || disabled) return;
     setError('');
     setBatchNotice('');
-    if (!note.trim()) { setError('请先填写图片来源或授权依据。'); return; }
+    if (!basis || (basis === 'unverified' && !external)) { setError('请选择本批图片符合实际情况的声明。'); return; }
     const outstanding = tasks.filter(task => task.stage !== 'ready' && !value.some(item => item.id === task.asset?.id)).length;
     if (value.length + outstanding + files.length > MAX_MEDIA_COUNT) { setError('每辆车最多 30 张图片，待完成的上传也占用名额。请减少本次选择。'); return; }
     for (const file of files) {
@@ -198,10 +198,11 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       if (invalid) { setError(`${file.name}：${invalid}`); return; }
     }
     let rights: MediaRights[];
-    try { rights = uploadRightsForFiles(source, files.length, basis, note, imageUrls, collectedAt); }
+    try { rights = uploadRightsForFiles(source, files.length, basis, declarations[basis], imageUrls, collectedAt); }
     catch (failure) { setError(failure instanceof Error ? failure.message : '请检查每张图片的来源资料。'); return; }
     const selected: UploadTask[] = files.map((file, index) => ({ key: crypto.randomUUID(), file, rights: rights[index]!, stage: 'waiting', retryable: false }));
     setTasks(current => [...current, ...selected]);
+    setBasis(undefined);
     if (external) setImageUrls('');
     void runTasks(selected);
   }
@@ -216,22 +217,23 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
   return <section className={styles.editor} aria-labelledby="vehicle-media-title">
     <Card title={<Space><CloudUploadOutlined /><Typography.Title level={4} id="vehicle-media-title" style={{ margin: 0 }}>车辆图片</Typography.Title></Space>} extra={<Tag color={value.length ? 'green' : 'default'}>{value.length} / 30 张</Tag>}>
       <Typography.Paragraph type="secondary">先上传清晰的车辆照片，再选封面、调整顺序。完成后保存草稿；重新发布后才会更新线上图片。</Typography.Paragraph>
-      <div className={styles.uploadFields}>
-        <Form.Item label="图片使用依据" htmlFor="media-rights-basis">
-          <Select id="media-rights-basis" aria-label="图片使用依据" value={basis} onChange={setBasis} disabled={locked} options={[{ value: 'owned', label: '自有图片' }, { value: 'permission', label: '已获授权' }, ...(external ? [{ value: 'unverified', label: '使用许可待核验（本地资料）' }] : [])]} />
-        </Form.Item>
-        <Form.Item className={styles.note} label="图片来源／授权说明" htmlFor="media-rights-note" required>
-          <Input.TextArea id="media-rights-note" aria-label="图片来源／授权说明" value={note} onChange={event => setNote(event.target.value)} autoSize={{ minRows: 2, maxRows: 4 }} maxLength={500} disabled={locked} placeholder="例如：公司现场拍摄，或供应商已授权用于车辆展示" />
-        </Form.Item>
-      </div>
+      <Form.Item label="本次上传声明" htmlFor="media-upload-declaration" required>
+        <Radio.Group id="media-upload-declaration" aria-label="本次上传声明" value={basis} disabled={locked} onChange={event => setBasis(event.target.value as MediaRights['basis'])}>
+          <Space orientation="vertical">
+            <Radio value="owned">{declarations.owned}</Radio>
+            <Radio value="permission">{declarations.permission}</Radio>
+            {external && <Radio value="unverified">{declarations.unverified}</Radio>}
+          </Space>
+        </Radio.Group>
+      </Form.Item>
       {source.kind === 'external' && <div className={styles.externalSources}>
         <Alert showIcon type="warning" title="逐张记录图片来源" description="原图地址仅作来源记录，不会自动下载。使用许可待核验仅供本地资料整理，生产使用前需核验。" />
         <Form.Item label="图片挂牌来源" htmlFor="media-listing-url"><Input id="media-listing-url" aria-label="图片挂牌来源" value={source.listingUrl} readOnly /></Form.Item>
         <Form.Item label="图片采集时间（UTC）" htmlFor="media-collected-at" required><UtcDateTimeField id="media-collected-at" label="图片采集时间（UTC）" value={collectedAt} disabled={locked} onChange={value => setCollectedAt(value.slice(0, 16))} /></Form.Item>
         <Form.Item label="逐图原始地址" htmlFor="media-image-urls" required help="每行一个 HTTP(S) 原图地址，数量与本次选择的文件相同，并保持相同顺序。"><Input.TextArea id="media-image-urls" aria-label="逐图原始地址" value={imageUrls} disabled={locked} onChange={event => setImageUrls(event.target.value)} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="https://来源网站/图片1.jpg&#10;https://来源网站/图片2.jpg" /></Form.Item>
       </div>}
-      <Form.Item label="上传车辆图片" htmlFor="vehicle-image-upload" help="JPEG / PNG / WebP，单张最大 10 MiB，每辆车最多 30 张。请先填写图片使用依据。">
-        <Upload.Dragger id="vehicle-image-upload" aria-label="上传车辆图片" multiple accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={locked || !note.trim()} beforeUpload={(file, fileList) => {
+      <Form.Item label="上传车辆图片" htmlFor="vehicle-image-upload" help="JPEG / PNG / WebP，单张最大 10 MiB，每辆车最多 30 张。请先确认本批图片的使用情况。">
+        <Upload.Dragger id="vehicle-image-upload" aria-label="上传车辆图片" multiple accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={locked || !basis} beforeUpload={(file, fileList) => {
           if (file.uid === fileList[0]?.uid) chooseFiles(fileList);
           return Upload.LIST_IGNORE;
         }}>

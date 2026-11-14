@@ -6,6 +6,7 @@ import { fillNumericDate } from './helpers/numeric-date';
 async function openCalculator(page: Page, country: string, locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}`);
   await expect(page.locator('.reset-button')).toBeEnabled();
+  if (country !== 'albania') await fillNumericDate(page, 'manufactureDate', '2021-01');
   await fillNumericDate(page, 'customsDate', '2026-10-22');
   await expect(page.getByTestId('total')).toBeVisible();
   // Explanations are intentionally collapsed in the initial quote. These checks

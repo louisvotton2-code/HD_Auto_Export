@@ -2,7 +2,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { ActivityEvent, AdminActivitySummary, ExternalIngestionStatus } from '@hd/contracts/admin';
 import { makeExternalAdminFixture, makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
-import { envelope, error, installApi, reply, vehicle } from './api-fixture';
+import { completeEntry, envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes } from './ui-helpers';
 
 const actor = { kind: 'staff' as const, staffId: 'staff_historical_1', name: '操作时姓名' };
@@ -192,7 +192,7 @@ test('activity external history keeps system import separate and long difference
 
 test('activity employee-managed external copies retain creator identity in list detail and recycle bin', async ({ page }) => {
   const record = vehicle();
-  record.draft = makeExternalVehicleDraftFixture();
+  record.draft = completeEntry(makeExternalVehicleDraftFixture());
   record.activity = { ...summary, firstImported: null };
   const api = await installApi(page, { items: [record] });
   await page.setViewportSize({ width: 1200, height: 960 });

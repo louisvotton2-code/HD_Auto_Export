@@ -113,7 +113,7 @@ function publicText(text, locale, reviewed = true) {
 function vehicle(id, locale, overrides = {}) {
   const base = makePublicVehicleFixture();
   const demo = id === 'fixture_demo';
-  const external = id === 'fixture_external';
+  const external = id === 'ext-abcdef12-3456-4123-8123-00112233abcd';
   const index = Number(id.match(/_(\d+)$/)?.[1] ?? 0);
   const beta = index % 2 === 1;
   const facts = {
@@ -430,7 +430,7 @@ function visibleVehicles(state, locale) {
   if (state.futurePublished && !state.futureArchived && state.futureAvailability !== 'sold')
     rows.unshift(vehicle('fixture_future', locale, { availability: state.futureAvailability }));
   if (state.externalPublished) {
-    const external = vehicle('fixture_external', locale);
+    const external = vehicle('ext-abcdef12-3456-4123-8123-00112233abcd', locale);
     if (state.externalRemotePhoto)
       external.images[0].url = 'https://photos.example.invalid/fixture-external.jpg';
     rows.push(external);

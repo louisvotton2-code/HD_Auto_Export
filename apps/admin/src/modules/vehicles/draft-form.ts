@@ -37,10 +37,10 @@ export function draftToForm(draft: VehicleDraftInput) {
     registrationStatus: facts.registrationStatus, powertrain: facts.powertrain,
     body: facts.body ?? ('' as const), transmission: facts.transmission ?? ('' as const),
     country: facts.location?.country ?? '', city: facts.location?.city ?? '', locationName: facts.location?.displayName ?? '',
-    priceKind: price.kind, amount: price.money?.amount ?? '', currency: price.money?.currency ?? 'USD', includes: price.includes.join('\n'),
+    priceKind: price.kind, amount: price.money?.amount ?? '', currency: price.money?.currency ?? 'CNY', includes: price.includes.join('\n'),
     titleLanguage: content.title.sourceLanguage, title: content.title.sourceText ?? '',
     descriptionLanguage: content.description.sourceLanguage, description: content.description.sourceText ?? '',
-    purchaseAmount: internal.purchaseCost?.amount ?? '', purchaseCurrency: internal.purchaseCost?.currency ?? 'USD',
+    purchaseAmount: internal.purchaseCost?.amount ?? '', purchaseCurrency: internal.purchaseCost?.currency ?? 'CNY',
     notes: internal.notes ?? '', supplierContact: internal.supplierContact ?? '', vin: internal.vin ?? '',
   };
 }

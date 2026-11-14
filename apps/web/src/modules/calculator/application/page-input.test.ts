@@ -43,6 +43,7 @@ describe('country page importer scope', () => {
   it('keeps company API input unsupported even when the page uses a fixed reference scope', () => {
     const company = {
       ...createDefaultInput('RU', '2026-10-23'),
+      manufactureDate: '2021-01',
       importerType: 'company' as const,
     };
     expect(

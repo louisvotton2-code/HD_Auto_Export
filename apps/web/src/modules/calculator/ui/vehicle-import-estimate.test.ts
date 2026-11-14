@@ -7,6 +7,7 @@ import type { Locale } from '@/i18n/routing';
 import zh from '../../../messages/zh.json';
 import en from '../../../messages/en.json';
 import ru from '../../../messages/ru.json';
+import { countries } from '../config/countries';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
 import { VehicleImportEstimate } from './vehicle-import-estimate';
 
@@ -31,6 +32,10 @@ describe('detail calculator server enhancement boundary', () => {
     expect(html).not.toContain('#hd-estimate=');
     expect(html).not.toContain('data-testid="inline-estimate-total"');
     expect(html).toContain('data-country-ready="false"');
+    for (const country of countries) {
+      expect(html).toContain(`value="${country.code}"`);
+      expect(html).toContain(`${country.flag} ${messages[locale].Countries[country.code]}`);
+    }
     expect(html).toContain('data-numeric-date="manufactureDate"');
     expect(html).toContain('name="manufactureDateYear"');
     expect(html).toContain('name="customsDateDay"');

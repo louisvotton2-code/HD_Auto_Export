@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeImportedPublicVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { getPublicVehicle, parseCatalogQuery, requestPublicApi } from './public-api';
 import { proxyPublicRequest } from './public-proxy';
 
@@ -36,6 +36,39 @@ describe('public HTTP adapter and same-origin proxy', () => {
     expect(fetcher.mock.calls[0][1].headers).toEqual({ Accept: 'application/json, image/*;q=0.9' });
     expect(response.headers.get('set-cookie')).toBeNull();
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+  it('redacts old identifiers and platform metadata before responding to the browser', async () => {
+    const vehicle = makeImportedPublicVehicleFixture('en');
+    vehicle.source = { kind: 'external', platform: { id: 'che168', name: '车168' }, listingUrl: 'https://www.che168.com/details/12345' };
+    vehicle.identifiers = { sourceId: '12345', source: 'che168', inquiryCode: 'che168-12345', vin: 'LHGCM82633A004352' };
+    vehicle.content.title = { ...vehicle.content.title, text: 'R1 Hybrid | 车168 che168-12345', contentLocale: 'zh' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ data: vehicle, meta: { requestId: 'fixture' } })));
+    const response = await proxyPublicRequest(
+      new Request(`http://website.test/api/v1/vehicles/${vehicle.id}?locale=en&view=localized`),
+      ['vehicles', vehicle.id],
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toMatch(/车168|che168|12345|listings\.example\.invalid/i);
+    expect(JSON.parse(body).data).toMatchObject({
+      id: vehicle.id, detailPath: vehicle.detailPath, stockCode: 'HDX-0000000000000001',
+      source: { kind: 'external' }, price: { kind: 'reference' }, availability: 'unknown',
+      identifiers: { vin: 'LHGCM82633A004352', inquiryCode: 'HDX-0000000000000001' },
+      content: { title: { contentLocale: 'zh', reviewed: false } },
+    });
+  });
+  it('redacts facet labels while preserving query keys and counts', async () => {
+    const trims = [{ id: 'trim-1', makeId: 'make-1', modelId: 'model-1', name: 'Premium · 懂车帝', count: 3 }];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
+      data: { catalog: 'curated', makes: [], models: [], powertrains: [], trims },
+      meta: { requestId: 'fixture' },
+    })));
+    const response = await proxyPublicRequest(
+      new Request('http://website.test/api/v1/vehicle-filters?locale=en'),
+      ['vehicle-filters'],
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.trims).toEqual([{ ...trims[0], name: 'Premium · …' }]);
   });
   it('blocks administrative, absolute and malformed paths before any upstream request', async () => {
     const fetcher = vi.fn();
