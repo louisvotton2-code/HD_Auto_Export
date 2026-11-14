@@ -1,6 +1,6 @@
 import { PublicVehicleInspectionQuerySchema, type PublicVehicleInspectionQuery } from '@hd/contracts/public';
 import { parseVehicleSegment } from '../public-segments';
-import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contracts/public';
+import { type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
@@ -13,6 +13,7 @@ import {
   localizedCardListSchema,
   localizedVehicleSchema,
   localizedInlineVehicleSchema,
+  publicWebsiteFiltersSchema,
 } from '../localized-projection';
 export { parseCatalogQuery, parseCatalogPageQuery } from '../public-query';
 export { publicQueryString as queryString } from '../public-query';
@@ -93,7 +94,7 @@ export function getPublicHome(locale: Locale) {
 export function getPublicFilters(locale: Locale, scope?: UsdFilterScope) {
   return readPublicJson(
     `/api/v1/vehicle-filters?${queryString(publicUsdFilterQuery(locale, scope))}`,
-    PublicVehicleFiltersSchema,
+    publicWebsiteFiltersSchema,
   );
 }
 export function getPublicCatalog(query: PublicVehicleQuery) {

@@ -1,7 +1,4 @@
 .editor { min-width: 0; }
-.uploadFields { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); gap: 20px; }
-.uploadFields :global(.ant-select) { width: 100%; }
-.note { min-width: 0; }
 .externalSources { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 18px; }
 .externalSources :global(.ant-form-item) { min-width: 0; margin-bottom: 0; }
 .tasksCollapse { margin: 24px 0; }
@@ -23,4 +20,4 @@
 .removed { margin-top: 24px; }
 .removed .tasks { margin-top: 18px; }
 .footerNote { margin: 20px 0 0 !important; font-size: 12px; }
-@media (max-width: 600px) { .uploadFields { grid-template-columns: minmax(0, 1fr); gap: 0; }.gallery { gap: 14px; }.taskHeading { align-items: flex-start; } }
+@media (max-width: 600px) { .gallery { gap: 14px; }.taskHeading { align-items: flex-start; } }

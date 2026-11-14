@@ -2,7 +2,7 @@
 import type { Page, Route } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { adminVehicleFixture, makeVehicleLocalizationFixture, makePublicationPreviewFixture, makePublishReadinessFixture } from '@hd/contracts/fixtures';
-import { VehicleLocalizationSchema, type AdminVehicle, type DisplayField, type StaffMe, type TranslatableField, type VehicleDraftInput, type VehicleLocalization } from '@hd/contracts/admin';
+import { VehicleLocalizationSchema, vehicleConfigurationExample, type AdminVehicle, type DisplayField, type StaffMe, type TranslatableField, type VehicleDraftInput, type VehicleLocalization } from '@hd/contracts/admin';
 
 import { PublicationPreviewFrameMessageSchema, ConfirmPublicationPreviewRequestSchema, LocaleSchema, PublicationPreviewSchema, PublicationPreviewResponseSchema, PublishReadinessSchema, PublishReadinessResponseSchema, type ConfirmPublicationPreviewRequest, type Locale, type PublicationPreview, type PublishReadiness } from '@hd/contracts/admin';
 import { CreateTranslationPlanRequestSchema, GenerateTranslationPlanRequestSchema, SaveVehicleTranslationBundleSchema, VehicleTranslationBundleResponseSchema, TranslationPlanResponseSchema, TranslationPlanResultResponseSchema, TranslationPlanStatusSchema, TranslationPlanStatusResponseSchema, parseVehicleDraftWrite, type SaveVehicleTranslationBundle, type TranslationPlan, type TranslationPlanStatus } from '@hd/contracts/admin';
@@ -21,7 +21,17 @@ export const error = (code: string) => ({
 export const reply = (route: Route, data: unknown, status = 200) => route.fulfill({
   status, contentType: 'application/json', body: JSON.stringify(data),
 });
-export function vehicle(): AdminVehicle { return { ...structuredClone(adminVehicleFixture), hasUnpublishedChanges: true }; }
+export function completeEntry(draft: VehicleDraftInput): VehicleDraftInput {
+  draft.facts.trim ??= { id: 'fixture_trim', name: '合成测试配置' };
+  draft.configuration ??= structuredClone(vehicleConfigurationExample);
+  draft.internal.purchaseCost ??= { amount: '18000.00', currency: 'USD' };
+  draft.content.description.sourceText ??= '合成车况说明，仅用于测试。';
+  return draft;
+}
+export function vehicle(): AdminVehicle {
+  const item = structuredClone(adminVehicleFixture);
+  return { ...item, draft: completeEntry(item.draft), hasUnpublishedChanges: true };
+}
 
 /** Only refs supplied by the simulated GET exist; clients must never derive their own refs. */
 export function localization(record: AdminVehicle, fields: DisplayField[] = []): VehicleLocalization {

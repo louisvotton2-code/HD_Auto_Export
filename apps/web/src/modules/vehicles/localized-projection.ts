@@ -1,5 +1,6 @@
 import {
   PublicHomeSectionsSchema,
+  PublicVehicleFiltersSchema,
   PublicVehicleListSchema,
   PublicVehicleCardListSchema,
   type PublicVehicleCard,
@@ -7,6 +8,7 @@ import {
   PublicVehicleInlineResponseSchema,
   type PublicVehicle,
 } from '@hd/contracts/public';
+import { publicSourcePrivacy, redactPublicPlatformMentions, redactPublicVehicleProse } from './public-source-privacy';
 import type { Locale } from '@/i18n/routing';
 
 /** A localized request must not silently accept the legacy raw-language projection. */
@@ -49,6 +51,7 @@ export const localizedVehicleSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicVehicleResponseSchema.parse(value);
     validateVehicle(result.data, locale, priceView, true);
+    result.data = publicSourcePrivacy(result.data);
     return result;
   },
 });
@@ -65,6 +68,7 @@ export const localizedInlineVehicleSchema = (locale: Locale, priceView?: 'usd') 
     ];
     for (const field of fields) if (field && field.requestedLocale !== locale)
       throw new Error('Localized inline detail mismatch');
+    result.data = publicSourcePrivacy(result.data);
     return result;
   },
 });
@@ -72,6 +76,7 @@ export const localizedListSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicVehicleListSchema.parse(value);
     for (const vehicle of result.data.items) validateVehicle(vehicle, locale, priceView);
+    result.data.items = result.data.items.map(publicSourcePrivacy);
     return result;
   },
 });
@@ -82,6 +87,7 @@ export const localizedCardListSchema = (locale: Locale, priceView?: 'usd') => ({
     for (const vehicle of result.data.items) {
       validateCard(vehicle, locale, priceView);
     }
+    result.data.items = result.data.items.map(publicSourcePrivacy);
     return result;
   },
 });
@@ -99,8 +105,11 @@ function validateCard(vehicle: PublicVehicleCard, locale: Locale, priceView?: 'u
 export const localizedHomeSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicHomeSectionsSchema.parse(value);
-    for (const section of result.data.sections)
+    for (const section of result.data.sections) {
       for (const vehicle of section.vehicles) validateVehicle(vehicle, locale, priceView);
+      section.title = redactPublicPlatformMentions(section.title);
+      section.vehicles = section.vehicles.map(publicSourcePrivacy);
+    }
     return result;
   },
 });
@@ -108,12 +117,19 @@ export const localizedHomeSchema = (locale: Locale, priceView?: 'usd') => ({
 // The editorial view is also used by sitemap traversal, so imports must stay out of its pages.
 export const legacyListSchema = PublicVehicleListSchema.refine((result) =>
   result.data.items.every((vehicle) => !vehicle.external && !vehicle.displayPrice),
-);
+).transform(result => ({ ...result, data: { ...result.data, items: result.data.items.map(publicSourcePrivacy) } }));
 export const legacyHomeSchema = PublicHomeSectionsSchema.refine((result) =>
   result.data.sections.every((section) =>
     section.vehicles.every((vehicle) => !vehicle.external && !vehicle.displayPrice),
   ),
-);
+).transform(result => ({ ...result, data: { sections: result.data.sections.map(section => ({
+  ...section, title: redactPublicPlatformMentions(section.title), vehicles: section.vehicles.map(publicSourcePrivacy),
+})) } }));
 export const legacyVehicleSchema = PublicVehicleResponseSchema.refine(
   (result) => !result.data.external && !result.data.displayPrice,
+).transform(result => ({ ...result, data: publicSourcePrivacy(result.data) }));
+
+/** Preserve facet identity, query semantics and counts while hiding source mentions in visible names. */
+export const publicWebsiteFiltersSchema = PublicVehicleFiltersSchema.transform(result =>
+  redactPublicVehicleProse(result),
 );

@@ -36,6 +36,13 @@ describe('public vehicle titles', () => {
     expect(publicVehicleTitle(imported, 'zh')).toEqual({ text: 'R1 Hybrid', lang: 'en' });
   });
 
+  it('retains the factual model language if a redacted title leaves no readable name', () => {
+    const vehicle = makeImportedPublicVehicleFixture('ru');
+    vehicle.content.title = { ...vehicle.content.title, text: '…' };
+    expect(publicVehicleTitle(vehicle, 'ru')).toMatchObject({ lang: 'zh' });
+    expect(publicVehicleTitle(vehicle, 'ru').text).toContain(vehicle.facts.model?.name);
+  });
+
   it.each(['zh', 'en', 'ru'] as const)('keeps the actual original title language in %s without synthetic translation', locale => {
     const imported = makeImportedPublicVehicleFixture(locale);
     imported.content.title = { ...imported.content.title, text: '原始车名 0 kW', contentLocale: 'zh' };

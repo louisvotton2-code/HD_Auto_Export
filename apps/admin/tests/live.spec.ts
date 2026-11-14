@@ -1,12 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import { traceCase, traceCaseTitle, traceMode } from './trace-live-guard.mjs';
 import { expect, test, type Page } from '@playwright/test';
-import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
+import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, CreateVehicleRequestSchema, PublishReadinessResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
 import { acknowledgePublicationPreview, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
-import { makeExternalImportFixture } from '@hd/contracts/fixtures';
+import { makeDemoVehicleDraftFixture, makeExternalVehicleDraftFixture, makeExternalImportFixture } from '@hd/contracts/fixtures';
 import { extendRateDeadline, rateCooldownMs, rateLimitSeconds } from './live-rate-window';
 import { assertDisabledLivePlan, assertLivePublicConfiguration, completeLiveTranslations, enterLiveConfiguration, expandLiveTranslationGroup, liveConfiguration, readLiveBundle, saveLiveBundle } from './ux11-live-helpers';
 
@@ -42,9 +43,15 @@ test.afterEach(async ({ page }) => {
   rateWindows.delete(page);
 });
 
-async function login(page: Page, path = '/admin/vehicles') {
+function assertOwnedRunner() {
   const allowedDatabase = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only' ? /^hd_ext_ad_[a-f0-9]{16}$/ : /^hd_admin_test_[a-f0-9]{16}$/;
-  if (!process.env.ADMIN_TEST_PASSWORD || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !allowedDatabase.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
+  const password = process.env.ADMIN_TEST_PASSWORD;
+  if (!password || process.env.ADMIN_LIVE_TEST !== '1' || process.env.ADMIN_LIVE_ORIGIN || process.env.ADMIN_API_TARGET !== 'http://127.0.0.1:3322' || !allowedDatabase.test(process.env.ADMIN_TEST_DB_NAME ?? '')) throw new Error('Use the isolated live runner only.');
+  return password;
+}
+
+async function login(page: Page, path = '/admin/vehicles') {
+  const password = assertOwnedRunner();
   const isIdentityResponse = (response: import('@playwright/test').Response) => response.request().method() === 'GET'
     && response.url() === 'http://127.0.0.1:3319/api/v1/admin/me';
   const [initialIdentity] = await Promise.all([page.waitForResponse(isIdentityResponse, { timeout: 15_000 }), page.goto(path)]);
@@ -61,7 +68,7 @@ async function login(page: Page, path = '/admin/vehicles') {
   // A second 429 or any unexpected response fails here, before waiting for a missing login field.
   expect(identity.status(), 'A fresh isolated browser must reach the unauthenticated login form').toBe(401);
   await page.getByLabel('账号或工作邮箱').fill('browser-test@example.invalid');
-  await page.getByLabel('密码', { exact: true }).fill(process.env.ADMIN_TEST_PASSWORD);
+  await page.getByLabel('密码', { exact: true }).fill(password);
   await page.getByRole('button', { name: /登录工作台$/ }).click();
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
 }
@@ -71,21 +78,68 @@ async function save(page: Page, id?: string) {
   const response = page.waitForResponse(r => r.url().endsWith(`/api/v1/admin/vehicles${id ? `/${id}` : ''}`) && r.request().method() === (id ? 'PATCH' : 'POST'));
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   const saved = await response;
+  if (!id) expect(saved.request().postDataJSON().draft.facts.location).toBeNull();
   expect(saved.status()).toBe(id ? 200 : 201);
   const vehicle = AdminVehicleResponseSchema.parse(await saved.json()).data;
   await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
   return vehicle;
 }
-async function create(page: Page, kind: 'manual' | 'demo', title: string) {
+async function seedLegacyDraft(page: Page, draft: AdminVehicle['draft']) {
+  assertOwnedRunner();
+  const origin = 'http://127.0.0.1:3319';
+  expect(new URL(page.url()).origin).toBe(origin);
+  const response = await page.request.post(`${origin}/api/v1/admin/vehicles`, {
+    data: CreateVehicleRequestSchema.parse({ draft }),
+    headers: { Origin: origin, 'Idempotency-Key': randomUUID() },
+  });
+  expect(response.status()).toBe(201);
+  const item = AdminVehicleResponseSchema.parse(await response.json()).data;
+  expect(item.draft.source.kind).toBe(draft.source.kind);
+  await page.goto(`/admin/vehicles/${encodeURIComponent(item.id)}`);
+  return item;
+}
+
+function syntheticText(sourceText: string): AdminVehicle['draft']['content']['title'] {
+  return { sourceText, sourceLanguage: 'zh', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
+}
+
+async function createDemo(page: Page, title: string, model = '隔离测试车型', privateNote?: string) {
+  const draft = makeDemoVehicleDraftFixture();
+  draft.facts.make = { id: 'toyota', name: '丰田' };
+  draft.facts.model = { id: `synthetic_${randomUUID()}`, name: model };
+  draft.media = [];
+  draft.content.title = syntheticText(title);
+  draft.content.description = syntheticText('仅用于隔离测试的合成车况。');
+  if (privateNote) draft.internal.notes = privateNote;
+  return seedLegacyDraft(page, draft);
+}
+
+async function createManual(page: Page, title: string) {
   await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: kind === 'manual' ? '真实车源录入' : '展示样例，非实际库存' }).click();
-  await newName(page, '品牌', `${kind === 'manual' ? '真实' : '展示'}联调品牌${Date.now()}`);
+  await expect(page.getByText('真实自有车源', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('所在地国家', { exact: true })).toHaveCount(0);
+  await newName(page, '品牌', `真实联调品牌${Date.now()}`);
   await newName(page, '车型', '隔离测试车型');
   await page.getByLabel('标题原文', { exact: true }).fill(title);
-  if (kind === 'manual') await select(page, '所在地国家', '中国');
-  await (await notes(page)).fill('PRIVATE_AD_UX_ONLY');
-  return save(page);
+  await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
+  await chooseYear(page, '年款', 2024);
+  await selectPetrolFromUnknown(page);
+  await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
+  await enterLiveConfiguration(page);
+  await tab(page, '价格与内部信息');
+  await page.getByLabel('公开价格金额', { exact: true }).fill('20000');
+  await page.getByLabel('内部采购成本', { exact: true }).fill('15000');
+  await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
+  await page.getByLabel('内部备注', { exact: true }).fill('PRIVATE_AD_UX_ONLY');
+  const item = await save(page);
+  expect(item.draft.source.kind).toBe('manual');
+  expect(item.draft.facts.location).toBeNull();
+  expect(item.draft.price.money).toMatchObject({ currency: 'CNY', amount: '20000' });
+  expect(item.draft.internal.purchaseCost).toMatchObject({ currency: 'CNY', amount: '15000' });
+  expect(item.draft.configuration).toEqual(liveConfiguration);
+  return item;
 }
+
 async function selectPetrolFromUnknown(page: Page) {
   const input = page.getByRole('combobox', { name: '动力类型', exact: true });
   await input.click();
@@ -102,56 +156,29 @@ async function selectPetrolFromUnknown(page: Page) {
   await expect(input).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('.ant-select').filter({ has: input }).getByTitle('汽油', { exact: true })).toBeVisible();
 }
-async function selectCurrency(page: Page, label: '公开价格币种' | '采购成本币种', currency: 'USD' | 'CNY') {
-  const input = page.getByRole('combobox', { name: label, exact: true });
-  await input.click();
-  await expect(input).toHaveAttribute('aria-expanded', 'true');
-  await expect(input).toHaveAttribute('aria-controls', /\S+/);
-  const controls = await input.getAttribute('aria-controls');
-  const list = page.locator(`[id=${JSON.stringify(controls)}]`);
-  const popup = page.locator('.ant-select-dropdown:visible').filter({ has: list });
-  await expect(popup).toHaveCount(1);
-  // Currency labels also appear in the hidden accessibility list; click the rendered option only.
-  const option = popup.locator('.ant-select-item-option-content:visible').filter({ hasText: new RegExp(`^${currency}$`) });
-  await expect(option).toHaveCount(1);
-  await option.click();
-  await expect(input).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.locator('.ant-select').filter({ has: input }).getByTitle(currency, { exact: true })).toBeVisible();
-}
 async function contentAndImage(page: Page, vehicle: AdminVehicle) {
-  if (vehicle.draft.source.kind === 'manual') {
-    await tab(page, '基础资料');
-    await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
-    await chooseYear(page, '年款', 2024);
-    await selectPetrolFromUnknown(page);
-    await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
-    await tab(page, '价格与内部信息');
-    await select(page, '公开价格口径', '公开报价');
-    await page.getByLabel('公开价格金额', { exact: true }).fill('20000');
-    await selectCurrency(page, '公开价格币种', 'USD');
-    await page.getByLabel('内部采购成本', { exact: true }).fill('15000');
-    await selectCurrency(page, '采购成本币种', 'USD');
-    await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
-    await enterLiveConfiguration(page);
-    vehicle = await save(page, vehicle.id);
-    expect(vehicle.draft.configuration).toEqual(liveConfiguration);
-    expect(vehicle.draft.facts.powertrain).toBe('petrol');
-    expect(vehicle.draft.price.money?.currency).toBe('USD');
-    expect(vehicle.draft.internal.purchaseCost?.currency).toBe('USD');
-  }
   await tab(page, '图片管理');
-  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('隔离浏览器测试生成图片，不是真实库存。');
+  await page.getByRole('radio', { name: '我确认本批图片为公司自有图片，可用于车辆展示。', exact: true }).check();
   const png = Buffer.from(await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 48; const ctx = c.getContext('2d')!; ctx.fillStyle = '#315b50'; ctx.fillRect(0, 0, 64, 48); return c.toDataURL('image/png').split(',')[1]!; }), 'base64');
   await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('textbox', { name: '图片 1 说明', exact: true })).toBeVisible();
   await page.getByRole('textbox', { name: '图片 1 说明', exact: true }).fill('合成测试封面');
   return save(page, vehicle.id);
 }
+async function expectNoLocationGate(page: Page, id: string) {
+  const response = await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${id}/publish-readiness?locale=zh`);
+  expect(response.status()).toBe(200);
+  const gate = PublishReadinessResponseSchema.parse(await response.json()).data;
+  expect(gate.issues.find(issue => issue.path === 'draft.facts.location'),
+    'The server must accept the intentionally unspecified location from the manual draft form.').toBeUndefined();
+}
+
 async function operation(page: Page, id: string, button: string, route: string) {
   await tab(page, '发布预览');
   if (route === 'publish') {
     await expect(page.getByTestId('vehicle-publish')).toHaveText('请完善信息');
     await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
+    await expectNoLocationGate(page, id);
     await acknowledgePublicationPreview(page);
     await expect(page.getByTestId('vehicle-publish')).toHaveText(button);
     await page.getByTestId('vehicle-publish').click();
@@ -238,11 +265,9 @@ test('real localization sidecar preserves public language snapshots with disable
     const path = new URL(request.url()).pathname;
     if (request.method() === 'POST' && (path.endsWith('/translation-suggestions') || /\/translation-plans\/[^/]+\/generate$/.test(path))) translationExecutions++;
   });
-  await login(page); await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '展示样例，非实际库存' }).click();
-  await select(page, '品牌', '丰田 / Toyota'); await newName(page, '车型', model.zh);
-  await page.getByLabel('标题原文', { exact: true }).fill('多语字段隔离展示样例'); await (await notes(page)).fill(privateMarker);
-  const initial = await save(page); const ready = await contentAndImage(page, initial);
+  await login(page);
+  const initial = await createDemo(page, '多语字段隔离展示样例', model.zh, privateMarker);
+  const ready = await contentAndImage(page, initial);
   expect(ready.draft.internal.notes).toBe(privateMarker); expect(ready.draft.media).toHaveLength(1);
   async function evidence(name: string) {
     await mkdir('/private/tmp/hd-ad-i18n02-evidence', { recursive: true });
@@ -350,12 +375,18 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
   await login(page);
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
   expect((await page.context().cookies()).some(c => c.httpOnly && c.path === '/api' && c.sameSite === 'Lax')).toBe(true);
-  const initial = await create(page, 'manual', '隔离草稿车辆');
-  expect(initial.draft.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'USD' }, includes: [] });
+  const initial = await createManual(page, '隔离草稿车辆');
   expect(initial.draft.facts.manufacturedAt).toBeNull();
   expect(initial.draft.facts.registrationStatus).toBe('registered');
   expect(initial.draft.facts.firstRegistration).toBeNull();
-  expect(initial.draft.configuration).toBeNull();
+  expect(initial.draft.facts.location).toBeNull();
+  const readiness = await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}/publish-readiness?locale=zh`);
+  expect(readiness.status()).toBe(200);
+  const gate = PublishReadinessResponseSchema.parse(await readiness.json()).data;
+  expect(gate.canPublish).toBe(false);
+  const locationGate = gate.issues.find(issue => issue.path === 'draft.facts.location');
+  await test.info().attach('manual-location-reproduction', { contentType: 'application/json',
+    body: JSON.stringify({ countryControlPresent: false, draftLocation: initial.draft.facts.location, publishCanProceed: gate.canPublish, locationGate: locationGate ?? null }, null, 2) });
   let invalidConfigurationWrites = 0;
   const observeInvalidWrite = (request: import('@playwright/test').Request) => {
     if (request.method() === 'PATCH' && new URL(request.url()).pathname === `/api/v1/admin/vehicles/${initial.id}`) invalidConfigurationWrites++;
@@ -366,7 +397,7 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
   await expect(page.getByLabel('配置内容（JSON）', { exact: true })).toHaveAttribute('aria-invalid', 'true');
   await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
   expect(invalidConfigurationWrites).toBe(0);
-  await page.getByLabel('配置内容（JSON）', { exact: true }).fill('');
+  await enterLiveConfiguration(page);
   page.off('request', observeInvalidWrite);
   await (await notes(page)).fill('PRIVATE_UPDATED');
   await save(page, initial.id);
@@ -381,7 +412,7 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
 test('manual image/translation/inventory publishing, draft snapshot and archive', async ({ page }) => {
   test.setTimeout(90_000);
   await login(page);
-  const initial = await create(page, 'manual', '人工车源完整隔离联调');
+  const initial = await createManual(page, '人工车源完整隔离联调');
   const ready = await contentAndImage(page, initial);
   const translated = await completeLiveTranslations(page, ready, path => readRespectingRateLimit(page, path));
   expect(translated.vehicle.draft.content.title.translations.ru).toMatchObject({ kind: 'human', reviewStatus: 'pending' });
@@ -492,7 +523,7 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
 test('demo pending content publishes honestly; dictionary/search/home/bulk use real contracts', async ({ page }) => {
   test.setTimeout(120_000);
   await login(page);
-  const demo = await create(page, 'demo', '展示样例隔离联调');
+  const demo = await createDemo(page, '展示样例隔离联调');
   const draftOptions = AdminVehicleFiltersResponseSchema.parse(await (await page.request.get('/api/v1/admin/vehicle-filters')).json()).data;
   expect(draftOptions.makes.some(item => item.id === demo.draft.facts.make?.id)).toBe(true);
   const ready = await contentAndImage(page, demo);
@@ -544,7 +575,7 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
   const publicHome = PublicHomeSectionsSchema.parse(await (await page.request.get('/api/v1/home/vehicles?locale=zh')).json()).data;
   expect(publicHome.sections[0]!.vehicles.map(v => v.id)).toContain(demo.id);
   await screenshot(page, 'live-desktop-home');
-  const manual = await create(page, 'manual', '批量测试独立车辆');
+  const manual = await createManual(page, '批量测试独立车辆');
   await page.goto('/admin/vehicles');
   await page.getByRole('checkbox', { name: `选择车辆 ${demo.stockCode}`, exact: true }).check();
   await page.getByRole('checkbox', { name: `选择车辆 ${manual.stockCode}`, exact: true }).check();
@@ -568,27 +599,22 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
 test('external eight-image real API lifecycle preserves source honesty, removes public media and restores only a draft', async ({ page }) => {
   test.setTimeout(240_000);
   await login(page);
-  await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '外部挂牌资料' }).click();
-  await newName(page, '品牌', `外部隔离品牌${Date.now()}`);
-  await newName(page, '车型', '八图生命周期测试车型');
   const externalId = `synthetic-lifecycle-${Date.now()}`;
   const listingUrl = `https://example.invalid/listings/${externalId}`;
   const collectedAt = '2026-11-08T08:00:00.000Z';
-  await page.getByLabel('来源平台标识', { exact: true }).fill('synthetic-lifecycle-market');
-  await page.getByLabel('来源平台名称', { exact: true }).fill('合成挂牌平台（隔离测试）');
-  await page.getByLabel('原始挂牌链接', { exact: true }).fill(listingUrl);
-  await page.getByLabel('原始挂牌编号', { exact: true }).fill(externalId);
-  await chooseUtcDateTime(page, '资料采集时间（UTC）', { date: '2026-11-08', hour: 8, minute: 0 });
-  await page.getByLabel('标题原文', { exact: true }).fill('合成外部挂牌八图生命周期，不是真实库存');
-  await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
-  await select(page, '所在地国家', '中国');
-  await tab(page, '价格与内部信息');
-  await select(page, '公开价格口径', '来源参考价格');
-  await page.getByLabel('公开价格金额', { exact: true }).fill('123456.78');
-  await selectCurrency(page, '公开价格币种', 'CNY');
-  await (await notes(page)).fill('PRIVATE_EXTERNAL_LIFECYCLE_ONLY');
-  const initial = await save(page);
+  const draft = makeExternalVehicleDraftFixture();
+  draft.source = { kind: 'external', platform: { id: 'synthetic-lifecycle-market', name: '合成挂牌平台（隔离测试）' },
+    listingUrl, externalId, collectedAt, sourceUpdatedAt: null };
+  draft.facts = { ...draft.facts, make: { id: 'toyota', name: '丰田' }, model: { id: 'synthetic_external_model', name: '八图生命周期测试车型' },
+    trim: { id: 'synthetic_external_trim', name: '员工挂牌隔离合成配置' }, modelYear: 2024, mileageKm: 12345, powertrain: 'petrol', location: null };
+  draft.price = { kind: 'reference', money: { amount: '123456.78', currency: 'CNY' }, includes: [] };
+  draft.internal.purchaseCost = { amount: '100000', currency: 'CNY' };
+  draft.internal.notes = 'PRIVATE_EXTERNAL_LIFECYCLE_ONLY';
+  draft.configuration = liveConfiguration;
+  draft.media = [];
+  draft.content.title = syntheticText('合成外部挂牌八图生命周期');
+  draft.content.description = syntheticText('仅用于隔离测试的外部挂牌车况。');
+  const initial = await seedLegacyDraft(page, draft);
   expect(initial.draft.source).toMatchObject({ kind: 'external', listingUrl, externalId, collectedAt });
   expect(initial.draft.price.money?.currency).toBe('CNY');
   expect(initial.draft.facts.mileageKm).toBe(12345);
@@ -598,7 +624,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await tab(page, '发布预览');
   await expect(page.getByRole('combobox', { name: '核验后的库存状态', exact: true })).toHaveCount(0);
   await tab(page, '图片管理');
-  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('本测试生成的合成图片；出处仅为隔离元数据，不是实际挂牌或授权证明。');
+  await page.getByRole('radio', { name: '本批图片使用许可待核验，仅供本地资料整理。', exact: true }).check();
   await expect(page.getByLabel('图片挂牌来源', { exact: true })).toHaveValue(listingUrl);
   await chooseUtcDateTime(page, '图片采集时间（UTC）', { date: '2026-11-08', hour: 8, minute: 0 });
   const imageUrls = Array.from({ length: 8 }, (_, i) => `https://example.invalid/images/${externalId}-${i + 1}.png`);
@@ -629,12 +655,12 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   expect(ready.draft.media.map(image => image.alt)).toEqual(['合成图 1', '合成图 2', '合成图 3', '合成图 4', '合成图 5', '合成图 6', '合成图 8', '合成图 7']);
   expect(ready.draft.media.find(image => image.isCover)?.alt).toBe('合成图 8');
   expect(ready.draft.content.title.translations).toMatchObject({ zh: { kind: 'original', reviewStatus: 'pending' }, en: null, ru: null });
-  expect(ready.draft.configuration).toBeNull();
+  expect(ready.draft.configuration).toEqual(liveConfiguration);
   for (const media of ready.draft.media) {
     const asset = MediaAssetResponseSchema.parse(await (await readRespectingRateLimit(page, `/api/v1/admin/media/${media.id}`)).json()).data;
     expect(asset.status).toBe('ready'); expect(asset.rights.source?.listingUrl).toBe(listingUrl);
   }
-  // This record was created under /admin/vehicles, not the automatic external_listings catalog.
+  // This is an employee-managed draft seeded through the isolated API.
   await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toHaveText('请完善信息');
   await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
@@ -644,27 +670,11 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   expect(rejected.status()).toBe(422);
   const rejection = await rejected.json(); expect(rejection.error.code).toBe('PUBLISH_VALIDATION_FAILED');
   expect(rejection.error.fields).toEqual(expect.arrayContaining([
-    expect.objectContaining({ path: 'draft.facts.trim' }),
-    expect.objectContaining({ path: 'draft.configuration' }),
     expect.objectContaining({ path: 'draft.content.title.translations.en' }),
   ]));
   const rejectedState = AdminVehicleResponseSchema.parse(await (await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`)).json()).data;
   expect(rejectedState.version).toBe(ready.version); expect(rejectedState.publicationState).toBe('draft');
-  await tab(page, '基础资料');
-  await page.getByLabel('配置名称', { exact: true }).fill('员工挂牌隔离合成配置');
-  await chooseYear(page, '年款', 2024);
-  await selectPetrolFromUnknown(page);
-  await tab(page, '价格与内部信息');
-  await page.getByLabel('内部采购成本', { exact: true }).fill('100000');
-  await selectCurrency(page, '采购成本币种', 'CNY');
-  const condition = '仅用于隔离测试的外部挂牌车况，不代表真实车辆或库存。';
-  await page.getByLabel('车况描述', { exact: true }).fill(condition);
-  await enterLiveConfiguration(page);
-  const configured = await save(page, initial.id);
-  expect(configured.draft.facts.powertrain).toBe('petrol');
-  expect(configured.draft.internal.purchaseCost?.currency).toBe('CNY');
-  expect(configured.draft.configuration).toEqual(liveConfiguration);
-  const translated = await completeLiveTranslations(page, configured, path => readRespectingRateLimit(page, path), {
+  const translated = await completeLiveTranslations(page, ready, path => readRespectingRateLimit(page, path), {
     title: { en: 'Synthetic external lifecycle vehicle', ru: 'Синтетический внешний автомобиль' },
     description: { en: 'Synthetic external vehicle condition for an isolated test only.', ru: 'Синтетическое состояние внешнего автомобиля только для изолированного теста.' },
   });
@@ -760,7 +770,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
 test('translation disabled real API keeps Chinese source intact and never pretends machine suggestions were saved', async ({ page }) => {
   test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'disabled', 'This case verifies the explicitly disabled provider.');
   await login(page);
-  const initial = await create(page, 'manual', '中文首存与未配置机器翻译隔离测试');
+  const initial = await createManual(page, '中文首存与未配置机器翻译隔离测试');
   expect(initial.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: '中文首存与未配置机器翻译隔离测试' });
   expect(initial.draft.content.title.translations.en).toBeNull();
   await tab(page, '公开字段多语');
@@ -783,7 +793,7 @@ test('actual local machine translation produces English/Russian suggestions and 
   await login(page);
   const sourceTitle = '2024款二手汽车';
   const sourceDescription = '车辆行驶12000公里，售价50000元，仅用于本地翻译测试。';
-  const initial = await create(page, 'manual', sourceTitle);
+  const initial = await createManual(page, sourceTitle);
   await tab(page, '价格与内部信息');
   await page.getByLabel('车况描述', { exact: true }).fill(sourceDescription);
   const withDescription = await save(page, initial.id);
@@ -839,7 +849,7 @@ test('real Aliyun international Chinese suggestion persistence', async ({ page }
   expect(sourceCharacters).toBeLessThanOrEqual(200);
   expect(sourceCharacters * 2).toBeLessThan(400);
   await login(page);
-  const initial = await create(page, 'manual', sourceTitle);
+  const initial = await createManual(page, sourceTitle);
   await tab(page, '价格与内部信息');
   await page.getByLabel('车况描述', { exact: true }).fill(sourceDescription);
   const source = await save(page, initial.id);
@@ -902,17 +912,83 @@ test('real Aliyun international Chinese suggestion persistence', async ({ page }
   await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-saved.png', fullPage: true, animations: 'disabled' });
 });
 
+function requireIsolatedPreviewWeb() {
+  const web = new URL(process.env.ADMIN_WEB_TARGET ?? 'http://127.0.0.1');
+  expect(web.origin === `http://127.0.0.1:${web.port}` && web.port && !['3317', '3318', '3319', '3320', '3322', '3363'].includes(web.port)
+    && web.pathname === '/' && !web.username && !web.password && !web.search && !web.hash,
+    'Use a dedicated loopback FE process via ADMIN_WEB_TARGET.').toBe(true);
+}
+
+test('real publication preview reads an isolated manual draft and renders its cover without publishing', async ({ page }) => {
+  test.setTimeout(90_000);
+  expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
+  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
+  requireIsolatedPreviewWeb();
+  const writes: string[] = [];
+  await page.route('**/api/v1/admin/vehicles/**', route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const forbidden = request.method() === 'POST' && /\/(publish|publication-preview\/confirm|translation-suggestions|translation-plans|generate)$/.test(path)
+      || request.method() === 'PUT' && path.endsWith('/translation-bundle');
+    if (!forbidden) return route.fallback();
+    writes.push(path);
+    return route.abort();
+  });
+  await login(page);
+  const item = await contentAndImage(page, await createManual(page, '隔离预览链路验证'));
+  const origin = 'http://127.0.0.1:3319';
+  const framePath = `/staff/vehicles/${item.id}/publication-preview/`;
+  const previewPath = `/api/v1/admin/vehicles/${item.id}/publication-preview`;
+  const fromPreview = (response: import('@playwright/test').Response) => {
+    const url = new URL(response.url());
+    return url.origin === origin && response.request().method() === 'GET';
+  };
+  const shell = page.waitForResponse(response => fromPreview(response) && new URL(response.url()).pathname === framePath);
+  const data = page.waitForResponse(response => fromPreview(response) && new URL(response.url()).pathname === previewPath);
+  await tab(page, '发布预览');
+  const [shellResponse, dataResponse] = await Promise.all([shell, data]);
+  expect(shellResponse.status()).toBe(200);
+  expect(dataResponse.status()).toBe(200);
+  const frame = page.frameLocator('iframe[title="中文车辆发布预览"]');
+  await expect(frame.getByTestId('publication-preview-body')).toHaveAttribute('data-vehicle-version', String(item.version));
+  const cover = item.draft.media.find(image => image.isCover);
+  expect(cover).toBeDefined();
+  const image = frame.locator(`img[data-gallery-active-image="${cover!.id}"]`);
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).complete && (node as HTMLImageElement).naturalWidth > 0)).toBe(true);
+  await expect(page.getByText('已显示当前草稿', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
+  expect(writes).toEqual([]);
+});
+
 test('real publication preview rejects private image failures until a new load succeeds', async ({ page }, testInfo) => {
   // Requires the reviewed FE image-decode fix; the older FE build must fail this regression.
   test.setTimeout(240_000);
   expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
   expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
   const { PublishReadinessResponseSchema, ConfirmPublicationPreviewRequestSchema } = await import('@hd/contracts/admin');
+  requireIsolatedPreviewWeb();
+  const writes = { confirm: 0, publish: 0, translation: 0 };
+  await page.route('**/api/v1/admin/vehicles/**', route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST') {
+      if (path.endsWith('/publish')) {
+        writes.publish++;
+        return route.abort();
+      }
+      if (/\/(translation-suggestions|translation-plans|generate)$/.test(path)) {
+        writes.translation++;
+        return route.abort();
+      }
+    }
+    return route.fallback();
+  });
   await login(page);
-  const initial = await create(page, 'manual', '私图失败发布预览隔离样例');
+  const initial = await createManual(page, '私图失败发布预览隔离样例');
   const firstImage = await contentAndImage(page, initial);
   await tab(page, '图片管理');
-  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('第二张本地生成合成图片，仅供隔离预览故障验收。');
+  await page.getByRole('radio', { name: '我确认本批图片为公司自有图片，可用于车辆展示。', exact: true }).check();
   const png = Buffer.from(await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
     const context = canvas.getContext('2d')!;
@@ -936,6 +1012,7 @@ test('real publication preview rejects private image failures until a new load s
   const readinessResponse = await readRespectingRateLimit(page, `${vehiclePath}/publish-readiness?locale=zh`);
   expect(readinessResponse.status()).toBe(200);
   const readiness = PublishReadinessResponseSchema.parse(await readinessResponse.json()).data;
+  expect(readiness.issues.find(issue => issue.path === 'draft.facts.location'), 'The manual draft form sends location:null.').toBeUndefined();
   expect(readiness).toMatchObject({ requiredFieldsReady: true, localizationReady: true, previewConfirmed: false, canPublish: false, confirmation: null });
   expect(readiness.issues.every(issue => issue.stage === 'preview')).toBe(true);
   const cover = withImages.draft.media.find(image => image.isCover)!;
@@ -946,7 +1023,6 @@ test('real publication preview rejects private image failures until a new load s
   const matchesImage = (url: URL) => url.origin === origin && paths.has(url.pathname);
   let stage = 'initial';
   let fault: { mediaId: string; result: 401 | 403 | 500 | 'abort' } | null = null;
-  const writes = { confirm: 0, publish: 0, translation: 0 };
   const confirmationBodies: ReturnType<typeof ConfirmPublicationPreviewRequestSchema.parse>[] = [];
   const imageOutcomes: Array<{ stage: string; loadId: string | null; mediaId: string; result: number | 'failed' }> = [];
   const loads: Array<{ stage: string; previousLoadId: string; loadId: string }> = [];
@@ -966,8 +1042,6 @@ test('real publication preview rejects private image failures until a new load s
       writes.confirm++;
       confirmationBodies.push(ConfirmPublicationPreviewRequestSchema.parse(request.postDataJSON()));
     }
-    if (path === `${vehiclePath}/publish`) writes.publish++;
-    if (path.endsWith('/translation-suggestions') || /^\/api\/v1\/admin\/vehicles\/[^/]+\/translation-plans\/[^/]+\/generate$/.test(path)) writes.translation++;
   });
   const intercept = async (route: import('@playwright/test').Route) => {
     const mediaId = paths.get(new URL(route.request().url()).pathname);
@@ -975,7 +1049,7 @@ test('real publication preview rejects private image failures until a new load s
     if (fault.result === 'abort') { await route.abort('failed'); return; }
     await route.fulfill({ status: fault.result, contentType: 'text/plain', headers: { 'Cache-Control': 'no-store' }, body: 'Isolated private image failure' });
   };
-  // Only this synthetic vehicle's image bytes are intercepted. FE, preview DTOs, proof and mutations remain real.
+  // Only this synthetic vehicle's image bytes are intercepted. FE, preview DTOs and confirmation remain real.
   await page.route(matchesImage, intercept);
   const iframe = page.locator('iframe[title="中文车辆发布预览"]');
   const frame = page.frameLocator('iframe[title="中文车辆发布预览"]');
@@ -1063,11 +1137,14 @@ test('real publication preview rejects private image failures until a new load s
     expect(PublishReadinessResponseSchema.parse(await beforeConfirmation.json()).data).toMatchObject({
       requiredFieldsReady: true, localizationReady: true, previewConfirmed: false, canPublish: false, confirmation: null,
     });
-    stage = 'explicit-confirm-and-publish';
-    const publishedResponse = await operation(page, initial.id, '发布车辆', 'publish');
-    expect(publishedResponse.status()).toBe(200);
-    expect(AdminVehicleResponseSchema.parse(await publishedResponse.json()).data).toMatchObject({ publicationState: 'published', hasUnpublishedChanges: false });
-    expect(writes).toEqual({ confirm: 1, publish: 1, translation: 0 });
+    stage = 'explicit-confirm-only';
+    await acknowledgePublicationPreview(page);
+    const draftResponse = await readRespectingRateLimit(page, vehiclePath);
+    expect(draftResponse.status()).toBe(200);
+    expect(AdminVehicleResponseSchema.parse(await draftResponse.json()).data).toMatchObject({
+      publicationState: 'draft', publishedRevisionId: null,
+    });
+    expect(writes).toEqual({ confirm: 1, publish: 0, translation: 0 });
     expect(confirmationBodies).toEqual([{ version: readiness.vehicleVersion, publicContentRevision: readiness.publicContentRevision, fingerprint: readiness.fingerprint, locale: 'zh' }]);
   } finally {
     await page.unroute(matchesImage, intercept);
@@ -1104,7 +1181,7 @@ test(traceCaseTitle, async ({ page }, testInfo) => {
   expect(creator).toMatchObject({ name: '隔离追溯员工甲', role: 'admin' });
   const originalTitle = '双员工隔离车源';
   const revisedTitle = '双员工隔离车源修改后';
-  const initial = await create(page, 'manual', originalTitle);
+  const initial = await createManual(page, originalTitle);
   await page.getByRole('button', { name: /退出登录$/ }).click();
   await expect(page.getByRole('heading', { name: '登录员工工作台' })).toBeVisible();
   await page.getByLabel('账号或工作邮箱').fill(process.env.ADMIN_TRACE_SECOND_EMAIL);

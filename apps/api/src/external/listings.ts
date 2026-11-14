@@ -3,6 +3,7 @@ import type { AdminActivitySummary } from '@hd/contracts/admin';
 import type { ExternalListingListQuery, ExternalListingSummary, ExternalOverrides, ExternalUpsertCandidate } from '@hd/contracts/admin';
 import type { Database } from '../db/index.js';
 import { literalPattern, publicListingId } from './catalog.js';
+import { externalInquiryBounds, externalInquiryCode } from './inquiry-code.js';
 import { eligibleTextOverride, sourceCopy, sourceHashes, type TextSourceIdentities } from './normalize.js';
 
 type ListingRow = {
@@ -71,9 +72,11 @@ function searchWhere(query: ExternalListingListQuery, values: unknown[]): string
   if (query.yearMax !== undefined) conditions.push(`(${facts}->>'modelYear')::int<=${param(query.yearMax)}`);
   if (query.mileageMax !== undefined) conditions.push(`(${facts}->>'mileageKm')::int<=${param(query.mileageMax)}`);
   if (query.q) {
-    const short=/^(che168|dongchedi)-([0-9]+)$/.exec(query.q);
+    const inquiry = externalInquiryBounds(query.q);
+    const legacy = /^(che168|dongchedi)-([0-9]+)$/i.exec(query.q);
     const id = searchListingId(query.q);
-    if(short)conditions.push('l.platform_id='+param(short[1])+' AND l.external_id='+param(short[2]));
+    if (inquiry) conditions.push(`l.id BETWEEN ${param(inquiry.lower)}::uuid AND ${param(inquiry.upper)}::uuid AND right(l.id::text, 4)=${param(inquiry.suffix)}`);
+    else if (legacy) conditions.push('l.platform_id=' + param(legacy[1]!.toLowerCase()) + ' AND l.external_id=' + param(legacy[2]));
     else if (id) conditions.push('l.id=' + param(id) + '::uuid');
     else {
       const pattern = param(literalPattern(query.q));
@@ -105,7 +108,7 @@ export async function listExternalListings(db: Database, query: ExternalListingL
       + from + " " + where + " ORDER BY l.fetched_at DESC,l.id LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2),
       [...values, pageSize, offset]);
     const items = result.rows.map((row): ExternalListingSummary => ({
-      activity:row.activity,id: publicListingId(row.id),inquiryCode:`${row.platform_id}-${row.external_id}`,
+      activity:row.activity,id: publicListingId(row.id),inquiryCode:externalInquiryCode(row.id),
       version: row.version,
       provider: row.provider,
       platformId: row.platform_id,

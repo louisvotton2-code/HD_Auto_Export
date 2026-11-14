@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
-import { installApi, vehicle } from './api-fixture';
+import { completeEntry, installApi, vehicle } from './api-fixture';
 import { tab } from './ui-helpers';
 
 async function selectPrecision(page: Page, name: string, option: string) {
@@ -115,12 +115,14 @@ test('reducing date precision retains only known parts and date clear controls p
   await clearDate(page, '制造日期');
   await clearDate(page, '首次登记日期');
   await clearDate(page, '年款');
+  await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
+  await chooseYear(page, '年款', '2025');
   await save(page);
   await expect.poll(() => api.saves.length).toBe(2);
-  expect(api.saves[1].draft.facts).toMatchObject({ manufacturedAt: null, firstRegistration: null, modelYear: null });
+  expect(api.saves[1].draft.facts).toMatchObject({ manufacturedAt: null, firstRegistration: null, modelYear: 2025 });
   await page.reload();
   await tab(page, '基础资料');
-  for (const name of ['制造日期', '首次登记日期', '年款']) await expect(page.getByRole('textbox', { name, exact: true })).toHaveValue('');
+  for (const name of ['制造日期', '首次登记日期']) await expect(page.getByRole('textbox', { name, exact: true })).toHaveValue('');
 });
 
 
@@ -145,7 +147,7 @@ test.describe('UTC date input from a non-UTC browser', () => {
     await page.clock.setFixedTime(new Date('2026-11-12T00:00:00Z'));
     expect(await page.evaluate(() => new Date('2026-11-12T00:00:00Z').getTimezoneOffset())).toBe(-480);
     const record = vehicle();
-    record.draft = makeExternalVehicleDraftFixture();
+    record.draft = completeEntry(makeExternalVehicleDraftFixture());
     expect(record.draft.source).toMatchObject({ kind: 'external', sourceUpdatedAt: null });
     const originalSource = structuredClone(record.draft.source);
     const api = await installApi(page, { items: [record] });

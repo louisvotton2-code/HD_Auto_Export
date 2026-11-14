@@ -9,4 +9,6 @@
 .group .part>select[aria-invalid=true]{border-color:#df7771}
 .feedback{display:block;margin-top:7px;color:#f3c98a;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 
+.preset{margin-top:8px}
+
 .group .part>select:disabled{opacity:.55;cursor:not-allowed}

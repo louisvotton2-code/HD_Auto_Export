@@ -3,13 +3,13 @@ import { expect, test, type Page } from '@playwright/test';
 import { AdminVehicleSchema, ExternalListingSchema, PublicationPreviewSchema, SaveVehicleRequestSchema, parseVehicleDraftWrite, type AdminVehicle, type AdminReport, type ExternalListing } from '@hd/contracts/admin';
 import { PublicVehicleSchema } from '@hd/contracts/public';
 import { makeExternalAdminFixture, makeExternalStructuredPublicVehicleFixture, makeExternalVehicleDraftFixture, makePublicationPreviewFixture } from '@hd/contracts/fixtures';
-import { envelope, error, installApi, reply, vehicle } from './api-fixture';
+import { completeEntry, envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, tab } from './ui-helpers';
 
 const reportUrl = 'https://reports.example.invalid/only-for-contract/synthetic-0001?language=zh&ref=fixture';
 const employeeId = '62000000-0000-4000-8000-000000000011';
 const reportLink = (page: Page) => page.getByRole('link', { name: '打开来源报告', exact: true });
-function employee() { return AdminVehicleSchema.parse({ ...vehicle(), id: employeeId, draft: makeExternalVehicleDraftFixture(), report: { hasReport: true, url: reportUrl } }); }
+function employee() { return AdminVehicleSchema.parse({ ...vehicle(), id: employeeId, draft: completeEntry(makeExternalVehicleDraftFixture()), report: { hasReport: true, url: reportUrl } }); }
 function external() { const listing = makeExternalAdminFixture().listing; listing.report = { hasReport: true, url: reportUrl }; return ExternalListingSchema.parse(listing); }
 const listingApi = (item: ExternalListing) => `**/api/v1/admin/external/listings/${item.id}?*`;
 async function preventExternalRequests(page: Page) {

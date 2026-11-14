@@ -121,7 +121,6 @@ const publicCopy = {
     intro: '你好，我想咨询这款车。',
     similar: '你好，这辆车已售，我想咨询类似车辆。',
     id: '车号',
-    source: '来源',
     vehicle: '车型',
     year: '年款',
     manufactured: '制造时间',
@@ -138,7 +137,6 @@ const publicCopy = {
     intro: 'Hello, I would like to ask about this vehicle.',
     similar: 'Hello, this vehicle is sold. I would like to ask about similar vehicles.',
     id: 'Stock code',
-    source: 'Source',
     vehicle: 'Vehicle',
     year: 'Model year',
     manufactured: 'Manufactured',
@@ -159,7 +157,6 @@ const publicCopy = {
     intro: 'Здравствуйте! Хочу узнать об этом автомобиле.',
     similar: 'Здравствуйте! Этот автомобиль продан. Интересуют похожие автомобили.',
     id: 'Номер автомобиля',
-    source: 'Источник',
     vehicle: 'Автомобиль',
     year: 'Модельный год',
     manufactured: 'Дата выпуска',
@@ -182,7 +179,6 @@ const publicCopy = {
     intro: string;
     similar: string;
     id: string;
-    source: string;
     vehicle: string;
     year: string;
     manufactured: string;
@@ -214,10 +210,10 @@ export function buildPublicVehicleContactLinks(
   const price = original
     ? `${vehicle.price.kind === 'reference' ? t.reference : t.asking}: ${amount} ${original.currency}${approx}`
     : t.onRequest;
+  const reference = publicVehicleReference(vehicle);
   const message = [
     vehicle.availability === 'sold' ? t.similar : t.intro,
-    `${t.id}: ${publicVehicleReference(vehicle).code}`,
-    ...(publicVehicleReference(vehicle).source ? [`${t.source}: ${publicVehicleReference(vehicle).source}`] : []),
+    ...(reference ? [`${t.id}: ${reference}`] : []),
     `${t.vehicle}: ${publicVehicleTitle(vehicle, locale).text}`,
     ...(vehicle.facts.modelYear === null ? [] : [`${t.year}: ${vehicle.facts.modelYear}`]),
     ...(vehicle.facts.manufacturedAt === null

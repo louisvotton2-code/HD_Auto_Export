@@ -12,9 +12,9 @@ const path = `/api/v1/admin/vehicles/${id}/translation-bundle`;
 function record(): AdminVehicle {
   const item = { ...vehicle(), id }; item.draft.media = [];
   item.draft.content.title = { sourceLanguage: 'zh', sourceText: '独立中文标题', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
-  item.draft.content.description = { sourceLanguage: 'zh', sourceText: null, sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
+  item.draft.content.description = { sourceLanguage: 'zh', sourceText: '独立合成车况', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
   item.draft.facts.make = { id: 'toyota', name: '丰田' }; item.draft.facts.model = { id: 'synthetic_model', name: '合成中文车型' };
-  item.draft.facts.trim = null; item.draft.facts.location = null; item.draft.price.includes = []; return item;
+  item.draft.facts.location = null; item.draft.price.includes = []; return item;
 }
 function field(ref: string, sourceText: string, sourceLanguage = 'zh'): DisplayField {
   return DisplayFieldSchema.parse({ ref, sourceLanguage, sourceText, sourceVersion: 1,

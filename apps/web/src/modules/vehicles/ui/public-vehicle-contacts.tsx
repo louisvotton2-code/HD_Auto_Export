@@ -22,6 +22,7 @@ export function PublicVehicleContacts({
   purpose?: 'vehicle' | 'inspection';
 }) {
   const t = publicVehicleMessages(locale);
+  const reference = publicVehicleReference(vehicle);
   const trusted = usePublicFreshness() === 'fresh';
   const inspection = purpose === 'inspection';
   const links = inspection
@@ -46,7 +47,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${telegramLabel} — ${publicVehicleReference(vehicle).code}`}
+        aria-label={`${telegramLabel}${reference ? ` — ${reference}` : ''}`}
       >
         <SocialIcon platform="telegram" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>Telegram</span>
@@ -58,7 +59,7 @@ export function PublicVehicleContacts({
         tabIndex={trusted ? undefined : -1}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`${whatsappLabel} — ${publicVehicleReference(vehicle).code}`}
+        aria-label={`${whatsappLabel}${reference ? ` — ${reference}` : ''}`}
       >
         <SocialIcon platform="whatsapp" size={19} />
         <span className={variant === 'card' ? styles.srOnly : undefined}>WhatsApp</span>

@@ -9,14 +9,15 @@ export function publicVehicleTitle(vehicle: PublicVehicleSummary, locale: Locale
   const original = vehicle.content.title;
   const missingTitle = vehicle.source.kind === 'external' && original.kind === 'catalog';
   const missingChinese = vehicle.source.kind !== 'external' && locale === 'zh' && !/^zh(?:-|$)/i.test(original.contentLocale);
-  if (!missingTitle && !missingChinese) {
+  if (!missingTitle && !missingChinese && original.text.trim() !== '…') {
     return { text: original.text, lang: original.contentLocale };
   }
   const { modelYear } = vehicle.facts;
   const factName = (field: 'make' | 'model' | 'trim') => {
     // The staff-published projection inserts a label for missing translations.
     if (vehicle.source.kind !== 'external' && vehicle.display?.[field].status === 'missing') return '';
-    return vehicle.facts[field]?.name.trim() ?? '';
+    const name = vehicle.facts[field]?.name.trim();
+    return name === '…' || !name ? '' : name;
   };
   const brand = factName('make');
   const name = factName('model');
@@ -34,5 +35,8 @@ export function publicVehicleTitle(vehicle: PublicVehicleSummary, locale: Locale
     ? `${modelYear}${locale === 'zh' ? '款' : ''}`
     : '';
   const text = [identity || genericTitle[locale], year, localizedTrim].filter(Boolean).join(' ');
-  return { text, lang: locale };
+  const taggedIdentity = (['model', 'make'] as const)
+    .find(field => factName(field) && vehicle.display?.[field].status === 'ready');
+  const lang = taggedIdentity && vehicle.display?.[taggedIdentity].contentLocale;
+  return { text, lang: lang || locale };
 }

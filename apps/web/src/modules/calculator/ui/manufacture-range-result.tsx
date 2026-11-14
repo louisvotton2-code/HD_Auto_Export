@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import type { Locale } from '@/i18n/routing';
 import type { ManufactureRangeCalculation, ManufactureQuoteScenario } from '../application/manufacture-range';
 import { manufactureRangeCopy } from '../application/manufacture-range-copy';
+import { formatCalculatorMoney } from '../application/fee-presentation';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import type { ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { FeeLine } from './fee-line';
@@ -22,12 +23,7 @@ export function ManufactureRangeResult({ calculation, locale, rates }: {
   const td = useTranslations('FeeDisplay');
   const prefix = useId();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const formatter = new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 });
-  const separator = formatter.formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.';
-  const format = (value: string) => {
-    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(value);
-    return match ? `${formatter.format(BigInt(match[1]))}${match[2] ? separator + match[2] : ''}` : '—';
-  };
+  const format = (value: string) => formatCalculatorMoney(value, locale);
   const usd = (scenario: ManufactureQuoteScenario, value: string) => {
     const converted = convertImportAmountToUsd(value, scenario.input, rates);
     return converted === null ? '— USD' : `≈ ${format(converted)} USD`;

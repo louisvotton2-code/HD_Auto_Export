@@ -3,6 +3,17 @@ import type { CalculationLine } from '../core/types';
 
 const numeric = /^-?\d+(?:\.\d+)?$/;
 
+/** Round only the display string, keeping supplied cents and arbitrary-size integer precision. */
+export function formatCalculatorMoney(value: string, locale: string): string {
+  if (!numeric.test(value)) return '—';
+  const places = Math.min(2, value.split('.')[1]?.length ?? 0);
+  const [whole, fraction] = new Amount(value).toFixed(places).split('.');
+  const formatter = new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale);
+  const separator = formatter.formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.';
+  const integer = whole === '-0' && Number(fraction) !== 0 ? -0 : BigInt(whole);
+  return `${formatter.format(integer)}${fraction ? separator + fraction : ''}`;
+}
+
 function numberText(value: string, locale: string, precision: number) {
   const amount = new Amount(value);
   const rounded = amount.toDecimalPlaces(precision);

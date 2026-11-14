@@ -19,19 +19,19 @@ describe('ready-to-edit calculator defaults', () => {
       price: '25000',
       displacementCc: '1998',
       powerHp: '150',
-      manufactureDate: '2021-01',
+      manufactureDate: '',
       customsDate: '2026-10-23',
       freight: '',
       insurance: '',
     });
     expect(input.transactionRate).toBe(getReferenceRate('RU', 'USD').transactionRate);
-    expect(calculateImportEstimate(input)).toMatchObject({ status: 'reference', total: '926952' });
+    expect(calculateImportEstimate(input)).toMatchObject({ status: 'incomplete', missingFields: ['manufactureDate'] });
   });
 
   it('does not make GE depend on the default price or exchange rate', () => {
     const input = createDefaultInput('GE', '2026-10-23');
     expect(
-      calculateImportEstimate({ ...input, price: '', transactionRate: '', euroRate: '' }),
+      calculateImportEstimate({ ...input, manufactureDate: '2021-01', price: '', transactionRate: '', euroRate: '' }),
     ).toMatchObject({ status: 'reference', total: '3605' });
   });
 
@@ -40,7 +40,7 @@ describe('ready-to-edit calculator defaults', () => {
     (country) => {
       const input = createDefaultInput(country, '2026-10-23');
       expect(input.freight).toBe('');
-      const result = calculateImportEstimate(input);
+      const result = calculateImportEstimate({ ...input, manufactureDate: '2021-01' });
       expect(result.status).toBe('reference');
       expect(result.total).not.toBeNull();
       if (['UZ', 'AM', 'KG', 'AL'].includes(country))
@@ -57,7 +57,7 @@ describe('ready-to-edit calculator defaults', () => {
       price: '25000',
       transactionRate: '84',
     });
-    expect(calculateImportEstimate(createDefaultInput('RU', '2027-01-01', rates)).status).toBe(
+    expect(calculateImportEstimate({ ...createDefaultInput('RU', '2027-01-01', rates), manufactureDate: '2021-01' }).status).toBe(
       'needs_review',
     );
   });

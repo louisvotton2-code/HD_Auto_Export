@@ -15,17 +15,20 @@ import {
   publicUsdFilterQuery,
   publicUsdView,
 } from '@/modules/vehicles';
+import type { HomeDestination } from '../types';
 import { HomePage } from './home-page';
 
 export function PublicHome({
   locale,
   home,
   filters,
+  destinations,
   initialRetryAfter = 0,
 }: {
   locale: Locale;
   home: PublicHomeSections | null;
   filters: PublicVehicleFilters['data'] | null;
+  destinations: HomeDestination[];
   initialRetryAfter?: number;
 }) {
   const projection = { locale, ...publicUsdView };
@@ -60,6 +63,7 @@ export function PublicHome({
     <PublicFreshnessBoundary url={url} phase={resource.phase}>
       <HomePage
         locale={locale}
+        destinations={destinations}
         sections={resource.data?.data.sections ?? []}
         catalogFilters={facets.data?.data ?? null}
         unavailable={!resource.data}

@@ -6,7 +6,7 @@ import { getResultStamp } from './result-stamp';
 import { stampMessages } from './stamp-messages';
 
 function stamp(country: CountryCode, overrides: Partial<CalculationInput> = {}) {
-  const input = { ...createDefaultInput(country, '2026-10-23'), ...overrides };
+  const input = { ...createDefaultInput(country, '2026-10-23'), manufactureDate: '2021-01', ...overrides };
   const result = calculateImportEstimate(input);
   expect(result.status).toBe('reference');
   return getResultStamp(input, result);
@@ -222,7 +222,7 @@ describe('reference result stamp', () => {
   ] as Array<[Partial<CalculationInput>, string]>)(
     'clears active bands for incomplete/invalid/uncovered facts %o',
     (overrides, expected) => {
-      const input = { ...createDefaultInput('RU', '2026-10-23'), ...overrides };
+      const input = { ...createDefaultInput('RU', '2026-10-23'), manufactureDate: '2021-01', ...overrides };
       const result = getResultStamp(input, calculateImportEstimate(input));
       expect(result.tone).toBe('muted');
       expect(result.title.key).toBe(expected);

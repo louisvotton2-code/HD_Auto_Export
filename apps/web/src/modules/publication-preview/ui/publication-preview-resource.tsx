@@ -8,14 +8,12 @@ import {
 } from '@hd/contracts/admin';
 import { PublicationPreviewDetail, type VehicleGalleryImageStatus } from '@/modules/vehicles';
 import { previewContent } from '../content';
-import { PreviewReadError, readPublicationPreview, type PreviewErrorCode } from '../read-preview';
+import { startPreviewFrameRead, type PreviewReadState } from '../frame-read';
+import type { PreviewErrorCode } from '../read-preview';
 import type { PreviewFrameScope } from '../scope';
 import styles from './publication-preview-resource.module.css';
 
-type PreviewState =
-  | { phase: 'loading'; key: string }
-  | { phase: 'error'; key: string; code: PreviewErrorCode }
-  | { phase: 'ready'; key: string; preview: PublicationPreview };
+type PreviewState = PreviewReadState & { key: string };
 const frameType = 'hd:auto:publication-preview';
 
 function postFrame(message: PublicationPreviewFrameMessage) {
@@ -159,6 +157,7 @@ function RenderedPreview({ preview, scope }: {
 export function PublicationPreviewResource({ scope }: { scope: PreviewFrameScope }) {
   const scopeKey = `${scope.vehicleId}:${scope.locale}:${scope.loadId}`;
   const [state, setState] = useState<PreviewState>({ phase: 'loading', key: scopeKey });
+  const currentRequest = useRef<AbortController | null>(null);
   const failRender = useCallback(() => {
     setState({ phase: 'error', key: scopeKey, code: 'render_error' });
     postFrame({ schemaVersion: 1, type: frameType, ...scope, event: 'error', error: { code: 'render_error' } });
@@ -166,41 +165,9 @@ export function PublicationPreviewResource({ scope }: { scope: PreviewFrameScope
 
   useEffect(() => {
     document.documentElement.lang = scope.locale === 'zh' ? 'zh-Hans' : scope.locale;
-    const controller = new AbortController();
-    let active = true;
-    const base = { schemaVersion: 1, type: frameType, ...scope } as const;
-    setState({ phase: 'loading', key: scopeKey });
-    postFrame({ ...base, event: 'loading' });
-    const timeout = window.setTimeout(() => {
-      if (!active) return;
-      active = false;
-      controller.abort();
-      setState({ phase: 'error', key: scopeKey, code: 'unavailable' });
-      postFrame({ ...base, event: 'error', error: { code: 'unavailable' } });
-    }, 15000);
-    void readPublicationPreview(scope, controller.signal).then((preview) => {
-      if (active) setState({ phase: 'ready', key: scopeKey, preview });
-    }).catch((error: unknown) => {
-      if (!active) return;
-      const code = error instanceof PreviewReadError ? error.code : 'unavailable';
-      setState({ phase: 'error', key: scopeKey, code });
-      postFrame({ ...base, event: 'error', error: { code } });
-    }).finally(() => window.clearTimeout(timeout));
-    const pageHidden = () => {
-      active = false;
-      window.clearTimeout(timeout);
-      controller.abort();
-      setState({ phase: 'error', key: scopeKey, code: 'unavailable' });
-      postFrame({ ...base, event: 'disposed' });
-    };
-    window.addEventListener('pagehide', pageHidden);
-    return () => {
-      active = false;
-      window.clearTimeout(timeout);
-      controller.abort();
-      window.removeEventListener('pagehide', pageHidden);
-      postFrame({ ...base, event: 'disposed' });
-    };
+    return startPreviewFrameRead(scope, currentRequest, (next) => {
+      setState({ ...next, key: scopeKey });
+    }, postFrame);
   }, [scope, scopeKey]);
 
   if (state.key !== scopeKey) return <PreviewStatus scope={scope} />;
