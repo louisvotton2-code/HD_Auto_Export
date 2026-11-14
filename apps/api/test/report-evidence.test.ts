@@ -62,14 +62,13 @@ test('offline report evidence and archived enrichment use only an isolated synth
     id = (await db.pool.query('SELECT id FROM external_listings WHERE external_id=$1', [candidate.externalId])).rows[0].id;
     otherId = (await db.pool.query('SELECT id FROM external_listings WHERE external_id=$1', [other.externalId])).rows[0].id;
 
-    await t.test('unverified URL stays private while source history and structured findings are public', async () => {
+    await t.test('unverified URL and report body stay private on detail while explicit source history remains public', async () => {
       const vehicle = (await read())!;
-      assert.equal(vehicle.external!.detail!.inspection!.reportUrl, null);
-      assert.equal(vehicle.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal(vehicle.external!.detail!.inspection, null);
       assert.deepEqual(vehicle.report, { hasReport: true });
       assert.deepEqual((await store.getListing(`ext-${id}`, 'en')).report, { hasReport: true, url: candidate.inspection!.reportUrl });
       assert.deepEqual(vehicle.external!.detail!.history, { ownershipTransfers: 0 });
-      assert.equal(vehicle.external!.detail!.inspection!.checks![0]!.groups[0]!.items[0]!.ok, false);
+      assert.equal((await db.pool.query('SELECT details FROM external_catalog WHERE listing_id=$1',[id])).rows[0].details.inspection.checks[0].groups[0].items[0].ok,false,'Stored findings remain intact behind the separate report boundary');
       assert.doesNotMatch(JSON.stringify(vehicle), /evidenceHash|sourceHash|reports\.example|photos"/);
       manifest = await exportReportManifest(db, [id], now);
       assert.equal(manifest.entries.length, 1); assert.equal(manifest.entries[0]!.listingId, id);
@@ -84,12 +83,12 @@ test('offline report evidence and archived enrichment use only an isolated synth
       assert.equal(await revision(), after);
       const inspection = (await read())!.external!.detail!.inspection!;
       assert.equal((await internalAccess()).status, 'available');
-      assert.equal(inspection.reportAccess!.status, 'unknown'); assert.equal(inspection.reportUrl, null);
+      assert.equal(inspection, null);
       assert.deepEqual((await read())!.report, { hasReport: true });
       assert.deepEqual(await getExternalReport(db.pool, id), { hasReport: true, url: manifest.entries[0]!.reportUrl });
       const expired = (await read(now + 1000))!.external!.detail!.inspection!;
       assert.equal((await internalAccess(now + 1000)).status, 'expired');
-      assert.equal(expired.reportAccess!.status, 'unknown'); assert.equal(expired.reportUrl, null);
+      assert.equal(expired, null);
     });
 
     await t.test('database evidence bindings cannot be empty and eligibility changes invalidate public revision', async () => {
@@ -100,10 +99,10 @@ test('offline report evidence and archived enrichment use only an isolated synth
       assert.equal(await revision(), before);
       await db.pool.query('UPDATE external_report_evidence SET observation_hash=$2 WHERE listing_id=$1', [id, '0'.repeat(64)]);
       assert.notEqual(await revision(), before);
-      assert.equal((await read())!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal((await read())!.external!.detail!.inspection, null);
       await db.pool.query('UPDATE external_report_evidence SET observation_hash=$2 WHERE listing_id=$1', [id, hash]);
       assert.equal((await internalAccess()).status, 'available');
-      assert.equal((await read())!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal((await read())!.external!.detail!.inspection, null);
     });
 
     await t.test('staff rights, future times and non-report HTTP 200 cannot manufacture availability', async () => {
@@ -113,7 +112,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
       await assert.rejects(importReportResults(db, results(manifest, [{ ...observation(manifest, 1), verifiedReportContent: false }]), actor.id, now + 1), { status: 409 });
       await assert.rejects(importReportResults(db, results(manifest, [{ ...observation(manifest, 1), finalUrl: 'https://reports.example.invalid/other' }]), actor.id, now + 1), { status: 409 });
       assert.equal((await internalAccess()).status, 'available');
-      assert.equal((await read())!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal((await read())!.external!.detail!.inspection, null);
     });
 
     await t.test('new negative proof wins and equal-time conflicts or older proof cannot overwrite it', async () => {
@@ -124,7 +123,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
       assert.equal(await revision(), before);
       const inspection = (await read(now + 2))!.external!.detail!.inspection!;
       assert.equal((await internalAccess(now + 2)).status, 'unavailable');
-      assert.equal(inspection.reportAccess!.status, 'unknown'); assert.equal(inspection.reportUrl, null);
+      assert.equal(inspection, null);
     });
 
     await t.test('a source-only revision change invalidates warm availability and rejects the old manifest', async () => {
@@ -138,7 +137,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
       await store.importBatch({ provider: 'synthetic-feed', records: [{ candidate: newer, raw: JSON.stringify(newer) }] }, randomUUID(), actor);
       assert.deepEqual((await db.pool.query('SELECT details FROM external_catalog WHERE listing_id=$1', [id])).rows[0].details, details);
       assert.notEqual(await revision(), before);
-      assert.equal((await cache.get('detail', { id }, load))!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal((await cache.get('detail', { id }, load))!.external!.detail!.inspection, null);
       await assert.rejects(importReportResults(db, results(manifest, [observation(manifest, 4)]), actor.id, now + 4), { status: 409 });
       manifest = await exportReportManifest(db, [id], now + 4); await cache.close();
     });
@@ -158,7 +157,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
         importReportResults(db, results(manifest, [observation(manifest, 7)]), actor.id, now + 7)]);
       assert.ok(settled.some(item => item.status === 'fulfilled'));
       assert.equal((await internalAccess(now + 7)).status, 'available');
-      assert.equal((await read(now + 7))!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal((await read(now + 7))!.external!.detail!.inspection, null);
       assert.equal((await db.pool.query('SELECT checked_at FROM external_report_evidence WHERE listing_id=$1', [id])).rows[0].checked_at.toISOString(), iso(7));
     });
 
@@ -166,8 +165,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
       const shell = { ...observation(manifest, 8), outcome: 'unknown' as const, verifiedReportContent: false, matchedVehicle: false };
       await importReportResults(db, results(manifest, [shell]), actor.id, now + 8);
       const inspection = (await read(now + 8))!.external!.detail!.inspection!;
-      assert.deepEqual(inspection.reportAccess, { status: 'unknown', url: null, checkedAt: null, expiresAt: null });
-      assert.equal(inspection.reportUrl, null);
+      assert.equal(inspection, null);
     });
 
     await t.test('presence-only source updates invalidate warm detail while unsafe links remain admin-null', async () => {
@@ -261,8 +259,7 @@ test('offline report evidence and archived enrichment use only an isolated synth
       const legacy = structuredClone(previous); legacy.inspection.reportUrl = candidate.inspection!.reportUrl; delete legacy.inspection.reportAccess;
       await db.pool.query('UPDATE external_catalog SET details=$2 WHERE listing_id=$1', [id, legacy]);
       const vehicle = (await read())!;
-      assert.equal(vehicle.external!.detail!.inspection!.reportUrl, null);
-      assert.equal(vehicle.external!.detail!.inspection!.reportAccess!.url, null);
+      assert.equal(vehicle.external!.detail!.inspection, null);
       assert.deepEqual(vehicle.report, { hasReport: true });
       assert.doesNotMatch(JSON.stringify(vehicle), /reports\.example/);
       await db.pool.query('UPDATE external_catalog SET details=$2 WHERE listing_id=$1', [id, previous]);
@@ -287,8 +284,8 @@ test('offline report evidence and archived enrichment use only an isolated synth
       assert.deepEqual(after!.report, { hasReport: true });
       assert.deepEqual(await getExternalReport(db.pool, row.id), { hasReport: true, url: null });
       assert.deepEqual(after!.external!.detail!.history, { ownershipTransfers: 0 });
-      assert.equal(after!.external!.detail!.inspection!.checks![0]!.groups[0]!.items[0]!.ok, false);
-      assert.equal(after!.external!.detail!.inspection!.reportAccess!.status, 'unknown');
+      assert.equal(after!.external!.detail!.inspection, null);
+      assert.equal((await db.pool.query('SELECT content FROM external_inspection_enrichment WHERE listing_id=$1',[row.id])).rows[0].content.inspection.checks[0].groups[0].items[0].ok,false);
       assert.deepEqual((await db.pool.query('SELECT source_data,source_revision,source_hash FROM external_listings WHERE id=$1', [row.id])).rows[0], before);
       const publicRevision = await revision();
       assert.deepEqual(await enrichArchivedInspections(db, [{ batchId: batch.id, row: 1 }], actor.id), { applied: 0, unchanged: 1 });

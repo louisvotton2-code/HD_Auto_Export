@@ -12,6 +12,8 @@ import {createStaff} from '../src/staff-cli.js';
 import {ExternalFullSyncStatusResponseSchema} from '@hd/contracts/admin';
 import {makeExternalImportFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleInspectionResponseSchema,PublicVehiclePriceHistoryResponseSchema} from '@hd/contracts/public';
+import {projectInspectionReport} from '../src/external/sources/inspection-projection.js';
+import {refreshInspectionEvidence} from '../src/external/sources/public-evidence.js';
 test('full sync HTTP controls require an admin and preserve versioned idempotent status receipts',async()=>{
  const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
  if(!['postgres:','postgresql:'].includes(url.protocol)||!['127.0.0.1','localhost'].includes(url.hostname)||url.pathname!=='/postgres'||url.search||url.hash)throw new Error('Isolated local maintenance database only');
@@ -56,6 +58,34 @@ test('full sync HTTP controls require an admin and preserve versioned idempotent
   assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=ru&cursor=${cursor}`})).statusCode,400);
   assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/price-history?locale=en&cursor=${cursor}`})).statusCode,400);
   const prices=await app.inject({url:`/api/v1/vehicles/${publicId}/price-history?locale=en&limit=2`});assert.equal(prices.statusCode,200,prices.body);assert.equal(PublicVehiclePriceHistoryResponseSchema.parse(prices.json()).data.items[0]!.money.amount,'0');
+  const sourceReport={hasReport:false,counts:[{category:'Accident items',checked:40,faults:1},{category:'Flood items',checked:36,faults:0}],
+   summary:[{area:'Summary',result:'Synthetic complete inspection conclusion'}],
+   checks:[{category:'Major accident check',groups:[{name:'Body',items:[{part:'Hood',result:'Original',ok:true},{part:'Door',result:'Repair noted',ok:false},{part:'Roof',result:null,ok:null}]}]}],
+   reportUrl:'https://private.invalid/inspection',seller:{phone:'PRIVATE_REPORT_MARKER'}};
+  await runtime.db.transaction(async tx=>{for(const locale of ['zh','en','ru'] as const)await refreshInspectionEvidence(tx,listing,locale,projectInspectionReport(sourceReport,locale));});
+  for(const locale of ['zh','en','ru'] as const){
+   const detail=await app.inject({url:`/api/v1/vehicles/${publicId}?locale=${locale}&view=localized`});assert.equal(detail.statusCode,200,detail.body);
+   assert.equal(detail.json().data.inspectionSummary.status,'available');assert.equal(detail.json().data.report.hasReport,true);
+   assert.equal(detail.json().data.inspectionSummary.checked,76);assert.equal(detail.json().data.inspectionSummary.faults,1);assert.equal(detail.json().data.inspectionSummary.contentLocale,'en');
+   assert.equal(detail.json().data.external.detail.inspection,null);assert.doesNotMatch(detail.body,/Synthetic complete inspection conclusion|Repair noted|PRIVATE_REPORT_MARKER|private\.invalid/);
+   const filtered=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&category=accident&order=faults_first&limit=1`});assert.equal(filtered.statusCode,200,filtered.body);assert.equal(filtered.headers['cache-control'],'no-store');
+   const data=PublicVehicleInspectionResponseSchema.parse(filtered.json()).data;
+   assert.equal(data.total,3);assert.equal(data.items.length,1);assert.equal(data.items[0]!.outcome,'defect');assert.equal(data.items[0]!.part?.text,'Door');
+   assert.equal(data.summary!.checked,76);assert.equal(data.summary!.faults,1);assert.equal(data.summary!.categories[1]!.faults,0);assert.equal(data.items[0]!.value.contentLocale,'en');assert.equal(data.items[0]!.value.requestedLocale,locale);
+   assert.doesNotMatch(filtered.body,/PRIVATE_REPORT_MARKER|private\.invalid/);
+   const scopeCursor=encodeURIComponent(data.nextCursor!);
+   const second=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&category=accident&order=faults_first&limit=1&cursor=${scopeCursor}`});assert.equal(second.statusCode,200,second.body);assert.equal(second.json().data.items[0].outcome,'unknown');assert.equal(second.json().data.summary.checked,76);
+   for(const query of ['category=flood&order=faults_first','category=accident&order=source','category=accident&order=faults_first&outcome=defect'])assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&${query}&cursor=${scopeCursor}`})).statusCode,400);
+   const byPart=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=${locale}&part=${data.items[0]!.partId}&outcome=defect`});assert.equal(byPart.statusCode,200,byPart.body);assert.equal(byPart.json().data.total,1);assert.equal(byPart.json().data.summary.checked,76);
+  }
+  for(const status of ['no_report','unavailable','pending','unknown'] as const){
+   const summary={status,contentLocale:null,checked:null,faults:null,categories:[]};
+   await runtime.db.transaction(tx=>refreshInspectionEvidence(tx,listing,'en',{status,summary,items:[],conclusions:[]}));
+   const detail=await app.inject({url:`/api/v1/vehicles/${publicId}?locale=en&view=localized`});assert.equal(detail.statusCode,200,detail.body);assert.equal(detail.json().data.inspectionSummary.status,status);
+   const response=await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=en`});assert.equal(response.statusCode,200,response.body);assert.equal(response.json().data.status,status);assert.equal(response.json().data.total,0);assert.equal(response.json().data.summary.faults,null);
+  }
+  assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?limit=101`})).statusCode,400);
+  const pricesAfter=await app.inject({url:`/api/v1/vehicles/${publicId}/price-history?locale=en&limit=2`});assert.equal(pricesAfter.statusCode,200,pricesAfter.body);assert.deepEqual(pricesAfter.json().data.items,prices.json().data.items);
   await runtime.db.pool.query("UPDATE external_vehicle_evidence_sets SET source_revision=$2,status='unavailable' WHERE listing_id=$1 AND kind='inspection'",[listing,'b'.repeat(64)]);
   assert.equal((await app.inject({url:`/api/v1/vehicles/${publicId}/inspection?locale=en&cursor=${cursor}`})).statusCode,409);
   await runtime.db.pool.query('DELETE FROM external_catalog WHERE listing_id=$1',[listing]);

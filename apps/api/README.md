@@ -222,3 +222,18 @@ node dist/external/full-sync/cli.js archive-release --reference BACKUP_NAME
 pin保护来源document/blob和未清理CSV快照，与CSV清理共用归档锁；须在备份开始前执行。release只解除指定reference，不删除数据。备份读取与恢复仍由OPS流程执行。
 
 批次运行日志使用 `event=external.full_sync.bulk_attempt`：只含 `source/locale/requestedCount/elapsedMs/responseBytes/resultCode/splitCode`。计时从实际发送开始，不含限速和额度等待；成功字节数取实际响应流，传输失败为null；拆批前失败与成功子批分别记录。日志不含车辆ID、URL、凭据、正文或供应商异常消息，记录失败不会触发重打请求。OPS结合容器内存峰值和持久容量样本判断500及拆批效果，无需额外探测供应商。
+
+## EXT08 已存检测报告重投影
+
+公开字段/语言/分类分页见[车辆接口第22节](../../docs/开发/车辆接口.md#22-ext08-详情摘要与独立检测报告)。0025为现有 `external_vehicle_evidence_sets` 添加轻量overview（summary/conclusions），status增加unknown，增加分类查询索引；旧原文、事实、媒体和来源身份不搬移。详情SQL只选summary及去掉inspection正文的旧详情，不拉取明细表或解析来源原文；独立报告页才按最多100项读取已存白名单。新来源写入会同时更新摘要/明细/版本，摘要变化触发既有公开缓存失效。
+
+既有首万投影通过下列受控命令补齐，须由OPS在备份与0025迁移、新API准备完成后执行；新报告页面验收前确认处理结束。只读本站当前source heads并重建inspection投影，不重新导入车辆、不调用供应商或翻译、不改变库存/员工修订/媒体/价格历史/同步容量控制。每车使用原来源写锁和短事务，可与撤回协作，不会重新发布已撤车/隐藏记录。没有请求时自动补写、全库启动钩子或自动循环。
+
+```sh
+node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATABASE_NAME --limit 25
+node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATABASE_NAME --limit 25 --after PREVIOUS_NEXT_CURSOR
+```
+
+读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。limit默认25、最大100，每次仅一批，返回 `{scanned,changed,nextCursor}`，nextCursor非null才沿同一命令续跑。失败退出1，不打印数据库连接/原文；成功0仅表示该批完成。末页nextCursor=null才表示该次有界遍历结束；重复运行相同内容不会重复改版本。只覆盖具有当前detail存档的ChinaCarAPI身份，缺档不虚构报告；现场处理数/异常和是否完成须由OPS另记，不能把本说明视为已经执行。
+
+本轮受影响检查为contracts/schema及合成fixtures、API类型/构建/OpenAPI、报告投影单测、来源映射深层单测，以及full-sync-http/full-sync-projection/report-evidence/external-catalog数据库回归。检查在服务器准确集成SHA运行，本机未运行应用检查；按已有统一门禁复用结果，不另重复全仓检查。公开OpenAPI生成命令仍为 `pnpm --filter @hd/api openapi`。

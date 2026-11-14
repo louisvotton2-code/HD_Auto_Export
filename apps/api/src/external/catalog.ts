@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import {
-  PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
+  PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
 } from '@hd/contracts/public';
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
@@ -9,6 +9,7 @@ import { displayText, publicText, type ExternalProjection } from './normalize.js
 import type { ReportSourceRow } from './report-evidence.js';
 import { projectSourceReport } from './reports.js';
 import { applyInspectionEnrichment } from './inspection-enrichment.js';
+import {emptyInspectionSummary} from './sources/inspection-projection.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount, type CatalogAnchor } from './cursor.js';
 export type { CatalogAnchor } from './cursor.js';
 
@@ -27,6 +28,7 @@ type CatalogRow = {
   provider?: string; external_id?: string; source_revision?: string; source_hash?: string;
   source_data?: ReportSourceRow['source_data']; upstream_state?: string;
   inspection_binding?: unknown; inspection_content?: unknown;
+  inspection_summary?:unknown;inspection_status?:PublicInspectionSummary['status'];
 };
 type ImageRow = {
   id: string; listing_id: string; url: string; alt: ExternalProjection['images'][number]['alt'];
@@ -59,11 +61,13 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     upstream_state: row.upstream_state! };
   const enriched = row.details ? applyInspectionEnrichment(source, row.details, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : undefined;
-  // Strip legacy persisted links and verification metadata on every public read, including old projections.
-  const detail = enriched ? { ...enriched, inspection: enriched.inspection
-    ? { ...enriched.inspection, reportUrl: null, reportAccess: { status: 'unknown' as const, url: null, checkedAt: null, expiresAt: null } } : null } : undefined;
+  // Reports are paged only on the separate inspection endpoint, including legacy/enriched projections.
+  const detail = enriched ? { ...enriched, inspection:null } : undefined;
   const report = detail ? projectSourceReport(source, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : null;
+  const parsedSummary=PublicInspectionSummarySchema.safeParse(row.inspection_summary);
+  const summaryStatus=row.inspection_status??(report?.hasReport?'unavailable':'unknown');
+  const inspectionSummary=detail?(parsedSummary.success&&summaryStatus==='available'?{...parsedSummary.data,status:summaryStatus}:emptyInspectionSummary(summaryStatus)):undefined;
   const original = (field: keyof ExternalProjection['details']['original']) => {
     const value = detail?.original[field];
     return value ? publicText(locale, value) : null;
@@ -76,7 +80,8 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     ...publicExtras(row),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
     content: { title, description }, images, mediaTotal:available.length, ...(row.configuration_total!==undefined?{configurationTotal:row.configuration_total}:{}),
-    ...(report ? { report: { hasReport: report.hasReport } } : {}),
+    ...(report ? { report: { hasReport: inspectionSummary?.status==='available'||inspectionSummary?.status!=='no_report'&&report.hasReport } } : {}),
+    ...(inspectionSummary?{inspectionSummary}:{}),
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: iso(row.source_updated_at),
     fetchedAt: row.fetched_at.toISOString(), publishedAt: row.published_at.toISOString(),
     external: {
@@ -213,9 +218,12 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
 }
 
 export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null) {
-  const result = await tx.query<CatalogRow>(`SELECT ${columns},c.details,l.provider,l.external_id,l.source_revision::text,l.source_hash,l.source_data,l.upstream_state,
-    i.binding AS inspection_binding,i.content AS inspection_content
-    ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id ${visible} AND c.listing_id=$2`, [locale, id]);
+  const result = await tx.query<CatalogRow>(`SELECT ${columns},jsonb_set(c.details,'{inspection}','null'::jsonb) AS details,l.provider,l.external_id,l.source_revision::text,l.source_hash,
+    CASE WHEN l.source_data IS NULL THEN NULL ELSE jsonb_build_object('platformId',l.source_data->'platformId','externalId',l.source_data->'externalId','disputes',coalesce(l.source_data->'disputes','[]'::jsonb),'inspection',jsonb_build_object('hasReport',l.source_data->'inspection'->'hasReport','reportUrl',l.source_data->'inspection'->'reportUrl')) END AS source_data,l.upstream_state,
+    i.binding AS inspection_binding,jsonb_set(i.content,'{inspection}','null'::jsonb) AS inspection_content,ev.status AS inspection_status,ev.overview->'summary' AS inspection_summary
+    ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
+    LEFT JOIN external_vehicle_evidence_sets ev ON ev.listing_id=l.id AND ev.locale=$1 AND ev.kind='inspection'
+    ${visible} AND c.listing_id=$2`, [locale, id]);
   return ((await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle | undefined) ?? null;
 }
 // A transactionally maintained read model carries only visibility and filter scalars.

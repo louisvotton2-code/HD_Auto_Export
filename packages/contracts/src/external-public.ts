@@ -90,7 +90,7 @@ export const ExternalReportAccessSchema = z.discriminatedUnion('status', [
 ]).refine(value => value.status === 'unknown' || Date.parse(value.expiresAt) > Date.parse(value.checkedAt),
   'Report evidence must expire after it was checked.');
 export type ExternalReportAccess = z.infer<typeof ExternalReportAccessSchema>;
-/** A presence flag invites contact with sales; false is absence of evidence, not evidence of absence. */
+/** Legacy source-presence hint. Detail/report UIs use inspectionSummary; false alone cannot prove absence. */
 export const PublicReportSchema = z.strictObject({ hasReport: z.boolean() });
 export type PublicReport = z.infer<typeof PublicReportSchema>;
 export const PublicReportAccessSchema = z.strictObject({ status: z.literal('unknown'), url: z.null(), checkedAt: z.null(), expiresAt: z.null() });

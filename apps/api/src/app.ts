@@ -215,7 +215,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,ve.export_status,ev.source_revision FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
@@ -284,8 +284,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
   app.get('/api/v1/admin/vehicles/:id/translation-bundle',{schema:adminSchema('getVehicleTranslationBundle',{params:IdParams,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.getTranslationBundle((request.params as {id:string}).id,actor(request)),request));
   const evidence=new VehicleEvidence(db,inventory);
-  app.get('/api/v1/vehicles/:id/inspection',{schema:{operationId:'getVehicleInspection',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleInspectionResponseSchema,...errorResponses}}},
-    async request=>response(pub.PublicVehicleInspectionResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'inspection',request.query as pub.PublicVehicleSegmentQuery)),request));
+  app.get('/api/v1/vehicles/:id/inspection',{schema:{operationId:'getVehicleInspection',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleInspectionQuerySchema,response:{200:pub.PublicVehicleInspectionResponseSchema,...errorResponses}}},
+    async request=>response(pub.PublicVehicleInspectionResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'inspection',request.query as pub.PublicVehicleInspectionQuery)),request));
   app.get('/api/v1/vehicles/:id/price-history',{schema:{operationId:'getVehiclePriceHistory',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehiclePriceHistoryResponseSchema,...errorResponses}}},
     async request=>response(pub.PublicVehiclePriceHistoryResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'price-history',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/vehicles/:id/gallery',{schema:{operationId:'getVehicleGallery',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleGalleryResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleGalleryResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'gallery',request.query as pub.PublicVehicleSegmentQuery)),request));

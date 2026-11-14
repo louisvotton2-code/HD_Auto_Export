@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import { test } from 'node:test';
+import { mock,test } from 'node:test';
 import { PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -12,9 +12,13 @@ import { applyFullSource, bindAlias, ensureMember } from '../src/external/full-s
 import { configureFullSync } from '../src/external/full-sync/engine.js';
 import type { Source } from '../src/external/full-sync/types.js';
 import type { SourceDocument } from '../src/external/sources/index.js';
+import {persistSourceDocument} from '../src/external/sources/index.js';
+import {reprojectStoredInspections} from '../src/external/inspection-reproject.js';
+import {VehicleEvidence} from '../src/vehicles/evidence.js';
 
 // Real projection/canonical SQL against this suite's random database only. No worker client, HTTP or provider calls.
 test('full-source apply preserves staff edits and promotes an active canonical backup without duplicate listings',async t=>{
+  const network=mock.method(globalThis,'fetch',async()=>{throw new Error('Stored source projections must not request suppliers or translations');});
   const address=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
   if(!['postgres:','postgresql:'].includes(address.protocol)||address.hostname!=='127.0.0.1'||address.pathname!=='/postgres'||address.search||address.hash)
     throw new Error('Projection tests require local maintenance PostgreSQL without options.');
@@ -117,7 +121,36 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       assert.deepEqual((await store.getListing(`ext-${backupId}`,'en')).overrides,backupOverrides);
       await assertPublic(backupId);
     });
+    await t.test('bounded stored-report reprojection resumes, is idempotent and cannot revive a withdrawn source or change staff facts',async()=>{
+      const report:SourceDocument={identity:{provider:'chinacarapi',source:'dongchedi',externalId:sourceIds.dongchedi},kind:'report',locale:'en',observedAt:'2026-11-14T01:00:00.000Z',sourceUpdatedAt:null,
+       payload:{id:sourceIds.dongchedi,hasReport:false,counts:[{category:'Accident items',checked:40,faults:0}],checks:[{category:'Major accident check',groups:[{name:'Body',items:[{part:'Door',result:'Original',ok:true}]}]}],reportUrl:'https://private.invalid',seller:{phone:'PRIVATE_MARKER'}}};
+      await database.transaction(tx=>persistSourceDocument(tx,report));
+      const factsBefore=(await database.pool.query('SELECT id,source_revision,source_hash,upstream_state FROM external_listings ORDER BY id')).rows;
+      const workerBefore=(await database.pool.query('SELECT * FROM external_full_sync')).rows;
+      const mediaBefore=(await database.pool.query('SELECT * FROM external_media ORDER BY id')).rows;
+      await database.pool.query("UPDATE external_vehicle_evidence_sets SET overview='{}',source_revision=repeat('0',64) WHERE kind='inspection'");
+      const first=await reprojectStoredInspections(database,{limit:1});assert.equal(first.scanned,1);assert.ok(first.nextCursor);
+      const second=await reprojectStoredInspections(database,{limit:1,after:first.nextCursor!});assert.equal(second.scanned,1);
+      assert.equal((await reprojectStoredInspections(database,{limit:1,after:second.nextCursor!})).scanned,0);
+      const publicVersion=(await database.pool.query('SELECT epoch,revision FROM public_catalog_state WHERE id=1')).rows[0];
+      assert.equal((await reprojectStoredInspections(database,{limit:100})).changed,0);
+      assert.deepEqual((await database.pool.query('SELECT epoch,revision FROM public_catalog_state WHERE id=1')).rows[0],publicVersion);
+      assert.deepEqual((await database.pool.query('SELECT id,source_revision,source_hash,upstream_state FROM external_listings ORDER BY id')).rows,factsBefore);
+      assert.deepEqual((await database.pool.query('SELECT * FROM external_full_sync')).rows,workerBefore);assert.deepEqual((await database.pool.query('SELECT * FROM external_media ORDER BY id')).rows,mediaBefore);
+      assert.deepEqual((await store.getListing(`ext-${backupId}`,'en')).overrides,backupOverrides);
+      const evidence=new VehicleEvidence(database,inventory);
+      for(const locale of locales){
+       const detail=await inventory.getPublic(`ext-${backupId}`,locale,'localized');assert.equal(detail.inspectionSummary!.status,'available');assert.equal(detail.inspectionSummary!.faults,0);assert.equal(detail.report!.hasReport,true);assert.equal(detail.external!.detail!.inspection,null);
+       const result=await evidence.read(`ext-${backupId}`,'inspection',{locale,limit:1,order:'faults_first'});assert.equal(result.total,1);assert.equal(result.summary!.faults,0);assert.doesNotMatch(JSON.stringify(result),/PRIVATE_MARKER|private\.invalid/);
+       await assert.rejects(evidence.read(`ext-${primaryId}`,'inspection',{locale,limit:1,order:'source'}),(error:any)=>error.status===404);
+      }
+      const current=await store.getListing(`ext-${backupId}`,'en');
+      await store.saveOverrides(`ext-${backupId}`,{version:current.version,overrides:{...current.overrides,hidden:true}},randomUUID(),actor);
+      await assert.rejects(evidence.read(`ext-${backupId}`,'inspection',{locale:'en',limit:1,order:'source'}),(error:any)=>error.status===404);
+      assert.equal(network.mock.callCount(),0);
+    });
   } finally {
+    network.mock.restore();
     await db?.close();try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}" WITH (FORCE)`);}finally{await maintenance.close();}
   }
 });
