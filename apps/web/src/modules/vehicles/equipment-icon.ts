@@ -17,7 +17,7 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   'side-airbag': ['sideAirbags', 'Side airbags', '侧安全气囊', '侧气囊', 'Боковые подушки безопасности'],
   'parking-sensors-rear': ['rearParkingSensors', 'parkingSensors', 'parkingRadar', 'Rear parking sensors', 'Parking sensors', '后驻车雷达', '后倒车雷达', '倒车雷达', 'Задние парктроники', 'Парктроники', 'Датчики парковки'],
   'parking-sensors-front': ['frontParkingSensors', 'Front parking sensors', '前驻车雷达', '前泊车雷达', 'Передние парктроники'],
-  'tire-pressure': ['tpms', 'tirePressureMonitoring', 'tyrePressureMonitoring', 'alloyWheels', 'Tire pressure monitoring (TPMS)', 'Tyre pressure monitoring', 'Alloy wheels', '胎压监测', '胎压显示', '铝合金轮毂', 'Контроль давления в шинах', 'Система контроля давления в шинах', 'Легкосплавные диски'],
+  'tire-pressure': ['tpms', 'tirePressureMonitoring', 'tyrePressureMonitoring', 'Tire pressure monitoring (TPMS)', 'Tyre pressure monitoring', '胎压监测', '胎压显示', 'Контроль давления в шинах', 'Система контроля давления в шинах'],
   'stability-control': ['esc', 'esp', 'electronicStabilityControl', 'Electronic stability control (ESC)', '车身稳定控制', '车身稳定系统', 'Электронная система стабилизации', 'Система курсовой устойчивости'],
   camera: ['rearViewCamera', 'reversingCamera', 'surroundViewCamera', 'camera360', 'Rear-view camera', 'Reversing camera', 'Surround-view camera', '倒车影像', '后视摄像头', '全景影像', '360度全景影像', 'Камера заднего вида', 'Камеры кругового обзора', 'Круговой обзор'],
   'blind-spot': ['blindSpotMonitoring', 'blindSpotDetection', 'Blind spot monitoring', '盲点监测', '并线辅助', 'Мониторинг слепых зон', 'Контроль слепых зон', 'Контроль мёртвых зон'],
@@ -27,7 +27,7 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   navigation: ['navigation', 'gps', 'navigationSystem', 'Navigation', '导航', '卫星导航', 'GPS导航', 'Навигация', 'Навигационная система'],
   usb: ['usbPort', 'usb', 'USB port', 'USB接口', 'USB端口', 'USB-порт', 'Разъём USB'],
   bluetooth: ['bluetooth', 'Bluetooth', '蓝牙', '蓝牙连接', 'Блютус'],
-  'keyless-entry': ['keylessEntry', 'hiPass', 'Hi-Pass toll system', 'Keyless entry', '无钥匙进入', 'ETC', '自动收费系统', 'Бесключевой доступ', 'Система бесключевого доступа'],
+  'keyless-entry': ['keylessEntry', 'Keyless entry', '无钥匙进入', 'Бесключевой доступ', 'Система бесключевого доступа'],
   'smart-key': ['smartKey', 'keylessStart', 'Smart key', '智能钥匙', '无钥匙启动', '一键启动', 'Смарт-ключ', 'Интеллектуальный ключ', 'Запуск кнопкой'],
   'door-lock': ['powerDoorLocks', 'centralLocking', 'Power door locks', '中控门锁', '电动门锁', 'Центральный замок'],
   window: ['powerWindows', 'electricWindows', 'Power windows', '电动车窗', 'Электростеклоподъёмники', 'Электрические стеклоподъёмники'],
@@ -36,6 +36,8 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   'mirror-dimming': ['autoDimmingMirror', 'ecm', 'Auto-dimming mirror (ECM)', '自动防眩目后视镜', 'Автозатемнение зеркала', 'Автоматическое затемнение зеркала'],
   'rain-sensor': ['rainSensor', 'Rain sensor', '雨量感应', '雨量传感器', '感应雨刷', 'Датчик дождя'],
   'automatic-headlights': ['automaticHeadlights', 'lightSensor', 'Automatic headlights', '自动大灯', '自动头灯', '自动灯光', 'Датчик света', 'Автоматические фары'],
+  // The current glyph set has no wheel or toll-system icon; keep these known keys neutral.
+  neutral: ['alloyWheels', 'Alloy wheels', '铝合金轮毂', 'Легкосплавные диски', 'hiPass', 'Hi-Pass toll system', 'ETC', '自动收费系统'],
 };
 
 function normalized(value: string) {

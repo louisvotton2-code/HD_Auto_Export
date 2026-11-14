@@ -41,6 +41,16 @@ describe('item equipment icon semantics', () => {
     expect(equipmentIconName('Система контроля давления в шинах (TPMS)')).toBe('tire-pressure');
   });
 
+  it('keeps alloy wheels and toll systems neutral without implying TPMS or keyless entry', () => {
+    for (const label of ['Alloy wheels', '铝合金轮毂', 'Легкосплавные диски', 'Hi-Pass toll system', 'ETC', '自动收费系统']) {
+      expect(equipmentIconName(label)).toBe('neutral');
+    }
+    expect(equipmentIconName('Tire pressure monitoring (TPMS)', 'supplier:alloyWheels')).toBe('neutral');
+    expect(equipmentIconName('Keyless entry', 'supplier:hiPass')).toBe('neutral');
+    expect(equipmentIconName('胎压监测', 'supplier:tpms')).toBe('tire-pressure');
+    expect(equipmentIconName('无钥匙进入', 'supplier:keylessEntry')).toBe('keyless-entry');
+  });
+
   it('renders the same item geometry for structured and legacy configuration entries, retaining false and zero', () => {
     const text = (value: string) => ({
       status: 'ready' as const, text: value, requestedLocale: 'zh' as const,
