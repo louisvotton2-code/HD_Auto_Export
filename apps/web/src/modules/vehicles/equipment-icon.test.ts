@@ -1,9 +1,10 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { makePublicExternalVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
-import type { DisplayText, PublicVehicle, PublicVehicleInline } from '@hd/contracts/public';
+import { CONFIGURATION_SEMANTIC_FIXTURES, makePublicExternalVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { CONFIGURATION_SEMANTIC_KEYS, type ConfigurationSemanticKey, type DisplayText, type PublicVehicle, type PublicVehicleInline } from '@hd/contracts/public';
 import { equipmentIconName } from './equipment-icon';
+import { equipmentIconSvg, type EquipmentIconName } from './equipment-icon-svg';
 import { PublicVehicleConfiguration } from './ui/public-vehicle-configuration';
 import { VehicleConfiguration } from './ui/vehicle-configuration';
 import { VehicleEquipment } from './ui/vehicle-equipment';
@@ -48,12 +49,16 @@ describe('item equipment icon semantics', () => {
     for (const label of labels) expect(equipmentIconName(label)).toBe(expected);
   });
 
-  it('uses a known stable field ID before a fallback label and never guesses from arbitrary IDs', () => {
+  it('uses explicit semantics before a fallback label and never guesses from source identities', () => {
     for (const label of ['Other feature', '其他配置', 'Другая опция']) {
-      expect(equipmentIconName(label, 'supplier:frontSeatHeating')).toBe('seat-heating');
+      expect(equipmentIconName(label, 'supplier:frontSeatHeating', 'frontSeatHeating')).toBe('seat-heating');
+      expect(equipmentIconName(label, 'supplier:frontSeatHeating')).toBe('neutral');
     }
     expect(equipmentIconName('Unmapped calibration feature', 'f4571316-18ed-4aba-9f98-87df8400abcd')).toBe('neutral');
     expect(equipmentIconName(null)).toBe('neutral');
+    expect(equipmentIconName(null, 'frontSeatHeating')).toBe('seat-heating');
+    expect(equipmentIconName(null, 'opaque:frontSeatHeating')).toBe('neutral');
+    expect(equipmentIconName(null, 'frontSeatHeating', null)).toBe('neutral');
   });
 
   it('handles feature qualifiers without switching to a group icon', () => {
@@ -71,29 +76,73 @@ describe('item equipment icon semantics', () => {
     for (const label of ['Hi-Pass toll system', 'ETC', '自动收费系统']) {
       expect(equipmentIconName(label)).toBe('neutral');
     }
-    expect(equipmentIconName('Tire pressure monitoring (TPMS)', 'supplier:alloyWheels')).toBe('wheel');
-    expect(equipmentIconName('Keyless entry', 'supplier:hiPass')).toBe('neutral');
+    expect(equipmentIconName('Tire pressure monitoring (TPMS)', 'supplier:alloyWheels', 'alloyWheels')).toBe('wheel');
+    expect(equipmentIconName('Keyless entry', 'supplier:hiPass', 'hiPass')).toBe('neutral');
     expect(equipmentIconName('胎压监测', 'supplier:tpms')).toBe('tire-pressure');
     expect(equipmentIconName('无钥匙进入', 'supplier:keylessEntry')).toBe('keyless-entry');
   });
 
   it.each([
-    ['displacementCc', 'engine'], ['engineKw', 'engine'], ['motorKw', 'motor'],
+    ['displacementCc', 'engine'], ['engineKw', 'engine'], ['engineHp', 'engine'], ['motorKw', 'motor'], ['motorHp', 'motor'],
     ['batteryKwh', 'battery'], ['driveType', 'drivetrain'], ['lengthMm', 'dimensions'],
     ['widthMm', 'dimensions'], ['heightMm', 'dimensions'], ['wheelbaseMm', 'dimensions'],
-    ['doors', 'door'], ['alloyWheels', 'wheel'], ['airbags', 'driver-airbag'], ['abs', 'abs'], ['tractionControl', 'stability-control'],
+    ['doors', 'door'], ['alloyWheels', 'wheel'], ['airbags', 'driver-airbag'], ['abs', 'abs'], ['tractionControl', 'stability-control'], ['parkingCamera', 'camera'],
   ])('uses authoritative %s independently of language, fallback name or opaque id', (semanticKey, expected) => {
     for (const label of ['其他配置', 'Other feature', 'Другая опция', 'Tire pressure monitoring (TPMS)']) {
       expect(equipmentIconName(label, 'supplier:frontSeatHeating', semanticKey)).toBe(expected);
     }
   });
 
-  it('does not infer a known glyph when the inline semantic key is null or unknown', () => {
-    for (const semanticKey of [null, 'futureSupplierFeature', 'constructor', 'toString']) {
+  it('does not infer a known glyph when a non-null inline semantic key is unknown', () => {
+    for (const semanticKey of ['futureSupplierFeature', 'constructor', 'toString']) {
       expect(equipmentIconName('座椅加热', 'frontSeatHeating', semanticKey)).toBe('neutral');
     }
-    // A legacy DTO without this field retains the previous three-language compatibility.
-    expect(equipmentIconName('座椅加热', 'opaque-id', undefined)).toBe('seat-heating');
+  });
+
+  it.each([
+    ['seat-heating', '座椅加热', 'Heated seats', 'Подогрев сидений'],
+    ['seat-ventilation', '座椅通风', 'Ventilated seats', 'Вентиляция сидений'],
+    ['tire-pressure', '胎压监测', 'Tire pressure monitoring (TPMS)', 'Контроль давления в шинах'],
+    ['navigation', '导航', 'Navigation', 'Навигация'],
+    ['engine', '发动机马力', 'Engine horsepower', 'Мощность двигателя (л.с.)'],
+    ['motor', '电机马力', 'Motor horsepower', 'Мощность электромотора (л.с.)'],
+    ['camera', '倒车影像', 'Parking camera', 'Камера заднего вида'],
+  ])('uses vetted %s labels when a stored projection has no semantic key', (expected, ...labels) => {
+    for (const label of labels) for (const key of [null, undefined]) {
+      expect(equipmentIconName(label, 'opaque-id', key)).toBe(expected);
+    }
+    expect(equipmentIconName('Unmapped calibration feature', 'supplier:frontSeatHeating', null)).toBe('neutral');
+    expect(equipmentIconName('Unmapped calibration feature', 'opaque:frontSeatHeating', undefined)).toBe('neutral');
+  });
+
+  it.each([
+    'No heated seats', 'May have navigation', 'Heated seats not confirmed',
+    '不带座椅加热', '可能有胎压监测', '导航待确认',
+    'Без подогрева сидений', 'Возможно есть подогрев сидений', 'Навигация не подтверждена',
+  ])('keeps a negative/uncertain fallback label neutral: %s', label => {
+    for (const key of [null, undefined]) {
+      expect(equipmentIconName(label, 'frontSeatHeating', key)).toBe('neutral');
+      expect(equipmentIconName(label, 'supplier:frontSeatHeating', key)).toBe('neutral');
+    }
+  });
+
+  it('consumes the shared BE semantic examples consistently across all three labels', () => {
+    const expected: Partial<Record<ConfigurationSemanticKey, EquipmentIconName>> = {
+      frontSeatHeating: 'seat-heating', rearSeatHeating: 'seat-heating',
+      seatVentilation: 'seat-ventilation', frontSeatVentilation: 'seat-ventilation',
+      driverSeatVentilation: 'seat-ventilation', passengerSeatVentilation: 'seat-ventilation',
+      seatMemory: 'seat-memory', navigation: 'navigation', tpms: 'tire-pressure',
+      parkingCamera: 'camera', engineHp: 'engine', motorHp: 'motor', motorKw: 'motor', adaptiveCruiseControl: 'cruise-control',
+    };
+    for (const fixture of CONFIGURATION_SEMANTIC_FIXTURES) {
+      const icon = fixture.semanticKey === null ? 'neutral' : expected[fixture.semanticKey];
+      expect(icon).toBeDefined();
+      for (const label of fixture.labels) expect(equipmentIconName(label, fixture.id, fixture.semanticKey)).toBe(icon);
+    }
+    // Every producer key must point to renderable local geometry, including deliberately neutral parameters.
+    for (const key of CONFIGURATION_SEMANTIC_KEYS) {
+      expect(Object.hasOwn(equipmentIconSvg, equipmentIconName('Unknown label', 'opaque-id', key))).toBe(true);
+    }
   });
 
   it('renders the same item geometry for structured and legacy configuration entries, retaining false and zero', () => {

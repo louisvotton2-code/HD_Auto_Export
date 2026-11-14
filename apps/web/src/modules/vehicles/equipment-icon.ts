@@ -1,3 +1,4 @@
+import { CONFIGURATION_SEMANTIC_ALIASES, CONFIGURATION_SEMANTIC_KEYS, type ConfigurationSemanticKey } from '@hd/contracts/public';
 import type { EquipmentIconName } from './equipment-icon-svg';
 
 /** Stable field keys and three-language labels resolve to the same decorative item glyph. */
@@ -47,37 +48,51 @@ const aliases: Partial<Record<EquipmentIconName, readonly string[]>> = {
   neutral: ['hiPass', 'Hi-Pass toll system', 'ETC', '自动收费系统'],
 };
 
-/** Only explicit, stable API semantics select an icon; a new/unknown key stays neutral. */
-const semanticIcons: Readonly<Record<string, EquipmentIconName>> = {
-  engine: 'engine', displacementCc: 'engine', engineCc: 'engine', engineKw: 'engine', enginePowerKw: 'engine', cylinders: 'engine',
-  motorKw: 'motor', motorPowerKw: 'motor', motorTorqueNm: 'motor', motorLayout: 'motor', motorType: 'motor', motors: 'motor',
+/** Exhaustive shared vocabulary. Parameters without an accurate existing glyph are deliberately neutral. */
+const semanticIcons: Readonly<Record<ConfigurationSemanticKey, EquipmentIconName>> = {
+  engine: 'engine', displacementCc: 'engine', engineKw: 'engine', engineHp: 'engine', cylinders: 'engine',
+  motorKw: 'motor', motorHp: 'motor', motorTorqueNm: 'motor', motorLayout: 'motor', motorType: 'motor', motors: 'motor',
+  powerKw: 'neutral', powerHp: 'neutral', torqueNm: 'neutral', systemKw: 'neutral',
   batteryKwh: 'battery', batteryType: 'battery', batteryWarranty: 'battery',
-  driveType: 'drivetrain', drivetrain: 'drivetrain',
+  rangeKm: 'neutral', fastChargeHours: 'neutral', slowChargeHours: 'neutral', consumptionKwh100km: 'neutral',
+  driveType: 'drivetrain', transmissionType: 'neutral', gears: 'neutral',
   lengthMm: 'dimensions', widthMm: 'dimensions', heightMm: 'dimensions', wheelbaseMm: 'dimensions',
-  doors: 'door', doorCount: 'door',
-  alloyWheels: 'wheel', wheelSize: 'wheel', rimSize: 'wheel', tyreSize: 'wheel', tireSize: 'wheel',
+  doors: 'door', bodyType: 'neutral',
+  curbWeightKg: 'neutral', grossWeightKg: 'neutral', fuelTankL: 'neutral', trunkL: 'neutral',
+  alloyWheels: 'wheel', wheelSize: 'wheel', tireSize: 'wheel', frontTireSize: 'wheel', rearTireSize: 'wheel',
   seats: 'seat', seatMaterial: 'seat', leatherSeats: 'seat', powerDriverSeat: 'seat', powerPassengerSeat: 'seat',
-  seatHeating: 'seat-heating', frontSeatHeating: 'seat-heating', rearSeatHeating: 'seat-heating', heatedFrontSeats: 'seat-heating', heatedRearSeats: 'seat-heating',
+  seatHeating: 'seat-heating', frontSeatHeating: 'seat-heating', rearSeatHeating: 'seat-heating',
   seatVentilation: 'seat-ventilation', frontSeatVentilation: 'seat-ventilation', driverSeatVentilation: 'seat-ventilation', passengerSeatVentilation: 'seat-ventilation',
   seatMemory: 'seat-memory', driverSeatMemory: 'seat-memory',
-  airConditioning: 'climate', climateControl: 'climate', automaticAirConditioning: 'climate',
-  steeringWheelControls: 'steering-controls', multiFunctionSteeringWheel: 'steering-controls',
-  heatedSteeringWheel: 'steering-wheel', steeringWheelHeating: 'steering-wheel', paddleShifters: 'steering-wheel', powerSteering: 'steering-wheel',
+  airConditioning: 'climate', climateControl: 'climate', sunroof: 'neutral',
+  steeringWheelControls: 'steering-controls', powerAdjustableSteeringWheel: 'steering-controls',
+  heatedSteeringWheel: 'steering-wheel', paddleShifters: 'steering-wheel', powerSteering: 'steering-wheel',
   cruiseControl: 'cruise-control', adaptiveCruiseControl: 'cruise-control', tractionControl: 'stability-control',
-  abs: 'abs', antiLockBrakingSystem: 'abs',
+  abs: 'abs',
   airbags: 'driver-airbag', driverAirbag: 'driver-airbag', frontAirbags: 'driver-airbag', passengerAirbag: 'passenger-airbag', curtainAirbags: 'curtain-airbag', sideAirbags: 'side-airbag',
-  rearParkingSensors: 'parking-sensors-rear', parkingSensors: 'parking-sensors-rear', parkingRadar: 'parking-sensors-rear', frontParkingSensors: 'parking-sensors-front',
-  tpms: 'tire-pressure', tirePressureMonitoring: 'tire-pressure', tyrePressureMonitoring: 'tire-pressure',
-  esc: 'stability-control', esp: 'stability-control', electronicStabilityControl: 'stability-control',
-  rearViewCamera: 'camera', reversingCamera: 'camera', surroundViewCamera: 'camera', camera360: 'camera',
-  blindSpotMonitoring: 'blind-spot', blindSpotDetection: 'blind-spot', laneDepartureWarning: 'lane-departure', laneKeepingAssist: 'lane-departure',
-  electronicParkingBrake: 'parking-brake', epb: 'parking-brake', frontAvMonitor: 'monitor', displayScreen: 'monitor', touchscreen: 'monitor',
-  navigation: 'navigation', gps: 'navigation', navigationSystem: 'navigation', usbPort: 'usb', usb: 'usb', bluetooth: 'bluetooth',
-  keylessEntry: 'keyless-entry', smartKey: 'smart-key', keylessStart: 'smart-key', powerDoorLocks: 'door-lock', centralLocking: 'door-lock',
-  powerWindows: 'window', electricWindows: 'window', powerFoldingMirrors: 'mirror-folding', foldingMirrors: 'mirror-folding',
-  hidHeadlights: 'headlight-hid', xenonHeadlights: 'headlight-hid', headlights: 'headlight-hid', autoDimmingMirror: 'mirror-dimming', ecm: 'mirror-dimming',
-  rainSensor: 'rain-sensor', automaticHeadlights: 'automatic-headlights', lightSensor: 'automatic-headlights', hiPass: 'neutral',
+  rearParkingSensors: 'parking-sensors-rear', parkingSensors: 'parking-sensors-rear', frontParkingSensors: 'parking-sensors-front',
+  tpms: 'tire-pressure', esc: 'stability-control',
+  parkingCamera: 'camera', surroundViewCamera: 'camera',
+  blindSpotMonitoring: 'blind-spot', laneDepartureWarning: 'lane-departure', laneKeepingAssist: 'lane-departure',
+  electronicParkingBrake: 'parking-brake', displayScreen: 'monitor', touchscreen: 'monitor',
+  navigation: 'navigation', usbPort: 'usb', bluetooth: 'bluetooth',
+  keylessEntry: 'keyless-entry', smartKey: 'smart-key', keylessStart: 'smart-key', centralLocking: 'door-lock',
+  powerWindows: 'window', powerFoldingMirrors: 'mirror-folding',
+  hidHeadlights: 'headlight-hid', headlights: 'headlight-hid', autoDimmingMirror: 'mirror-dimming',
+  rainSensor: 'rain-sensor', automaticHeadlights: 'automatic-headlights', hiPass: 'neutral',
+  energyType: 'neutral', emissionStandard: 'neutral', topSpeedKmh: 'neutral', acceleration0to100S: 'neutral',
+  fuelConsumptionL100km: 'neutral', launchDate: 'neutral', warranty: 'neutral',
 };
+
+// Map lookup avoids treating inherited names such as constructor/toString as glyphs.
+const semanticIndex = new Map<string, EquipmentIconName>();
+for (const key of CONFIGURATION_SEMANTIC_KEYS) {
+  const glyph = semanticIcons[key];
+  semanticIndex.set(key, glyph);
+  for (const alias of CONFIGURATION_SEMANTIC_ALIASES[key]) {
+    if (/^[a-z][A-Za-z0-9]*$/u.test(alias)) semanticIndex.set(alias, glyph);
+  }
+}
 
 function normalized(value: string) {
   return value.normalize('NFKC').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]/gu, '');
@@ -87,37 +102,20 @@ const aliasIndex = new Map<string, EquipmentIconName>();
 for (const [icon, labels] of Object.entries(aliases)) {
   for (const label of labels) aliasIndex.set(normalized(label), icon as EquipmentIconName);
 }
+// Producer and consumer share the reviewed vocabulary; keep older qualified labels as compatibility only.
+for (const key of CONFIGURATION_SEMANTIC_KEYS) {
+  for (const label of [key, ...CONFIGURATION_SEMANTIC_ALIASES[key]]) aliasIndex.set(normalized(label), semanticIcons[key]);
+}
 
-const patterns: readonly [EquipmentIconName, RegExp][] = [
-  ['seat-ventilation', /(?:seat.*ventilat|ventilat.*seat|座椅.*通风|通风.*座椅|вентиляци.*сиден|вентилируем.*сиден|сиден.*вентиляци)/iu],
-  ['seat-heating', /(?:seat.*heat|heat.*seat|座椅.*加热|加热.*座椅|(?:подогрев|обогрев).*сиден|сиден.*(?:подогрев|обогрев))/iu],
-  ['seat-memory', /(?:seat.*memory|memory.*seat|座椅.*记忆|память.*сиден)/iu],
-  ['steering-wheel', /(?:steering.*(?:heat|paddle)|方向盘.*加热|подогрев.*рул)/iu],
-  ['parking-sensors-front', /(?:front.*(?:parking|radar)|前.*(?:驻车|泊车|雷达)|передн.*парктроник)/iu],
-  ['parking-sensors-rear', /(?:parking.*(?:sensor|radar|distance)|rear.*radar|倒车雷达|驻车雷达|парктроник|датчик.*парков|парковочн.*(?:датчик|радар))/iu],
-  ['tire-pressure', /(?:t[iy]re.*pressure|\btpms\b|胎压|давлени.*шин)/iu],
-  ['camera', /(?:rear(?:.view)?.*camera|revers.*camera|surround.*view|倒车.*(?:影像|摄像)|全景影像|камера.*заднего|кругово.*обзор)/iu],
-  ['navigation', /(?:\bnavigation\b|\bgps\b|导航|навигац)/iu],
-  ['climate', /(?:air.condition|climate.control|空调|климат.контрол|кондиционер)/iu],
-  ['cruise-control', /(?:cruise.control|巡航|круиз.контрол)/iu],
-  ['blind-spot', /(?:blind.spot|盲点|并线辅助|слепых.зон|мёртвых.зон)/iu],
-  ['lane-departure', /(?:lane.*(?:departure|keeping)|车道.*(?:偏离|保持)|полос.*движен|удержан.*полос)/iu],
-  ['seat', /(?:leather.*seat|power.*seat|seat.*adjust|真皮.*座椅|座椅.*调节|кожан.*(?:сиден|салон)|электро.*сиден)/iu],
-  ['bluetooth', /(?:bluetooth|蓝牙|блютус)/iu],
-  ['usb', /(?:\busb\b)/iu],
-  ['rain-sensor', /(?:rain.sensor|雨量|感应雨刷|датчик.дожд)/iu],
-];
-
-/** New projections are authoritative, including null/unknown semantics. Old DTOs keep label compatibility. */
+/** A non-null key is authoritative. An absent key may use verified labels, never an opaque identity. */
 export function equipmentIconName(label: string | null | undefined, fieldId?: string, semanticKey?: string | null): EquipmentIconName {
-  if (semanticKey !== undefined) {
-    return semanticKey !== null && Object.hasOwn(semanticIcons, semanticKey) ? semanticIcons[semanticKey]! : 'neutral';
+  if (semanticKey !== undefined && semanticKey !== null) {
+    return semanticIndex.get(semanticKey) ?? 'neutral';
   }
-  if (fieldId) {
-    const key = aliasIndex.get(normalized(fieldId)) ?? aliasIndex.get(normalized(fieldId.split(/[:/.]/u).at(-1) ?? ''));
-    if (key) return key;
+  if (!label?.trim()) {
+    // Old nameless fields may use a complete known stable ID. No source-prefix/hash guessing.
+    return semanticKey === undefined && fieldId ? semanticIndex.get(fieldId) ?? 'neutral' : 'neutral';
   }
-  if (!label?.trim()) return 'neutral';
-  const key = aliasIndex.get(normalized(label));
-  return key ?? patterns.find(([, pattern]) => pattern.test(label))?.[0] ?? 'neutral';
+  // Exact reviewed aliases only: negative/uncertain phrases must not regain an icon by substring.
+  return aliasIndex.get(normalized(label)) ?? 'neutral';
 }

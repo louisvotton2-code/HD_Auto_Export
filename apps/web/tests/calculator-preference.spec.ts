@@ -10,22 +10,48 @@ test.afterEach(async ({ request }) => {
   if (process.env.PUBLIC_FIXTURE_API_URL) await resetPublicFixture(request);
 });
 
-test('numeric date controls retain empty edits, leap days and a cleared impossible day', async ({ page }) => {
+test('numeric date dropdowns retain empty values, valid month choices, leap days and a cleared impossible day', async ({ page }) => {
   await page.goto('/en/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('input[type="date"],input[type="month"]')).toHaveCount(0);
+  await expect(page.locator('[data-numeric-date="manufactureDate"] select')).toHaveCount(2);
+  await expect(page.locator('[data-numeric-date="customsDate"] select')).toHaveCount(3);
+  await expect(page.locator('[data-numeric-date] input:not([type="hidden"])')).toHaveCount(0);
+  for (const name of ['manufactureDate', 'customsDate']) {
+    const monthOptions = await page.locator(`#${name}-month option:not([value=""])`).evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
+    expect(monthOptions).toEqual(Array.from({ length: 12 }, (_, index) => String(index + 1)));
+    await expect(page.locator(`#${name}-year option[value="0000"],#${name}-year option[value="0"]`)).toHaveCount(0);
+    await expect(page.locator(`#${name}-year option[value="1886"]`)).toHaveCount(1);
+  }
   await fillNumericDate(page, 'customsDate', '2024-02-29');
-  await page.locator('#customsDate-year').fill('2023');
+  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(29);
+  await page.locator('#customsDate-year').selectOption('2023');
   await expect(page.locator('#customsDate-day')).toHaveValue('');
   await expect(page.locator('#customsDate')).toHaveValue('');
   await expect(page.locator('#customsDate-date-feedback')).toContainText('Day was cleared');
-  await page.locator('#customsDate-day').fill('28');
+  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(28);
+  await expect(page.locator('#customsDate-day option[value="29"]')).toHaveCount(0);
+  await page.locator('#customsDate-day').selectOption('28');
   await expect(page.locator('#customsDate')).toHaveValue('2023-02-28');
-  await page.locator('#manufactureDate-year').fill('');
+  await fillNumericDate(page, 'customsDate', '2000-02-29');
+  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(29);
+  await page.locator('#customsDate-year').selectOption('1900');
+  await expect(page.locator('#customsDate-day')).toHaveValue('');
+  await expect(page.locator('#customsDate')).toHaveValue('');
+  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(28);
+  await fillNumericDate(page, 'customsDate', '2024-01-31');
+  await page.locator('#customsDate-month').selectOption('4');
+  await expect(page.locator('#customsDate-day')).toHaveValue('');
+  await expect(page.locator('#customsDate')).toHaveValue('');
+  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(30);
+  await expect(page.locator('#customsDate-date-feedback')).toContainText('Day was cleared');
+  await fillNumericDate(page, 'customsDate', '');
+  await expect(page.locator('#customsDate-day')).toBeDisabled();
+  await expect(page.locator('#customsDate-year')).toHaveValue('');
+  await expect(page.locator('#customsDate-month')).toHaveValue('');
+  await page.locator('#manufactureDate-year').selectOption('');
   await expect(page.locator('#manufactureDate')).toHaveValue('');
-  await page.locator('#manufactureDate-year').fill('0000');
-  await expect(page.locator('#manufactureDate')).toHaveValue('');
-  await expect(page.locator('#manufactureDate-year')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#manufactureDate-year')).toHaveValue('');
   await fillNumericDate(page, 'manufactureDate', '2021-12');
   await expect(page.locator('#manufactureDate-year')).toHaveAttribute('aria-invalid', 'false');
 });

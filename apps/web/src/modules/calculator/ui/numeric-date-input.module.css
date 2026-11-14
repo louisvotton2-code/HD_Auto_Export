@@ -4,7 +4,9 @@
 .controls[data-precision=date]{grid-template-columns:minmax(0,1.4fr) repeat(2,minmax(0,1fr))}
 .part{display:grid;gap:5px;min-width:0}
 .part>label{margin:0!important;font-size:11px!important;color:#9d9893!important;line-height:1.4}
-.group .part>input{font:inherit;min-height:42px;min-width:0;width:100%;box-sizing:border-box;border:1px solid #4a4a4a66;border-radius:8px;background:#1e1e1e;color:#f5f0eb;padding:8px 10px;text-align:center;font-variant-numeric:tabular-nums;appearance:textfield}
-.group .part>input:focus-visible{outline:2px solid #b67749;outline-offset:2px}
-.group .part>input[aria-invalid=true]{border-color:#df7771}
+.group .part>select{font:inherit;min-height:42px;min-width:0;width:100%;box-sizing:border-box;border:1px solid #4a4a4a66;border-radius:8px;background:#1e1e1e;color:#f5f0eb;padding:8px 30px 8px 8px;text-align:center;font-variant-numeric:tabular-nums;display:flex;align-items:center;font-size:14px;cursor:pointer}
+.group .part>select:focus-visible{outline:2px solid #b67749;outline-offset:2px}
+.group .part>select[aria-invalid=true]{border-color:#df7771}
 .feedback{display:block;margin-top:7px;color:#f3c98a;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+
+.group .part>select:disabled{opacity:.55;cursor:not-allowed}

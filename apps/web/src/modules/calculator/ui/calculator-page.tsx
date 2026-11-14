@@ -404,7 +404,7 @@ export function CalculatorPage({
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
         {options.type === 'month' || options.type === 'date' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
-          precision={options.type} label={label} locale={locale as Locale} onChange={value => update(key, value)}
+          precision={options.type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale as Locale} onChange={value => update(key, value)}
           onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
           <label htmlFor={key}>{label}</label>
           <div className="input-wrap">

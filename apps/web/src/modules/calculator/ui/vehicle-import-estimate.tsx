@@ -141,7 +141,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} label={label} locale={locale}
+      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale}
         onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
         <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
         <input id={id} name={key} value={input[key] ?? ''} type="text"
