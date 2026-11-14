@@ -96,11 +96,63 @@ def unpack_verified_bundle(bundle, destination):
     return manifest
 
 
-def regular_files(roots, profile='controls'):
+def require_no_incomplete_points(root):
+    """Lock must be held. Never pile a new dump on an unresolved failed job.
+
+    Do not infer that a timed-out docker exec's server-side dump has stopped.
+    Operator recovery must verify processes/FDs, clean only owned components,
+    then release that exact pin/lease and archive the failed job evidence.
+    """
+    completed_count = 0
+    for point in root.iterdir():
+        if not re.fullmatch(r'daily-[0-9TZ.]+(?:\.partial)?', point.name):
+            continue
+        if point.is_symlink() or not point.is_dir():
+            raise ValueError('Unresolved daily backup path; no new backup created')
+        proof = point/'routine.json'
+        if proof.is_symlink() or not proof.is_file():
+            raise ValueError('Incomplete daily backup requires explicit recovery')
+        try:
+            state = json.loads(proof.read_text())
+        except (ValueError, OSError) as error:
+            raise ValueError('Unreadable daily proof; no new backup created') from error
+        if state.get('name') != point.name or state.get('kind') != 'daily' or state.get('complete') is not True:
+            raise ValueError('Incomplete daily backup requires explicit recovery')
+        if state.get('format') == 2 and state.get('phase') != 'finalized':
+            raise ValueError('Backup cleanup/protection finalization requires explicit recovery')
+        if state.get('plaintextRetention') == 'temporary-for-one-time-restore':
+            # An intentionally retained verification copy must be resolved too.
+            raise ValueError('One-time restore components still require explicit cleanup')
+        completed_count += 1
+    if completed_count > 2:
+        raise ValueError('Previous retention incomplete; resolve before creating another point')
+
+
+def archive_selection(paths, root):
+    if not isinstance(paths, list):
+        raise ValueError('Invalid archive SQL result')
+    pattern = r'/private/full-sync/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.csv(?:\.gz)?'
+    selected = set()
+    for item in paths:
+        if not isinstance(item, dict) or not isinstance(item.get('path'), str) or not re.fullmatch(pattern, item['path']):
+            raise ValueError('Unexpected worker archive path')
+        path = root/Path(item['path']).name
+        if not path.exists() and item.get('state') in ('downloading', 'failed'):
+            continue
+        if not path.exists():
+            raise ValueError('Referenced archive missing')
+        selected.add(path)
+    return selected
+
+
+def regular_files(roots, profile='controls', selected=None):
     if profile not in ('controls', 'media', 'archive'):
         raise ValueError('Unknown archive profile')
     uuid = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
+    if profile == 'archive' and selected is None:
+        raise ValueError('Archive SQL selection required')
+    selected = set(selected or [])
     files = {}
     for root in roots:
         root = Path(root)
@@ -117,7 +169,9 @@ def regular_files(roots, profile='controls'):
                 else:
                     if re.fullmatch(rf'{uuid}\.csv\.partial', path.name):
                         continue
-                    valid = re.fullmatch(rf'{uuid}\.csv', path.name)
+                    valid = re.fullmatch(rf'{uuid}\.csv(?:\.gz)?', path.name)
+                    if valid and path.parent == root and path not in selected:
+                        continue
                 if path.parent != root or not valid:
                     raise ValueError('Unexpected immutable archive input')
             st = path.lstat()
@@ -144,11 +198,13 @@ def regular_files(roots, profile='controls'):
                 files[name] = dict(type='file', sha256=digest(path), bytes=st.st_size, **common)
             else:
                 raise ValueError('Archive input contains a hard link or special file')
+    if profile == 'archive' and not selected.issubset({Path('/'+name) for name in files}):
+        raise ValueError('Selected archive is missing')
     return files
 
 
-def pack_roots(output, roots, profile='controls'):
-    files = regular_files(roots, profile)
+def pack_roots(output, roots, profile='controls', selected=None):
+    files = regular_files(roots, profile, selected)
     with tarfile.open(output, 'x:gz', compresslevel=6) as archive:
         for name in sorted(files):
             archive.add('/'+name, arcname=name, recursive=False)
@@ -236,6 +292,7 @@ def main():
     backup_root.mkdir(mode=0o700, exist_ok=True)
     lock = (backup_root/'routine.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    require_no_incomplete_points(backup_root)
     point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     point = backup_root/point_name
     if point.exists() or point.with_suffix('.partial').exists():
@@ -278,11 +335,16 @@ def main():
         if not isinstance(lease, list) or not lease or not all(isinstance(x, str) for x in lease):
             raise ValueError('Reviewed media deletion lease command required')
         point.mkdir(mode=0o700)
+        state.update(phase='acquiring-protection', ownerPid=os.getpid())
+        atomic_json(point/'routine.json', state)
         call(lease+['acquire', '--reference', reference])
         pinned = False
+        archive_finished = False
         try:
             archive_control('archive-pin', reference)
             pinned = True
+            state['phase'] = 'dump-and-pack'
+            atomic_json(point/'routine.json', state)
             # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
             # comparison. The archive manifest belongs to this dump, not later SQL.
             with (point/'database.dump').open('xb') as dump:
@@ -293,15 +355,22 @@ def main():
                 subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
                     check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
             media = pack_roots(point/'media.tar.gz', media_roots, 'media')
-            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive')
+            paths = json.loads(subprocess.check_output(compose+['exec', '-T', 'postgres', 'psql', '-X',
+                '-U', 'postgres', '-d', config['database'], '-Atq', '-v', 'ON_ERROR_STOP=1', '-c',
+                "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
+            selected = archive_selection(paths, archive_root)
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected)
             controls_manifest = pack_roots(point/'controls.tar.gz', controls)
             manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
                 createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
                 files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
                        for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
             atomic_json(point/'manifest.json', manifest)
+            archive_finished = True
             # Stream the outer tar directly into encryption: do not write another
             # full plaintext container. Inputs remain until ciphertext is complete.
+            state['phase'] = 'encrypting'
+            atomic_json(point/'routine.json', state)
             cipher = point/'recovery.cms'
             encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
                 '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
@@ -325,7 +394,7 @@ def main():
                 raise ValueError('Empty encrypted point')
             with cipher.open('rb') as persisted:
                 os.fsync(persisted.fileno())
-            state.update(complete=True, archiveValidation='checksums-and-dump-directory',
+            state.update(complete=True, phase='encrypted', archiveValidation='checksums-and-dump-directory',
                 restoreValidation='not-run', offsite='pending', format=2,
                 plaintextRetention='temporary-for-one-time-restore' if args.retain_for_restore else 'remove-after-encryption',
                 ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size,
@@ -338,11 +407,14 @@ def main():
         finally:
             # Release only our lease; stale references from an interrupted job
             # require explicit recovery, never automatic expiry during a dump.
-            call(lease+['release', '--reference', reference])
+            if archive_finished:
+                call(lease+['release', '--reference', reference])
         # Retained point embeds the sources. Pins can now be released; failed
         # jobs retain their archive pin until partial recovery material is handled.
         if pinned:
             archive_control('archive-release', reference)
+        state['phase'] = 'finalized'
+        atomic_json(point/'routine.json', state)
         # Retention is narrow: failed/incomplete/unknown and release points stay.
         points = []
         for child in backup_root.iterdir():

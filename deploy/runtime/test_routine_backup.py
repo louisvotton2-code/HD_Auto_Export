@@ -65,8 +65,55 @@ class OnlineInputs(unittest.TestCase):
             root=Path(temp)/'archive';root.mkdir()
             (root/(uid+'.csv')).write_bytes(b'complete')
             (root/(uid+'.csv.partial')).write_bytes(b'incomplete')
-            self.assertEqual(len(routine.regular_files([root],'archive')),2)
+            self.assertEqual(len(routine.regular_files([root],'archive',{root/(uid+'.csv')})),2)
             self.assertEqual(len(routine.regular_files([root],'controls')),3)
+
+
+    def test_only_committed_gzip_selected_and_missing_refused(self):
+        uid='12345678-1234-1234-1234-123456789abc'
+        other='22345678-1234-1234-1234-123456789abc'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'archives';root.mkdir()
+            (root/(uid+'.csv.gz')).write_bytes(b'complete')
+            (root/(other+'.csv.gz')).write_bytes(b'in-progress')
+            self.assertEqual(routine.archive_selection([dict(path='/private/full-sync/'+other+'.csv',state='downloading')],root),set())
+            selected=routine.archive_selection([dict(path='/private/full-sync/'+uid+'.csv.gz',state='failed')],root)
+            files=routine.regular_files([root],'archive',selected)
+            self.assertIn(str(root/(uid+'.csv.gz')).lstrip('/'),files)
+            self.assertNotIn(str(root/(other+'.csv.gz')).lstrip('/'),files)
+            (root/(uid+'.csv.gz')).unlink()
+            with self.assertRaises(ValueError):routine.regular_files([root],'archive',selected)
+            (root/'unknown.csv.gz').write_bytes(b'bad')
+            with self.assertRaises(ValueError):routine.regular_files([root],'archive',set())
+
+
+class IncompleteJobs(unittest.TestCase):
+    def test_pack_encrypt_and_interrupted_jobs_block_next_copy(self):
+        import json
+        for phase in ['dump-and-pack','encrypting',None]:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);point=root/'daily-20261114T000000Z';point.mkdir()
+                (point/'database.dump').write_bytes(b'partial-owned-material')
+                if phase is not None:
+                    (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=False,phase=phase)))
+                with self.assertRaises(ValueError):routine.require_no_incomplete_points(root)
+                self.assertEqual((point/'database.dump').read_bytes(),b'partial-owned-material')
+
+    def test_unfinished_retention_blocks_another_point(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for n in range(3):
+                point=root/f'daily-20261114T00000{n}Z';point.mkdir()
+                (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=True)))
+            with self.assertRaises(ValueError):routine.require_no_incomplete_points(root)
+
+    def test_successful_point_does_not_block_next_job(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);point=root/'daily-20261114T000000Z';point.mkdir()
+            (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=True)))
+            routine.require_no_incomplete_points(root)
 
 
 class Envelope(unittest.TestCase):
