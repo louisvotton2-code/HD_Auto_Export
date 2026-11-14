@@ -10,6 +10,8 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
   workers: 1,
+  // Abort on the first failed test; a passing gate still executes the complete suite.
+  maxFailures: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: 'list',

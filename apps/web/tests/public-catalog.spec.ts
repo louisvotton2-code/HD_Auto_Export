@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Locator } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 // State-changing test controls are never sent to a real API, including the local 3320 DB.
 const fixtureBaseValue = process.env.PUBLIC_FIXTURE_API_URL;
@@ -71,6 +71,8 @@ async function expectContacts(
 ) {
   const links = contacts.locator('a[href^="https://t.me/"], a[href^="https://wa.me/"]');
   await expect(links).toHaveCount(2);
+  await expect(contacts.locator('a[href^="https://t.me/HD_Auto_CN?"]')).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://wa.me/8618215932610?"]')).toHaveCount(1);
   const drafts = [];
   for (const link of await links.all()) {
     await expect(link).toHaveAttribute('target', '_blank');
@@ -89,6 +91,16 @@ async function expectContacts(
   }
   expect(drafts[0]).toBe(drafts[1]);
   return drafts[0];
+}
+
+async function expectDetailContacts(page: Page, locale: string, stockCode: string, id: string, isDemo = true) {
+  const sidebar = page.locator(`#vehicle-contact-${id} [data-vehicle-contacts="${id}"]`);
+  const service = page.locator(`#inspection[data-inspection-service] [data-vehicle-contacts="${id}"]`);
+  await expect(sidebar).toHaveCount(1);
+  await expect(service).toHaveCount(1);
+  const draft = await expectContacts(sidebar, locale, stockCode, id, isDemo);
+  expect(await expectContacts(service, locale, stockCode, id, isDemo)).toBe(draft);
+  return draft;
 }
 
 test.describe('public HTTP catalog against an isolated fixture API', () => {
@@ -131,13 +143,13 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
       expect(await expectContacts(catalogCar, locale, 'SHOW-ALPHA', 'fixture_demo')).toBe(
         homeDraft,
       );
-      await catalogCar.locator(`a[href="/${locale}/cars/fixture_demo/"]`).first().click();
+      await catalogCar.locator('h2 a').click();
       await expect(page.locator('main h1')).toHaveText(labels[locale].title);
       await expect(page.locator('main')).not.toContainText(labels[locale].demo);
       await expect(page.locator('main')).toContainText(labels[locale].price);
       expect(
-        await expectContacts(
-          page.locator('[data-vehicle-contacts="fixture_demo"]'),
+        await expectDetailContacts(
+          page,
           locale,
           'SHOW-ALPHA',
           'fixture_demo',
@@ -275,8 +287,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await fixture(request, 'put', 'state', { futurePublished: true });
     await page.goto('/en/cars/fixture_future/');
     await expect(page.locator('main h1')).toHaveText('Newly published vehicle');
-    await expectContacts(
-      page.locator('[data-vehicle-contacts="fixture_future"]'),
+    await expectDetailContacts(
+      page,
       'en',
       'HD-FUTURE-01',
       'fixture_future',
@@ -292,8 +304,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     const sold = await page.goto('/en/cars/fixture_future/');
     expect(sold?.status()).toBe(200);
     await expect(page.locator('main')).toContainText(/sold/i);
-    const soldDraft = await expectContacts(
-      page.locator('[data-vehicle-contacts="fixture_future"]'),
+    const soldDraft = await expectDetailContacts(
+      page,
       'en',
       'HD-FUTURE-01',
       'fixture_future',
@@ -341,8 +353,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await page.goBack();
     await expect(page.locator('[data-availability="sold"]')).toBeVisible();
     await expect(page.locator('[data-availability="available"]')).toHaveCount(0);
-    const draft = await expectContacts(
-      page.locator('[data-vehicle-contacts="fixture_future"]'),
+    const draft = await expectDetailContacts(
+      page,
       'en',
       'HD-FUTURE-01',
       'fixture_future',
@@ -408,12 +420,21 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await page.goto('/ru/cars/fixture_demo/');
     await expect(page.locator('main h1')).toHaveText(labels.ru.title);
     await expect(page.locator('main')).not.toContainText(labels.ru.demo);
-    const contacts = page.locator('[data-vehicle-contacts="fixture_demo"]');
-    await expectContacts(contacts, 'ru', 'SHOW-ALPHA', 'fixture_demo');
-    await contacts.locator('a').first().focus();
-    await expect(contacts.locator('a').first()).toBeFocused();
+    for (const [name, slug, code] of [['Россия', 'russia', 'ru'], ['Казахстан', 'kazakhstan', 'kz']] as const) {
+      const countryLink = page.locator('main').getByRole('link', { name, exact: true });
+      await expect(countryLink).toHaveAttribute('href', `/ru/calculator/${slug}/`);
+      await expect(countryLink.locator('img')).toHaveAttribute('src', `/flags/${code}.svg`);
+      await expect(countryLink.locator('img')).toHaveAttribute('alt', '');
+      await expect(countryLink.locator('img')).toHaveAttribute('aria-hidden', 'true');
+    }
+    await expectDetailContacts(page, 'ru', 'SHOW-ALPHA', 'fixture_demo');
+    const contacts = page.locator('#vehicle-contact-fixture_demo [data-vehicle-contacts="fixture_demo"]');
+    const telegram = contacts.locator('a[href^="https://t.me/"]');
+    const whatsapp = contacts.locator('a[href^="https://wa.me/"]');
+    await telegram.focus();
+    await expect(telegram).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(contacts.locator('a').nth(1)).toBeFocused();
+    await expect(whatsapp).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

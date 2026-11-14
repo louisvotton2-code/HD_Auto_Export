@@ -174,7 +174,10 @@ test('Russian detail budget fits a 320px screen and works without inventing miss
 test('the import calculator stays usable on both sides of the two-column breakpoints', async ({ page }) => {
   await page.goto('/en/cars/fixture_car_1/');
   const calculator = page.getByRole('complementary', { name: 'Import cost calculator' });
-  const contacts = page.locator('[data-vehicle-contacts="fixture_car_1"]');
+  const contacts = page.locator('#vehicle-contact-fixture_car_1 [data-vehicle-contacts="fixture_car_1"]');
+  await expect(contacts).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://t.me/HD_Auto_CN?"]')).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://wa.me/8618215932610?"]')).toHaveCount(1);
   const heading = page.locator('main h1');
   const destination = calculator.locator('[name="country"]');
   for (const width of [1023, 1024, 1180, 1279, 1280]) {

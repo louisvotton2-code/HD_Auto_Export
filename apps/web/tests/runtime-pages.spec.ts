@@ -83,8 +83,11 @@ test('home and calculator entries remain usable with JavaScript disabled', async
   await homeLink.click();
   await expect(page.getByTestId('home-page')).toBeVisible();
   await page.goto('/zh/calculator/');
-  const calculatorLink = page.getByRole('link', { name: '前往计算器', exact: true });
+  const countryChoices = page.locator('main').getByRole('navigation');
+  await expect(countryChoices.getByRole('link')).toHaveCount(7);
+  const calculatorLink = countryChoices.getByRole('link', { name: '俄罗斯', exact: true });
   await expect(calculatorLink).toHaveAttribute('href', '/zh/calculator/russia/');
+  await expect(countryChoices.getByRole('link', { name: '哈萨克斯坦', exact: true })).toHaveAttribute('href', '/zh/calculator/kazakhstan/');
   await calculatorLink.click();
   await expect(page).toHaveURL(/\/zh\/calculator\/russia\/$/);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();

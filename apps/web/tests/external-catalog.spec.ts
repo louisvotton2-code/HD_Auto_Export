@@ -109,10 +109,15 @@ test('original-language fallback, missing media and disputed facts are readable 
   expect(list.data.items).toEqual([]);
 });
 
-test('report links retain vehicle identity and destination flags without probing report bodies', async ({ page, request }) => {
+test('inline report contacts retain vehicle identity and named destinations without probing report bodies', async ({ page, request }) => {
   const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ contentType: 'image/png', body: image }));
   const id = externalFixtureId(1);
+  const countryNames = {
+    zh: { RU: '俄罗斯', KZ: '哈萨克斯坦' },
+    en: { RU: 'Russia', KZ: 'Kazakhstan' },
+    ru: { RU: 'Россия', KZ: 'Казахстан' },
+  };
   await setPublicFixtureState(request, { reportPresenceMode: 'known' });
   for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.goto(`/${locale}/cars/${id}/`);
@@ -132,10 +137,14 @@ test('report links retain vehicle identity and destination flags without probing
       expect(draft).toContain(`/${locale}/cars/${id}/`);
     }
     const destination = page.getByTestId('vehicle-import-estimate').locator('[name="country"]');
-    await expect(destination.locator('option:checked')).toContainText('🇷🇺');
+    const initialCountry = locale === 'zh' ? 'RU' : 'KZ';
+    await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country-ready', 'true');
+    await expect(destination).toHaveValue(initialCountry);
+    await expect(destination.locator('option:checked')).toHaveText(countryNames[locale][initialCountry]);
     await expect(destination.locator('option')).toHaveCount(7);
     await destination.selectOption('KZ');
-    await expect(destination.locator('option:checked')).toContainText('🇰🇿');
+    await expect(destination).toHaveValue('KZ');
+    await expect(destination.locator('option:checked')).toHaveText(countryNames[locale].KZ);
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
     await expect(page.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
     const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();

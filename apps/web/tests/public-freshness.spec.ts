@@ -50,6 +50,18 @@ const contactLinks = (scope: Locator) =>
   scope.locator(
     '[data-vehicle-contacts] a[href^="https://t.me/"], [data-vehicle-contacts] a[href^="https://wa.me/"]',
   );
+const vehicleConsultation = (scope: Locator, id: string) =>
+  scope.locator(`[id="vehicle-contact-${id}"]`);
+const inspectionService = (scope: Locator) => scope.locator('#inspection[data-inspection-service]');
+async function expectDetailContactRegions(scope: Locator, id: string) {
+  // The sidebar asks about this car; the no-report service offers a separate inspection enquiry.
+  for (const region of [vehicleConsultation(scope, id), inspectionService(scope)]) {
+    const contacts = region.locator(`[data-vehicle-contacts="${id}"]`);
+    await expect(contacts).toHaveCount(1);
+    await expect(contacts.locator('a[href^="https://t.me/"]')).toHaveCount(1);
+    await expect(contacts.locator('a[href^="https://wa.me/"]')).toHaveCount(1);
+  }
+}
 const cleanPath = (url: string) => new URL(url).pathname.replace(/\/$/, '');
 const isDataRequest = (request: Request) =>
   /\/api\/v1\/(?:home\/vehicles|vehicles(?:\/[^/]+)?|vehicle-filters)\/?$/.test(
@@ -76,12 +88,14 @@ function networkAudit(page: Page) {
 }
 async function resource(page: Page, path: string) {
   const wrappers = page.locator('[data-resource-url]');
-  await expect.poll(() => wrappers.count()).toBeGreaterThan(0);
+  await expect.poll(() => wrappers.count(), {
+    message: `Expected a public resource wrapper for ${path} at ${page.url()}`,
+  }).toBeGreaterThan(0);
   for (const node of await wrappers.all()) {
     const value = await node.getAttribute('data-resource-url');
     if (value && new URL(value, page.url()).pathname.replace(/\/$/, '') === path) return node;
   }
-  throw new Error(`No public resource wrapper for ${path}`);
+  throw new Error(`No public resource wrapper for ${path} at ${page.url()}`);
 }
 async function beginShellAudit(page: Page) {
   await page.evaluate(() => {
@@ -248,7 +262,7 @@ test.describe('explicit public queries, stable activation and media regression',
     await expect(page.locator('main h1')).toHaveText(vehicle.content.title.text);
     await expect(page.getByTestId('vehicle-external-notice')).toHaveCount(0);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
-    const links = contactLinks(page.locator('main'));
+    const links = contactLinks(vehicleConsultation(page.locator('main'), 'fixture_external'));
     await expect(links).toHaveCount(2);
     for (const link of await links.all()) {
       const url = new URL((await link.getAttribute('href'))!);
@@ -276,7 +290,7 @@ test.describe('explicit public queries, stable activation and media regression',
     await card.getByRole('link', { name: /View details/ }).click();
     await expect(page.locator('[data-vehicle-gallery] [data-loading]').getByText('This photo is temporarily unavailable.')).toBeVisible();
     await expect(page.locator('main h1')).toBeVisible();
-    await expect(contactLinks(page.locator('main'))).toHaveCount(2);
+    await expect(contactLinks(vehicleConsultation(page.locator('main'), 'fixture_external'))).toHaveCount(2);
     expect(remoteRequests.length).toBeGreaterThanOrEqual(2);
     for (const remote of remoteRequests) expect((await remote.allHeaders()).referer).toBeUndefined();
   });
@@ -289,7 +303,7 @@ test.describe('explicit public queries, stable activation and media regression',
         { route: `/${locale}/cars/fixture_car_2/`, endpoint: '/api/v1/vehicles/fixture_car_2' },
       ]) {
         await page.goto(entry.route);
-        const current = await resource(page, entry.endpoint);
+        const current = await test.step(`Resource wrapper: ${entry.route}`, () => resource(page, entry.endpoint));
         await expect(current).toHaveAttribute('data-freshness', 'fresh');
         await page.waitForTimeout(350); // Let initial route prefetch finish before the activation audit.
         const input = page.locator('main input[name="q"]');
@@ -323,7 +337,7 @@ test.describe('explicit public queries, stable activation and media regression',
   test('real Back and Forward check current sold and removed records with one local JSON request', async ({ page, request }) => {
     await patchFixture(request, { futurePublished: true });
     await page.goto('/en/cars/fixture_future/');
-    await expect(contactLinks(page.locator('main'))).toHaveCount(2);
+    await expectDetailContactRegions(page.locator('main'), 'fixture_future');
     await page.getByRole('link', { name: /Back to selected vehicles/ }).click();
     await expect(page).toHaveURL(/\/en\/cars\/$/);
     await patchFixture(request, { futureAvailability: 'sold' });
@@ -337,11 +351,16 @@ test.describe('explicit public queries, stable activation and media regression',
       const current = await resource(page, '/api/v1/vehicles/fixture_future');
       await expect(current).toHaveAttribute('data-freshness', 'checking');
       await expect(contactLinks(current)).toHaveCount(0);
+      for (const region of [vehicleConsultation(current, 'fixture_future'), inspectionService(current)]) {
+        await expect(region.locator('[data-vehicle-contacts] a')).toHaveCount(2);
+        await expect(region.locator('[data-vehicle-contacts] a[aria-disabled="true"]')).toHaveCount(2);
+      }
       await expect(page.locator('main h1')).toHaveText('Newly published vehicle');
       release();
       await expect(current).toHaveAttribute('data-freshness', 'fresh');
       await expect(current.locator('[data-availability="sold"]')).toBeVisible();
-      const draft = new URL((await contactLinks(current).first().getAttribute('href'))!).searchParams.get('text');
+      await expectDetailContactRegions(current, 'fixture_future');
+      const draft = new URL((await vehicleConsultation(current, 'fixture_future').locator('a[href^="https://t.me/"]').getAttribute('href'))!).searchParams.get('text');
       expect(draft).toMatch(/sold|similar/i);
       await page.waitForTimeout(150);
       expect(audit.data()).toHaveLength(1);
@@ -360,6 +379,7 @@ test.describe('explicit public queries, stable activation and media regression',
       await expect(page.getByTestId('public-vehicle-missing')).toBeVisible();
       await expect(page.locator('[data-public-vehicle-detail="fixture_future"]')).toHaveCount(0);
       await expect(contactLinks(page.locator('main'))).toHaveCount(0);
+      await expect(page.locator('main #inspection, main [id="vehicle-contact-fixture_future"]')).toHaveCount(0);
       await page.waitForTimeout(150);
       expect(audit.data().slice(beforeRemovedBack)).toHaveLength(1);
       expect((await request.get('/en/cars/fixture_future/')).status()).toBe(404);
@@ -472,7 +492,7 @@ test.describe('explicit public queries, stable activation and media regression',
     await gallery.getByRole('link', { name: 'View photo 2', exact: true }).click();
     await expect(gallery.getByRole('button', { name: 'Retry photo', exact: true })).toBeVisible();
     await expect(page.locator('main h1')).toHaveText(/fixture_car_2/);
-    await expect(page.locator('[data-vehicle-contacts="fixture_car_2"] a')).toHaveCount(2);
+    await expectDetailContactRegions(page.locator('main'), 'fixture_car_2');
     await page.unroute(matcher);
     await gallery.getByRole('button', { name: 'Retry photo', exact: true }).click();
     await expect(gallery.getByRole('button', { name: 'Retry photo', exact: true })).toHaveCount(0);
@@ -562,7 +582,7 @@ test.describe('explicit public queries, stable activation and media regression',
       );
       await expect(gallery.locator('nav a').nth(1)).toHaveAttribute('target', '_blank');
       await expect(gallery.locator('nav a').nth(1)).toHaveAttribute('rel', 'noopener noreferrer');
-      await expect(contactLinks(page.locator('main'))).toHaveCount(2);
+      await expectDetailContactRegions(page.locator('main'), 'fixture_car_2');
       for (const path of [
         '/api/v1/media/media_fixture_demo?variant=original',
         '/api/v1/media/media_fixture_demo?variant=thumb&url=https://example.invalid',
