@@ -22,7 +22,9 @@ import { VehiclePriceValues } from './vehicle-price-values';
 import { VehicleHistory } from './vehicle-history';
 import { PublicVehicleConfiguration } from './public-vehicle-configuration';
 import { PublicVehicleGallery } from './public-vehicle-gallery';
-import { PublicVehicleInspection, PublicVehiclePriceHistory } from './public-vehicle-records';
+import { PublicVehiclePriceHistory } from './public-vehicle-records';
+import { VehicleInspectionSummary } from './vehicle-inspection-summary';
+import { VehicleVinCard } from './vehicle-vin-card';
 import {
   VehicleBudgetPanel,
   VehicleDetailActions,
@@ -58,7 +60,7 @@ export function PublicVehicleDetail({
   const manufactureDate = vehicle.manufacture?.date?.value ?? (vehicle.manufacture?.range
     ? `${vehicle.manufacture.range.earliest.value} – ${vehicle.manufacture.range.latest.value}` : vehicle.facts.manufacturedAt?.value);
   const contactId = `vehicle-contact-${vehicle.id}`;
-  const reportId = `vehicle-public-inspection-${vehicle.id}`;
+  const reportAvailable = vehicle.inspectionSummary?.status === 'available';
 
   return (
     <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id}>
@@ -106,6 +108,7 @@ export function PublicVehicleDetail({
                 <bdi>{reference.code}</bdi>
                 {reference.source && <small className={styles.referenceSource}>{reference.source}</small>}
               </div>
+              <VehicleVinCard vin={vehicle.identifiers?.vin} locale={locale} />
               <div className={`${styles.tile} ${styles.mileageTile}`}>
                 <p><span className={styles.tileIcon}><Icon name="gauge" size={16} /></span>{copy.mileage}</p>
                 <strong>{mileage ?? t.unknown}{mileage !== undefined && <small>{t.km}</small>}</strong>
@@ -138,9 +141,6 @@ export function PublicVehicleDetail({
                       <dd lang={fact.lang} dir="auto">{fact.value}</dd>
                     </div>
                   ))}
-                  {vehicle.identifiers?.vin && <div data-public-vehicle-vin>
-                    <dt>{recordsCopy.vin}</dt><dd className={styles.vinCode}><bdi>{vehicle.identifiers.vin}</bdi></dd>
-                  </div>}
                   {vehicle.vehicleClass?.status === 'ready' && <div data-public-vehicle-class>
                     <dt>{recordsCopy.vehicleClass}</dt><dd lang={vehicle.vehicleClass.contentLocale} dir="auto">{vehicle.vehicleClass.text}</dd>
                   </div>}
@@ -152,7 +152,7 @@ export function PublicVehicleDetail({
             </section>
 
             <VehicleHistory vehicle={vehicle} locale={locale} />
-            <PublicVehicleInspection vehicle={vehicle} locale={locale} />
+            <VehicleInspectionSummary vehicle={vehicle} locale={locale} />
             <PublicVehiclePriceHistory vehicle={vehicle} locale={locale} />
             {vehicle.content.description && (
               <section className={styles.card}>
@@ -233,7 +233,9 @@ export function PublicVehicleDetail({
                 <p className={styles.smallNote}>{t.contactNote}</p>
               </div>
             </section>
-            <a className={styles.reportLink} href={`#${reportId}`}><Icon name="document" size={16} />{recordsCopy.viewReport}</a>
+            {reportAvailable && <a className={styles.reportLink} href={fresh ? `${vehicle.detailPath}inspection/` : undefined}
+              target="_blank" rel="noopener noreferrer" data-public-inspection-link aria-disabled={!fresh || undefined} tabIndex={fresh ? undefined : -1}>
+              <Icon name="document" size={16} />{recordsCopy.viewReport}</a>}
           </aside>
         </div>
       </div>

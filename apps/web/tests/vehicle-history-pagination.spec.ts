@@ -7,11 +7,12 @@ test.beforeEach(async ({ request }) => { await resetPublicFixture(request); });
 test.afterEach(async ({ request }) => { await resetPublicFixture(request); });
 
 const copy = {
-  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测报告', inspect: '查看检测报告', no: '无' },
-  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection report', inspect: 'View inspection report', no: 'No' },
-  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Отчёт об осмотре автомобиля', inspect: 'Посмотреть отчёт об осмотре', no: 'Нет' },
+  zh: { pagination: '车辆目录分页', page: (n: number) => `第 ${n} 页`, inspection: '车辆检测摘要', inspect: '查看检测报告', no: '无' },
+  en: { pagination: 'Vehicle catalog pages', page: (n: number) => `Page ${n}`, inspection: 'Vehicle inspection summary', inspect: 'View inspection report', no: 'No' },
+  ru: { pagination: 'Страницы каталога автомобилей', page: (n: number) => `Страница ${n}`, inspection: 'Результаты осмотра автомобиля', inspect: 'Посмотреть отчёт об осмотре', no: 'Нет' },
 };
-const kinds = ['accidents', 'transfers', 'owners', 'plateChanges', 'theft', 'flood', 'waterDamage', 'fire', 'totalLoss'];
+const kinds = ['accidents', 'transfers', 'owners', 'plateChanges'];
+const inspectionOnlyKinds = ['theft', 'flood', 'waterDamage', 'fire', 'totalLoss'];
 const filteredQuery = new URLSearchParams({
   q: 'fixture_car', make: 'alpha', model: 'alpha_model', powertrain: 'bev',
   priceCurrency: 'USD', priceMin: '0', priceMax: '999999', yearMin: '2020', yearMax: '2026', pageSize: '5',
@@ -22,29 +23,43 @@ async function ids(cards: Locator) {
 }
 
 for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const) {
-  test(`${locale}: explicit history retains zero and negative facts while report text uses its bounded public section at ${width}px`, async ({ page, request }) => {
+  test(`${locale}: explicit history retains zero and does not derive events from inspection findings at ${width}px`, async ({ page, request }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await setPublicFixtureState(request, { importedPublished: true, historyScenario: 'complete' });
+    await setPublicFixtureState(request, { importedPublished: true, historyScenario: 'complete', inspectionSummaryStatus: 'available' });
     const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
     await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ contentType: 'image/png', body: image }));
     await page.goto(`/${locale}/cars/${externalFixtureId(1)}/`);
     const main = page.locator('main');
     const history = main.locator('[data-vehicle-history]');
     await expect(history).toBeVisible();
-    await expect(history.locator('[data-history-kind]')).toHaveCount(9);
+    await expect(history.locator('[data-history-kind]')).toHaveCount(kinds.length);
     for (const kind of kinds) await expect(history.locator(`[data-history-kind="${kind}"]`)).toBeVisible();
-    for (const kind of ['accidents', 'plateChanges', 'flood'])
+    for (const kind of ['accidents', 'plateChanges'])
       await expect(history.locator(`[data-history-kind="${kind}"] dd`)).toHaveText('0');
     await expect(history.locator('[data-history-kind="transfers"] dd')).toHaveText('2');
     await expect(history.locator('[data-history-kind="owners"] dd')).toHaveText('3');
-    for (const kind of ['theft', 'waterDamage', 'fire', 'totalLoss'])
-      await expect(history.locator(`[data-history-kind="${kind}"] dd`)).toHaveText(copy[locale].no);
+    for (const kind of inspectionOnlyKinds)
+      await expect(history.locator(`[data-history-kind="${kind}"]`)).toHaveCount(0);
     await expect(history).not.toContainText('9 / 24');
     await expect(history).not.toContainText('0 / 18');
     const inspection = main.getByRole('region', { name: copy[locale].inspection, exact: true });
     await expect(inspection).toBeVisible();
-    const inspectLink = main.getByRole('link', { name: copy[locale].inspect, exact: true });
-    await expect(inspectLink).toHaveAttribute('href', `#vehicle-public-inspection-${externalFixtureId(1)}`);
+    // The summary and sales sidebar intentionally offer separate report entry points.
+    const inspectLink = inspection.getByRole('link', { name: copy[locale].inspect, exact: true });
+    const sidebarLink = main.locator('aside').getByRole('link', { name: copy[locale].inspect, exact: true });
+    const reportPath = `/${locale}/cars/${externalFixtureId(1)}/inspection/`;
+    for (const link of [inspectLink, sidebarLink]) {
+      await expect(link).toHaveCount(1);
+      await expect(link).toBeVisible();
+      await expect(link).toHaveAttribute('href', reportPath);
+      await expect(link).toHaveAttribute('target', '_blank');
+      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    }
+    const [reportPage] = await Promise.all([page.waitForEvent('popup'), inspectLink.click()]);
+    try {
+      await expect(reportPage).toHaveURL(url => url.pathname === reportPath);
+      await expect(reportPage.locator(`[data-vehicle-inspection-page="${externalFixtureId(1)}"]`)).toBeVisible();
+    } finally { await reportPage.close(); }
     await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   });
@@ -59,17 +74,14 @@ for (const scenario of ['empty', 'conflict'] as const) {
     expect(response.status()).toBe(200);
     const vehicle = (await response.json()).data;
     expect(vehicle.facts.firstRegistration).not.toBeNull();
-    expect(vehicle.external.detail.inspection.entries.length).toBeGreaterThan(0);
+    expect(vehicle.external.detail.inspection).toBeNull();
     await page.goto(`/en/cars/${id}/`);
     await expect(page.locator('main [data-vehicle-history]')).toHaveCount(0);
     await expect(page.getByRole('region', { name: copy.en.inspection, exact: true })).toBeVisible();
     await expect(page.locator('main a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
-    if (scenario === 'empty') {
-      const report = page.locator('[data-public-vehicle-inspection]');
-      await report.getByRole('button', { name: copy.en.inspect, exact: true }).click();
-      await expect(report.locator('[data-public-inspection-item] dd > span[lang="zh"]')).toHaveText('0');
-      await expect(page.locator('main [data-vehicle-history]')).toHaveCount(0);
-    }
+    await expect(page.locator('[data-public-inspection-item]')).toHaveCount(0);
+    const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
+    expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
   });
 }
 

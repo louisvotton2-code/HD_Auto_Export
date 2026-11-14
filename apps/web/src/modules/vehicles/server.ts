@@ -4,6 +4,7 @@ import { getSsrPublicVehicle } from './infrastructure/ssr-public-api';
 import type { Locale } from '@/i18n/routing';
 export {
   getPublicSitemapCatalog,
+  getPublicVehicleInspection,
   parseCatalogQuery,
   parseCatalogPageQuery,
   PublicApiError,

@@ -1,3 +1,5 @@
+import { PublicVehicleInspectionQuerySchema, type PublicVehicleInspectionQuery } from '@hd/contracts/public';
+import { parseVehicleSegment } from '../public-segments';
 import { PublicVehicleFiltersSchema, type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicRequestHeaders } from './public-request-context';
@@ -127,4 +129,14 @@ export async function getPublicVehicle(
     if (error instanceof PublicApiError && [400, 404].includes(error.status)) return null;
     throw error;
   }
+}
+
+/** Report pages read only the existing public, bounded stored projection, with no internal alias or cache. */
+export function getPublicVehicleInspection(id: string, locale: Locale,
+  options: Partial<Pick<PublicVehicleInspectionQuery, 'category' | 'part' | 'outcome' | 'order' | 'limit'>> = {}) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) throw new PublicApiError(404);
+  const query = PublicVehicleInspectionQuerySchema.parse({ ...options, locale, limit: options.limit ?? 50 });
+  return readPublicJson(`/api/v1/vehicles/${id}/inspection?${queryString(query)}`, {
+    parse: value => parseVehicleSegment('inspection', value, id, locale),
+  });
 }

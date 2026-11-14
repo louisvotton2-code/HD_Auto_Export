@@ -4,6 +4,7 @@ import { Icon } from '@/shared/ui/icon';
 import { configurationCopy } from '../configuration-copy';
 import { externalDetailCopy } from '../external-detail-copy';
 import { publicVehicleMessages } from '../public-messages';
+import { EquipmentIcon } from './equipment-icon';
 import detailStyles from './public-detail.module.css';
 import styles from './vehicle-configuration.module.css';
 
@@ -60,7 +61,10 @@ export function VehicleConfiguration({ configuration, locale, showMetadata = fal
         <dl className={styles.entries}>
           {configuration.items.map(({ id, name, value }) => (
             <div key={id} className={styles.item} data-configuration-item={id}>
-              <dt><ConfigurationText field={name} kind="name" locale={locale} showMetadata={showMetadata} /></dt>
+              <dt className={styles.itemLabel}>
+                <EquipmentIcon label={name.text} fieldId={id} className={styles.itemIcon} />
+                <div className={styles.itemLabelText}><ConfigurationText field={name} kind="name" locale={locale} showMetadata={showMetadata} /></div>
+              </dt>
               <dd><ConfigurationText field={value} kind="value" locale={locale} showMetadata={showMetadata} /></dd>
             </div>
           ))}

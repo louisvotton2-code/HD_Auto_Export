@@ -35,8 +35,14 @@ export function parseVehicleSegment<K extends VehicleSegmentKind>(kind: K, value
   if (kind === 'gallery') for (const item of (parsed as PublicVehicleGalleryResponse).data.items)
     if (item.altText !== undefined && item.altText.requestedLocale !== locale) throw new VehicleSegmentError(503);
   if (kind === 'inspection') for (const item of (parsed as PublicVehicleInspectionResponse).data.items) {
-    for (const field of [item.category, item.part, item.name, item.value])
+    for (const field of [item.category, item.part, item.name, item.value, item.group])
       if (field && field.requestedLocale !== locale) throw new VehicleSegmentError(503);
+  }
+  if (kind === 'inspection') {
+    const report = (parsed as PublicVehicleInspectionResponse).data;
+    for (const field of [...(report.summary?.categories.map(category => category.label) ?? []),
+      ...(report.conclusions?.flatMap(conclusion => [conclusion.name, conclusion.value]) ?? [])])
+      if (field.requestedLocale !== locale) throw new VehicleSegmentError(503);
   }
   if (new Set(parsed.data.items.map(item => item.id)).size !== parsed.data.items.length) throw new VehicleSegmentError(503);
   return parsed as VehicleSegmentResponses[K];

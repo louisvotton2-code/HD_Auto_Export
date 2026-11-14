@@ -43,14 +43,21 @@ describe('published vehicle history', () => {
     expect(renderToStaticMarkup(createElement(VehicleHistory, { vehicle, locale: 'zh' }))).toBe('');
   });
 
-  it('reads explicit facts from both published specifications and inspection entries', () => {
+  it('uses explicit published history and does not turn inspection conclusions into historical events', () => {
     const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
     vehicle.external!.detail!.specifications = [entry('Ownership transfers', '2')];
     vehicle.external!.detail!.inspection!.entries = [entry('theft', 'false')];
     const html = renderToStaticMarkup(createElement(VehicleHistory, { vehicle, locale: 'en' }));
     expect(html).toContain('data-history-kind="transfers"');
-    expect(html).toContain('data-history-kind="theft"');
+    expect(html).not.toContain('data-history-kind="theft"');
     expect(html).not.toContain('Manufactured');
+  });
+
+  it('never treats numeric or boolean inspection conclusions as accident, flood or fire counts', () => {
+    const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
+    vehicle.external!.detail!.specifications = [];
+    vehicle.external!.detail!.inspection!.entries = [entry('accidentCount', '0'), entry('theft', 'false'), entry('floodCount', '2'), entry('fireDamage', 'true')];
+    expect(vehicleHistory(vehicle, 'en')).toEqual([]);
   });
 
   it.each([0, 2])('uses structured ownership transfers %s over conflicting old text', (ownershipTransfers) => {
@@ -61,7 +68,7 @@ describe('published vehicle history', () => {
     detail.inspection!.entries = [entry('过户次数', '1'), entry('theft', 'false')];
     const history = vehicleHistory(vehicle, 'en');
     expect(history.find(({ kind }) => kind === 'transfers')?.value).toBe(String(ownershipTransfers));
-    expect(history.map(({ kind }) => kind)).toEqual(['accidents', 'transfers', 'theft']);
+    expect(history.map(({ kind }) => kind)).toEqual(['accidents', 'transfers']);
   });
 
   it.each([null, { ownershipTransfers: null }])('does not restore guessed transfers when structured history is unknown', (history) => {

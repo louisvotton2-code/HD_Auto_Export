@@ -28,3 +28,6 @@ export { VehiclePhoto } from './ui/vehicle-photo';
 export { publicUsdFilterQuery, publicUsdView, publicQueryString, parseCatalogPageRequest } from './public-query';
 export { VehicleRateAttribution } from './ui/vehicle-rate-attribution';
 export { VehiclePriceValues } from './ui/vehicle-price-values';
+
+export { VehicleInspectionPage } from './ui/vehicle-inspection-page';
+export { inspectionPageCopy } from './inspection-page-copy';

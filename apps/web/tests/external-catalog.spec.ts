@@ -34,7 +34,7 @@ test('localized catalog pages preserve API priority, original currency and safe 
   await expect(page.getByTestId('hero-stat-catalog').locator('[data-counter-value]')).toHaveText('31');
 });
 
-test('a direct photo error is reported once and detail reads bounded inspection entries explicitly', async ({ page, request }) => {
+test('a direct photo error is reported once and detail shows only a report summary', async ({ page, request }) => {
   await setPublicFixtureState(request, { reportPresenceMode: 'known' });
   const sample = makeImportedPublicVehicleFixture('en', 'supplier', true);
   const photo = sample.images[0]!;
@@ -63,25 +63,21 @@ test('a direct photo error is reported once and detail reads bounded inspection 
   await expect(main.getByText('Listing platform', { exact: true })).toHaveCount(0);
   await expect(main.getByText('Synthetic Market', { exact: true })).toHaveCount(0);
   await expect(main.getByRole('heading', { name: 'HD Auto Export consultation' })).toHaveCount(0);
-  const reportSection = main.locator('[data-public-vehicle-inspection]');
-  await expect(reportSection).toHaveAttribute('data-report-status', 'unread');
-  await expect(reportSection.locator('[data-public-inspection-item]')).toHaveCount(0);
-  const reportButton = main.getByRole('link', { name: 'View inspection report' });
-  const anchor = `#vehicle-public-inspection-${sample.id}`;
-  await expect(reportButton).toHaveAttribute('href', anchor);
-  await reportButton.press('Enter');
-  expect(new URL(page.url()).hash).toBe(anchor);
-  await expect(reportSection).toBeFocused();
-  await reportSection.getByRole('button', { name: 'View inspection report', exact: true }).click();
-  await expect(reportSection).toHaveAttribute('data-report-status', 'available');
-  await expect(reportSection.locator('[data-public-inspection-item]')).toHaveCount(1);
-  await expect(reportSection.locator('dd > span[lang="zh"]')).toHaveText('0');
+  const reportSection = main.locator('[data-inspection-summary]');
+  await expect(reportSection).toHaveAttribute('data-inspection-status', 'available');
+  await expect(main.locator('[data-public-inspection-item]')).toHaveCount(0);
+  const reportButton = reportSection.getByRole('link', { name: 'View inspection report', exact: true });
+  await expect(reportButton).toHaveAttribute('href', `/en/cars/${sample.id}/inspection/`);
+  await expect(reportButton).toHaveAttribute('target', '_blank');
+  await expect(reportButton).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(main.locator('a[href^="#vehicle-public-inspection-"]')).toHaveCount(0);
   await expect(main.locator('a[href^="https://reports.example.invalid/"]')).toHaveCount(0);
   await expect(main.getByText('Related listings')).toHaveCount(0);
   await expect(main.locator('a[href^="https://listings.example.invalid/"]')).toHaveCount(0);
   await expect(main.locator('[data-vehicle-gallery] [data-loading]').getByText('This photo is temporarily unavailable.')).toBeVisible();
   const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
   expect(events.requests.filter((event: { path: string }) => event.path === `/api/v1/external-media/${photo.id}/failure`)).toHaveLength(1);
+  expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
 });
 
 test('original-language fallback, missing media and disputed facts are readable and withdrawal returns 404', async ({ page, request }) => {
@@ -97,12 +93,15 @@ test('original-language fallback, missing media and disputed facts are readable 
   await expect(page.locator('main summary').filter({ hasText: 'Detailed vehicle information' }).locator('..')).toHaveAttribute('open', '');
   const year = page.locator('main dt').filter({ hasText: /^Model year$/ }).locator('..').locator('dd');
   await expect(year).toHaveCount(0);
+  await setPublicFixtureState(request, { inspectionSummaryStatus: 'no_report' });
   await page.goto(`/en/cars/${externalFixtureId(4)}/`);
   await expect(page.locator('main [data-vehicle-photo-unavailable]')).toBeVisible();
-  const noReport = page.locator('[data-public-vehicle-inspection]');
-  await noReport.getByRole('button', { name: 'View inspection report', exact: true }).click();
-  await expect(noReport).toHaveAttribute('data-report-status', 'no_report');
-  await expect(noReport).toContainText('This listing has no inspection report.');
+  const noReport = page.locator('[data-inspection-service]');
+  await expect(noReport).toHaveAttribute('data-inspection-status', 'no_report');
+  await expect(noReport).toContainText('No historical inspection report is currently available for this listing.');
+  await expect(page.locator('[data-inspection-summary]')).toHaveCount(0);
+  await expect(page.locator('[data-public-inspection-link]')).toHaveCount(0);
+  await expect(page.locator('main a[href*="/inspection/"]')).toHaveCount(0);
   await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
   await expect(page.locator('main').getByText('Price on request', { exact: true }).filter({ visible: true }).first()).toBeVisible();
   await setPublicFixtureState(request, { importedWithdrawn: true });
@@ -111,7 +110,7 @@ test('original-language fallback, missing media and disputed facts are readable 
   expect(list.data.items).toEqual([]);
 });
 
-test('public reports retain vehicle identity and destination flags in all three languages', async ({ page, request }) => {
+test('report links retain vehicle identity and destination flags without probing report bodies', async ({ page, request }) => {
   const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ contentType: 'image/png', body: image }));
   const id = externalFixtureId(1);
@@ -120,11 +119,12 @@ test('public reports retain vehicle identity and destination flags in all three 
   for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.goto(`/${locale}/cars/${id}/`);
     const title = await page.locator('main h1').innerText();
-    const reportSection = page.locator('[data-public-vehicle-inspection]');
-    const loaded = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/inspection/'));
-    await reportSection.getByRole('button', { name: openReport[locale], exact: true }).click();
-    expect((await (await loaded).json()).data.vehicleId).toBe(id);
-    await expect(reportSection).toHaveAttribute('data-report-status', 'available');
+    const reportSection = page.locator('[data-inspection-summary]');
+    await expect(reportSection).toHaveAttribute('data-inspection-status', 'available');
+    const reportLink = reportSection.getByRole('link', { name: openReport[locale], exact: true });
+    await expect(reportLink).toHaveAttribute('href', `/${locale}/cars/${id}/inspection/`);
+    await expect(reportLink).toHaveAttribute('target', '_blank');
+    await expect(reportLink).toHaveAttribute('rel', 'noopener noreferrer');
     await expect(page.locator('[data-vehicle-report-request]')).toHaveCount(0);
     const links = page.locator(`[data-vehicle-contacts="${id}"] a`).filter({ visible: true });
     await expect(links).toHaveCount(2);
@@ -143,6 +143,8 @@ test('public reports retain vehicle identity and destination flags in all three 
     await expect(destination.locator('option:checked')).toContainText('🇰🇿');
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
     await expect(page.locator('[data-vehicle-equipment] > details')).toHaveAttribute('open', '');
+    const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
+    expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
   }
 });
 

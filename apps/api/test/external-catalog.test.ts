@@ -236,7 +236,7 @@ test('public pagination is staff-first and exact; detail comparison, price and d
     assert.equal(ready.content.title.kind, locale === 'zh' ? 'original' : 'supplier');
     assert.equal(ready.external?.detail?.original.title?.contentLocale, 'zh');
     assert.equal(ready.external?.detail?.specifications.length, 1);
-    assert.equal(ready.external?.detail?.inspection?.entries.length, 1);
+    assert.equal(ready.external?.detail?.inspection, null);
     assert.equal(ready.price.money?.amount, '128000.50');
     assert.equal(ready.availability, 'unknown');
     assert.equal(ready.availabilityCheckedAt, null);

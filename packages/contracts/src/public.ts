@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import {VehicleIdentifiersSchema,ManufactureEvidenceSchema,ExportStatusSchema,PublicInspectionEntrySchema,PublicPriceHistoryEntrySchema} from './catalog-enhancements.js';
+import {VehicleIdentifiersSchema,ManufactureEvidenceSchema,ExportStatusSchema,PublicInspectionEntrySchema,PublicPriceHistoryEntrySchema,InspectionStatusSchema,InspectionOutcomeSchema,InspectionKeySchema,PublicInspectionSummarySchema,PublicInspectionConclusionSchema} from './catalog-enhancements.js';
 export * from './catalog-enhancements.js';
 import { ConfigurationDisplaySchema } from './configuration-display.js';
 import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from './catalog-cache.js';
@@ -79,6 +79,7 @@ export const PublicVehicleSchema = z.strictObject({
   // Detail-only. Lists omit the potentially large configuration payload.
   configuration: ConfigurationDisplaySchema.nullable().optional(),
   report: PublicReportSchema.optional(),
+  inspectionSummary:PublicInspectionSummarySchema.optional(),
   availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
   sourceUpdatedAt: TimestampSchema.nullable(),
@@ -232,6 +233,8 @@ export const PublicVehicleSegmentQuerySchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type PublicVehicleSegmentQuery = z.infer<typeof PublicVehicleSegmentQuerySchema>;
+export const PublicVehicleInspectionQuerySchema=PublicVehicleSegmentQuerySchema.extend({category:InspectionKeySchema.optional(),part:InspectionKeySchema.optional(),outcome:InspectionOutcomeSchema.optional(),order:z.enum(['source','faults_first']).default('source')});
+export type PublicVehicleInspectionQuery=z.infer<typeof PublicVehicleInspectionQuerySchema>;
 const segmentFields = { vehicleId: IdSchema, locale: LocaleSchema, revision: z.string().regex(/^[a-f0-9]{64}$/),
   total: z.number().int().nonnegative(), nextCursor: z.string().max(2000).nullable() };
 export const PublicVehicleGalleryResponseSchema = responseSchema(z.strictObject({
@@ -246,7 +249,7 @@ export const PublicVehicleConfigurationResponseSchema = responseSchema(z.strictO
 }));
 export type PublicVehicleConfigurationResponse = z.infer<typeof PublicVehicleConfigurationResponseSchema>;
 
-export const PublicVehicleInspectionResponseSchema=responseSchema(z.strictObject({...segmentFields,status:z.enum(['available','no_report','unavailable','pending']),items:z.array(PublicInspectionEntrySchema).max(100)}));
+export const PublicVehicleInspectionResponseSchema=responseSchema(z.strictObject({...segmentFields,status:InspectionStatusSchema,summary:PublicInspectionSummarySchema.optional(),conclusions:z.array(PublicInspectionConclusionSchema).max(30).optional(),items:z.array(PublicInspectionEntrySchema).max(100)}));
 export type PublicVehicleInspectionResponse=z.infer<typeof PublicVehicleInspectionResponseSchema>;
 export const PublicVehiclePriceHistoryResponseSchema=responseSchema(z.strictObject({...segmentFields,items:z.array(PublicPriceHistoryEntrySchema).max(100)}));
 export type PublicVehiclePriceHistoryResponse=z.infer<typeof PublicVehiclePriceHistoryResponseSchema>;

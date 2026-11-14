@@ -23,6 +23,8 @@ test('full gallery replaces the old 30-photo preview, then reads the bounded fin
   await setPublicFixtureState(request, { segmentGalleryCount: 65, segmentFallback: true });
   await page.goto(path);
   await expect(gallery(page).locator('[data-vehicle-thumbnails] a')).toHaveCount(30);
+  await expect(inlineGallery(page).getByRole('button')).toHaveText('Load more photos');
+  await expect(gallery(page).getByRole('button', { name: 'Browse photos', exact: true })).toHaveCount(0);
   expect(await reads(request, 'gallery')).toHaveLength(0);
   // The preview and first page now deliberately belong to different photo collections.
   await setPublicFixtureState(request, { segmentRevision: 2 });
@@ -49,6 +51,28 @@ test('full gallery replaces the old 30-photo preview, then reads the bounded fin
   await expect(gallery(page).locator('dialog[open] img[data-gallery-active-image]')).toHaveAttribute('alt', '图片说明 31');
   expect(await reads(request, 'gallery')).toHaveLength(2);
   await page.keyboard.press('Escape');
+});
+
+test('unknown and fully shown gallery counts have no initial browse or speculative more action', async ({ page, request }) => {
+  for (const count of [null, 3]) {
+    await resetPublicFixture(request);
+    await setPublicFixtureState(request, { segmentGalleryCount: count });
+    await page.goto(path);
+    await expect(gallery(page)).toBeVisible();
+    await expect(inlineGallery(page).getByRole('button')).toHaveCount(0);
+    expect(await reads(request, 'gallery')).toHaveLength(0);
+
+    // Opening the actual image still reads a single bounded first page and opens its viewer.
+    const firstPage = page.waitForResponse(response => /\/gallery\/?$/.test(new URL(response.url()).pathname));
+    await gallery(page).locator('[data-vehicle-photo-opener]').click();
+    await expect(gallery(page).locator('dialog[open]')).toBeVisible();
+    expect((await firstPage).status()).toBe(200);
+    await expect(gallery(page).locator('[data-public-gallery-pagination="viewer"]')).toHaveAttribute('aria-busy', 'false');
+    await expect.poll(async () => (await reads(request, 'gallery')).length).toBe(1);
+    await expect(gallery(page).locator('[data-public-gallery-pagination="viewer"] [data-gallery-load-more]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(gallery(page).locator('dialog[open]')).toHaveCount(0);
+  }
 });
 
 test('normal configuration retains the bounded seed and its source values without a complete-configuration request', async ({ page, request }) => {
