@@ -1,5 +1,5 @@
 # Apply last after base/proxy/media/domains. Explicit release identity, no synthetic-mode override.
-# Production switch still requires the reviewed main manifest, backup/restore proof and PM release gate.
+# Production switch requires reviewed main/CI and exclusive writer handoff; daily backups are independent.
 services:
   postgres:
     cpus: 1.0

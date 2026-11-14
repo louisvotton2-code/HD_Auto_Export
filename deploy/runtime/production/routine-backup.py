@@ -186,6 +186,8 @@ def main():
     config = json.loads(args.config.read_text())
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', config['database']):
         raise ValueError('Explicit current production database required')
+    if not re.fullmatch(r'[a-f0-9]{40}', config.get('releaseId', '')):
+        raise ValueError('Reviewed active release binding required')
     backup_root = Path(config['backupRoot'])
     if backup_root != ROOT/'backups/ext07' or backup_root.is_symlink():
         raise ValueError('Use the dedicated EXT07 backup root')
@@ -206,7 +208,7 @@ def main():
     backup_root.mkdir(mode=0o700, exist_ok=True)
     lock = (backup_root/'routine.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     point = backup_root/point_name
     if point.exists() or point.with_suffix('.partial').exists():
         raise ValueError('Recovery point already exists')
@@ -265,7 +267,7 @@ def main():
             media = pack_roots(point/'media.tar.gz', media_roots)
             archives = pack_roots(point/'source-archives.tar.gz', [archive_root])
             controls_manifest = pack_roots(point/'controls.tar.gz', controls)
-            manifest = dict(format=2, sourceDatabase=config['database'], snapshot='pg_dump-mvcc',
+            manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
                 createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
                 files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
                        for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
