@@ -27,7 +27,10 @@ test('loading is driven by the pending response, keeps cards and clears after co
   await page.route(/\/api\/v1\/vehicles\/\?/, async route => { await pending; await route.continue(); });
   try {
     await page.locator('input[name="q"]').fill('fixture_car');
-    await page.locator('form').filter({ has: page.locator('input[name="q"]') }).locator('button[type="submit"]').click();
+    const searchButton = page.locator('form').filter({ has: page.locator('input[name="q"]') })
+      .getByRole('button', { name: 'Search', exact: true });
+    await expect(searchButton).toHaveCount(1);
+    await searchButton.click();
     const status = page.getByTestId('public-resource-status').filter({ visible: true });
     await expect(status).toHaveAttribute('data-phase', 'checking');
     await expect(status.locator('.public-resource-spinner svg')).toBeVisible();
