@@ -5,6 +5,7 @@ import { ConfigurationDisplaySchema } from './configuration-display.js';
 import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from './catalog-cache.js';
 export * from './catalog-cache.js';
 export * from './configuration-display.js';
+export * from './configuration-semantics.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
