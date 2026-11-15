@@ -1,5 +1,5 @@
 import {
-  BRAND_CATALOG, findBrand, getDisplayTextLimit, SaveVehicleLocalizationSchema, type AdminVehicle, type DisplayField, type DisplayTranslationSuggestions,
+  BRAND_CATALOG, findBrand, getDisplayTextLimit, SaveVehicleLocalizationSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField, type DisplayTranslationSuggestions,
   type LocalizationData, type Locale, type VehicleLocalization,
 } from '@hd/contracts/admin';
 
@@ -16,16 +16,28 @@ export function localizationSaveRequest(base: VehicleLocalization, data: Localiz
   // Unknown source languages remain unknown. Only generation/review needs an explicitly saved language.
   return SaveVehicleLocalizationSchema.parse({ vehicleVersion: base.vehicleVersion, revision: base.revision, data });
 }
-export function displayFieldLabel(field: DisplayField, fields: DisplayField[], vehicle: AdminVehicle): string {
+export function displayFieldRefLabel(ref: string, vehicle: AdminVehicle, fields: readonly DisplayField[] = []): string {
   const labels: Record<string, string> = { make: '品牌名称', model: '车型名称', trim: '配置名称', generation: '代系名称', 'location.city': '所在地城市', 'location.displayName': '所在地说明', 'source.platform': '来源平台名称' };
-  if (labels[field.ref]) return labels[field.ref];
-  if (field.ref.startsWith('media.')) {
-    const id = field.ref.slice('media.'.length, -'.alt'.length);
-    const index = [...vehicle.draft.media].sort((a, b) => a.sortOrder - b.sortOrder).findIndex(media => media.id === id);
+  if (labels[ref]) return labels[ref];
+  if (ref.startsWith('configuration.')) {
+    const part = ref.endsWith('.name') ? 'name' : 'value';
+    const type = part === 'name' ? '配置名称' : '配置内容';
+    const item = vehicle.draft.configuration?.items.find(item => ref === `configuration.${vehicleConfigurationItemId(item.name)}.${part}`);
+    return item ? `${item.name} · ${type}` : type;
+  }
+  if (ref.startsWith('media.')) {
+    const id = ref.slice('media.'.length, -'.alt'.length).toLowerCase();
+    const index = [...vehicle.draft.media].sort((a, b) => a.sortOrder - b.sortOrder).findIndex(media => media.id.toLowerCase() === id);
     return index < 0 ? '图片说明（图片已变化）' : `图片 ${index + 1} 说明`;
   }
-  if (field.ref.startsWith('price.includes.')) return `费用条目 ${fields.filter(item => item.ref.startsWith('price.includes.')).findIndex(item => item.ref === field.ref) + 1}`;
+  if (ref.startsWith('price.includes.')) {
+    const index = fields.filter(item => item.ref.startsWith('price.includes.')).findIndex(item => item.ref === ref);
+    return index < 0 ? `费用条目（${ref.slice('price.includes.'.length)}）` : `费用条目 ${index + 1}`;
+  }
   return '公开展示文字';
+}
+export function displayFieldLabel(field: DisplayField, fields: DisplayField[], vehicle: AdminVehicle): string {
+  return displayFieldRefLabel(field.ref, vehicle, fields);
 }
 export function changeDisplayLanguage(field: DisplayField, language: string): DisplayField {
   if (language === field.sourceLanguage) return field;
@@ -44,10 +56,13 @@ export function displayReviewState(field: DisplayField, saved: DisplayField, loc
 }
 export function editDisplayTranslation(field: DisplayField, saved: DisplayField, locale: Locale, text: string): DisplayField {
   if (text === (field.translations[locale]?.text ?? '')) return field;
+  const savedTranslation = saved.translations[locale];
+  if (sameSource(field, saved) && text === (savedTranslation?.text ?? ''))
+    return { ...field, translations: { ...field.translations, [locale]: savedTranslation } };
   return { ...field, translations: { ...field.translations, [locale]: !text.trim() ? null : {
     text, kind: locale === field.sourceLanguage.split('-')[0] && text === field.sourceText ? 'original' : 'human',
     reviewStatus: sameSource(field, saved) ? 'pending' : 'stale', sourceVersion: field.sourceVersion,
-    humanEditVersion: saved.translations[locale]?.humanEditVersion ?? 0, engineVersion: null,
+    humanEditVersion: savedTranslation?.humanEditVersion ?? 0, engineVersion: null,
   } } };
 }
 export function reviewDisplayTranslation(field: DisplayField, saved: DisplayField, locale: Locale, approved: boolean): DisplayField {

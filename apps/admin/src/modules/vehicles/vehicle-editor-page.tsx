@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Link, useBlocker, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Alert, App, Badge, Breadcrumb, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input, Modal, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutlined, PlusOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { AdminVehicleResponseSchema, VehicleDraftWriteSchema, type AdminVehicle, type ConfirmPublicationPreviewRequest, type VehicleDraftInput } from '@hd/contracts/admin';
+import { AdminVehicleResponseSchema, VehicleDraftWriteSchema, type AdminVehicle, type ConfirmPublicationPreviewRequest, type PublicationIssue, type PublishReadiness, type VehicleDraftInput } from '@hd/contracts/admin';
 import type { Locale } from '@hd/contracts/public';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
@@ -17,7 +17,7 @@ import { VehicleMediaEditor } from './media-editor';
 import { VehicleActions } from './vehicle-actions';
 import { PublicationPreviewPanel } from './publication-preview-panel';
 import { VehicleDeletionActions } from './vehicle-deletion-actions';
-import { VehicleTranslationWorkspace, type TranslationWorkspaceGuard as LocalizationGuard } from './vehicle-translation-workspace';
+import { VehicleTranslationWorkspace, type PublicationTranslationFocus, type TranslationWorkspaceGuard as LocalizationGuard } from './vehicle-translation-workspace';
 import { brandIdentityOptions } from './vehicle-localization-model';
 import { modelIdentityOptions } from './model-suggestions';
 import styles from './vehicle-editor.module.css';
@@ -53,7 +53,7 @@ function tabForField(key?: keyof DraftForm, path = ''): TabKey {
   if (path.replace(/^draft\./, '').startsWith('localization')) return 'localization';
   if (path.includes('media')) return 'images';
   if (path.includes('translations')) return 'localization';
-  if (key && ['priceKind', 'amount', 'currency', 'includes', 'description', 'descriptionLanguage', 'purchaseAmount', 'purchaseCurrency', 'supplierContact', 'vin', 'notes'].includes(key)) return 'commercial';
+  if (key && ['priceKind', 'amount', 'currency', 'includes', 'purchaseAmount', 'purchaseCurrency', 'supplierContact', 'vin', 'notes'].includes(key)) return 'commercial';
   return 'basics';
 }
 function issueForPath(path: string): FieldIssue {
@@ -72,9 +72,10 @@ export function VehicleEditorPage() {
   const { modal, message } = App.useApp();
   const dictionary = useVehicleDictionary();
   const [record, setRecord] = useState<AdminVehicle | null>(null);
-  const [publishTarget, setPublishTarget] = useState<HTMLDivElement | null>(null);
   const [previewLocale, setPreviewLocale] = useState<Locale>('zh');
   const [previewReceipt, setPreviewReceipt] = useState<ConfirmPublicationPreviewRequest | null>(null);
+  const [publicationReadiness, setPublicationReadiness] = useState<PublishReadiness | null>(null);
+  const [publicationTranslationFocus, setPublicationTranslationFocus] = useState<PublicationTranslationFocus | null>(null);
   const acceptedRecord = useRef<AdminVehicle | null>(null);
   const reportRefresh = useRef<AbortController | null>(null);
   const reportSession = useRef(0);
@@ -279,6 +280,13 @@ export function VehicleEditorPage() {
     if (tab === 'localization') setLocalizationOpened(true);
   }
 
+  function focusPublicationIssue(issue: PublicationIssue) {
+    if (issue.stage === 'localization' && record) {
+      setPublicationTranslationFocus({ issue, vehicleId: record.id, version: record.version });
+      openTab('localization');
+    } else focusIssue(issueForPath(issue.path));
+  }
+
   function clearPowertrain() {
     const config = configurationState.value;
     const rows = config?.items.filter(item => item.name.normalize('NFKC').trim() !== '动力类型');
@@ -475,7 +483,8 @@ export function VehicleEditorPage() {
           <Space.Compact className={styles.fullWidth}><Select id="modelName" aria-label="车型" showSearch optionFilterProp="label" allowClear placeholder={form.makeId ? '搜索该品牌车型' : '请先选择品牌'} value={form.modelId || undefined} disabled={locked || !form.makeId} loading={dictionary.loading} options={identityOptions('model')} onChange={value => chooseIdentity('model', value)} className={styles.flexSelect} /><Button icon={<PlusOutlined />} aria-label="新增车型" disabled={locked || !form.makeId} onClick={() => { setNewIdentity('model'); setNewName(''); setNameError(''); }}>新增</Button></Space.Compact>
         </Form.Item></Col>
         <Col xs={24} md={16}>{textField('title', { label: '标题原文', placeholder: '填写中文车型标题，保存后生成英俄译文' })}</Col>
-        {form.titleLanguage.split('-')[0] !== 'zh' && <Col span={24}><Alert showIcon type="warning" title="请先将历史标题整理为中文" description="在基础资料修改标题后再保存，之后即可生成英俄译文。" /></Col>}
+        {form.titleLanguage.split('-')[0] !== 'zh' && <Col span={24}><Alert showIcon type="info" title="历史标题的原文语言未标为中文" description="如需更新中文展示，可在这里填写并保存中文标题。" /></Col>}
+        <Col span={24}>{textField('description', { multiline: true, label: '车况描述', hint: '请使用中文描述车辆外观、内饰、维修及已知问题，将用于公开展示，发布时必填。' })}{form.descriptionLanguage.split('-')[0] !== 'zh' && <Alert showIcon type="info" title="历史车况的原文语言未标为中文" description="如需更新中文展示，可在这里填写并保存中文车况。" />}</Col>
         <Col xs={24} md={12}>{textField('trimName', { label: '配置名称', maxLength: 120, placeholder: '如长续航版、尊贵版' })}</Col>
         <Col xs={24} md={12}><Form.Item label="年款" htmlFor="modelYear" required={required('modelYear')} extra="年款与制造日期分别记录。">
           <DatePicker id="modelYear" aria-label="年款" picker="year" format="YYYY" inputReadOnly value={form.modelYear ? dayjs(form.modelYear) : null}
@@ -541,29 +550,35 @@ export function VehicleEditorPage() {
         <Col xs={24} md={12}>{textField('supplierContact', { maxLength: 1000 })}</Col><Col xs={24} md={12}>{textField('vin', { maxLength: 17 })}</Col>
       </Row>
     </Card>
-    <Card title="车况描述与内部备注" className={styles.card}>
+    <Card title="内部备注" className={styles.card}>
       <Row gutter={[24, 0]}>
-        <Col span={24}>{textField('description', { multiline: true, label: '车况描述', hint: '请使用中文描述车辆外观、内饰、维修及已知问题，将用于公开展示，发布时必填。' })}{form.descriptionLanguage.split('-')[0] !== 'zh' && <Alert showIcon type="warning" title="请先将历史车况描述整理为中文，再保存生成翻译" />}</Col>
         <Col span={24}>{textField('notes', { multiline: true, hint: '仅员工可见。' })}</Col>
       </Row>
     </Card>
   </div>;
   const images = <div data-editor-section="images" tabIndex={-1}>{externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}{record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} value={extras.media} savedMediaIds={base.media.map(media => media.id)} onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }} onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || conflict || externalSourceChanged} /> : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}</div>;
+  const currentPublicationIssues = record && publicationReadiness?.vehicleId === record.id && publicationReadiness.vehicleVersion === record.version
+    ? publicationReadiness.issues.filter(issue => issue.stage === 'localization') : [];
   const localization = <div className={styles.sectionStack} data-editor-section="localization" tabIndex={-1}>
     {record && localizationOpened ? <VehicleTranslationWorkspace key={record.id} vehicle={record} hasUnsavedChanges={coreDirty}
+      active={activeTab === 'localization'} publicationIssues={currentPublicationIssues} publicationFocus={publicationTranslationFocus}
       disabled={saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || conflict} onGuardChange={localizationGuardChanged} onBusyChange={setTranslationBusy}
       canAdoptVehicle={vehicle => !!acceptedRecord.current && acceptedRecord.current.id === vehicle.id && !acceptedRecord.current.deletedAt && vehicle.version >= acceptedRecord.current.version}
       onVehicleUpdated={accept} onConflict={() => { setConflict(true); void loadRemote(); }} />
-      : <Alert showIcon type="info" title="先保存中文资料，再生成英俄译文" description="标题在基础资料填写，车况描述在价格与内部信息填写，这里会直接引用已保存内容。" />}
+      : <Alert showIcon type="info" title="先保存中文资料，再生成英俄译文" description="标题和车况描述在基础资料填写。多语页面引用已保存的原文。" />}
   </div>;
   const review = <div className={styles.sectionStack} data-editor-section="review" tabIndex={-1}>
     {record && activeTab === 'review' && <PublicationPreviewPanel vehicleId={record.id} version={record.version} locale={previewLocale} onLocaleChange={setPreviewLocale} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onRendered={setPreviewReceipt} />}
-    {record ? <VehicleActions publicationTabActive={activeTab === 'review'} publishTarget={publishTarget} previewLocale={previewLocale} previewReceipt={previewReceipt} onIssue={issue => { if (issue.stage === 'preview') { openTab('review'); } else focusIssue(issueForPath(issue.path)); }} vehicle={record} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onUpdated={acceptMutation} onConflict={() => { setConflict(true); void loadRemote(); }} onLocalizationIssue={() => { setLocalizationOpened(true);setActiveTab('localization'); }} onBusyChange={setActionsBusy} /> : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、多语和库存信息完善后，在这里检查预览并发布。" />}
+    {record ? <VehicleActions key={record.id} publicationTabActive={activeTab === 'review'} previewLocale={previewLocale} previewReceipt={previewReceipt}
+      onIssue={focusPublicationIssue} onReadinessChange={setPublicationReadiness} vehicle={record} hasUnsavedChanges={dirty}
+      disabled={saving || mediaBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onUpdated={acceptMutation}
+      onConflict={() => { setConflict(true); void loadRemote(); }} onBusyChange={setActionsBusy} />
+      : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、多语和库存信息完善后，在这里检查预览并发布。" />}
   </div>;
 
   return <section className={styles.page}>
     <Breadcrumb items={[{ title: <Link to="/vehicles">车辆工作台</Link> }, { title: record?.stockCode ?? '新建车辆' }]} />
-    <header className={styles.heading}><div><Typography.Text type="secondary">车辆资料</Typography.Text><h1>{id ? '编辑车辆草稿' : '新建车辆'}</h1><Typography.Paragraph type="secondary" className={styles.noMargin}>填完基础资料后可保存草稿，再继续填写后续资料。</Typography.Paragraph></div><Space wrap><Tag color={isDemo ? 'gold' : isExternal ? 'blue' : undefined}>{isDemo ? '展示样例，非实际库存' : isExternal ? '外部来源资料，非自有库存' : '真实车源录入'}</Tag>{record && <><Tag color={record.publicationState === 'published' ? 'green' : undefined}>{publicationLabels[record.publicationState]}</Tag><Tag>{isDemo ? '非实际库存' : isExternal ? '外部库存未知' : availabilityLabels[record.availability]}</Tag></>}<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/vehicles')}>返回车辆列表</Button><div ref={setPublishTarget}>{activeTab !== 'review' && <Button onClick={() => { openTab('review'); }}>进入发布预览</Button>}{!record && activeTab === 'review' && <Space orientation="vertical" size={4}><Button className={styles.publishIncomplete} disabled>请完善信息</Button><Button size="small" onClick={() => { setActiveTab("basics"); void message.info("可先保存草稿，再添加图片、完善多语并检查发布预览。"); }}>查看发布要求</Button></Space>}</div></Space></header>
+    <header className={styles.heading}><div><Typography.Text type="secondary">车辆资料</Typography.Text><h1>{id ? '编辑车辆草稿' : '新建车辆'}</h1><Typography.Paragraph type="secondary" className={styles.noMargin}>填完基础资料后可保存草稿，再继续填写后续资料。</Typography.Paragraph></div><Space wrap><Tag color={isDemo ? 'gold' : isExternal ? 'blue' : undefined}>{isDemo ? '展示样例，非实际库存' : isExternal ? '外部来源资料，非自有库存' : '真实车源录入'}</Tag>{record && <><Tag color={record.publicationState === 'published' ? 'green' : undefined}>{publicationLabels[record.publicationState]}</Tag><Tag>{isDemo ? '非实际库存' : isExternal ? '外部库存未知' : availabilityLabels[record.availability]}</Tag></>}<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/vehicles')}>返回车辆列表</Button><div>{activeTab !== 'review' && <Button onClick={() => { openTab('review'); }}>进入发布预览</Button>}</div></Space></header>
     {record && <Card size="small" title="操作追溯" extra={<Button onClick={() => setHistoryOpen(true)}>操作记录</Button>}><ActivitySummary activity={record.activity} external={record.draft.source.kind === 'external'} /></Card>}
     <ActivityHistory target={historyOpen && record ? { kind: 'vehicle', id: record.id, label: record.stockCode } : null} onClose={() => setHistoryOpen(false)} />
     {record && <Descriptions size="small" column={{ xs: 1, sm: 2, lg: 3 }} className={styles.metadata} items={[{ key: 'version', label: '草稿版本', children: record.version }, { key: 'updated', label: '最近修改', children: formatTime(record.updatedAt) }, { key: 'checked', label: '库存核验', children: isDemo ? '不适用（展示样例）' : isExternal ? '不适用（外部来源）' : formatTime(record.availabilityCheckedAt) }, ...(sourceReportUrl ? [{ key: 'report', label: '来源报告', children: <SourceReportLink url={sourceReportUrl} /> }] : [])]} />}

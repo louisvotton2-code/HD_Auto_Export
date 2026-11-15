@@ -12,6 +12,10 @@
 .factFields > * { min-width: 0; }
 .factFields :global(.ant-select) { width: 100%; }
 .saveRow { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 8px; }
+.gapHint { margin: 0 0 4px; }
+.gapList { margin: 0; padding-inline-start: 20px; }
+.gapLink { display: inline; height: auto; padding-inline: 0; text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.publicationIssueReason { color: #716b5f; margin-bottom: 6px; }
 .comparisonText { white-space: pre-wrap; overflow-wrap: anywhere; }
 .plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
 .plan :global(.ant-typography) { margin-bottom: 0; }

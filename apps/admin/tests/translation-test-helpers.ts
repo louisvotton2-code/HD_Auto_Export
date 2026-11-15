@@ -10,9 +10,9 @@ export async function openWorkspace(page: Page, id: string) {
   await expect(page.getByLabel('标题原文（只读）', { exact: true })).toBeVisible();
 }
 /** Creating an estimate never authorizes a paid generation. Call confirmPlan separately. */
-export async function requestPlan(page: Page) {
+export async function requestPlan(page: Page, button = planButton(page)) {
   const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/translation-plans'));
-  await planButton(page).click();
+  await button.click();
   const result = await response; expect(result.status()).toBe(200);
   const plan = TranslationPlanResponseSchema.parse(await result.json()).data;
   await expect(page.getByTestId('translation-plan-confirmation')).toBeVisible();

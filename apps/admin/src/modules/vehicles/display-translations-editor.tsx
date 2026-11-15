@@ -1,6 +1,7 @@
 import { getDisplayTextLimit, type DisplayField } from '@hd/contracts/admin';
 import { Collapse, Form, Input, Typography } from 'antd';
 import { useId } from 'react';
+import { needsManualChineseTranslation, translationLocales } from './translation-model';
 import { displayLocaleLabels, editDisplayTranslation } from './vehicle-localization-model';
 import styles from './display-translations-editor.module.css';
 
@@ -13,6 +14,8 @@ export type DisplayTranslationGroup = {
 export type DisplayTranslationsEditorProps = {
   groups: DisplayTranslationGroup[];
   savedFields: DisplayField[];
+  activeGroups: string[];
+  onGroupsChange: (groups: string[]) => void;
   disabled?: boolean;
   onChange: (field: DisplayField) => void;
   labelForField: (field: DisplayField) => string;
@@ -34,6 +37,7 @@ function DisplayFieldEditor({ field, saved, label, disabled, onChange }: FieldEd
   const sourceId = `${id}-source`;
   const headingId = `${id}-heading`;
   const chineseSource = field.sourceLanguage.split('-')[0].toLowerCase() === 'zh';
+  const shownLocales = saved && needsManualChineseTranslation(saved) ? translationLocales : targetLocales;
   const limit = getDisplayTextLimit(field.ref);
 
   return <section className={styles.field} aria-labelledby={headingId}>
@@ -45,28 +49,29 @@ function DisplayFieldEditor({ field, saved, label, disabled, onChange }: FieldEd
     </div>
     {!saved && <Typography.Paragraph className={styles.notice}>请先保存原文资料，再填写对应译文。</Typography.Paragraph>}
     <div className={styles.targets}>
-      {targetLocales.map(locale => {
+      {shownLocales.map(locale => {
         const translation = field.translations[locale];
         const inputId = `${id}-${locale}`;
         const helpId = `${inputId}-help`;
         return <div key={locale} className={styles.target}>
           <Form.Item label={`${displayLocaleLabels[locale]}${label}`} htmlFor={inputId}>
             <Input.TextArea id={inputId} aria-label={`${displayLocaleLabels[locale]}${label}`} aria-describedby={helpId}
+              data-translation-ref={field.ref} data-translation-locale={locale}
               value={translation?.text ?? ''} disabled={disabled || !saved} maxLength={limit}
               autoSize={{ minRows: 2, maxRows: 8 }} placeholder={`填写${displayLocaleLabels[locale]}译文`}
               onChange={event => { if (saved && !disabled) onChange(editDisplayTranslation(field, saved, locale, event.target.value)); }} />
           </Form.Item>
-          <div id={helpId} className={styles.provenance}>{translation ? kindLabels[translation.kind] : '尚无译文'} · 最多{limit}字</div>
+          <div id={helpId} className={styles.provenance}>{translation?.text.trim() ? kindLabels[translation.kind] : '尚无译文'} · 最多{limit}字</div>
         </div>;
       })}
     </div>
   </section>;
 }
 
-export function DisplayTranslationsEditor({ groups, savedFields, disabled = false, onChange, labelForField }: DisplayTranslationsEditorProps) {
+export function DisplayTranslationsEditor({ groups, savedFields, activeGroups, onGroupsChange, disabled = false, onChange, labelForField }: DisplayTranslationsEditorProps) {
   const savedByRef = new Map(savedFields.map(field => [field.ref, field]));
 
-  return <Collapse className={styles.groups} defaultActiveKey={[]} items={groups.map(group => ({
+  return <Collapse className={styles.groups} activeKey={activeGroups} onChange={onGroupsChange} items={groups.map(group => ({
     key: group.id,
     label: <span className={styles.groupLabel}><span>{group.label}</span><span className={styles.count}>{group.fields.length}项</span></span>,
     children: group.fields.length ? <div className={styles.fields}>{group.fields.map(field => <DisplayFieldEditor

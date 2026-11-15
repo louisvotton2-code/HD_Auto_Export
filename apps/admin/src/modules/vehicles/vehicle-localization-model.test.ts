@@ -42,8 +42,9 @@ describe('独立公开展示资料的编辑与保存', () => {
     expect(edited.translations.en).toMatchObject({ kind: 'human', engineVersion: null, reviewStatus: 'pending', humanEditVersion: 7 });
     const cleared = editDisplayTranslation(edited, saved, 'en', '');expect(cleared.translations.en).toBeNull();
     expect(editDisplayTranslation(cleared, saved, 'en', 'Restored input').translations.en?.humanEditVersion).toBe(7);
+    expect(editDisplayTranslation(cleared, saved, 'en', saved.translations.en!.text)).toEqual(saved);
     const original = editDisplayTranslation({ ...saved, translations: { ...saved.translations, zh: null } }, saved, 'zh', saved.sourceText);
-    expect(original.translations.zh).toMatchObject({ kind: 'original', reviewStatus: 'pending', humanEditVersion: saved.translations.zh!.humanEditVersion });
+    expect(original.translations.zh).toEqual(saved.translations.zh);
   });
   it('明确审核旧译文改为当前来源版本，人工版本不自增', () => {
     const saved = makeVehicleLocalizationFixture().data.fields[0];saved.sourceVersion = 2;saved.translations.en!.reviewStatus = 'stale';

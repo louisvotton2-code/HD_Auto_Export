@@ -1,4 +1,5 @@
-import type { AdminVehicle, PublicationIssue } from '@hd/contracts/admin';
+import { DisplayRefSchema, type AdminVehicle, type DisplayField, type PublicationIssue } from '@hd/contracts/admin';
+import { displayFieldRefLabel, displayLocaleLabels } from './vehicle-localization-model';
 
 export type PublishIntent = {
   key: string;
@@ -45,6 +46,45 @@ export function publicationIssueLabel(path: string): string {
 export function publicationReadinessIssueLabel(issue: PublicationIssue): string {
   if (issue.stage === 'preview') return '发布预览：请检查并确认当前内容';
   return publicationIssueLabel(issue.path);
+}
+
+type PublicationTranslationTarget = { ref: string; language: 'zh' | 'en' | 'ru' | 'sourceLanguage' };
+
+export function publicationTranslationTarget(issue: PublicationIssue): PublicationTranslationTarget | null {
+  if (issue.stage !== 'localization') return null;
+  const path = issue.path.replace(/^draft\./, '');
+  const display = /^localization\.(.+)\.(zh|en|ru|sourceLanguage)$/.exec(path);
+  if (display && DisplayRefSchema.safeParse(display[1]).success)
+    return { ref: display[1]!, language: display[2] as PublicationTranslationTarget['language'] };
+  const body = /^content\.(title|description)\.(?:translations\.(zh|en|ru)(?:\.[a-zA-Z]+)?|(sourceLanguage))$/.exec(path);
+  return body ? { ref: `content.${body[1]}`, language: (body[2] ?? body[3]) as PublicationTranslationTarget['language'] } : null;
+}
+
+export function publicationIssueDetail(issue: PublicationIssue, vehicle: AdminVehicle, fields: readonly DisplayField[] = []) {
+  const target = publicationTranslationTarget(issue);
+  if (!target) {
+    const label = publicationReadinessIssueLabel(issue);
+    if (issue.stage === 'preview' && issue.code === 'PREVIEW_CONFIRMATION_REQUIRED') return { label, reason: '' };
+    const media = /^media\.([0-9a-f-]{36})(\.rights)?$/i.exec(issue.path.replace(/^draft\./, ''));
+    if (issue.stage === 'required_fields' && media) {
+      const id = media[1]!.toLowerCase();
+      const index = [...vehicle.draft.media].sort((a, b) => a.sortOrder - b.sortOrder).findIndex(image => image.id.toLowerCase() === id);
+      const name = index < 0 ? `图片（${media[1]}）` : `图片 ${index + 1}`;
+      const reason = issue.message === 'Every referenced image must be processed, readable and owned by this vehicle.'
+        ? '请确认该图片已处理、可以读取且属于当前车辆。'
+        : issue.message === 'External photos require provenance for this same listing.'
+          ? '请核对该图片来源是否对应当前挂牌。'
+          : issue.message === 'Declared image ownership or permission is required.'
+            ? '请核对该图片的权属或使用许可。' : `请核对字段 ${issue.path}。`;
+      return { label: `${name} · ${media[2] ? '来源与授权' : '处理状态'}`, reason };
+    }
+    return { label, reason: issue.stage === 'localization' || label === '车辆资料：请检查未满足的发布条件' ? `请核对字段 ${issue.path}。` : '' };
+  }
+  const name = target.ref === 'content.title' ? '车辆标题' : target.ref === 'content.description' ? '车况描述' : displayFieldRefLabel(target.ref, vehicle, fields);
+  const label = `${name} · ${target.language === 'sourceLanguage' ? '中文原文' : displayLocaleLabels[target.language]}`;
+  if (target.language === 'sourceLanguage') return { label, reason: '请核对并确认当前原文为中文，再保存多语资料。' };
+  if (target.language === 'zh') return { label, reason: '请补齐并保存中文内容。' };
+  return { label, reason: '请补齐这一语言的译文。' };
 }
 
 /** A later rejection cannot prove that an earlier response-lost publish never committed. */

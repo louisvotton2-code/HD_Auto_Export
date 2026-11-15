@@ -36,6 +36,5 @@
 }
 @media (max-width: 380px) { .saveBar { flex-wrap: wrap; }.saveBar > button { width: 100%; }.saveHint { max-width: none; } }
 
-.publishIncomplete:disabled { color: #a61d24; background: #fff1f0; border-color: #ffa39e; }
 
 .nextBar { display: flex; justify-content: flex-end; margin-top: 16px; }

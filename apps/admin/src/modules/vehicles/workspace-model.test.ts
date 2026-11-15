@@ -47,7 +47,7 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
     expect(() => translationPlanConfirmation(plan, Date.parse(plan.expiresAt))).toThrow('过期');
     expect(() => translationPlanConfirmation({ ...plan, provider: 'disabled', engineVersion: null }, Date.parse(plan.createdAt))).toThrow('尚未启用');
   });
-  it('计划只接受当前已声明中文的持久字段，错误源hash或展示修订不能采用', async () => {
+  it('计划只接受当前保存字段，错误源哈希或展示修订不能采用', async () => {
     const { bundle, plan } = await setup();
     await expect(assertTranslationPlan(plan, bundle)).resolves.toBeUndefined();
     const wrongHash = structuredClone(plan); wrongHash.fields[0]!.sourceHash = '0'.repeat(64);
@@ -56,6 +56,66 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
     const oldLanguage = structuredClone(bundle); oldLanguage.localization.data.fields[0]!.sourceLanguage = 'und';
     oldLanguage.sourceLanguageConfirmationRequired = ['model'];
     await expect(assertTranslationPlan(plan, oldLanguage)).rejects.toThrow('没有覆盖');
+  });
+  it('旧 en 和 und 来源标签可以补译及恢复，原文槽和来源保护照常生效', async () => {
+    const { bundle, plan, result } = await setup();
+    const title = bundle.vehicle.draft.content.title;
+    title.sourceLanguage = 'en';
+    plan.fields[0]!.sourceHash = result.fields[0]!.sourceHash = await translationSourceHash('en', title.sourceText);
+    const display = bundle.localization.data.fields[0]!;
+    display.sourceLanguage = 'und';
+    display.sourceHash = plan.fields[1]!.sourceHash = result.fields[1]!.sourceHash = '3'.repeat(64);
+    for (const field of [...plan.fields, ...result.fields]) field.targets = ['en', 'ru'];
+
+    await expect(assertTranslationPlan(plan, bundle, true)).resolves.toBeUndefined();
+    const applied = await applyTranslationPlanResult(plan, bundle, workspaceData(bundle), bundle, result);
+    expect(applied.applied).toBe(4);
+    expect(applied.data.content.title).toMatchObject({ sourceLanguage: 'en', translations: { zh: null, ru: result.fields[0]!.translations.ru } });
+    expect(applied.data.localization.fields[0]).toMatchObject({ sourceLanguage: 'und', translations: { zh: null, en: result.fields[1]!.translations.en } });
+
+    const refreshed = structuredClone(bundle);
+    refreshed.vehicle.version++;
+    refreshed.localization.vehicleVersion = refreshed.vehicle.version;
+    refreshed.localization.revision++;
+    const adoptionBase = { vehicleVersion: refreshed.vehicle.version, localizationRevision: refreshed.localization.revision };
+    const recovered = await applyTranslationPlanResult(plan, refreshed, workspaceData(refreshed), refreshed, result, [], adoptionBase);
+    expect(recovered.applied).toBe(4);
+    refreshed.vehicle.draft.content.title.sourceLanguage = 'und';
+    const rebound = await applyTranslationPlanResult(plan, refreshed, workspaceData(refreshed), refreshed, result, [], adoptionBase);
+    expect(rebound.applied).toBe(2);
+    expect(rebound.data.content.title.translations.ru).toBeNull();
+  });
+  it('缺项续译拒绝包含有效或受保护译文的计划', async () => {
+    const { bundle, plan, result } = await setup();
+    await expect(assertTranslationPlan(plan, bundle, true)).rejects.toThrow('未标明每项待译语言');
+    const explicitPlan = TranslationPlanSchema.parse({
+      ...plan, fields: plan.fields.map(field => ({ ...field, targets: ['en', 'ru'] })),
+    });
+    bundle.vehicle.draft.content.title.translations.en = { ...result.fields[0]!.translations.en! };
+    await expect(assertTranslationPlan(explicitPlan, bundle, true)).rejects.toThrow('已有或受保护');
+    const remaining = TranslationPlanSchema.parse({
+      ...plan,
+      fields: [{ ...explicitPlan.fields[0], targets: ['ru'] }, explicitPlan.fields[1]],
+      estimate: { ...plan.estimate, maximumCharacters: 12, maximumRequests: 3 },
+    });
+    await expect(assertTranslationPlan(remaining, bundle, true)).resolves.toBeUndefined();
+    const incomplete = TranslationPlanSchema.parse({
+      ...remaining, fields: [], estimate: { ...remaining.estimate, maximumCharacters: 0, maximumRequests: 0 },
+    });
+    await expect(assertTranslationPlan(incomplete, bundle, true)).rejects.toThrow('遗漏待译项目');
+    const historical = structuredClone(bundle);
+    historical.vehicle.draft.content.title.translations.en = {
+      ...result.fields[0]!.translations.en!, kind: 'original', engineVersion: null,
+    };
+    await expect(assertTranslationPlan(remaining, historical, true)).resolves.toBeUndefined();
+    result.fields[0]!.targetHumanEditVersions.en = 0;
+    const corrected = await applyTranslationPlanResult(explicitPlan, historical, workspaceData(historical), historical,
+      { ...result, fields: result.fields.map(field => ({ ...field, targets: ['en', 'ru'] })) });
+    expect(corrected.data.content.title.translations.en?.kind).toBe('original');
+    bundle.vehicle.draft.content.title.translations.ru = {
+      ...result.fields[0]!.translations.ru!, kind: 'human', engineVersion: null, reviewStatus: 'stale',
+    };
+    await expect(assertTranslationPlan(remaining, bundle, true)).rejects.toThrow('已有或受保护');
   });
   it('完整与部分结果直接填入pending建议，缺失目标保留原内容，已过期计划仍可只读采用当前源的结果', async () => {
     const { bundle, plan, result } = await setup();
@@ -71,6 +131,28 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
     expect(adopted.applied).toBe(3); expect(adopted.missing).toBe(1);
     expect(adopted.data.content.title.translations.ru).toEqual(bundle.vehicle.draft.content.title.translations.ru);
     expect(adopted.data.localization.fields[0]!.translations.ru?.kind).toBe('machine');
+  });
+  it('旧回执只填当前版本下仍为空、且来源与人工编辑版本匹配的译文', async () => {
+    const { bundle, plan, result } = await setup();
+    const current = structuredClone(bundle);
+    current.vehicle.version++;
+    current.localization.vehicleVersion = current.vehicle.version;
+    current.localization.revision++;
+    current.vehicle.draft.content.title.translations.en = {
+      ...result.fields[0]!.translations.en!, text: '已保存的文字', kind: 'human', humanEditVersion: 3, engineVersion: null,
+    };
+    current.localization.data.fields[0]!.sourceHash = '3'.repeat(64);
+    const adoptionBase = { vehicleVersion: current.vehicle.version, localizationRevision: current.localization.revision };
+    const adopted = await applyTranslationPlanResult(plan, current, workspaceData(current), current, result, [], adoptionBase);
+    expect(adopted.applied).toBe(1);
+    expect(adopted.data.content.title.translations).toEqual({
+      zh: null, en: current.vehicle.draft.content.title.translations.en, ru: result.fields[0]!.translations.ru,
+    });
+    expect(adopted.data.localization.fields[0]!.translations).toEqual({ zh: null, en: null, ru: null });
+    expect(workspaceSaveRequest(current, adopted.data)).toMatchObject({ version: adoptionBase.vehicleVersion, localizationRevision: adoptionBase.localizationRevision });
+    await expect(applyTranslationPlanResult(plan, current, workspaceData(current), current, result, [], {
+      ...adoptionBase, localizationRevision: adoptionBase.localizationRevision - 1,
+    })).rejects.toThrow('没有覆盖');
   });
   it('人工修改和已核对内容完整保留，包括原目标人工版本', async () => {
     const { bundle, plan, result } = await setup();
@@ -157,7 +239,7 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
   });
 });
 
-it('requires both current translations for every saved source, allowing generated Chinese', async () => {
+it('counts only empty slots for saved sources, allowing generated Chinese', async () => {
   const { bundle } = await setup();
   const data = workspaceData(bundle);
   expect(workspaceTranslationGaps(bundle, data).every(gap => gap.ref !== 'content.description')).toBe(true);
@@ -176,8 +258,7 @@ it('requires both current translations for every saved source, allowing generate
   }
   expect(workspaceTranslationGaps(bundle, data)).toEqual([]);
   data.content.title.translations.ru!.reviewStatus = 'stale';
-  data.localization.fields[0]!.translations.en = null;
-  expect(workspaceTranslationGaps(bundle, data)).toEqual([
-    { ref: 'content.title', locale: 'ru' }, { ref: 'model', locale: 'en' },
-  ]);
+  data.content.title.translations.ru!.sourceVersion = 1;
+  data.localization.fields[0]!.translations.en!.text = ' \t\n';
+  expect(workspaceTranslationGaps(bundle, data)).toEqual([{ ref: 'model', locale: 'en' }]);
 });

@@ -1,7 +1,7 @@
 /** Synthetic server state validated by the official contract. No provider or real API is used. */
 import { createHash } from 'node:crypto';
 import {
-  TranslationPlanSchema, TranslationPlanResultSchema, VehicleTranslationBundleSchema, translationRequestCount, getTranslationPlanTextLimit,
+  TranslationPlanSchema, TranslationPlanResultSchema, VehicleTranslationBundleSchema, translationRequestCount, getTranslationPlanTextLimit, TRANSLATION_PLAN_TARGETS,
   type AdminVehicle, type VehicleLocalization, type VehicleTranslationBundle, type TranslationPlan, type TranslatableField,
 } from '@hd/contracts/admin';
 
@@ -22,22 +22,29 @@ export function bundleField(bundle: VehicleTranslationBundle, ref: string): Tran
   return field;
 }
 
-export function translationPlan(bundle: VehicleTranslationBundle, id = '70000000-0000-4000-8000-000000000001'): TranslationPlan {
-  const fields = [
+export function translationPlan(bundle: VehicleTranslationBundle, id = '70000000-0000-4000-8000-000000000001', scope?: 'missing'): TranslationPlan {
+  const sources: TranslationPlan['fields'] = [
     ...(['title', 'description'] as const).flatMap(name => {
       const source = bundle.vehicle.draft.content[name];
       return source.sourceText ? [{ ref: `content.${name}`, sourceText: source.sourceText, sourceVersion: source.sourceVersion,
-        sourceHash: syntheticHash([source.sourceLanguage, source.sourceText]), mode: 'translate', sourceCharacters: source.sourceText.length }] : [];
+        sourceHash: syntheticHash([source.sourceLanguage, source.sourceText]), mode: 'translate' as const, sourceCharacters: source.sourceText.length }] : [];
     }),
     ...bundle.localization.data.fields.map(field => ({ ref: field.ref, sourceText: field.sourceText, sourceVersion: field.sourceVersion,
-      sourceHash: field.sourceHash, mode: 'translate', sourceCharacters: field.sourceText.length })),
+      sourceHash: field.sourceHash, mode: 'translate' as const, sourceCharacters: field.sourceText.length })),
   ];
+  const fields = sources.flatMap(field => {
+    if (scope !== 'missing') return [field];
+    const source = bundleField(bundle, field.ref);
+    const targets = TRANSLATION_PLAN_TARGETS.filter(locale => !source.translations[locale]?.text.trim());
+    return targets.length ? [{ ...field, targets }] : [];
+  });
+  const byTarget = (field: TranslationPlan['fields'][number]) => (field.targets ?? TRANSLATION_PLAN_TARGETS).length;
   const now = Date.now();
   return TranslationPlanSchema.parse({ id, vehicleId: bundle.vehicle.id, vehicleVersion: bundle.vehicle.version,
-    localizationRevision: bundle.localization.revision, sourceFingerprint: syntheticHash([bundle.vehicle.version, bundle.vehicle.draft.content, bundle.vehicle.draft.configuration ?? null, bundle.localization]),
+    localizationRevision: bundle.localization.revision, sourceFingerprint: syntheticHash([bundle.vehicle.version, bundle.vehicle.draft.content, bundle.vehicle.draft.configuration ?? null, bundle.localization, scope]),
     sourceLanguage: 'zh', targetLocales: ['en', 'ru'], provider: 'libretranslate', engineVersion: 'fixture-machine-translation-v1', fields,
-    estimate: { characterBasis: 'utf16_upper_bound', maximumCharacters: fields.reduce((sum, field) => sum + field.sourceCharacters * 2, 0),
-      maximumRequests: fields.reduce((sum, field) => sum + translationRequestCount(field.sourceText) * 2, 0), hourlyCharacterLimit: 50_000,
+    estimate: { characterBasis: 'utf16_upper_bound', maximumCharacters: fields.reduce((sum, field) => sum + field.sourceCharacters * byTarget(field), 0),
+      maximumRequests: fields.reduce((sum, field) => sum + translationRequestCount(field.sourceText) * byTarget(field), 0), hourlyCharacterLimit: 50_000,
       cost: { status: 'unknown', amount: null, currency: null, freeAllowanceCharacters: null } },
     createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 600_000).toISOString() });
 }
@@ -49,11 +56,13 @@ export function translationResult(bundle: VehicleTranslationBundle, plan = trans
       const source = bundleField(bundle, field.ref);
       const targetHumanEditVersions = { zh: source.translations.zh?.humanEditVersion ?? null,
         en: source.translations.en?.humanEditVersion ?? null, ru: source.translations.ru?.humanEditVersion ?? null };
-      return { ...field, targetHumanEditVersions, translations: Object.fromEntries((['zh', 'en', 'ru'] as const).map(locale => [locale, {
+      return { ...field, targetHumanEditVersions, translations: Object.fromEntries((['zh', 'en', 'ru'] as const).map(locale => [locale,
+        locale !== 'zh' && !(field.targets ?? TRANSLATION_PLAN_TARGETS).includes(locale) ? null : {
         text: locale === 'zh' ? field.sourceText : locale === 'en' ? field.ref === 'content.title' ? 'Machine generated title' : field.ref === 'content.description' ? 'Machine generated description' : `Synthetic English ${field.ref}`.slice(0, getTranslationPlanTextLimit(field.ref))
           : field.ref === 'content.title' ? 'Машинный заголовок' : field.ref === 'content.description' ? 'Машинное описание' : `Тестовый перевод ${field.ref}`.slice(0, getTranslationPlanTextLimit(field.ref)),
         kind: locale === 'zh' ? 'original' : 'machine', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
-        humanEditVersion: targetHumanEditVersions[locale] ?? 0, engineVersion: locale === 'zh' ? null : plan.engineVersion,
+        humanEditVersion: targetHumanEditVersions[locale] ?? 0,
+        engineVersion: locale === 'zh' ? null : field.catalogTargets?.includes(locale) ? plan.catalogVersion : plan.engineVersion,
       }])) };
     }) });
 }

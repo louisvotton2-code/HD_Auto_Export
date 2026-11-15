@@ -131,10 +131,10 @@ export function usePublicationReadiness(options: Options) {
     return () => clearTimeout(timer);
   }, [ready, key, reload]);
 
-  function isPublishReady() {
+  function isPublishReady(receipt: ConfirmPublicationPreviewRequest) {
     const latest = snapshotRef.current;
-    return latest.key === current.current.key && !latest.loading && !latest.error && !!latest.data?.canPublish
-      && latest.data.vehicleVersion === current.current.version && publicationConfirmationIsCurrent(latest.data);
+    return latest.key === current.current.key && !latest.error && !!latest.data?.canPublish
+      && publicationReceiptMatches(latest.data, receipt) && publicationConfirmationIsCurrent(latest.data);
   }
   return {
     ready, loading: snapshot.key !== key || snapshot.loading, confirming: snapshot.key === key && snapshot.confirming,

@@ -6,6 +6,8 @@ import {
 import { translationSourceHash } from './machine-translation-model';
 
 export type TranslationWorkspaceData = Pick<SaveVehicleTranslationBundle, 'content' | 'localization' | 'sourceLanguageConfirmations'>;
+export type TranslationResultTarget = Pick<TranslationPlanResult['failures'][number], 'ref' | 'targetLocale'>;
+type AdoptionBase = { vehicleVersion: number; localizationRevision: number };
 const locales = ['zh', 'en', 'ru'] as const;
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -21,16 +23,17 @@ export function workspaceDirty(base: VehicleTranslationBundle | null, data: Tran
   return !!base && !!data && !equal(workspaceData(base), data);
 }
 
+function hasTranslationText(field: TranslationWorkspaceData['content']['title'], locale: 'en' | 'ru') {
+  return !!field.translations[locale]?.text.trim();
+}
+
 /** Check editable targets for every current source; Chinese is derived on save. */
 export function workspaceTranslationGaps(base: VehicleTranslationBundle, data: TranslationWorkspaceData) {
   const missing: { ref: string; locale: 'en' | 'ru' }[] = [];
   const check = (ref: string, field: TranslationWorkspaceData['content']['title']) => {
     if (!field.sourceText?.trim()) return;
     for (const locale of ['en', 'ru'] as const) {
-      const value = field.translations[locale];
-      if (!value?.text.trim() || value.sourceVersion !== field.sourceVersion || value.reviewStatus === 'stale') {
-        missing.push({ ref, locale });
-      }
+      if (!hasTranslationText(field, locale)) missing.push({ ref, locale });
     }
   };
   check('content.title', data.content.title);
@@ -98,53 +101,107 @@ function fieldFor(bundle: VehicleTranslationBundle, ref: string) {
   return bundle.localization.data.fields.find(field => field.ref === ref);
 }
 
-export async function assertTranslationPlan(planInput: TranslationPlan, base: VehicleTranslationBundle) {
+export function translationSourceUnchanged(before: VehicleTranslationBundle, after: VehicleTranslationBundle, ref: string) {
+  const previous = fieldFor(before, ref), next = fieldFor(after, ref);
+  return !!previous && !!next && previous.sourceVersion === next.sourceVersion && previous.sourceLanguage === next.sourceLanguage &&
+    previous.sourceText === next.sourceText && (!('sourceHash' in previous) || ('sourceHash' in next && previous.sourceHash === next.sourceHash));
+}
+
+export function translationPlanTargets(field: TranslationPlan['fields'][number]) {
+  return field.targets ?? (['en', 'ru'] as const);
+}
+
+export function translationPlanUsesSupplier(plan: TranslationPlan) {
+  return plan.estimate.cost.status !== 'no_supplier_calls';
+}
+
+export async function assertTranslationPlan(planInput: TranslationPlan, base: VehicleTranslationBundle, missingOnly = false) {
   const plan = TranslationPlanSchema.parse(planInput);
   if (plan.vehicleId !== base.vehicle.id || plan.vehicleVersion !== base.vehicle.version || plan.localizationRevision !== base.localization.revision ||
       base.vehicle.deletedAt || base.sourceLanguageConfirmationRequired.length) throw new TranslationWorkspaceChanged();
+  const savedData = missingOnly ? workspaceData(base) : null;
+  const pending = savedData
+    ? new Set(workspaceTranslationGaps(base, savedData).map(({ ref, locale }) => `${ref}:${locale}`))
+    : null;
   for (const planned of plan.fields) {
     const source = fieldFor(base, planned.ref);
-    if (!source || source.sourceLanguage.split('-')[0].toLowerCase() !== 'zh' || source.sourceText !== planned.sourceText || source.sourceVersion !== planned.sourceVersion)
+    if (!source || source.sourceText !== planned.sourceText || source.sourceVersion !== planned.sourceVersion)
       throw new TranslationWorkspaceChanged();
     const hash = 'sourceHash' in source ? source.sourceHash : await translationSourceHash(source.sourceLanguage, source.sourceText);
     if (hash !== planned.sourceHash) throw new TranslationWorkspaceChanged();
+    if (pending) {
+      if (!planned.targets?.length) throw new Error('续译计划未标明每项待译语言，请重新生成缺项计划。');
+      if (planned.targets.some(locale => !pending.delete(`${planned.ref}:${locale}`)))
+        throw new Error('续译计划包含已有或受保护的译文，请重新生成缺项计划。');
+    }
   }
+  if (pending?.size) throw new Error('续译计划遗漏待译项目，请重新生成缺项计划。');
 }
 
 export function translationPlanConfirmation(plan: TranslationPlan, now = Date.now()) {
+  if (!plan.fields.length) throw new Error('当前没有可生成的译文。');
   if (Date.parse(plan.expiresAt) <= now) throw new TranslationWorkspaceChanged('翻译计划已过期，请重新查看范围和费用后确认。');
-  if (plan.provider === 'disabled') throw new Error('翻译服务尚未启用，不能开始生成。');
+  const usesSupplier = translationPlanUsesSupplier(plan);
+  if (usesSupplier && plan.provider === 'disabled') throw new Error('翻译服务尚未启用，不能开始生成。');
   return GenerateTranslationPlanRequestSchema.parse({ confirmed: true, sourceFingerprint: plan.sourceFingerprint,
-    maximumCharacters: plan.estimate.maximumCharacters, acceptUnknownCost: true });
+    maximumCharacters: plan.estimate.maximumCharacters, acceptUnknownCost: usesSupplier });
 }
 
 export async function applyTranslationPlanResult(
   plan: TranslationPlan, base: VehicleTranslationBundle, current: TranslationWorkspaceData,
-  fresh: VehicleTranslationBundle, resultInput: TranslationPlanResult,
+  fresh: VehicleTranslationBundle, resultInput: TranslationPlanResult, blockedTargets: readonly TranslationResultTarget[] = [],
+  adoptionBase?: AdoptionBase,
 ): Promise<{ data: TranslationWorkspaceData; applied: number; protected: number; missing: number }> {
   assertWorkspaceSnapshot(base, fresh);
   if (workspaceDirty(base, current)) throw new TranslationWorkspaceChanged();
-  await assertTranslationPlan(plan, fresh);
+  if (adoptionBase) {
+    if (plan.vehicleId !== fresh.vehicle.id || fresh.vehicle.deletedAt || fresh.sourceLanguageConfirmationRequired.length ||
+        adoptionBase.vehicleVersion !== fresh.vehicle.version || adoptionBase.localizationRevision !== fresh.localization.revision ||
+        plan.vehicleVersion > adoptionBase.vehicleVersion || plan.localizationRevision > adoptionBase.localizationRevision)
+      throw new TranslationWorkspaceChanged();
+  } else await assertTranslationPlan(plan, fresh);
   const result = TranslationPlanResultSchema.parse(resultInput);
   if (result.planId !== plan.id || result.vehicleId !== plan.vehicleId || result.vehicleVersion !== plan.vehicleVersion ||
       result.localizationRevision !== plan.localizationRevision || result.sourceFingerprint !== plan.sourceFingerprint || result.fields.length !== plan.fields.length)
     throw new TranslationWorkspaceChanged();
   const data = workspaceData(fresh);
+  const blocked = new Set(blockedTargets.map(({ ref, targetLocale }) => `${ref}:${targetLocale}`));
   let applied = 0, protectedCount = 0, missing = 0;
   for (const next of result.fields) {
     const planned = plan.fields.find(field => field.ref === next.ref);
     const saved = fieldFor(fresh, next.ref);
-    if (!planned || !saved || next.sourceText !== planned.sourceText || next.sourceHash !== planned.sourceHash ||
-        next.sourceVersion !== planned.sourceVersion || next.mode !== planned.mode || next.sourceCharacters !== planned.sourceCharacters)
+    if (!planned || next.sourceText !== planned.sourceText || next.sourceHash !== planned.sourceHash ||
+        next.sourceVersion !== planned.sourceVersion || next.mode !== planned.mode || next.sourceCharacters !== planned.sourceCharacters ||
+        !equal(translationPlanTargets(next), translationPlanTargets(planned)) || !equal(next.catalogTargets, planned.catalogTargets))
       throw new TranslationWorkspaceChanged();
+    if (adoptionBase) {
+      if (!saved || saved.sourceText !== planned.sourceText || saved.sourceVersion !== planned.sourceVersion) continue;
+      const hash = 'sourceHash' in saved ? saved.sourceHash : await translationSourceHash(saved.sourceLanguage, saved.sourceText);
+      if (hash !== planned.sourceHash) continue;
+    }
+    if (!saved) throw new TranslationWorkspaceChanged();
     const target = next.ref === 'content.title' ? data.content.title : next.ref === 'content.description' ? data.content.description
       : data.localization.fields.find(field => field.ref === next.ref)!;
+    const targets = translationPlanTargets(planned);
     for (const locale of locales) {
       const prior = saved.translations[locale], translated = next.translations[locale];
-      if (next.targetHumanEditVersions[locale] !== (prior?.humanEditVersion ?? null)) throw new TranslationWorkspaceChanged();
-      if (translated && locale !== 'zh' && translated.engineVersion !== plan.engineVersion) throw new TranslationWorkspaceChanged();
+      // The result echoes its source as Chinese. Preserve the actual original slot on older language labels.
+      if (locale === 'zh' && (adoptionBase || saved.sourceLanguage.split('-')[0].toLowerCase() !== 'zh')) continue;
+      if (next.targetHumanEditVersions[locale] !== (prior?.humanEditVersion ?? null)) {
+        if (adoptionBase) continue;
+        throw new TranslationWorkspaceChanged();
+      }
+      if (locale !== 'zh' && !targets.includes(locale)) continue;
+      if (translated && locale !== 'zh') {
+        const engine = planned.catalogTargets?.includes(locale) ? plan.catalogVersion : plan.engineVersion;
+        if (translated.engineVersion !== engine) throw new TranslationWorkspaceChanged();
+      }
+      if (locale !== 'zh' && blocked.has(`${next.ref}:${locale}`)) { missing++; continue; }
       if (!translated) { if (locale !== 'zh') missing++; continue; }
-      if (prior?.kind === 'human' || prior?.reviewStatus === 'approved') { protectedCount++; continue; }
+      if (locale === 'zh' ? prior?.kind === 'human' || prior?.reviewStatus === 'approved' : hasTranslationText(saved, locale)) {
+        protectedCount++;
+        continue;
+      }
       // Result schema requires original Chinese and machine/pending targets with exact revisions.
       target.translations[locale] = structuredClone(translated);
       if (locale !== 'zh') applied++;
