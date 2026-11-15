@@ -72,7 +72,7 @@ test('a detail link reserves pending space, respects reduced motion and starts t
     await link.click();
     await expect(hint).toHaveAttribute('data-link-pending', 'true');
     expect(await hint.evaluate(node => node.getBoundingClientRect().width)).toBe(before);
-    expect(await hint.locator('[aria-hidden="true"]').evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+    await expect(hint.locator(':scope > span[aria-hidden="true"]')).toHaveCSS('animation-name', 'none');
   } finally {
     release();
   }

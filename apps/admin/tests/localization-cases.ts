@@ -38,7 +38,8 @@ test('localization public verification requests localized metadata and never fal
   const first = page.getByRole('row').filter({ hasText: 'I18N02-0' }); const legacy = page.getByRole('row').filter({ hasText: 'I18N02-1' });
   await expect(first).toContainText('English synthetic make English synthetic model');
   await expect(first).toContainText('English source platform');
-  await expect(legacy).toContainText('品牌未填写或待翻译'); await expect(legacy).toContainText('来源平台未填写或待翻译');
+  await expect(legacy).toContainText('品牌未填写或待翻译');
+  await expect(legacy.getByRole('link', { name: '原始挂牌 ↗', exact: true })).toHaveAttribute('href', 'https://example.invalid/synthetic-only');
   for (const row of [first, legacy]) {
     await expect(row.getByRole('img', { name: '车辆封面', exact: true })).toBeVisible();
     await expect(row.getByRole('link', { name: /查看数据/ })).toHaveAttribute('href', /[?]locale=en&view=localized$/);

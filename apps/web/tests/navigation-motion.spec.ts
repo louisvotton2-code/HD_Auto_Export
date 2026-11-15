@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
+import { fillNumericDate } from './helpers/numeric-date';
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
@@ -7,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}/`);
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.getByTestId('total')).toBeVisible();
+  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 }
 
 test('header, footer and guide use the preference entry while country links stay explicit', async ({
@@ -85,7 +86,11 @@ test('language navigation retains the country, importer and manual draft while u
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#importerType')).toHaveValue('company');
   await expect(page.locator('#price')).toHaveValue('215000');
-  await expect(page.locator('#transactionRate')).toHaveValue('12');
+  const rate = page.locator('#transactionRate');
+  await expect(rate).toHaveValue('12.00');
+  await rate.focus();
+  await expect(rate).toHaveValue('12');
+  await rate.blur();
   await expect(page.locator('.language-switch a[aria-current="page"]')).toHaveText('RU');
 });
 
@@ -121,7 +126,7 @@ test('an unfinished route shows inline feedback without blocking the current cal
     expect(Math.abs(pending!.width - before!.width)).toBeLessThanOrEqual(1);
     await page.locator('#price').fill('225000');
     await expect(page.locator('#price')).toHaveValue('225000');
-    await expect(page.getByTestId('total')).toBeVisible();
+    await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 
     release();
     await expect(page).toHaveURL(/\/zh\/buy\/$/);
@@ -169,6 +174,7 @@ test('rapidly reversing a fee disclosure keeps the latest state and both currenc
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await openCalculator(page, 'uzbekistan');
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   const row = page.locator('.fee-line').first();
   const toggle = row.getByTestId('fee-detail-toggle');
   const panelId = await toggle.getAttribute('aria-controls');
@@ -202,6 +208,7 @@ test('reduced motion keeps route, result and disclosure interactions immediately
 }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openCalculator(page, 'uzbekistan');
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await page.locator('#price').fill('215000');
   const toggle = page.getByTestId('fee-detail-toggle').first();
   const panelId = await toggle.getAttribute('aria-controls');

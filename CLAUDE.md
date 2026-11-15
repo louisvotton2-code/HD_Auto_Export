@@ -1,3 +1,3 @@
 @AGENTS.md
 
-先阅读 [Claude Code 交接](docs/协作/Claude-Code-交接.md)，按本次职责进入对应文档。产品范围、测试和提交规则以仓库公共入口为准。
+Claude Code 从 [docs/README.md](docs/README.md) 进入同一套规则、角色任务与技术资料；指定私有交接材料时按本轮授权读取。

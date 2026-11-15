@@ -238,7 +238,8 @@ test('three-language source fallback and USD remain consistent in the normal con
     await page.setViewportSize({ width: locale === 'zh' ? 1440 : locale === 'en' ? 390 : 320, height: 1000 });
     await setPublicFixtureState(request, { usdRateAvailable: true });
     await page.goto(`/${locale}/cars/${externalFixtureId(2)}/`);
-    await expect(page.locator('main h1')).toHaveAttribute('lang', 'zh');
+    await expect(page.locator('main h1')).toHaveAttribute('lang', 'en');
+    await expect(page.locator('main h1')).toHaveText('Toyota 2024');
     await expect(page.locator('main [data-vehicle-original-price]').first()).toContainText('¥');
     await expect(page.locator('main [data-vehicle-usd-approx]').first()).toContainText('USD');
     await expect(page.locator('main a[href="https://www.exchangerate-api.com"]').filter({ visible: true }).first()).toBeVisible();

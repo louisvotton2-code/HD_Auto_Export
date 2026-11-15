@@ -28,7 +28,7 @@ async function expectVehicleContacts(contacts: Locator, id: string, locale: Loca
     const href = new URL((await link.getAttribute('href'))!);
     const text = href.searchParams.get('text')!;
     expect(text).toContain(id);
-    expect(text).toContain(stockCode);
+    expect(text).not.toContain(stockCode);
     expect(text).toContain(title);
     expect(text).toContain(`/${locale}/cars/${id}/`);
     expect(text).not.toMatch(/(?:里程|Mileage|Пробег):\s*0\s*(?:km|公里|км)/i);
@@ -43,7 +43,7 @@ async function expectVehicleContacts(contacts: Locator, id: string, locale: Loca
       expect(text).not.toMatch(/(?:制造时间|Manufactured|Дата выпуска):/);
     } else {
       expect(text).toContain('2024');
-      expect(text).toContain('23500 USD');
+      expect(text).toContain(`${new Intl.NumberFormat(locale).format(23500)} USD`);
       expect(text).not.toContain(publicFixtureLabels[locale].demo);
     }
     drafts.push(text);
@@ -58,12 +58,13 @@ async function platformHrefs(contacts: Locator) {
     .evaluateAll(links => links.map(link => link.getAttribute('href')).sort());
 }
 
-async function expectDetailContactAreas(page: Page, id: string, locale: Locale, demo = true) {
+async function expectDetailContacts(page: Page, id: string, locale: Locale, demo = true) {
   const sidebar = page.locator(`#vehicle-contact-${id} [data-vehicle-contacts="${id}"]`);
-  const service = page.locator(`#inspection[data-inspection-service] [data-vehicle-contacts="${id}"]`);
-  // The inspection service and the sidebar deliberately expose their own complete platform pair.
-  for (const contacts of [sidebar, service]) await expectVehicleContacts(contacts, id, locale, demo);
-  return { sidebar, service };
+  const service = page.locator('#inspection[data-inspection-service]');
+  await expect(service).toHaveCount(1);
+  await expect(service.locator('a')).toHaveCount(0);
+  await expectVehicleContacts(sidebar, id, locale, demo);
+  return sidebar;
 }
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
@@ -93,10 +94,8 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     // The homepage contact area also owns a distinct detail CTA; exercise it instead of dropping it from coverage.
     await contacts.locator(`a[href="/${locale}/cars/${id}/"]`).click();
     await expect(page).toHaveURL(new RegExp(`/${locale}/cars/${id}/$`));
-    const { sidebar, service } = await expectDetailContactAreas(page, id!, locale);
-    for (const detailContacts of [sidebar, service]) {
-      expect(await platformHrefs(detailContacts)).toEqual(homeHrefs);
-    }
+    const sidebar = await expectDetailContacts(page, id!, locale);
+    expect(await platformHrefs(sidebar)).toEqual(homeHrefs);
   });
 
   test(`${locale}: HTTP catalog and detail preserve public vehicle contact context`, async ({
@@ -117,10 +116,8 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       await expectVehicleContacts(catalogContacts, id, locale, id === 'fixture_demo');
       const catalogHrefs = await platformHrefs(catalogContacts);
       await catalogCard.locator('h2 a').click();
-      const { sidebar, service } = await expectDetailContactAreas(page, id, locale, id === 'fixture_demo');
-      for (const detailContacts of [sidebar, service]) {
-        expect(await platformHrefs(detailContacts)).toEqual(catalogHrefs);
-      }
+      const sidebar = await expectDetailContacts(page, id, locale, id === 'fixture_demo');
+      expect(await platformHrefs(sidebar)).toEqual(catalogHrefs);
     }
   });
 }
@@ -137,7 +134,7 @@ test('mobile vehicle contacts remain keyboard accessible without JavaScript', as
   const page = await context.newPage();
   try {
     await page.goto('/ru/cars/fixture_demo/');
-    const { sidebar: contacts } = await expectDetailContactAreas(page, 'fixture_demo', 'ru');
+    const contacts = await expectDetailContacts(page, 'fixture_demo', 'ru');
     const telegram = contacts.locator('a[href^="https://t.me/"]');
     const whatsapp = contacts.locator('a[href^="https://wa.me/"]');
     await telegram.focus();

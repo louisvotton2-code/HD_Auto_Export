@@ -57,7 +57,9 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await expect(vehicle).toBeVisible();
     await vehicle.click();
     await expect(page).toHaveURL(new RegExp(`/${locale}/cars/fixture_demo/$`));
-    await expect(page.locator('main h1')).toHaveText(publicFixtureLabels[locale].title);
+    const heading = page.locator('main h1');
+    await expect(heading).toHaveText(publicFixtureLabels.en.title);
+    await expect(heading).toHaveAttribute('lang', 'en');
     await expect(page.locator('main')).not.toContainText(publicFixtureLabels[locale].demo);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
   });

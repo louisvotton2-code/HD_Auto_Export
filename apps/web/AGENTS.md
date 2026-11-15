@@ -1,8 +1,6 @@
-# 官网 Agent 入口
+# 官网入口
 
-先读仓库根 [AGENTS](../../AGENTS.md)、[接手导航](../../docs/README.md) 和 [前端任务](../../docs/协作/前端.md)。本目录是 `@hd/web`，其 `src/`、`public/`、`tests/`、`scripts/` 均相对此应用。
-
-当前FE-01已迁Node／standalone；首页、目录与动态详情通过独立API和公共契约获取数据，不导入其他应用源码。保留原视觉和纯计算边界；对外使用正式车源与服务文案，不输出demo／第三方／未知库存治理提示，内部source与unknown保持真实，未知事实不造零；具体本轮验证见FE角色日志。统一检查从仓库根执行 `pnpm check`，本应用检查用 `pnpm --filter @hd/web check`。具体运行见 [README](README.md)。
+从仓库 [docs/README.md](../../docs/README.md) 读取本轮流程、当前进度和 FE 任务。官网技术边界见 [模块维护](../../docs/开发/模块维护.md)，运行与检查见本目录 [README](README.md)。本文件下方 Next.js 规则按已安装版本执行。
 
 <!-- BEGIN:nextjs-agent-rules -->
 
