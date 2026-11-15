@@ -27,6 +27,35 @@ class Peak(unittest.TestCase):
         e=self.data();e['sampleEvidenceSufficient']=False
         with self.assertRaises(ValueError):self.calculate(e)
 
+class BoundedAdmission(unittest.TestCase):
+    def test_full_csv_binding_is_rejected_before_probe(self):
+        c = {'admissionTargetRows': 100_000}
+        with patch.object(m, 'config', return_value=c), \
+             patch.object(m, 'evidence', return_value=Peak().data()), \
+             patch.object(m.subprocess, 'run') as run:
+            self.assertIsNone(m.measure())
+            run.assert_not_called()
+
+    def test_large_bounded_batch_uses_live_database_cost_without_dump(self):
+        e = Peak().data() | {'distinctProcessed': 50_000, 'targetRows': 100_000,
+                             'evidenceHash': 'a'*64}
+        c = {'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
+        with patch.object(m, 'config', return_value=c), \
+             patch.object(m, 'evidence', return_value=e), \
+             patch.object(m, 'sql', return_value={'database': 500_000_000, 'raw': 200_000_000}), \
+             patch.object(m, 'daily_bytes', return_value=0), \
+             patch.object(m.os, 'statvfs') as disk, \
+             patch.object(m.subprocess, 'run') as run:
+            disk.return_value.f_blocks = 400 * 1024**2
+            disk.return_value.f_bfree = 350 * 1024**2
+            disk.return_value.f_frsize = 1024
+            result = m.measure()
+            run.assert_not_called()
+        self.assertEqual(result['targetRows'], 100_000)
+        self.assertEqual(result['components']['sqlSnapshotsBytes'], 60_000_000)
+        self.assertEqual(result['components']['recoveryPointBytes'], 1_423_000_000)
+
+
 class DumpBoundary(unittest.TestCase):
     def test_client_limits_private_network_and_readonly_credentials(self):
         c=dict(dumpNetwork='hd-auto-data',dumpHost='postgres',dumpUser='capacity_reader',database='hd_release_0123456789abcdef',dumpPgpassFile='/srv/hd-auto/secrets/capacity.pgpass')
