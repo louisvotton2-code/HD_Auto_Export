@@ -10,16 +10,16 @@ FE-UX-03：Next.js Node／standalone 官网，首页、精选目录和详情通�
 pnpm hooks:check
 pnpm --filter @hd/contracts build
 pnpm --filter @hd/web check
-NEXT_PUBLIC_SITE_URL=http://127.0.0.1:3317 SITE_INDEXABLE=false pnpm --filter @hd/web build
+NEXT_PUBLIC_SITE_URL=http://127.0.0.1:3363 SITE_INDEXABLE=false pnpm --filter @hd/web build
 HD_DEPLOYMENT_ENV=local HD_RELEASE_ID="$(git rev-parse HEAD)" HD_SSR_SERVICE_SECRET_FILE='/absolute/private/ssr-service-secret' VEHICLE_API_BASE_URL=http://127.0.0.1:3320 pnpm --filter @hd/web start --port 3317
 ```
 
-开发模式用 `pnpm --filter @hd/web dev --port 3317`。同一应用的dev／typegen／build必须串行，不能共写 `.next/`。**长驻验收服务必须先将完整standalone复制至独立ignored release目录，再从该目录启动；build会替换原目录，不能让旧进程继续依赖共享.next。** PID存活或HTML200不代表静态资源版本正确，切换后逐项检查HTML引用的CSS/JS及BUILD。`preview` 与 `start` 均启动本轮生产standalone，不再读取旧 `out/`。本地启动脚本只监听127.0.0.1，不能误将后台或API端口作为官网端口。
+开发模式用 `pnpm --filter @hd/web dev --port 3317`；3317 仅为内部端口，用户统一通过 `http://127.0.0.1:3363` 验收。同一应用的dev／typegen／build必须串行，不能共写 `.next/`。**长驻验收服务必须先将完整standalone复制至独立ignored release目录，再从该目录启动；build会替换原目录，不能让旧进程继续依赖共享.next。** PID存活或HTML200不代表静态资源版本正确，切换后逐项检查HTML引用的CSS/JS及BUILD。`preview` 与 `start` 均启动本轮生产standalone，不再读取旧 `out/`。本地启动脚本只监听127.0.0.1，不能误将后台或API端口作为官网端口。
 
 - `VEHICLE_API_BASE_URL`：**服务端**API origin，默认127.0.0.1:3320；不加NEXT_PUBLIC前缀，不带凭据／路径，不传入客户端props。SSR查询不使用员工会话。
 - `HD_DEPLOYMENT_ENV` / `HD_RELEASE_ID`：所有实际Node启动显式配置。环境只允许production／local／test；正式版本只允许完整小写commit SHA（40–64位）或`sha256:`加64位摘要，本地／隔离测试可使用固定ASCII标签。缺失、非法或`unreleased`会在启动时退出，不自动生成默认版本。生产值由OPS绑定最终交付版本，不根据访客或公开构建变量生成；与正式API联调的本地环境也使用完整SHA。
 - `HD_SSR_SERVICE_SECRET_FILE`：与API一致、仅服务端可读的静态服务凭据文件绝对路径。普通文件、owner-only权限（例如0600）、32–256字节可打印ASCII，可含一个结尾换行；拒绝符号链接和过大文件。不要把值放入环境变量、浏览器、镜像层或Git。Node启动会核验；构建阶段不需要真实密钥。API原始socket peer白名单及公网`/internal`拒绝由OPS配置，完整协议见[车辆接口§19](../../docs/开发/车辆接口.md#19-be-rel-03-目录缓存与分页契约)。
-- `NEXT_PUBLIC_SITE_URL`：公开官网origin，在构建时写入客户端草稿及metadata。实际域名或验收端口变化须重建；本地3317成品在3100隔离测试时canonical／草稿仍指向配置的3317。
+- `NEXT_PUBLIC_SITE_URL`：公开官网origin，在构建时写入客户端草稿及metadata。实际域名或验收端口变化须重建；内部 3317 成品经 3363 提供用户验收；在其他端口隔离测试时 canonical／草稿仍指向构建时配置的 3363。
 - `SITE_INDEXABLE=false`：本地默认禁止索引。展示样例详情、当前精选目录始终noindex；仅符合条件的manual在售详情可在正式开关开启后加入动态sitemap。demo、external、sold／reserved／unknown均不入详情sitemap。
 
 `.env.example` 是无凭据示例；真实环境文件不提交。当前不连接旧服务器或执行生产部署。
