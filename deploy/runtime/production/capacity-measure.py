@@ -17,7 +17,6 @@ ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
 MODEL = 'hd-ext09-daily-two-v1'
-BOUNDED_PROBE_ROWS = 25_000
 # Exact host controls used by the release/backup configuration. Do not admit
 # arbitrary /etc or /usr trees merely because the private config names them.
 SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
@@ -145,8 +144,8 @@ def measure():
     e = evidence(c)
     if not bounded_evidence(c, e):
         return None
-    large_bounded = c.get('admissionTargetRows') is not None and e['distinctProcessed'] >= BOUNDED_PROBE_ROWS
-    if not large_bounded:
+    bounded = c.get('admissionTargetRows') is not None
+    if not bounded:
         try:
             cached = private_json(STATE/'probe.json')
         except (OSError, ValueError):
@@ -166,10 +165,10 @@ def measure():
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname='public' AND c.relkind='r'
           AND c.relname IN ('external_source_blobs','external_source_documents')""")
-    if large_bounded:
-        # A live full dump grows beyond the probe's time/byte bounds. Use the
-        # measured allocated DB size (including indexes) as a conservative
-        # backup basis, still reserving raw history and fixed staging.
+    if bounded:
+        # Reserve from live allocated DB size (including indexes) so a new
+        # sample hash can be evaluated without rerunning a compressed dump.
+        # The model still reserves raw history and fixed staging separately.
         cached = physical_backup_basis(e, sizes['database'], sizes['raw'])
     result = project(e, cached, used=used, total=total,
                      media=sum(allocated(p) for p in c['mediaRoots']),
@@ -231,7 +230,7 @@ def probe():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         c=config(); e=evidence(c)
         if not bounded_evidence(c, e): return
-        if c.get('admissionTargetRows') is not None and e['distinctProcessed'] >= BOUNDED_PROBE_ROWS: return
+        if c.get('admissionTargetRows') is not None: return
         image=dump_target(c)
         business=compressed_dump(c,image,['--exclude-table=public.external_full_stage'])
         raw=compressed_dump(c,image,['--table=public.external_source_blobs','--table=public.external_source_documents'])

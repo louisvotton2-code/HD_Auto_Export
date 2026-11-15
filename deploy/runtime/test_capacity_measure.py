@@ -36,8 +36,8 @@ class BoundedAdmission(unittest.TestCase):
             self.assertIsNone(m.measure())
             run.assert_not_called()
 
-    def test_large_bounded_batch_uses_live_database_cost_without_dump(self):
-        e = Peak().data() | {'distinctProcessed': 50_000, 'targetRows': 100_000,
+    def test_bounded_batch_uses_live_database_cost_before_25000(self):
+        e = Peak().data() | {'distinctProcessed': 10_000, 'targetRows': 100_000,
                              'evidenceHash': 'a'*64}
         c = {'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
         with patch.object(m, 'config', return_value=c), \
@@ -53,7 +53,30 @@ class BoundedAdmission(unittest.TestCase):
             run.assert_not_called()
         self.assertEqual(result['targetRows'], 100_000)
         self.assertEqual(result['components']['sqlSnapshotsBytes'], 60_000_000)
-        self.assertEqual(result['components']['recoveryPointBytes'], 1_423_000_000)
+        self.assertEqual(result['components']['recoveryPointBytes'], 6_863_000_000)
+
+    def test_bounded_target_waits_when_sample_is_insufficient(self):
+        c = {'admissionTargetRows': 100_000}
+        e = Peak().data() | {'targetRows': 100_000, 'sampleEvidenceSufficient': False}
+        with patch.object(m, 'config', return_value=c), \
+             patch.object(m, 'evidence', return_value=e), \
+             patch.object(m, 'physical_backup_basis') as physical, \
+             patch.object(m.subprocess, 'run') as run:
+            self.assertIsNone(m.measure())
+            physical.assert_not_called()
+            run.assert_not_called()
+
+    def test_unbounded_target_still_waits_for_matching_compressed_probe(self):
+        e = Peak().data() | {'evidenceHash': 'a'*64, 'snapshotId': 'snapshot'}
+        with patch.object(m, 'config', return_value={}), \
+             patch.object(m, 'evidence', return_value=e), \
+             patch.object(m, 'private_json', return_value={'model': m.MODEL, 'evidenceHash': 'b'*64}), \
+             patch.object(m, 'physical_backup_basis') as physical, \
+             patch.object(m.subprocess, 'run') as run:
+            self.assertIsNone(m.measure())
+            physical.assert_not_called()
+            run.assert_called_once_with(['systemctl', 'start', '--no-block', 'hd-auto-ext07-capacity-probe.service'],
+                                       check=True, timeout=5)
 
 
 class DumpBoundary(unittest.TestCase):
