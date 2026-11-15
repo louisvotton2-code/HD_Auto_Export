@@ -244,7 +244,8 @@ test('external editing preserves immutable source identity, observed facts and h
   const api = await installApi(page, { items: [external] });
   await page.goto(`/admin/vehicles/${external.id}`);
   await expect(page.getByLabel('来源平台标识', { exact: true })).toBeDisabled();
-  await expect(page.getByLabel('配置名称', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('原始挂牌编号', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('配置名称', { exact: true })).toBeEnabled();
   await expect(page.getByLabel('里程（公里）', { exact: true })).not.toBeDisabled();
   await notes(page);
   await page.getByRole('combobox', { name: '公开价格口径', exact: true }).click();
