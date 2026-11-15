@@ -143,7 +143,7 @@ export function PublicVehicleList({
                   fallbackHref={publicCatalogHref(locale, selected)}
                 />
               </div>
-              {!data && phase === 'checking' ? null : !query || !data ? (
+              {!query || !data ? (
                 <div className={styles.state} role="alert" data-testid="public-catalog-error">
                   <p>{t.unavailable}</p>
                   <a

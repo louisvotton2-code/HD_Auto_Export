@@ -379,11 +379,8 @@ export class FullSyncWorker{
 }
 
 /** Public detail read hint. Throttled writes cannot turn each page request into a refresh job. */
-export async function markFullSyncAccess(db:Database,listingId:string){
- await db.pool.query(`UPDATE external_full_members m SET last_accessed_at=now()
-   FROM external_listings l
-   WHERE l.id=$1 AND l.provider='chinacarapi' AND m.source=l.platform_id AND m.external_id=l.external_id
-   AND (m.last_accessed_at IS NULL OR m.last_accessed_at<now()-interval '1 hour')`,[listingId]);
+export async function markFullSyncAccess(db:Database,source:Source,externalId:string){
+ await db.pool.query("UPDATE external_full_members SET last_accessed_at=now() WHERE source=$1 AND external_id=$2 AND (last_accessed_at IS NULL OR last_accessed_at<now()-interval '1 hour')",[source,externalId]);
 }
 export async function pinFullSyncArchive(db:Database,snapshotId:string,reference:string){
  await db.pool.query('INSERT INTO external_full_archive_pins VALUES($1,$2) ON CONFLICT DO NOTHING',[snapshotId,reference]);

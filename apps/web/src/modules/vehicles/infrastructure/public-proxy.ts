@@ -3,6 +3,7 @@ import {
   PublicLocaleQuerySchema,
   PublicVehicleDetailQuerySchema,
   PublicMediaQuerySchema,
+  PublicVehicleFiltersSchema,
   PublicVehicleSegmentQuerySchema,
   PublicVehicleInspectionQuerySchema,
 } from '@hd/contracts/public';
@@ -23,7 +24,6 @@ import {
   localizedHomeSchema,
   localizedListSchema,
   localizedCardListSchema,
-  publicWebsiteFiltersSchema,
 } from '../localized-projection';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -165,7 +165,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
       ? (localized ? localizedHomeSchema(locale, priceView) : legacyHomeSchema)
       : path === 'vehicles'
         ? (query.projection === 'card' ? localizedCardListSchema(locale, priceView) : localized ? localizedListSchema(locale, priceView) : legacyListSchema)
-        : publicWebsiteFiltersSchema;
+        : PublicVehicleFiltersSchema;
     const value = await readPublicJson(
       upstream,
       schema as { parse: (value: unknown) => unknown },

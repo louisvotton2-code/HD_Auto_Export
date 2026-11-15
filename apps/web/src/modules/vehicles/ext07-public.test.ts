@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeImportedPublicVehicleFixture, makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { PublicVehicleCardSchema, PublicVehicleSchema } from '@hd/contracts/public';
 import { localizedCardListSchema } from './localized-projection';
 import { parseVehicleSegment, mergeVehicleSegment } from './public-segments';
@@ -43,23 +43,15 @@ describe('EXT07 public projections and records', () => {
     full.facts.powerHp = null;
     expect(publicVehicleFacts(full, 'ru').find(row => row.label === t.powerLabel)).toBeUndefined();
   });
-  it('uses the public HDX code and original detail URL in contact drafts', () => {
-    const full = makeImportedPublicVehicleFixture('ru');
+  it('uses the supplier inquiry reference and source without changing detail URLs', () => {
+    const full = vehicle();
     full.identifiers = { inquiryCode: 'dcd-357217151', sourceId: '357217151', source: 'dongchedi', vin: 'LHGCM82633A004352' };
     expect(PublicVehicleSchema.parse(full).identifiers?.vin).toBe('LHGCM82633A004352');
     const draft = buildPublicVehicleContactLinks(full, 'ru');
-    expect(draft.message).toContain('HDX-0000000000000001');
-    expect(draft.message).not.toMatch(/dcd-357217151|dongchedi/);
+    expect(draft.message).toContain('dcd-357217151');
+    expect(draft.message).toContain('dongchedi');
     expect(draft.message).toContain(full.detailPath);
     expect(draft.message).not.toContain(`ID: ${full.id}`);
-  });
-  it('keeps the manual HD number even if an old response carries a source inquiry code', () => {
-    const full = { ...vehicle(), stockCode: 'HD-000032', identifiers: {
-      inquiryCode: 'dcd-357217151', sourceId: '357217151', source: 'dongchedi', vin: null,
-    } };
-    const draft = buildPublicVehicleContactLinks(full, 'ru');
-    expect(draft.message).toContain('HD-000032');
-    expect(draft.message).not.toMatch(/357217151|dongchedi/);
   });
   it('ignores obsolete export filtering while retaining ordering and card projection', () => {
     const query = parseCatalogQuery({ exportStatus: 'restricted', sort: 'price_asc' }, 'ru')!;

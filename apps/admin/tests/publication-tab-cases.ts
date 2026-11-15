@@ -57,15 +57,3 @@ test('publication tab unknown publication is recoverable only from preview with 
   await expect(page.locator('.ant-message-success').filter({ hasText: '已确认当前公开版本' })).toBeVisible();
   expect(calls).toEqual([original, original]); await expect(publish(page)).toBeDisabled();
 });
-
-test('publication tab keeps legacy inventory and archive actions reachable without filling a new draft', async ({ page }) => {
-  const item = { ...vehicle(), id, publicationState: 'published' as const };
-  item.draft.configuration = null;
-  const api = await installApi(page, { items: [item], publicationDefaultConfirmed: false });
-  await page.goto(`/admin/vehicles/${id}`);
-  await tab(page, '发布预览');
-  await expect(page.getByRole('button', { name: /核验并更新库存/ })).toBeEnabled();
-  await expect(page.getByRole('button', { name: /下架车辆/ })).toBeEnabled();
-  await expect(publish(page)).toBeDisabled();
-  expect(api.saves).toEqual([]);
-});

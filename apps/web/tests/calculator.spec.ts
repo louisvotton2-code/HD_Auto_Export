@@ -129,11 +129,10 @@ async function expectUsdAmount(locator: Locator, amount: number) {
     .toBe(amount);
 }
 
-async function openCalculator(page: Page, country = 'russia', locale = 'zh', selectMonth = true) {
+async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}`);
   // Wait for draft restoration before interacting with the native details element.
   await expect(page.locator('.reset-button')).toBeEnabled();
-  if (selectMonth && country !== 'albania') await fillNumericDate(page, 'manufactureDate', '2021-01');
 }
 
 async function openAdvanced(page: Page) {
@@ -190,11 +189,7 @@ async function expectReferenceAmount(page: Page) {
 test('defaults calculate immediately with settings expanded and still allow manual collapse', async ({
   page,
 }) => {
-  await openCalculator(page, 'russia', 'zh', false);
-  await expect(page.locator('#manufactureDate')).toHaveValue('');
-  await expect(page.getByTestId('january-estimates').locator('[data-january-month]')).toHaveCount(7);
-  await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await expect(page.getByTestId('january-estimates')).toHaveCount(0);
+  await openCalculator(page);
   await expect(page.locator('#price')).toHaveValue('25000');
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
@@ -546,10 +541,9 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
   await expect(page.locator('#powerHp')).toHaveValue('150');
-  await expect(page.locator('#manufactureDate')).toHaveValue('');
-  await expect(page.getByTestId('january-estimates').locator('[data-january-month]')).toHaveCount(7);
+  await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
   await expect(page.getByTestId('fx-status')).not.toContainText('手动');
-
+  await expectReferenceAmount(page);
   await openAdvanced(page);
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expect(page.locator('#powertrainDetail')).toHaveValue('petrol');

@@ -25,7 +25,7 @@
 .feedback p:last-child { margin-bottom: 0; }
 .conflictActions { margin: 20px 0; }
 .compareText { white-space: pre-wrap; overflow-wrap: anywhere; }
-.saveBar { margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; background: rgba(255,255,255,.98); border: 1px solid #dfe5ea; border-radius: 10px; padding: 16px 24px; }
+.saveBar { position: sticky; bottom: 0; z-index: 5; margin-top: 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; background: rgba(255,255,255,.98); border: 1px solid #dfe5ea; border-radius: 10px; padding: 16px 24px; box-shadow: 0 -5px 24px #102d4010; }
 .saveHint { display: block; font-size: 12px; margin-top: 3px; padding-left: 14px; }
 .loading { min-height: 300px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 18px; }
 .center { text-align: center; }
@@ -39,6 +39,4 @@
 }
 @media (max-width: 380px) { .saveBar { flex-wrap: wrap; }.saveBar > button { width: 100%; }.saveHint { max-width: none; } }
 
-
-.nextBar { display: flex; justify-content: flex-end; margin-top: 16px; }
-.nextBar > button { max-width: 100%; white-space: normal; height: auto; }
+.publishIncomplete:disabled { color: #a61d24; background: #fff1f0; border-color: #ffa39e; }

@@ -11,12 +11,12 @@ import { projectSourceReport } from './reports.js';
 import { applyInspectionEnrichment } from './inspection-enrichment.js';
 import {emptyInspectionSummary} from './sources/inspection-projection.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount, type CatalogAnchor } from './cursor.js';
-import { externalInquiryCode, externalInquiryBounds } from './inquiry-code.js';
 export type { CatalogAnchor } from './cursor.js';
 
 export const publicListingId = (id: string) => `ext-${id}`;
 export const listingUuid = (id: string) => id.slice(4);
 export const publicMediaId = (id: string) => `ximg-${id}`;
+const stockCode = (id: string) => `EXT-${id.toUpperCase()}`;
 type Queryable = Pick<Database['pool'] | PoolClient, 'query'>;
 type CatalogRow = {
   configuration_total?:number; overridden_names?:string[];
@@ -74,7 +74,7 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   };
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   return PublicVehicleSchema.parse({
-    id, stockCode: externalInquiryCode(row.listing_id), detailPath: `/${locale}/cars/${id}/`,
+    id, stockCode: stockCode(row.listing_id), detailPath: `/${locale}/cars/${id}/`,
     source: { kind: 'external', platform: { id: row.platform_id, name: row.platform_name }, listingUrl: row.listing_url },
     facts: { ...localizedFacts(row.facts, display), ...(row.extras?.powerHp !== undefined ? {powerHp:row.extras.powerHp} : {}) }, display,
     ...publicExtras(row),
@@ -105,13 +105,7 @@ function publicExtras(row: CatalogRow) {
   const manufacture=row.overridden_names?.includes('manufacturedAt')
     ? {date:row.facts.manufacturedAt,range:null,source:'staff',basis:null}
     : row.extras?.manufacture;
-  return { identifiers: {
-      inquiryCode: externalInquiryCode(row.listing_id),
-      source: row.platform_id,
-      // Keep the nullable transport field for existing clients. Provider identity stays server-side.
-      sourceId: null,
-      vin: row.extras?.identifiers?.vin ?? null,
-    },
+  return { ...(row.extras?.identifiers ? { identifiers: row.extras.identifiers } : {}),
     ...(manufacture ? { manufacture } : {}),
     ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass } : {}),
     exportStatus: row.extras?.exportStatus ?? 'unknown' };
@@ -123,7 +117,7 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
   const display={...catalogDisplay(row),mediaAlt:images.map(photo=>({mediaId:photo.id,value:photo.altText!}))};
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   const id=publicListingId(row.listing_id);
-  return PublicVehicleCardSchema.parse({ id,stockCode:externalInquiryCode(row.listing_id),detailPath:`/${locale}/cars/${id}/`,
+  return PublicVehicleCardSchema.parse({ id,stockCode:stockCode(row.listing_id),detailPath:`/${locale}/cars/${id}/`,
     source:{kind:'external',platform:{id:row.platform_id,name:row.platform_name},listingUrl:row.listing_url},
     facts:{...localizedFacts(row.facts,display),...(row.extras?.powerHp!==undefined?{powerHp:row.extras.powerHp}:{})},display,...publicExtras(row),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),content:{title:row.localized.title},images,
@@ -154,10 +148,7 @@ function matches(query: PublicFilterQuery,quote:FxQuote|null=null) {
     else {if(query.priceMin!==undefined)where.push(`f.price_cny>=${param(query.priceMin)}::numeric`);if(query.priceMax!==undefined)where.push(`f.price_cny<=${param(query.priceMax)}::numeric`);}
   }
   if (query.exportStatus && query.exportStatus !== 'all') where.push(`coalesce(x.export_status,'unknown')=${param(query.exportStatus)}`);
-  const inquiry = query.q && externalInquiryBounds(query.q);
-  if (inquiry) {
-    where.push(`f.listing_id BETWEEN ${param(inquiry.lower)}::uuid AND ${param(inquiry.upper)}::uuid AND right(f.listing_id::text, 4)=${param(inquiry.suffix)}`);
-  } else if (query.q) {
+  if (query.q) {
     const pattern = param(literalPattern(query.q));
     // The combined GIN candidate may cross field separators; the second predicate cannot.
     where.push(`s.search_document LIKE lower(${pattern}) ESCAPE E'\\\\'`);

@@ -8,7 +8,6 @@ export {
   publicVehicleFacts,
   publicCatalogHref,
 } from './public-presentation';
-export { PublicCatalogLink } from './ui/public-catalog-link';
 export { PublicVehicleCard } from './ui/public-vehicle-card';
 export { PublicVehicleList } from './ui/public-vehicle-list';
 export { CatalogOffsetLimitNotice } from './ui/catalog-offset-limit';

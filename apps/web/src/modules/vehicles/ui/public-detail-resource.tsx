@@ -63,7 +63,7 @@ export function PublicDetailResource({
           <h1>
             {resource.missing
               ? liveVehicleCopy[locale].missing
-              : resource.phase === 'checking' ? publicVehicleMessages(locale).loading : publicVehicleMessages(locale).unavailable}
+              : publicVehicleMessages(locale).unavailable}
           </h1>
           {!resource.missing && resource.retryAfter <= 0 && (
             <noscript>

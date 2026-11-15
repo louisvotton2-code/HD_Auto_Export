@@ -31,7 +31,7 @@ export function publicationIssueLabel(path: string): string {
   if (normalized === 'facts.mileageKm') return '里程：请填写公里数，确认零公里时可填0';
   if (normalized === 'internal.purchaseCost' || normalized.startsWith('internal.purchaseCost.')) return '采购成本：请填写正数金额并核对币种';
   if (normalized === 'content.description.sourceText') return '车况描述：请填写公开车况说明';
-  if (normalized === 'facts.location' || normalized.startsWith('facts.location.')) return '所在地：已有资料格式无效，请联系维护人员核对';
+  if (normalized === 'facts.location' || normalized.startsWith('facts.location.')) return '所在地：请填写国家代码';
   if (normalized === 'content.title.sourceText') return '标题原文：请填写原文标题';
   if (normalized === 'content.title.sourceLanguage') return '标题原文：请先在基础资料整理为中文';
   if (normalized === 'content.description.sourceLanguage') return '车况描述：请先整理为中文';

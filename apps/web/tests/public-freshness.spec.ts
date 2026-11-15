@@ -249,29 +249,27 @@ test.describe('explicit public queries, stable activation and media regression',
 
   test('external DTO identity stays safe while public presentation and drafts omit source governance notices', async ({ page, request }) => {
     await patchFixture(request, { externalPublished: true });
-    const response = await request.get('/api/v1/vehicles/ext-abcdef12-3456-4123-8123-00112233abcd/?locale=en');
+    const response = await request.get('/api/v1/vehicles/fixture_external/?locale=en');
     expect(response.status()).toBe(200);
     const vehicle = (await response.json()).data;
-    expect(vehicle.id).toBe('ext-abcdef12-3456-4123-8123-00112233abcd');
-    expect(vehicle.source.kind).toBe('external');
-    expect(JSON.stringify(vehicle)).not.toMatch(/fixture_market|Fixture Marketplace|listings\/fixture-external/);
-    expect(vehicle.stockCode).toBe('HDX-ABCDEF123456ABCD');
+    expect(vehicle.id).toBe('fixture_external');
+    expect(vehicle.source).toEqual({ kind: 'external', platform: { id: 'fixture_market', name: 'Fixture Marketplace' }, listingUrl: 'https://example.invalid/listings/fixture-external' });
     expect(vehicle.price.kind).toBe('reference');
     expect(vehicle.availability).toBe('unknown');
     expect(vehicle.availabilityCheckedAt).toBeNull();
     expect(vehicle.content.title.reviewed).toBe(false);
-    await page.goto('/en/cars/ext-abcdef12-3456-4123-8123-00112233abcd/');
+    await page.goto('/en/cars/fixture_external/');
     await expect(page.locator('main h1')).toHaveText(vehicle.content.title.text);
     await expect(page.getByTestId('vehicle-external-notice')).toHaveCount(0);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
-    const links = contactLinks(vehicleConsultation(page.locator('main'), 'ext-abcdef12-3456-4123-8123-00112233abcd'));
+    const links = contactLinks(vehicleConsultation(page.locator('main'), 'fixture_external'));
     await expect(links).toHaveCount(2);
     for (const link of await links.all()) {
       const url = new URL((await link.getAttribute('href'))!);
       expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
       const draft = url.searchParams.get('text');
       expect(draft).toContain(vehicle.stockCode);
-      expect(draft).toContain('/en/cars/ext-abcdef12-3456-4123-8123-00112233abcd/');
+      expect(draft).toContain('/en/cars/fixture_external/');
       expect(draft).not.toMatch(/third.party listing|external listing|stock not verified|display example|not actual inventory/i);
     }
   });
@@ -284,15 +282,15 @@ test.describe('explicit public queries, stable activation and media regression',
       remoteRequests.push(route.request());
       await route.fulfill({ status: 410, body: 'Expired fixture photo' });
     });
-    await page.goto('/en/cars/?q=HD-ext-abcdef12-3456-4123-8123-00112233abcd');
-    const card = page.locator('[data-public-vehicle="ext-abcdef12-3456-4123-8123-00112233abcd"]');
+    await page.goto('/en/cars/?q=HD-fixture_external');
+    const card = page.locator('[data-public-vehicle="fixture_external"]');
     await expect(card.locator('[data-vehicle-photo-unavailable]')).toBeVisible();
     await expect(card.locator('img')).toHaveCount(0);
     await expect(card.locator('[data-availability]')).toHaveCount(0);
     await card.getByRole('link', { name: /View details/ }).click();
     await expect(page.locator('[data-vehicle-gallery] [data-loading]').getByText('This photo is temporarily unavailable.')).toBeVisible();
     await expect(page.locator('main h1')).toBeVisible();
-    await expect(contactLinks(vehicleConsultation(page.locator('main'), 'ext-abcdef12-3456-4123-8123-00112233abcd'))).toHaveCount(2);
+    await expect(contactLinks(vehicleConsultation(page.locator('main'), 'fixture_external'))).toHaveCount(2);
     expect(remoteRequests.length).toBeGreaterThanOrEqual(2);
     for (const remote of remoteRequests) expect((await remote.allHeaders()).referer).toBeUndefined();
   });

@@ -3,15 +3,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { mock,test } from 'node:test';
-import { PublicFilterQuerySchema, PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
-import { ExternalListingListQuerySchema } from '@hd/contracts/admin';
+import { PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { InventoryService } from '../src/vehicles/service.js';
 import { ExternalStore } from '../src/external/store.js';
 import { applyFullSource, bindAlias, ensureMember } from '../src/external/full-sync/apply.js';
-import { configureFullSync, markFullSyncAccess } from '../src/external/full-sync/engine.js';
-import { listExternalListings } from '../src/external/listings.js';
+import { configureFullSync } from '../src/external/full-sync/engine.js';
 import type { Source } from '../src/external/full-sync/types.js';
 import type { SourceDocument } from '../src/external/sources/index.js';
 import {persistSourceDocument} from '../src/external/sources/index.js';
@@ -80,50 +78,6 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       const bound=(await database.pool.query('SELECT source,external_id FROM external_canonical_bindings WHERE canonical_id=$1',[canonical])).rows;
       assert.deepEqual(bound,[{source:'che168',external_id:sourceIds.che168}]);
       assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_vehicle_extras WHERE listing_id=$1',[primaryId])).rows[0].n,3);
-    });
-    await t.test('HDX references replace source numbers and locate the same permanent listing across projections', async () => {
-      const [first, second, , , last] = primaryId.split('-');
-      const code = `HDX-${first}${second}${last!.slice(-4)}`.toUpperCase();
-      const id = `ext-${primaryId}`;
-      const detailPath = `/en/cars/${id}/`;
-      const adminListing = await store.getListing(id, 'en');
-      assert.equal(adminListing.inquiryCode, code);
-      assert.equal(adminListing.identity.externalId, sourceIds.che168);
-      for (const q of [code, code.toLowerCase(), `che168-${sourceIds.che168}`, id, detailPath]) {
-        const result = await listExternalListings(database, ExternalListingListQuerySchema.parse({ q }));
-        assert.deepEqual(result.items.map(item => [item.id, item.inquiryCode]), [[id, code]], q);
-      }
-      const wrong = code.slice(0, -1) + (code.endsWith('0') ? '1' : '0');
-      const byWrongCode = await listExternalListings(database, ExternalListingListQuerySchema.parse({ q: wrong }));
-      assert.equal(byWrongCode.total, 0);
-      const adminFiltered = await listExternalListings(database, ExternalListingListQuerySchema.parse({ q: code, platformId: 'dongchedi' }));
-      assert.equal(adminFiltered.total, 0);
-
-      const query = { locale: 'en', view: 'localized', q: code.toLowerCase() } as const;
-      const cards = PublicVehicleCardListSchema.parse(await inventory.listPublic(PublicVehicleQuerySchema.parse({
-        ...query, projection: 'card',
-      }), 'hdx-reference'));
-      assert.equal(cards.meta.total, 1);
-      assert.equal((await inventory.filters(PublicFilterQuerySchema.parse(query))).total, 1);
-      const card = cards.data.items[0]!;
-      const detail = await inventory.getPublic(id, 'en', 'localized');
-      for (const vehicle of [card, detail]) {
-        assert.equal(vehicle.id, id);
-        assert.equal(vehicle.detailPath, detailPath);
-        assert.equal(vehicle.stockCode, code);
-        assert.deepEqual(vehicle.identifiers, { inquiryCode: code, source: 'che168', sourceId: null, vin: null });
-        assert.equal(vehicle.availability, 'unknown');
-        assert.equal(vehicle.availabilityCheckedAt, null);
-      }
-
-      await markFullSyncAccess(database, primaryId);
-      const lastAccess = async () => (await database.pool.query(
-        "SELECT last_accessed_at FROM external_full_members WHERE source='che168' AND external_id=$1", [sourceIds.che168],
-      )).rows[0].last_accessed_at;
-      const firstAccess = await lastAccess();
-      assert.ok(firstAccess instanceof Date);
-      await markFullSyncAccess(database, primaryId);
-      assert.deepEqual(await lastAccess(), firstAccess);
     });
     await t.test('verified second-source alias remains private while original staff corrections survive refresh',async()=>{
       await database.transaction(async tx=>{

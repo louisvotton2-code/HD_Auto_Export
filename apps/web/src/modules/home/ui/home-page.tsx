@@ -1,11 +1,11 @@
 'use client';
 
+import NextLink from 'next/link';
 import { BrandMarquee } from './brand-marquee';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
 import {
-  PublicCatalogLink,
   publicAvailabilityLabel,
   publicVehicleCover,
   publicVehicleMessages,
@@ -27,7 +27,7 @@ import { HomeSections } from './home-sections';
 import { HeroStats } from './hero-stats';
 import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import styles from './home.module.css';
-import type { HomeDestination, HomeModel } from '../types';
+import type { HomeModel } from '../types';
 import { homeContent } from '../content/home-content';
 
 function VehicleRail({
@@ -116,7 +116,6 @@ function VehicleRail({
           const links = buildPublicVehicleContactLinks(v, locale);
           const image = publicVehicleCover(v);
           const { text: name, lang } = publicVehicleTitle(v, locale);
-          const reference = publicVehicleReference(v);
           return (
             <div className={styles.vehicleSlot} key={v.id}>
               <article
@@ -127,9 +126,9 @@ function VehicleRail({
               >
                 <div className={styles.cardLight} aria-hidden="true" />
                 <div className={styles.vehicleImage}>
-                  <PublicCatalogLink locale={locale} href={v.detailPath} tabIndex={-1} aria-hidden="true">
+                  <NextLink href={v.detailPath} prefetch={false} tabIndex={-1} aria-hidden="true">
                     <VehiclePhoto image={image} locale={locale} alt={image?.alt || name} />
-                  </PublicCatalogLink>
+                  </NextLink>
                   <FavoriteVehicleButton
                     className={styles.save}
                     vehicleId={v.id}
@@ -145,9 +144,9 @@ function VehicleRail({
                 <div className={styles.vehicleBody}>
                   <h3 lang={lang} title={name}>{name}</h3>
                   <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
-                  {reference && <p className={styles.stockCode}>
-                    {vehicleCopy.stockCodeLabel}: {reference}
-                  </p>}
+                  <p className={styles.stockCode}>
+                    {vehicleCopy.stockCodeLabel}: {publicVehicleReference(v).code}{publicVehicleReference(v).source ? ` · ${publicVehicleReference(v).source}` : ''}
+                  </p>
                   {trusted && v.availability !== 'unknown' && (
                     <p className={styles.availability} data-availability={v.availability}>
                       {publicAvailabilityLabel(v, locale)}
@@ -189,10 +188,10 @@ function VehicleRail({
                     >
                       <SocialIcon platform="whatsapp" size={20} />
                     </a>
-                    <PublicCatalogLink locale={locale} className={styles.details} href={v.detailPath}>
+                    <NextLink className={styles.details} href={v.detailPath} prefetch={false}>
                       {t.details}
                       <Icon name="arrow" size={14} />
-                    </PublicCatalogLink>
+                    </NextLink>
                   </div>
                 </div>
               </article>
@@ -207,7 +206,6 @@ function VehicleRail({
 export function HomePage({
   locale,
   sections,
-  destinations,
   catalogFilters = null,
   unavailable = false,
   retryAfter = 0,
@@ -215,7 +213,6 @@ export function HomePage({
 }: {
   locale: Locale;
   sections: PublicHomeSection[];
-  destinations: HomeDestination[];
   catalogFilters?: PublicVehicleFilters['data'] | null;
   unavailable?: boolean;
   retryAfter?: number;
@@ -347,7 +344,7 @@ export function HomePage({
         </section>
       )}
       <BrandMarquee brands={brands} paused={paused} />
-      <HomeSections locale={locale} models={models} destinations={destinations} paused={paused} />
+      <HomeSections locale={locale} models={models} paused={paused} />
     </main>
   );
 }

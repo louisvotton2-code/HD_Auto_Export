@@ -3,20 +3,19 @@
 import { useEffect, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { daysInNumericMonth, editNumericDate, invalidNumericDatePart, numericDateParts, type NumericDatePart, type NumericDatePrecision } from '../application/numeric-date';
-import { januaryManufactureMonths } from '../application/january-estimates';
 import styles from './numeric-date-input.module.css';
 
 const copy = {
-  zh: { year: '年', month: '月', day: '日', presets: '按每年 1 月估算', invalid: '请选择有效的年、月和日。', cleared: '所选年月不包含原先的日期，日已清空，请重新填写。' },
-  en: { year: 'Year', month: 'Month', day: 'Day', presets: 'Estimate using January', invalid: 'Select a valid year, month and day.', cleared: 'The previous day does not exist in the selected month and year. Day was cleared; enter it again.' },
-  ru: { year: 'Год', month: 'Месяц', day: 'День', presets: 'Оценка по январю', invalid: 'Выберите допустимые год, месяц и день.', cleared: 'Прежнего дня нет в выбранном месяце и году. День очищен; укажите его заново.' },
+  zh: { year: '年', month: '月', day: '日', invalid: '请选择有效的年、月和日。', cleared: '所选年月不包含原先的日期，日已清空，请重新填写。' },
+  en: { year: 'Year', month: 'Month', day: 'Day', invalid: 'Select a valid year, month and day.', cleared: 'The previous day does not exist in the selected month and year. Day was cleared; enter it again.' },
+  ru: { year: 'Год', month: 'Месяц', day: 'День', invalid: 'Выберите допустимые год, месяц и день.', cleared: 'Прежнего дня нет в выбранном месяце и году. День очищен; укажите его заново.' },
 } as const;
 
 const FIRST_COMMON_YEAR = 1886;
 const MAX_COMMON_YEARS = 300;
 
 /** Numeric selections keep partial dates local; only a complete valid ISO value reaches the tax core. */
-export function NumericDateInput({ id, name, value, precision, label, locale, referenceYear, onChange, onBlur, describedBy, invalid = false, januaryPresets = false }: {
+export function NumericDateInput({ id, name, value, precision, label, locale, referenceYear, onChange, onBlur, describedBy, invalid = false }: {
   id: string;
   name: string;
   value: string;
@@ -28,7 +27,6 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
   onBlur?: () => void;
   describedBy?: string;
   invalid?: boolean;
-  januaryPresets?: boolean;
 }) {
   const [state, setState] = useState(() => ({ source: value, parts: numericDateParts(value), dayCleared: false }));
   useEffect(() => setState(previous => previous.source === value ? previous : { source: value, parts: numericDateParts(value), dayCleared: false }), [value]);
@@ -46,7 +44,6 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
   if (/^\d{4}$/.test(current.parts.year) && Number(current.parts.year) >= 1 && !years.includes(current.parts.year))
     years.push(current.parts.year);
   years.sort((left, right) => Number(right) - Number(left));
-  const presets = januaryPresets && precision === 'month' && !value ? januaryManufactureMonths(referenceYear) : [];
   const days = daysInNumericMonth(current.parts.year, current.parts.month);
   const options = (part: NumericDatePart) => part === 'year' ? years
     : Array.from({ length: part === 'month' ? 12 : days ?? 31 }, (_, index) => String(index + 1));
@@ -70,20 +67,6 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
         </select>
       </div>)}
     </div>
-    {presets.length > 0 && <div className={`${styles.part} ${styles.preset}`}>
-      <label htmlFor={`${id}-january`}>{words.presets}</label>
-      <select id={`${id}-january`} value="" onChange={event => {
-        const date = event.target.value;
-        if (!presets.includes(date)) return;
-        const controls = event.currentTarget.closest('fieldset');
-        controls?.querySelector<HTMLSelectElement>('select')?.focus();
-        setState({ source: date, parts: numericDateParts(date), dayCleared: false });
-        onChange(date);
-      }}>
-        <option value="">—</option>
-        {presets.map(date => <option key={date} value={date}>{date}</option>)}
-      </select>
-    </div>}
     {feedback && <small id={`${id}-date-feedback`} className={styles.feedback} role="status">{feedback}</small>}
   </fieldset>;
 }

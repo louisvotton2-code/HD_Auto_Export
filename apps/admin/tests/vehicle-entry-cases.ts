@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
-import { newName, select, tab } from './ui-helpers';
-import { fillRequiredEntry } from './draft-entry-test-helpers';
+import { select, tab } from './ui-helpers';
 
 test('vehicle list distinguishes an incomplete asking quote from an explicit on-request price', async ({ page }) => {
   const missingMoney = vehicle(); missingMoney.stockCode = 'ASKING-NO-MONEY';
@@ -29,7 +28,9 @@ test('vehicle list distinguishes an incomplete asking quote from an explicit on-
 test('manual entry defaults and model suggestions are saved as draft facts only', async ({ page }) => {
   const api = await installApi(page);
   await page.goto('/admin/vehicles/new');
-  await fillRequiredEntry(page);
+  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
+  await select(page, '品牌', '丰田 / Toyota');
+  await select(page, '车型', '卡罗拉 / Corolla');
   await expect(page.getByLabel('所在地城市', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('公开所在地描述', { exact: true })).toHaveCount(0);
   await tab(page, '价格与内部信息');
@@ -37,9 +38,8 @@ test('manual entry defaults and model suggestions are saved as draft facts only'
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.creates.length).toBe(1);
   expect(JSON.parse(api.creates[0].body!)).toMatchObject({ draft: {
-    facts: { model: { id: 'toyota-corolla', name: '卡罗拉' }, registrationStatus: 'registered', location: null, mileageKm: 0 },
-    price: { includes: [], money: { currency: 'CNY', amount: '120000.00' } },
-    internal: { purchaseCost: { currency: 'CNY', amount: '100000.00' } },
+    facts: { model: { id: 'toyota-corolla', name: '卡罗拉' }, registrationStatus: 'registered', location: { country: 'CN', city: null, displayName: null } },
+    price: { includes: [] },
   } });
   expect(api.items[0]).toMatchObject({ availability: 'unknown', availabilityCheckedAt: null });
   await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
@@ -116,44 +116,3 @@ for (const startsOnDesktop of [false, true]) {
     await page.screenshot({ path: testInfo.outputPath('vehicle-table-390-vehicle.png'), animations: 'disabled' });
   });
 }
-
-test('manual image upload requires an explicit batch declaration and records exactly that choice', async ({ page }) => {
-  const item = vehicle();
-  await installApi(page, { items: [item] });
-  const declarations: unknown[] = [];
-  await page.route('**/api/v1/admin/media/uploads', route => {
-    declarations.push(route.request().postDataJSON().rights);
-    return reply(route, error('VALIDATION_ERROR'), 422);
-  });
-  await page.goto(`/admin/vehicles/${item.id}`);
-  await tab(page, '图片管理');
-  await expect(page.getByLabel('图片来源／授权说明', { exact: true })).toHaveCount(0);
-  await expect(page.locator('input[type=file]')).toBeDisabled();
-  const allowed = page.getByRole('radio', { name: '我确认本批图片已获授权用于车辆展示。', exact: true });
-  await allowed.check();
-  await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: Buffer.from('synthetic') });
-  await expect.poll(() => declarations).toEqual([{ basis: 'permission', note: '我确认本批图片已获授权用于车辆展示。' }]);
-  await expect(allowed).not.toBeChecked();
-});
-
-test('changing the model refreshes saved options and leaves generation for staff to enter', async ({ page }) => {
-  const item = { ...vehicle(), id: '82000000-0000-4000-8000-000000000013' };
-  const api = await installApi(page, { items: [item] });
-  await page.goto(`/admin/vehicles/${item.id}`);
-  await tab(page, '公开字段多语');
-  await expect.poll(() => api.bundleReads.length).toBe(1);
-  await expect(page.getByRole('button', { name: '生成翻译', exact: true })).toBeVisible();
-  await tab(page, '基础资料');
-  await newName(page, '车型', '新录入的合成车型');
-  const dictionary = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/admin/vehicle-filters');
-  await page.getByRole('button', { name: /保存草稿$/ }).click();
-  const { data } = await (await dictionary).json();
-  expect(data.models).toContainEqual(expect.objectContaining({ name: '新录入的合成车型' }));
-  expect(api.saves).toHaveLength(1);
-  await tab(page, '公开字段多语');
-  await expect(page.getByText('车型已更新', { exact: true })).toBeVisible();
-  await expect.poll(() => api.bundleReads.length).toBe(2);
-  await page.getByText('补充代系与驱动形式', { exact: true }).click();
-  await expect(page.getByLabel('代系名称', { exact: true })).toHaveValue('');
-  expect(api.bundleSaves).toEqual([]);
-});

@@ -108,9 +108,3 @@ pnpm --filter @hd/web test:e2e
 官网详情使用显式 `projection=detail-inline-v1` 和新严格schema，同响应有界检测说明／配置。旧无projection响应保持原结构；新旧响应不可共用缓存项，服务器先上双投影API再切官网。旧报告链接跳回详情`#inspection`。当前实现及接手约定见[首页与车源](../../docs/开发/模块/首页与车源.md#fe-ext-09-当前详情与交互)。
 
 构建时由OPS注入 `HD_DEPLOYMENT_ID=<准确源码SHA>`，映射Next `deploymentId`；同一版本各实例必须一致。此变量不替代既有匿名DTO缓存的release identity。`?dpl=`仅用于资源cache busting，Next不据其路由；混版导航由Next检测后整页导航。OPS需保留当前／上版静态hash资源并平滑reload，不能只设置此变量就删除旧资源。无值的日常开发不制造部署编号。本轮没有变更依赖或共享锁文件。
-
-### 官网车源与计算器
-
-- 公开 SSR、BFF、刷新、筛选标签和咨询草稿的来源处理集中在 `src/modules/vehicles/public-source-privacy.ts`、`localized-projection.ts` 和 `src/shared/lib/public-vehicle-reference.ts`。接受 API 的 HDX 短号并兼容旧响应；保留详情 URL、人工 HD 编号、参考价和外部挂牌的未知库存。图片继续按现有媒体契约交付。
-- 详情布局和三语检测费用分别维护在 `src/modules/vehicles/ui/public-detail.module.css` 与 `src/modules/vehicles/inspection-summary-copy.ts`。标题使用 API 给出的实际文本语言，缺标题时用已有车型字段回退。
-- `src/modules/calculator/application/january-estimates.ts` 用当前年份和前六年的一月逐项调用既有计算入口。已知生产范围继续使用原区间测算。确认生产月份后恢复单月明细。首页国家列表由 `src/app/[locale]/page.tsx` 按计算器支持范围生成；内联原生下拉用国旗字符，显示取决于系统字体。

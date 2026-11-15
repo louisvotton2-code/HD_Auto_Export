@@ -31,7 +31,6 @@ export function PublicVehicleCard({
     cover = publicVehicleCover(vehicle);
   const trusted = usePublicFreshness() === 'fresh';
   const title = publicVehicleTitle(vehicle, locale);
-  const reference = publicVehicleReference(vehicle);
   const availability = trusted ? publicAvailabilityLabel(vehicle, locale) : '';
   return (
     <div className={styles.cardSlot}>
@@ -67,9 +66,9 @@ export function PublicVehicleCard({
             </PublicCatalogLink>
           </h2>
           <p className={styles.make}>{vehicle.facts.make?.name ?? t.unknown}</p>
-          {reference && <p className={styles.stockCode}>
-            {t.stockCodeLabel}: <bdi>{reference}</bdi>
-          </p>}
+          <p className={styles.stockCode}>
+            {t.stockCodeLabel}: <bdi>{publicVehicleReference(vehicle).code}</bdi>{publicVehicleReference(vehicle).source ? ` · ${publicVehicleReference(vehicle).source}` : ''}
+          </p>
           {availability && (
             <p className={styles.status} data-availability={vehicle.availability}>
               {availability}

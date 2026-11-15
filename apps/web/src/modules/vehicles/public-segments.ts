@@ -4,7 +4,6 @@ import {
   type PublicVehicleGalleryResponse, type PublicVehicleConfigurationResponse,
   type PublicVehicleInspectionResponse, type PublicVehiclePriceHistoryResponse,
 } from '@hd/contracts/public';
-import { redactPublicVehicleProse } from './public-source-privacy';
 import type { Locale } from '@/i18n/routing';
 
 type VehicleSegmentResponses = {
@@ -46,7 +45,7 @@ export function parseVehicleSegment<K extends VehicleSegmentKind>(kind: K, value
       if (field.requestedLocale !== locale) throw new VehicleSegmentError(503);
   }
   if (new Set(parsed.data.items.map(item => item.id)).size !== parsed.data.items.length) throw new VehicleSegmentError(503);
-  return (kind === 'price-history' ? parsed : redactPublicVehicleProse(parsed)) as VehicleSegmentResponses[K];
+  return parsed as VehicleSegmentResponses[K];
 }
 
 /** First page replaces previews; only stable, complete pages from one revision may be appended. */
