@@ -96,12 +96,11 @@ async function expectContacts(
 
 async function expectDetailContacts(page: Page, locale: string, stockCode: string, id: string, isDemo = true) {
   const sidebar = page.locator(`#vehicle-contact-${id} [data-vehicle-contacts="${id}"]`);
-  const service = page.locator(`#inspection[data-inspection-service] [data-vehicle-contacts="${id}"]`);
+  const service = page.locator('#inspection[data-inspection-service]');
   await expect(sidebar).toHaveCount(1);
   await expect(service).toHaveCount(1);
-  const draft = await expectContacts(sidebar, locale, stockCode, id, isDemo);
-  expect(await expectContacts(service, locale, stockCode, id, isDemo)).toBe(draft);
-  return draft;
+  await expect(service.locator('a')).toHaveCount(0);
+  return expectContacts(sidebar, locale, stockCode, id, isDemo);
 }
 
 test.describe('public HTTP catalog against an isolated fixture API', () => {
@@ -145,7 +144,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
         homeDraft,
       );
       await catalogCar.locator('h2 a').click();
-      await expect(page.locator('main h1')).toHaveText(labels[locale].title);
+      await expect(page.locator('main h1')).toHaveText(labels.en.title);
+      await expect(page.locator('main h1')).toHaveAttribute('lang', 'en');
       await expect(page.locator('main')).not.toContainText(labels[locale].demo);
       await expect(page.locator('main')).toContainText(labels[locale].price);
       expect(
@@ -420,7 +420,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     const page = await context.newPage();
     try {
       await page.goto('/ru/cars/fixture_demo/');
-      await expect(page.locator('main h1')).toHaveText(labels.ru.title);
+      await expect(page.locator('main h1')).toHaveText(labels.en.title);
+      await expect(page.locator('main h1')).toHaveAttribute('lang', 'en');
       await expect(page.locator('main')).not.toContainText(labels.ru.demo);
       await expect(page.locator('main a[href="/ru/cars/"]')).toBeVisible();
       await expectDetailContacts(page, 'ru', 'SHOW-ALPHA', 'fixture_demo');

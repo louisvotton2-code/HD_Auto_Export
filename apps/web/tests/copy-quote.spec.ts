@@ -38,7 +38,12 @@ test('copied quotes preserve effective inputs and exclude inactive fields carrie
     );
   });
   await page.goto('/zh/calculator/albania');
-  await expect(page.locator('#price')).toHaveValue('23456.78');
+  const price = page.locator('#price');
+  await expect(price).toHaveValue('23457');
+  await price.focus();
+  await expect(price).toHaveValue('23456.78');
+  await price.blur();
+  await expect(price).toHaveValue('23457');
   await expect(page.getByTestId('total')).toBeVisible();
   await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
   const albania = await page.evaluate(

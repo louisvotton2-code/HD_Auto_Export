@@ -46,8 +46,8 @@ test('a direct photo error is reported once and detail shows only a report summa
   const card = page.locator(`[data-public-vehicle="${sample.id}"]`);
   await expect(card.locator('[data-vehicle-photo-unavailable]')).toBeVisible();
   await expect(card.locator('h2')).toHaveAttribute('lang', 'en');
-  await expect(card.locator('[data-vehicle-original-price]')).toHaveText('¥ 128,000.5');
-  await expect(card.locator('[data-vehicle-usd-approx]')).toHaveText('≈ 16,000.06 USD');
+  await expect(card.locator('[data-vehicle-original-price]')).toHaveText('¥ 128,001');
+  await expect(card.locator('[data-vehicle-usd-approx]')).toHaveText('≈ 16,000 USD');
   const response = await report;
   expect(response.status()).toBe(202);
   expect(response.request().postDataJSON()).toEqual({ revision: 1 });
@@ -83,8 +83,9 @@ test('a direct photo error is reported once and detail shows only a report summa
 test('original-language fallback, missing media and disputed facts are readable and withdrawal returns 404', async ({ page, request }) => {
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
   await page.goto(`/ru/cars/${externalFixtureId(2)}/`);
-  await expect(page.locator('main h1')).toHaveAttribute('lang', 'zh');
-  await expect(page.locator('main h1')).toHaveText('示例 R1 2');
+  await expect(page.locator('main h1')).toHaveAttribute('lang', 'en');
+  await expect(page.locator('main h1')).toHaveText('Toyota 2024');
+  await expect(page.locator('main p[lang="zh"]').filter({ hasText: '这是合成测试说明。' })).toBeVisible();
   await page.goto(`/en/cars/${externalFixtureId(3)}/`);
   const issue = page.getByRole('region', { name: 'Information to confirm' });
   await expect(issue).toContainText('Model year');
@@ -122,7 +123,10 @@ test('inline report contacts retain vehicle identity and named destinations with
   await setPublicFixtureState(request, { reportPresenceMode: 'known' });
   for (const locale of ['zh', 'en', 'ru'] as const) {
     await page.goto(`/${locale}/cars/${id}/`);
-    const title = await page.locator('main h1').innerText();
+    const heading = page.locator('main h1');
+    await expect(heading).toHaveAttribute('lang', 'en');
+    await expect(heading).toHaveText('Example R1 Hybrid');
+    const inquiryTitle = makeImportedPublicVehicleFixture(locale, 'supplier', true).content.title.text;
     const reportSection = page.locator('[data-inspection-summary]');
     await expect(reportSection).toHaveAttribute('data-inspection-status', 'available');
     await expectInlineInspection(reportSection);
@@ -133,7 +137,7 @@ test('inline report contacts retain vehicle identity and named destinations with
       const url = new URL((await link.getAttribute('href'))!);
       expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
       const draft = url.searchParams.get('text')!;
-      expect(draft).toContain(title);
+      expect(draft).toContain(inquiryTitle);
       expect(draft).toContain('HX100001');
       expect(draft).not.toContain('EXT-000001');
       expect(draft).toContain(`/${locale}/cars/${id}/`);

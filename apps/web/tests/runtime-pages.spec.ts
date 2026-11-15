@@ -40,7 +40,8 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
         locale === 'zh' ? 'zh-Hans' : locale,
       );
       await expect(page.locator('.reset-button')).toBeEnabled();
-      await expect(page.getByTestId('total')).toBeVisible();
+      const defaultResult = page.getByTestId(destination === 'albania' ? 'total' : 'manufacture-range-total');
+      await expect(defaultResult).toBeVisible();
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
         'href',
         new RegExp(`/${locale}/calculator/${destination}/?$`),
@@ -48,7 +49,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       const refreshed = await page.reload();
       expect(refreshed?.status()).toBe(200);
       await expect(page.locator('.reset-button')).toBeEnabled();
-      await expect(page.getByTestId('total')).toBeVisible();
+      await expect(defaultResult).toBeVisible();
       expect(errors).toEqual([]);
     });
   }
@@ -67,7 +68,7 @@ test('root defaults to Russian home and calculator shortcuts still reach their d
     await page.goto(`/${locale}/calculator/`);
     await expect(page).toHaveURL(new RegExp(`/${locale}/calculator/russia/?$`));
     await expect(page.locator('.reset-button')).toBeEnabled();
-    await expect(page.getByTestId('total')).toBeVisible();
+    await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
   }
 });
 
@@ -153,12 +154,12 @@ test('calculating and navigating use local assets without calling an API or runt
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.locator('#displacementCc').fill('1700');
-  await expect(page.getByTestId('total')).toBeVisible();
+  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
   await page.locator('.country-nav a[href^="/zh/calculator/georgia"]').click();
   await expect(page).toHaveURL(/\/zh\/calculator\/georgia\/$/);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
-  await expect(page.getByTestId('total')).toContainText('480');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveText('480.00 – 480.00 GEL');
   await page.waitForLoadState('networkidle');
   expect(requests.filter((url) => new URL(url).pathname.startsWith('/api/'))).toEqual([]);
   expect(requests.filter((url) => /open\.er-api\.com|exchangerate-api\.com/.test(url))).toEqual([]);
@@ -172,7 +173,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-11');
-  await expect(page.getByTestId('total')).toBeVisible();
+  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
   await fillNumericDate(page, 'customsDate', '2026-09-30');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
@@ -180,7 +181,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await page.clock.setFixedTime(new Date('2026-12-20T20:30:00Z'));
   await page.locator('.reset-button').click();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-21');
-  await expect(page.getByTestId('total')).toBeVisible();
+  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 });
 
 test('a future browser year remains explicit instead of silently applying expired reference rules', async ({
@@ -190,6 +191,8 @@ test('a future browser year remains explicit instead of silently applying expire
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2027-01-01');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveCount(0);
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toHaveCount(0);
   await expect(page.getByTestId('result-stamp')).toHaveAttribute('data-stamp-tone', 'muted');
   await expect(page.getByTestId('result-status')).toBeVisible();
@@ -210,6 +213,6 @@ test('FX labels identify a frozen build snapshot or reference fallback and manua
   await expect(page.locator('#transactionRate')).toHaveValue('100');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('#transactionRate')).toHaveValue('100');
+  await expect(page.locator('#transactionRate')).toHaveValue('100.00');
   await expect(fx).toContainText('使用你手动设置的参考汇率');
 });

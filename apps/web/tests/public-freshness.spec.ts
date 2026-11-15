@@ -54,13 +54,13 @@ const vehicleConsultation = (scope: Locator, id: string) =>
   scope.locator(`[id="vehicle-contact-${id}"]`);
 const inspectionService = (scope: Locator) => scope.locator('#inspection[data-inspection-service]');
 async function expectDetailContactRegions(scope: Locator, id: string) {
-  // The sidebar asks about this car; the no-report service offers a separate inspection enquiry.
-  for (const region of [vehicleConsultation(scope, id), inspectionService(scope)]) {
-    const contacts = region.locator(`[data-vehicle-contacts="${id}"]`);
-    await expect(contacts).toHaveCount(1);
-    await expect(contacts.locator('a[href^="https://t.me/"]')).toHaveCount(1);
-    await expect(contacts.locator('a[href^="https://wa.me/"]')).toHaveCount(1);
-  }
+  const contacts = vehicleConsultation(scope, id).locator(`[data-vehicle-contacts="${id}"]`);
+  await expect(contacts).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://t.me/"]')).toHaveCount(1);
+  await expect(contacts.locator('a[href^="https://wa.me/"]')).toHaveCount(1);
+  const service = inspectionService(scope);
+  await expect(service).toHaveCount(1);
+  await expect(service.locator('a')).toHaveCount(0);
 }
 const cleanPath = (url: string) => new URL(url).pathname.replace(/\/$/, '');
 const isDataRequest = (request: Request) =>
@@ -351,10 +351,10 @@ test.describe('explicit public queries, stable activation and media regression',
       const current = await resource(page, '/api/v1/vehicles/fixture_future');
       await expect(current).toHaveAttribute('data-freshness', 'checking');
       await expect(contactLinks(current)).toHaveCount(0);
-      for (const region of [vehicleConsultation(current, 'fixture_future'), inspectionService(current)]) {
-        await expect(region.locator('[data-vehicle-contacts] a')).toHaveCount(2);
-        await expect(region.locator('[data-vehicle-contacts] a[aria-disabled="true"]')).toHaveCount(2);
-      }
+      const consultation = vehicleConsultation(current, 'fixture_future');
+      await expect(consultation.locator('[data-vehicle-contacts] a')).toHaveCount(2);
+      await expect(consultation.locator('[data-vehicle-contacts] a[aria-disabled="true"]')).toHaveCount(2);
+      await expect(inspectionService(current).locator('a')).toHaveCount(0);
       await expect(page.locator('main h1')).toHaveText('Newly published vehicle');
       release();
       await expect(current).toHaveAttribute('data-freshness', 'fresh');
