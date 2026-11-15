@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CalculationLine } from '../core/types';
-import { formatCalculatorMoney, formatFeeFormula, formatMethodParameters } from './fee-presentation';
+import { formatFeeFormula, formatMethodParameters } from './fee-presentation';
 
 const labels = { maximum: '取较高值', lookup: '按计税价值查表', amount: '该项金额' };
 const line = (formula: string, amount = '100'): CalculationLine => ({
@@ -77,15 +77,5 @@ describe('policy explanation operands', () => {
     expect(values.age).toBe('5');
     expect(values.perCc).toBe('0,44');
     expect(values.amount.replace(/\s/g, '')).toBe('21000');
-  });
-});
-
-describe('calculator monetary display', () => {
-  it('rounds to cents without losing large integer precision or changing supplied cents', () => {
-    expect(formatCalculatorMoney('9007199254740993.995', 'en')).toBe('9,007,199,254,740,994.00');
-    expect(formatCalculatorMoney('505.00', 'en')).toBe('505.00');
-    expect(formatCalculatorMoney('123.456', 'ru')).toBe('123,46');
-    expect(formatCalculatorMoney('-0.128', 'en')).toBe('-0.13');
-    expect(formatCalculatorMoney('n/a', 'zh')).toBe('—');
   });
 });

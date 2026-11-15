@@ -126,12 +126,9 @@
   margin-top: 20px;
 }
 .tiles:has([data-public-vehicle-vin]) {
-  display: flex;
-  flex-wrap: wrap;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
 }
-.tiles:has([data-public-vehicle-vin]) > .tile { flex: 1 1 128px; }
-.tiles > [data-public-vehicle-vin] { flex: 1.5 1 218px; }
-.tiles > [data-public-vehicle-vin] code { font-size: clamp(12px, 1vw, 13px); }
+.tiles:has([data-public-vehicle-vin]) > .mileageTile { grid-column: 1 / -1; }
 .tile {
   min-width: 0;
   border-radius: 12px;
@@ -173,6 +170,18 @@
 }
 .tile > bdi {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.referenceSource {
+  display: block;
+  margin-top: 6px;
+  color: #a89a8d;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.vinCode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .03em;
 }
 .mileageTile {
   border-color: transparent;
@@ -600,6 +609,7 @@
   .tiles {
     gap: 8px;
   }
+  .tiles:has([data-public-vehicle-vin]) { grid-template-columns: minmax(0, 1fr); }
   .tile {
     padding: 12px 9px;
   }

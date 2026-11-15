@@ -23,7 +23,6 @@ describe('copied quote input facts', () => {
   it('keeps exact price, power, dates, currencies, exchange rates and rule version for reproduction', () => {
     const input = {
       ...createDefaultInput('RU', '2026-10-23', rates),
-      manufactureDate: '2021-01',
       price: '25001.25',
       currency: 'USD' as const,
       transactionRate: '81.969182',
@@ -45,7 +44,7 @@ describe('copied quote input facts', () => {
   });
 
   it('omits inactive price, transport, power and tax FX for Georgia while preserving steering and display FX', () => {
-    const input = { ...createDefaultInput('GE', '2026-10-23', rates), manufactureDate: '2021-01', steering: 'right' as const };
+    const input = { ...createDefaultInput('GE', '2026-10-23', rates), steering: 'right' as const };
     expect(facts(input, true)).toEqual({
       powertrain: 'petrol',
       displacement: '1998',

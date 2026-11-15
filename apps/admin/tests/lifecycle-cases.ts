@@ -1,8 +1,9 @@
 /** Contract simulations: these tests do not establish real API persistence. */
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
-import { completeEntry, envelope, error, installApi, reply, vehicle } from './api-fixture';
+import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
+import { chooseUtcDateTime } from './publication-test-helpers';
 
 const deletedTime = '2026-11-08T09:00:00Z';
 function deletedVehicle() { return { ...vehicle(), deletedAt: deletedTime, publicationState: 'published' as const, version: 7, publishedRevisionId: 'fixture_revision', publishedAt: deletedTime, availability: 'available' as const, availabilityCheckedAt: deletedTime }; }
@@ -239,7 +240,7 @@ test('lifecycle read permission never exposes destructive actions and unauthenti
 });
 
 test('external editing preserves immutable source identity, observed facts and honest price and inventory controls', async ({ page }) => {
-  const external = { ...vehicle(), draft: completeEntry(makeExternalVehicleDraftFixture()), availability: 'unknown' as const, availabilityCheckedAt: null };
+  const external = { ...vehicle(), draft: makeExternalVehicleDraftFixture(), availability: 'unknown' as const, availabilityCheckedAt: null };
   const before = structuredClone(external.draft);
   const api = await installApi(page, { items: [external] });
   await page.goto(`/admin/vehicles/${external.id}`);
@@ -250,10 +251,11 @@ test('external editing preserves immutable source identity, observed facts and h
   await page.getByRole('combobox', { name: '公开价格口径', exact: true }).click();
   await expect(page.locator('.ant-select-dropdown:visible').getByText('公开报价', { exact: true })).toHaveCount(0);
   await page.getByRole('combobox', { name: '公开价格口径', exact: true }).press('Escape');
+  await select(page, '公开价格口径', '待询价');
   await (await notes(page)).fill('保持外部实车事实与来源身份');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.saves.length).toBe(1);
-  expect(api.saves[0]!.draft).toMatchObject({ source: before.source, facts: before.facts, price: before.price });
+  expect(api.saves[0]!.draft).toMatchObject({ source: before.source, facts: before.facts, price: { kind: 'on_request', money: null } });
   await tab(page, '发布预览');
   await expect(page.getByRole('combobox', { name: '核验后的库存状态', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /核验并更新库存$/ })).toHaveCount(0);
@@ -276,4 +278,50 @@ test('publishing clears the earlier draft-only save notice after accepting the c
   await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本，请核对公开内容。' })).toBeVisible();
   await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toHaveCount(0);
   await expect(page.getByText('已发布', { exact: true }).first()).toBeVisible();
+});
+
+test('external source identity rejection allows correction with a new key while an unknown creation stays frozen', async ({ page }) => {
+  const api = await installApi(page);
+  const calls: ReturnType<typeof attempt>[] = [];
+  let created = vehicle();
+  await page.route('**/api/v1/admin/vehicles', route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    calls.push(attempt(route));
+    if (calls.length === 1 || calls.length === 3) return reply(route, error('SOURCE_IDENTITY_CONFLICT'), 409);
+    if (calls.length === 2) {
+      created = { ...vehicle(), draft: route.request().postDataJSON().draft };
+      api.items.push(created);
+      return route.abort('failed');
+    }
+    return reply(route, envelope(created), 201);
+  });
+  await page.goto('/admin/vehicles/new');
+  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '外部挂牌资料' }).click();
+  await page.getByLabel('来源平台标识', { exact: true }).fill('fixture-identity-market');
+  await page.getByLabel('来源平台名称', { exact: true }).fill('合成来源身份平台');
+  await page.getByLabel('原始挂牌链接', { exact: true }).fill('https://example.invalid/listings/identity');
+  await page.getByLabel('原始挂牌编号', { exact: true }).fill('already-exists');
+  await chooseUtcDateTime(page, '资料采集时间（UTC）', { date: '2026-11-08', hour: 8, minute: 0 });
+  await page.getByLabel('标题原文', { exact: true }).fill('重复来源身份纠正与未知创建测试');
+  await page.getByRole('button', { name: /保存草稿$/ }).click();
+  await expect.poll(() => calls.length).toBe(1);
+  await expect(page.getByLabel('原始挂牌编号', { exact: true })).toBeEnabled();
+  await expect(page.getByLabel('标题原文', { exact: true })).toHaveValue('重复来源身份纠正与未知创建测试');
+  await expect(page.getByText('创建结果尚未确认', { exact: true })).toHaveCount(0);
+  expect(api.items).toHaveLength(0);
+  await page.getByLabel('原始挂牌编号', { exact: true }).fill('corrected-identity');
+  await page.getByRole('button', { name: /保存草稿$/ }).click();
+  await expect(page.getByText('创建结果尚未确认', { exact: true })).toBeVisible();
+  expect(calls[1]!.key).not.toBe(calls[0]!.key);
+  expect(JSON.parse(calls[1]!.body!).draft.source.externalId).toBe('corrected-identity');
+  await page.getByRole('button', { name: /重试原创建请求$/ }).click();
+  await expect.poll(() => calls.length).toBe(3);
+  await expect(page.getByText('创建结果尚未确认', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('原始挂牌编号', { exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: /重试原创建请求$/ }).click();
+  await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
+  expect(calls).toHaveLength(4);
+  expect(calls[2]).toEqual(calls[1]); expect(calls[3]).toEqual(calls[1]);
+  expect(api.items).toHaveLength(1);
+  await expect(page.getByLabel('原始挂牌编号', { exact: true })).toHaveValue('corrected-identity');
 });

@@ -14,7 +14,7 @@ test('numeric date dropdowns retain empty values, valid month choices, leap days
   await page.goto('/en/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('input[type="date"],input[type="month"]')).toHaveCount(0);
-  await expect(page.locator('[data-numeric-date="manufactureDate"] select')).toHaveCount(3);
+  await expect(page.locator('[data-numeric-date="manufactureDate"] select')).toHaveCount(2);
   await expect(page.locator('[data-numeric-date="customsDate"] select')).toHaveCount(3);
   await expect(page.locator('[data-numeric-date] input:not([type="hidden"])')).toHaveCount(0);
   for (const name of ['manufactureDate', 'customsDate']) {

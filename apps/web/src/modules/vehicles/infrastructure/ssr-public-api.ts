@@ -1,7 +1,7 @@
-import { PublicVehicleQuerySchema, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
+import { PublicVehicleFiltersSchema, PublicVehicleQuerySchema, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { getServerReleaseIdentity } from '@/shared/config/server-runtime';
-import { localizedHomeSchema, localizedCardListSchema, localizedInlineVehicleSchema, publicWebsiteFiltersSchema } from '../localized-projection';
+import { localizedHomeSchema, localizedCardListSchema, localizedInlineVehicleSchema } from '../localized-projection';
 import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicInlineDetailView, type UsdFilterScope } from '../public-query';
 import { publicApiOrigin, PublicApiError } from './public-http';
 import { publicRequestHeaders } from './public-request-context';
@@ -37,7 +37,7 @@ export function getSsrPublicHome(locale: Locale) {
 }
 export function getSsrPublicFilters(locale: Locale, scope?: UsdFilterScope) {
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', publicUsdFilterQuery(locale, scope)),
-    priceView: 'usd', schema: publicWebsiteFiltersSchema });
+    priceView: 'usd', schema: PublicVehicleFiltersSchema });
 }
 export function getSsrPublicCatalog(query: PublicVehicleQuery) {
   const effective = PublicVehicleQuerySchema.parse(publicUsdCatalogQuery(query));

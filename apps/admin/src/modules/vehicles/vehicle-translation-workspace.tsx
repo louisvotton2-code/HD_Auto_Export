@@ -294,7 +294,7 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
       <DisplayTranslationsEditor groups={groups} savedFields={base.localization.data.fields} disabled={locked} labelForField={fieldLabel}
         onChange={field => edit({ ...data, localization: { ...data.localization, fields: data.localization.fields.map(item => item.ref === field.ref ? field : item) } })} />
       <Collapse defaultActiveKey={[]} items={[{ key: 'facts', label: '补充代系与驱动形式', children: <>
-        <Typography.Paragraph type="secondary">代系是同一车型的产品代际，例如第八代或 G20。只填有资料依据的代际，车型名称请在基础资料填写。修改代系后先保存，再填写对应译文。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">仅填写已知事实。修改代系后先保存，再编辑它对应的译文。</Typography.Paragraph>
         <div className={styles.factFields}><Form.Item label="代系名称"><Input aria-label="代系名称" disabled={locked} maxLength={120} value={data.localization.facts.generation?.name ?? ''}
           onChange={event => { const name = event.target.value; if (name.trim() && !generationId.current) generationId.current = `manual_${crypto.randomUUID().replaceAll('-', '')}`;
             edit({ ...data, localization: { ...data.localization, facts: { ...data.localization.facts, generation: name.trim() ? { id: data.localization.facts.generation?.id ?? generationId.current!, name } : null } } }); }} /></Form.Item>

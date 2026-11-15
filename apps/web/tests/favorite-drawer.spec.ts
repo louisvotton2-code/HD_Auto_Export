@@ -170,14 +170,14 @@ test('saved current data retains reference-price and reserved-state semantics', 
     ({ key }) =>
       localStorage.setItem(
         key,
-        JSON.stringify({ version: 1, ids: ['ext-abcdef12-3456-4123-8123-00112233abcd', 'fixture_reserved'] }),
+        JSON.stringify({ version: 1, ids: ['fixture_external', 'fixture_reserved'] }),
       ),
     { key: storageKey },
   );
   await page.goto('/en/');
   await page.locator('header button[aria-controls="vehicle-favorites"]').click();
   const dialog = page.locator('#vehicle-favorites');
-  await expect(dialog.locator('[data-favorite-vehicle="ext-abcdef12-3456-4123-8123-00112233abcd"]')).toContainText(
+  await expect(dialog.locator('[data-favorite-vehicle="fixture_external"]')).toContainText(
     'Reference price',
   );
   await expect(dialog.locator('[data-favorite-vehicle="fixture_reserved"]')).toContainText(

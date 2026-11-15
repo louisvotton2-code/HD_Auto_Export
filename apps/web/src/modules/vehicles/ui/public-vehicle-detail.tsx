@@ -102,10 +102,11 @@ export function PublicVehicleDetail({
             </div>
             <PublicVehicleGallery vehicle={vehicle} title={title} locale={locale} />
             <div className={styles.tiles}>
-              {reference && <div className={styles.tile}>
+              <div className={styles.tile}>
                 <p><span className={styles.tileIcon}><Icon name="document" size={16} /></span>{copy.inquiry}</p>
-                <bdi>{reference}</bdi>
-              </div>}
+                <bdi>{reference.code}</bdi>
+                {reference.source && <small className={styles.referenceSource}>{reference.source}</small>}
+              </div>
               <VehicleVinCard vin={vehicle.identifiers?.vin} locale={locale} />
               <div className={`${styles.tile} ${styles.mileageTile}`}>
                 <p><span className={styles.tileIcon}><Icon name="gauge" size={16} /></span>{copy.mileage}</p>
@@ -141,6 +142,9 @@ export function PublicVehicleDetail({
                   ))}
                   {vehicle.vehicleClass?.status === 'ready' && <div data-public-vehicle-class>
                     <dt>{recordsCopy.vehicleClass}</dt><dd lang={vehicle.vehicleClass.contentLocale} dir="auto">{vehicle.vehicleClass.text}</dd>
+                  </div>}
+                  {vehicle.exportStatus && <div data-public-export-status={vehicle.exportStatus}>
+                    <dt>{recordsCopy.exportStatus}</dt><dd>{recordsCopy.exportStatuses[vehicle.exportStatus]}</dd>
                   </div>}
                 </dl>
               </details>

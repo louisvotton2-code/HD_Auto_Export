@@ -40,7 +40,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
         locale === 'zh' ? 'zh-Hans' : locale,
       );
       await expect(page.locator('.reset-button')).toBeEnabled();
-      await expect(page.getByTestId(destination === 'albania' ? 'total' : 'january-estimates')).toBeVisible();
+      await expect(page.getByTestId('total')).toBeVisible();
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
         'href',
         new RegExp(`/${locale}/calculator/${destination}/?$`),
@@ -48,7 +48,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
       const refreshed = await page.reload();
       expect(refreshed?.status()).toBe(200);
       await expect(page.locator('.reset-button')).toBeEnabled();
-      await expect(page.getByTestId(destination === 'albania' ? 'total' : 'january-estimates')).toBeVisible();
+      await expect(page.getByTestId('total')).toBeVisible();
       expect(errors).toEqual([]);
     });
   }
@@ -67,7 +67,7 @@ test('root defaults to Russian home and calculator shortcuts still reach their d
     await page.goto(`/${locale}/calculator/`);
     await expect(page).toHaveURL(new RegExp(`/${locale}/calculator/russia/?$`));
     await expect(page.locator('.reset-button')).toBeEnabled();
-    await expect(page.getByTestId('january-estimates').locator('[data-january-month]')).toHaveCount(7);
+    await expect(page.getByTestId('total')).toBeVisible();
   }
 });
 
@@ -152,7 +152,6 @@ test('calculating and navigating use local assets without calling an API or runt
   page.on('request', (request) => requests.push(request.url()));
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await page.locator('#displacementCc').fill('1700');
   await expect(page.getByTestId('total')).toBeVisible();
   await page.locator('.country-nav a[href^="/zh/calculator/georgia"]').click();
@@ -173,7 +172,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-11');
-  await expect(page.getByTestId('january-estimates').locator('[data-status="reference"]')).toHaveCount(7);
+  await expect(page.getByTestId('total')).toBeVisible();
   await fillNumericDate(page, 'customsDate', '2026-09-30');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
@@ -181,7 +180,7 @@ test('browser initialization and reset use the Shanghai calendar date after the 
   await page.clock.setFixedTime(new Date('2026-12-20T20:30:00Z'));
   await page.locator('.reset-button').click();
   await expect(page.locator('#customsDate')).toHaveValue('2026-12-21');
-  await expect(page.getByTestId('january-estimates').locator('[data-status="reference"]')).toHaveCount(7);
+  await expect(page.getByTestId('total')).toBeVisible();
 });
 
 test('a future browser year remains explicit instead of silently applying expired reference rules', async ({
@@ -192,9 +191,7 @@ test('a future browser year remains explicit instead of silently applying expire
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#customsDate')).toHaveValue('2027-01-01');
   await expect(page.getByTestId('total')).toHaveCount(0);
-  const unavailable = page.getByTestId('january-estimates');
-  await expect(unavailable.locator('[data-january-month="2027-01"][data-status="needs_review"]')).toBeVisible();
-  await expect(unavailable.locator('[data-status="reference"]')).toHaveCount(0);
+  await expect(page.getByTestId('result-stamp')).toHaveAttribute('data-stamp-tone', 'muted');
   await expect(page.getByTestId('result-status')).toBeVisible();
 });
 

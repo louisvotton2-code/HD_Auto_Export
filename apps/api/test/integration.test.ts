@@ -88,8 +88,8 @@ async function upload(vehicle:AdminVehicle, provenance?:{listingUrl:string;image
   const complete=await call({method:'POST',url:`/api/v1/admin/media/${p.media.id}/complete`,headers:headers(),payload:{version:sent.json().data.version}});
   assert.equal(complete.statusCode,200,complete.body);return complete.json().data;
 }
-async function ready(input?: VehicleDraftInput):Promise<AdminVehicle> {
-  let vehicle=await create(input);const media=await upload(vehicle);
+async function ready():Promise<AdminVehicle> {
+  let vehicle=await create();const media=await upload(vehicle);
   vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Isolated synthetic fixture'}];vehicle=await save(vehicle);
   const availability=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/availability`,headers:headers(),payload:{version:vehicle.version,availability:'available',checkedAt:new Date().toISOString()}});
   assert.equal(availability.statusCode,200,availability.body);return availability.json().data;
@@ -308,36 +308,6 @@ test('translation results racing with an edit are rejected and upstream failures
     assert.deepEqual(await runtime.inventory.getAdmin(vehicle.id),{...vehicle,report:{hasReport:false,url:null}});
   } finally{release();translationHook=null;}
 });
-test('manual publication readiness accepts an unknown location without inventing a country', async () => {
-  const input = draft();
-  input.facts.location = null;
-  const vehicle = await ready(input);
-  const endpoint = `/api/v1/admin/vehicles/${vehicle.id}`;
-  assert.equal(vehicle.draft.facts.location, null);
-
-  const readiness = await call({ url: `${endpoint}/publish-readiness?locale=zh`, headers: headers() });
-  assert.equal(readiness.statusCode, 200, readiness.body);
-  const state = PublishReadinessResponseSchema.parse(readiness.json()).data;
-  assert.equal(state.requiredFieldsReady, true, JSON.stringify(state.issues));
-  assert.equal(state.canPublish, false);
-  assert.ok(state.issues.some(issue => issue.path === 'publicationPreview'));
-
-  for (const locale of ['zh', 'en', 'ru']) {
-    const response = await call({ url: `${endpoint}/publication-preview?locale=${locale}`, headers: headers() });
-    assert.equal(response.statusCode, 200, response.body);
-    const view = PublicationPreviewResponseSchema.parse(response.json()).data;
-    assert.equal(view.vehicle.facts.location, null);
-    assert.equal(view.vehicle.display.city.text, null);
-    assert.equal(view.vehicle.display.location.text, null);
-  }
-
-  await confirmReady(vehicle);
-  const confirmed = await call({ url: `${endpoint}/publish-readiness?locale=zh`, headers: headers() });
-  assert.equal(confirmed.statusCode, 200, confirmed.body);
-  assert.equal(PublishReadinessResponseSchema.parse(confirmed.json()).data.canPublish, true);
-  assert.equal((await call({ url: `/api/v1/vehicles/${vehicle.id}?locale=zh` })).statusCode, 404);
-});
-
 test('demo publication stays non-inventory across catalog counts, home, detail and media; manual gates remain',async()=>{
   let demo=await readyDemo();
   assert.equal(demo.availability,'unknown');assert.equal(demo.availabilityCheckedAt,null);
@@ -368,6 +338,8 @@ test('demo publication stays non-inventory across catalog counts, home, detail a
   assert.equal((await call({method:'GET',url:'/api/v1/home/vehicles'})).json().data.sections.length,0);
   const archivedHome={...configured.json().data};
   assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:archivedHome})).statusCode,422);
+  let manual=await ready();manual.draft.facts.location=null;manual=await save(manual);
+  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}}),'draft.facts.location');
   const noInventory=await readyDemo();const source=structuredClone(noInventory.draft);source.source.kind='manual';
   const manualUnknown=await create({...source,media:[]});const img=await upload(manualUnknown);manualUnknown.draft.media=[{id:img.id,sortOrder:0,isCover:true,alt:''}];manualUnknown.draft.facts.location={country:'CN',city:null,displayName:null};const saved=await save(manualUnknown);
   const unverified=await call({method:'POST',url:`/api/v1/admin/vehicles/${saved.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:saved.version}});assert.equal(unverified.statusCode,422);assert.ok(unverified.json().error.fields.some((f:{path:string})=>f.path==='availability'));

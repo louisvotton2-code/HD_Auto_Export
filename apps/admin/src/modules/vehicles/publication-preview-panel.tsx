@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Card, Radio, Space, Tag, Typography } from 'antd';
 import { EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { PublicationPreviewFrameMessageSchema, type ConfirmPublicationPreviewRequest } from '@hd/contracts/admin';
@@ -35,51 +35,34 @@ export function PublicationPreviewPanel(props: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   const invalidated = useRef(false);
   const cancelDeadline = useRef<() => void>(() => {});
-  const afterFrameLoad = useRef<() => void>(() => {});
   const current = useRef(props);
   current.current = props;
-  const loadId = useMemo(() => crypto.randomUUID(), [vehicleId, version, locale, reload, hasUnsavedChanges]);
+  const loadId = useMemo(() => crypto.randomUUID(), [vehicleId, version, locale, reload]);
   const query = new URLSearchParams({ locale, loadId });
   const src = `/staff/vehicles/${encodeURIComponent(vehicleId)}/publication-preview/?${query}`;
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     let active = true;
     let deadline: number | undefined;
-    let startupDeadline: number | undefined;
     let phase = 0;
-    let frameResponded = false;
     function clearDeadline() {
       phase += 1;
       window.clearTimeout(deadline);
-      window.clearTimeout(startupDeadline);
       deadline = undefined;
-      startupDeadline = undefined;
-    }
-    function expire(expectedPhase: number) {
-      if (!active || phase !== expectedPhase || invalidated.current || current.current.hasUnsavedChanges) return;
-      clearDeadline();
-      invalidated.current = true;
-      setStatus('error');
-      setError(frameResponded ? '预览尚未完整显示。请重新载入，显示完成后才能确认。'
-        : '预览页面未响应。请重新载入；若仍失败，请检查官网预览服务和后台代理。');
-      current.current.onRendered(null);
     }
     function startDeadline() {
       // Duplicate loading messages cannot extend an already pending render phase.
       if (deadline !== undefined) return;
       clearDeadline();
       const expectedPhase = phase;
-      deadline = window.setTimeout(() => expire(expectedPhase), 40_000);
+      deadline = window.setTimeout(() => {
+        if (!active || phase !== expectedPhase || invalidated.current || current.current.hasUnsavedChanges) return;
+        clearDeadline();
+        invalidated.current = true; setStatus('error');
+        setError('预览尚未完整显示。请重新载入，显示完成后才能确认。');
+        current.current.onRendered(null);
+      }, 40_000);
     }
-    afterFrameLoad.current = () => {
-      // load can represent a static shell or an HTTP error page. It never proves readiness.
-      if (frameResponded || invalidated.current || deadline === undefined || startupDeadline !== undefined) return;
-      const expectedPhase = phase;
-      startupDeadline = window.setTimeout(() => {
-        startupDeadline = undefined;
-        if (!frameResponded) expire(expectedPhase);
-      }, 12_000);
-    };
     cancelDeadline.current = clearDeadline;
     invalidated.current = current.current.hasUnsavedChanges;
     setStatus(invalidated.current ? 'stale' : 'loading'); setError(''); setHeight(850);
@@ -90,9 +73,6 @@ export function PublicationPreviewPanel(props: Props) {
       if (!parsed.success) return;
       const message = parsed.data;
       if (message.loadId !== loadId || message.vehicleId !== vehicleId || message.locale !== locale) return;
-      frameResponded = true;
-      window.clearTimeout(startupDeadline);
-      startupDeadline = undefined;
       if (message.event === 'resize') { setHeight(message.height); return; }
       if (invalidated.current) return;
       if (current.current.hasUnsavedChanges) {
@@ -129,6 +109,10 @@ export function PublicationPreviewPanel(props: Props) {
     return () => { active = false; clearDeadline(); window.removeEventListener('message', receive); current.current.onRendered(null); };
   }, [loadId, vehicleId, version, locale]);
 
+  useEffect(() => {
+    if (hasUnsavedChanges) { cancelDeadline.current(); invalidated.current = true; setStatus('stale'); current.current.onRendered(null); }
+  }, [hasUnsavedChanges]);
+
   function reloadPreview() { cancelDeadline.current(); invalidated.current = true; current.current.onRendered(null); setReload(value => value + 1); }
 
   return <Card className={styles.panel} title={<Space><EyeOutlined />发布预览</Space>} extra={
@@ -144,7 +128,7 @@ export function PublicationPreviewPanel(props: Props) {
     <Typography.Paragraph type="secondary">检查封面、车辆事实、车况和价格，切换语言核对实际展示。下方确认只对应本次显示的已保存内容。</Typography.Paragraph>
     {hasUnsavedChanges && <Alert showIcon type="warning" title="当前显示的是已保存草稿，请先保存修改" className={styles.notice} />}
     {error && <Alert showIcon type="error" title={error} className={styles.notice} />}
-    <div className={styles.frameWrap}><iframe key={loadId} ref={frame} src={src} onLoad={() => afterFrameLoad.current()} title={`${languages[locale]}车辆发布预览`}
+    <div className={styles.frameWrap}><iframe key={loadId} ref={frame} src={src} title={`${languages[locale]}车辆发布预览`}
       className={styles.frame} style={{ height }} referrerPolicy="same-origin" /></div>
   </Card>;
 }

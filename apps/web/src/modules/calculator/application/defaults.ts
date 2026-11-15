@@ -25,7 +25,7 @@ export function createDefaultInput(
     currency: 'USD',
     displacementCc: '1998',
     powerHp: '150',
-    manufactureDate: '',
+    manufactureDate: '2021-01',
     customsDate: date,
     // No China freight quote is known; unknown costs must not silently become zero.
     freight: '',

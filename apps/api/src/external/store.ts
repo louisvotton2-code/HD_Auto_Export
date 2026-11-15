@@ -12,7 +12,6 @@ import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { idempotent, type Actor } from '../vehicles/service.js';
 import { getExternalPublic, listingUuid, publicListingId } from './catalog.js';
-import { externalInquiryCode } from './inquiry-code.js';
 import { buildProjection, canonicalJson, emptyOverrides, isDatabaseJson, isPublicText, jsonHash, sha256, sourceHashes, textSourceIdentity, type ExternalProjection, type TextSourceIdentities } from './normalize.js';
 import { chinaCarProfile, chinaCarSampleProfile, getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
 
@@ -272,7 +271,7 @@ export class ExternalStore {
       if (!row) throw notFound();
       const overrides = row.overrides ?? emptyOverrides();
       const hashes = projectListing(row, overrides)?.sourceHashes ?? sourceHashes(null);
-      return { activity:await externalActivitySummary(tx,row.id),inquiryCode:externalInquiryCode(row.id),id, version: row.version, state: upstreamState(row),
+      return { activity:await externalActivitySummary(tx,row.id),inquiryCode:`${row.platform_id}-${row.external_id}`,id, version: row.version, state: upstreamState(row),
         identity: { provider: row.provider, platformId: row.platform_id, externalId: row.external_id },
         sourceRevision: Number(row.source_revision), sourceUpdatedAt: iso(row.source_updated_at), fetchedAt: row.fetched_at.toISOString(),
         source: row.source_data, overrides, sourceHashes: hashes, report: await getExternalReport(tx, row.id), vehicle: await getExternalPublic(tx, row.id, locale) };

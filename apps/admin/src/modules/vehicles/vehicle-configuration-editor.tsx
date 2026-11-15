@@ -32,10 +32,10 @@ type Props = {
   rows: ReadonlyArray<{ name: string; value: string }> | null;
   errors: readonly string[];
   disabled?: boolean;
-  required?: boolean;
+  requiredForPublish?: boolean;
 };
 
-export function VehicleConfigurationEditor({ value, onChange, rows, errors, disabled = false, required = true }: Props) {
+export function VehicleConfigurationEditor({ value, onChange, rows, errors, disabled = false, requiredForPublish = true }: Props) {
   const { message } = App.useApp();
   const [expanded, setExpanded] = useState<string[]>([]);
   const valid = !!rows?.length && errors.length === 0;
@@ -54,14 +54,14 @@ export function VehicleConfigurationEditor({ value, onChange, rows, errors, disa
     }
   }
 
-  return <Card title="车辆详细配置" className={styles.card} extra={<Tag color={required ? 'gold' : undefined}>{required ? '保存草稿必填' : '可选型号配置'}</Tag>}>
+  return <Card title="车辆详细配置" className={styles.card} extra={<Tag color={requiredForPublish ? 'gold' : undefined}>{requiredForPublish ? '发布必填' : '可选型号配置'}</Tag>}>
     <div className={styles.instructions}>
       <Typography.Paragraph>复制提示词，连同原始配置资料发给你使用的 AI，再把生成的 JSON 粘贴到下方。只填写有依据的配置，粘贴后请核对具体数值。</Typography.Paragraph>
       <Button icon={<CopyOutlined />} onClick={() => void copyPrompt()}>复制 AI 配置提示词</Button>
     </div>
     <Typography.Paragraph type="secondary">最多 {VEHICLE_CONFIGURATION_LIMITS.items} 项；名称最多 {VEHICLE_CONFIGURATION_LIMITS.nameUtf16} 字符，内容最多 {VEHICLE_CONFIGURATION_LIMITS.valueUtf16} 字符，名称与内容合计最多 {VEHICLE_CONFIGURATION_LIMITS.totalUtf16.toLocaleString('zh-CN')} 字符。超限会提示修正，不会截断内容。</Typography.Paragraph>
-    <Form.Item label="配置内容（JSON）" htmlFor="configuration" required={required} validateStatus={errors.length ? 'error' : undefined}
-      help={errors.length ? <ul className={styles.errors}>{errors.map((error, index) => <li key={`${index}:${error}`}>{error}</li>)}</ul> : required ? '请按标准格式填写至少一项有依据的配置。' : '可选填有依据的型号参数；填写后需符合标准格式。'}>
+    <Form.Item label="配置内容（JSON）" htmlFor="configuration" required={requiredForPublish} validateStatus={errors.length ? 'error' : undefined}
+      help={errors.length ? <ul className={styles.errors}>{errors.map((error, index) => <li key={`${index}:${error}`}>{error}</li>)}</ul> : requiredForPublish ? '可先留空保存草稿；填写后必须符合标准格式，发布前至少填写一项有效配置。' : '可选填有依据的型号参数；填写后需符合标准格式。'}>
       <Input.TextArea id="configuration" aria-label="配置内容（JSON）" value={value} onChange={event => onChange(event.target.value)}
         disabled={disabled} autoSize={{ minRows: 9, maxRows: 22 }} placeholder={configurationExample}
         className={styles.input} spellCheck={false} aria-invalid={errors.length > 0} />

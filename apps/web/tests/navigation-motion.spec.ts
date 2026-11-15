@@ -1,5 +1,4 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
-import { fillNumericDate } from './helpers/numeric-date';
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
@@ -8,7 +7,6 @@ test.beforeEach(async ({ page }) => {
 async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}/`);
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toBeVisible();
 }
 

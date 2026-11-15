@@ -17,7 +17,6 @@ import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
 import { VehicleEvidence } from './vehicles/evidence.js';
 import {markFullSyncAccess} from './external/full-sync/engine.js';
-import {listingUuid} from './external/catalog.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { MediaService } from './media/service.js';
@@ -270,10 +269,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([pub.PublicVehicleResponseSchema,pub.PublicVehicleInlineResponseSchema]),...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
       const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection);
-      if (p.id.startsWith('ext-') && vehicle.source.kind === 'external'
-          && ['che168', 'dongchedi'].includes(vehicle.source.platform.id)) {
-        try { await serving.optionalEffect(() => markFullSyncAccess(db, listingUuid(p.id))); }
-        catch { request.log.debug('Full-sync access hint unavailable'); }
+      const identity=vehicle.identifiers;
+      if(p.id.startsWith('ext-')&&identity?.sourceId&&(identity.source==='che168'||identity.source==='dongchedi')) {
+        try{await serving.optionalEffect(()=>markFullSyncAccess(db,identity.source as 'che168'|'dongchedi',identity.sourceId!));}catch{request.log.debug('Full-sync access hint unavailable');}
       }
       return vehicle;
     },request);});
