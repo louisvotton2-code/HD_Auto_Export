@@ -7,7 +7,7 @@ import {
 import { translationSourceHash } from './machine-translation-model';
 import {
   applyTranslationPlanResult, assertTranslationPlan, assertWorkspaceFresh, assertWorkspaceSnapshot,
-  translationPlanConfirmation, workspaceData, workspaceDirty, workspaceNeedsChineseNormalization, workspaceSaveRequest,
+  translationPlanConfirmation, workspaceData, workspaceDirty, workspaceNeedsChineseNormalization, workspaceSaveRequest, workspaceIsFactsOnly, workspaceIsSourceDeclarationOnly, workspaceTranslationGaps,
 } from './workspace-model';
 
 async function setup() {
@@ -155,4 +155,29 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
     bundle.localization.data.fields[0]!.translations.zh!.reviewStatus = 'stale';
     expect(workspaceNeedsChineseNormalization(bundle)).toBe(true);
   });
+});
+
+it('requires both current translations for every saved source, allowing generated Chinese', async () => {
+  const { bundle } = await setup();
+  const data = workspaceData(bundle);
+  expect(workspaceTranslationGaps(bundle, data).every(gap => gap.ref !== 'content.description')).toBe(true);
+  expect(workspaceIsSourceDeclarationOnly(bundle, { ...data, sourceLanguageConfirmations: ['model'] })).toBe(true);
+  const factsOnly = workspaceData(bundle);
+  factsOnly.localization.facts.drivetrain = 'awd';
+  expect(workspaceIsFactsOnly(bundle, factsOnly)).toBe(true);
+  factsOnly.content.description.sourceText = 'Changed';
+  expect(workspaceIsFactsOnly(bundle, factsOnly)).toBe(false);
+  data.content.description.sourceText = '合成车况';
+  for (const field of [...Object.values(data.content), ...data.localization.fields]) {
+    for (const locale of ['en', 'ru'] as const) field.translations[locale] = {
+      text: 'Synthetic translation', kind: 'human', reviewStatus: 'pending',
+      sourceVersion: field.sourceVersion, humanEditVersion: 0, engineVersion: null,
+    };
+  }
+  expect(workspaceTranslationGaps(bundle, data)).toEqual([]);
+  data.content.title.translations.ru!.reviewStatus = 'stale';
+  data.localization.fields[0]!.translations.en = null;
+  expect(workspaceTranslationGaps(bundle, data)).toEqual([
+    { ref: 'content.title', locale: 'ru' }, { ref: 'model', locale: 'en' },
+  ]);
 });

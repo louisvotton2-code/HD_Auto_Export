@@ -57,9 +57,13 @@
     box-shadow 0.3s,
     transform 0.3s;
 }
-.catalogButton span {
+.catalogButtonLabel {
   position: relative;
   z-index: 1;
+}
+.catalogButton > :global(.navigation-hint),
+.catalogShortcut > :global(.navigation-hint) {
+  display: none;
 }
 .catalogButton::before {
   content: '';
@@ -205,7 +209,7 @@
   line-height: 20px;
   font-weight: 600;
 }
-.shortcut span {
+.shortcutNote {
   display: none;
   color: var(--silver);
   font-size: 12px;
@@ -653,7 +657,7 @@
     font-size: 16px;
     line-height: 24px;
   }
-  .shortcut span {
+  .shortcutNote {
     display: block;
   }
   .stats {
@@ -732,12 +736,12 @@
     scroll-behavior: auto !important;
   }
 }
-.shortcut > svg:last-child {
+.shortcut > .shortcutArrow {
   width: 16px;
   height: 16px;
   margin-top: auto;
 }
-.shortcut > span {
+.shortcutNote {
   margin-top: -6px;
 }
 .cardContact > a:not(.details) {

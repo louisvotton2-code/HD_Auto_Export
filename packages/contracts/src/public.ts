@@ -46,12 +46,16 @@ export const PublicMediaSchema = z.strictObject({
 export type PublicMedia = z.infer<typeof PublicMediaSchema>;
 export const PublicMediaQuerySchema = z.strictObject({ variant: z.literal('thumb').optional() });
 export type PublicMediaQuery = z.infer<typeof PublicMediaQuerySchema>;
-export const SourceSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('manual') }),
-  z.strictObject({ kind: z.literal('demo') }),
-  z.strictObject({ kind: z.literal('external'), platform: ExternalPlatformSchema, listingUrl: SafeHttpUrlSchema }),
-]);
+const ManualSourceSchema = z.strictObject({ kind: z.literal('manual') });
+const DemoSourceSchema = z.strictObject({ kind: z.literal('demo') });
+const ExternalSourceSchema = z.strictObject({ kind: z.literal('external'), platform: ExternalPlatformSchema, listingUrl: SafeHttpUrlSchema });
+export const SourceSchema = z.discriminatedUnion('kind', [ManualSourceSchema, DemoSourceSchema, ExternalSourceSchema]);
 export type Source = z.infer<typeof SourceSchema>;
+export const PublicSourceSchema = z.discriminatedUnion('kind', [
+  ManualSourceSchema,
+  DemoSourceSchema,
+  ExternalSourceSchema.extend({ listingUrl: SafeHttpUrlSchema.nullable() }),
+]);
 /** Opt-in USD display; original price remains the immutable source quotation. */
 export const PublicUsdPriceSchema=z.discriminatedUnion('status',[
   z.strictObject({status:z.literal('ready'),kind:z.enum(['asking','reference']),money:MoneySchema.extend({currency:z.literal('USD')}),
@@ -67,7 +71,7 @@ export const PublicVehicleSchema = z.strictObject({
   stockCode: z.string().min(1).max(60),
   identifiers:VehicleIdentifiersSchema.optional(),manufacture:ManufactureEvidenceSchema.optional(),
   exportStatus:ExportStatusSchema.optional(),vehicleClass:DisplayTextSchema.nullable().optional(),
-  source: SourceSchema,
+  source: PublicSourceSchema,
   facts: VehicleFactsSchema.extend({generation:NamedValueSchema.nullable().optional(),drivetrain:DrivetrainSchema.nullable().optional()}),
   display:VehicleDisplaySchema.optional(),
   price: PublicPriceSchema,
@@ -214,7 +218,7 @@ export const PublicVehicleListSchema = z.strictObject({
 export type PublicVehicleList = z.infer<typeof PublicVehicleListSchema>;
 /** Explicit projection=card: no descriptions, configuration, reports or full galleries. */
 export const PublicVehicleCardSchema=z.strictObject({
- id:IdSchema,stockCode:PublicVehicleSchema.shape.stockCode,source:SourceSchema,
+ id:IdSchema,stockCode:PublicVehicleSchema.shape.stockCode,source:PublicSourceSchema,
  identifiers:VehicleIdentifiersSchema.optional(),manufacture:ManufactureEvidenceSchema.optional(),exportStatus:ExportStatusSchema.optional(),vehicleClass:DisplayTextSchema.nullable().optional(),
  facts:PublicVehicleSchema.shape.facts,display:VehicleDisplaySchema.optional(),price:PublicPriceSchema,displayPrice:PublicUsdPriceSchema.optional(),
  content:z.strictObject({title:PublicTextSchema}),images:z.array(PublicMediaSchema).max(1),availability:AvailabilitySchema,availabilityCheckedAt:TimestampSchema.nullable(),

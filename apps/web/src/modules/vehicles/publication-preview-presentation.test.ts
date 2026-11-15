@@ -26,13 +26,13 @@ describe('publication preview presentation', () => {
     expect(publicationPreviewPrice(price, locale)).toEqual({ original: '0 USD', approximation: null });
   });
 
-  it('shares original-currency precision and half-up USD rounding with the public site', () => {
+  it('shares up to two decimals in both currencies with the public site', () => {
     const { price } = makePublicationPreviewFixture('en').vehicle;
     price.money = { amount: '99999999999999.99', currency: 'CNY' };
     price.displayPrice = { status: 'ready', kind: 'reference', money: { amount: '23500.50', currency: 'USD' },
       conversion: { asOf: '2026-11-12T00:00:00Z', source: 'synthetic' } };
     expect(publicationPreviewPrice(price, 'en')).toEqual({
-      original: '¥ 99,999,999,999,999.99', approximation: '≈ 23,501 USD',
+      original: '¥ 99,999,999,999,999.99', approximation: '≈ 23,500.5 USD',
     });
     price.displayPrice = { status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable' };
     expect(publicationPreviewPrice(price, 'en')).toEqual({

@@ -40,7 +40,7 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
       const response=await call({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password}});assert.equal(response.statusCode,200,response.body);
       return response.cookies.map(cookie=>`${cookie.name}=${cookie.value}`).join('; ');}
     const cookie=await login('first'),other=await login('second'),headers={origin,cookie};
-    const draft=makeVehicleDraftFixture();draft.media=[];draft.configuration={version:1,items:[{name:'排量(cc)',value:'1989'},{name:'座椅',value:'真皮'}]};
+    const draft=makeVehicleDraftFixture();draft.media=[];draft.facts.trim={id:'translation_trim',name:'Synthetic translation trim'};draft.configuration={version:1,items:[{name:'排量(cc)',value:'1989'},{name:'座椅',value:'真皮'}]};
     draft.internal.notes='PRIVATE_UX11_SENTINEL';
     for(const field of Object.values(draft.content)){field.sourceLanguage='zh';field.translations.en=null;field.translations.ru=null;}
     const creation=await call({method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers,'idempotency-key':randomUUID()},payload:{draft}});

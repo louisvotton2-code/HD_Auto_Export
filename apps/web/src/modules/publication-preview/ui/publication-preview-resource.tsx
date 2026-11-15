@@ -198,8 +198,8 @@ export function PublicationPreviewResource({ scope }: { scope: PreviewFrameScope
       active = false;
       window.clearTimeout(timeout);
       controller.abort();
+      // Development Strict Mode replays effect cleanup while the frame is still live.
       window.removeEventListener('pagehide', pageHidden);
-      postFrame({ ...base, event: 'disposed' });
     };
   }, [scope, scopeKey]);
 

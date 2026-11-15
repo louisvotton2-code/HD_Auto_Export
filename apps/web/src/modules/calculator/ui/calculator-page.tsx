@@ -10,20 +10,24 @@ import { Icon } from '@/shared/ui/icon';
 import { CountryFlag } from '@/shared/ui/country-flag';
 import { useDestinationCountry } from '@/shared/ui/use-destination-country';
 import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
+import { formatDisplayAmount } from '@/shared/lib/display-amount';
+import { DecimalDisplayInput } from './decimal-display-input';
+import { fieldDisplayPrecision } from './field-display-precision';
 import { NumericDateInput } from './numeric-date-input';
 import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type CalculationResult, type Powertrain } from '../index';
-import { createDefaultInput, convertTransactionPrice } from '../application/defaults';
+import { convertTransactionPrice } from '../application/defaults';
 import { getClearanceDate } from '../application/current-date';
 import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
-import { calculateManufactureRange, type ManufactureMonthRange } from '../application/manufacture-range';
-import { manufactureRangeCopy } from '../application/manufacture-range-copy';
+import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
+import { januaryRangeNote, manufactureRangeCopy } from '../application/manufacture-range-copy';
 import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
   CALCULATOR_DRAFT_STORAGE_KEY,
   CALCULATOR_POWERTRAINS,
   LEGACY_CALCULATOR_DRAFT_STORAGE_KEY,
+  createCalculatorFormInput,
   restoreCalculatorDraft,
   type StoredCalculatorDraft,
 } from '../application/draft';
@@ -54,13 +58,6 @@ type InputField =
   | 'euroRate'
   | 'usdRate';
 
-function defaultInput(
-  country: CountryRecord,
-  date: string,
-  rates: ExchangeRateSnapshot,
-): CalculationInput {
-  return createDefaultInput(country.code, date, rates);
-}
 
 const errorMap: Record<string, string> = {
   invalid_option: 'invalid_number',
@@ -99,9 +96,9 @@ export function CalculatorPage({
   const locale = useLocale();
   const preference = useDestinationCountry(country.code);
   const [activeRates, setActiveRates] = useState(initialRates);
-  const [input, setInput] = useState(() => defaultInput(country, initialDate, initialRates));
+  const [input, setInput] = useState(() => createCalculatorFormInput(country, initialDate, initialRates));
+  const [referenceYear, setReferenceYear] = useState(Number(initialDate.slice(0, 4)));
   const [manualRates, setManualRates] = useState(false);
-  const [manufactureRange, setManufactureRange] = useState<ManufactureMonthRange>();
   const [ready, setReady] = useState(false);
   const [advanced, setAdvanced] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -126,16 +123,12 @@ export function CalculatorPage({
       ?? (pendingSeedRef.current?.seed.input.country === country.code ? pendingSeedRef.current : null);
     pendingSeedRef.current = fragment;
     const rates = fragment?.seed.rates ?? readStoredEstimateRates(raw.current, country.code) ?? initialRates;
-    const restored = restoreCalculatorDraft(
-      raw,
-      country,
-      getClearanceDate(new Date()),
-      rates,
-    );
+    const visitDate = getClearanceDate(new Date());
+    setReferenceYear(Number(visitDate.slice(0, 4)));
+    const restored = restoreCalculatorDraft(raw, country, visitDate, rates);
     setActiveRates(rates);
     setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
-    setManufactureRange(fragment ? fragment.seed.manufactureRange : restored.manufactureRange);
     if (fragment) {
       // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
       try {
@@ -155,11 +148,11 @@ export function CalculatorPage({
     if (!ready || input.country !== country.code) return;
     pendingSeedRef.current = null;
     try {
-      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates, manufactureRange }));
+      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, ready, country.code, activeRates, manufactureRange]);
+  }, [input, manualRates, ready, country.code, activeRates]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -198,31 +191,17 @@ export function CalculatorPage({
       next[key] = next[key]?.trim() ?? '';
     return next;
   }, [input, country]);
-  const rangeResult = useMemo(() => country.needsManufactureDate && manufactureRange && input.manufactureDate === ''
-    ? calculateManufactureRange(normalized, manufactureRange) : null, [normalized, manufactureRange, country.needsManufactureDate, input.manufactureDate]);
+  const dateIsBlank = country.needsManufactureDate && normalized.manufactureDate === '';
+  const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
+    [dateIsBlank, normalized, referenceYear]);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
   const rangeCopy = manufactureRangeCopy[locale as Locale];
-  const manufactureNote = rangeResult
-    ? rangeCopy.source.replace('{from}', rangeResult.range.from).replace('{to}', rangeResult.range.to)
-      .replace('{count}', rangeResult.evaluatedMonths.toLocaleString(locale)) : undefined;
+  const manufactureNote = rangeResult ? januaryRangeNote(locale as Locale, rangeResult) : undefined;
   const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
-  const formatter = useMemo(
-    () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, { maximumFractionDigits: 2 }),
-    [locale],
-  );
-  const decimalSeparator =
-    formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value || '.';
-  const format = (amount: string) => {
-    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(amount);
-    if (!match) return '—';
-    const whole = formatter.format(BigInt(match[1]));
-    return match[2] ? `${whole}${decimalSeparator}${match[2]}` : whole;
-  };
+  const format = (amount: string) => formatDisplayAmount(amount, locale, 2);
   function usdText(amount: string) {
     const converted = convertImportAmountToUsd(amount, normalized, activeRates);
-    if (converted === null) return '— USD';
-    const [integer, decimals] = converted.split('.');
-    return `≈ ${formatter.format(BigInt(integer))}${decimalSeparator}${decimals.padEnd(2, '0')} USD`;
+    return converted === null ? '— USD' : `≈ ${format(converted)} USD`;
   }
   const isElectric = input.powertrain === 'bev';
   const needsDisplacement = !isElectric && !(country.code === 'KG' && input.powertrain === 'erev');
@@ -267,7 +246,6 @@ export function CalculatorPage({
         : {}),
     }));
     setCopyState('idle');
-    if (key === 'manufactureDate') setManufactureRange(undefined);
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
@@ -289,9 +267,10 @@ export function CalculatorPage({
   }
   function reset() {
     setActiveRates(initialRates);
-    setInput(defaultInput(country, getClearanceDate(new Date()), initialRates));
+    const visitDate = getClearanceDate(new Date());
+    setReferenceYear(Number(visitDate.slice(0, 4)));
+    setInput(createCalculatorFormInput(country, visitDate, initialRates));
     setManualRates(false);
-    setManufactureRange(undefined);
     setTouched(new Set());
     setCopyState('idle');
     setAdvanced(true);
@@ -363,7 +342,7 @@ export function CalculatorPage({
       `${siteConfig.name} · ${tc(country.code)}`,
       ...(scopeLabel ? [scopeLabel] : []),
       ...quotes,
-      ...(manufactureNote ? [manufactureNote] : []),
+      ...(manufactureNote ? [manufactureNote.lead + manufactureNote.period] : []),
       t('usdReferenceHint'),
       t('referenceNotice'),
     ].join('\n');
@@ -392,7 +371,7 @@ export function CalculatorPage({
   function field(
     key: InputField,
     label: string,
-    options: { type?: string; unit?: string; children?: ReactNode; note?: string } = {},
+    options: { type?: string; unit?: string; children?: ReactNode; note?: ReactNode } = {},
   ) {
     const code = result.fieldErrors[key];
     const error = code
@@ -404,11 +383,13 @@ export function CalculatorPage({
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
         {options.type === 'month' || options.type === 'date' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
-          precision={options.type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale as Locale} onChange={value => update(key, value)}
+          limitToCurrentYear={key === 'manufactureDate'}
+          precision={options.type} referenceYear={referenceYear} label={label} locale={locale as Locale} onChange={value => update(key, value)}
           onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
           <label htmlFor={key}>{label}</label>
           <div className="input-wrap">
-          <input
+          <DecimalDisplayInput
+            precision={fieldDisplayPrecision[key]}
             id={key}
             name={key}
             type={options.type || 'text'}
@@ -513,7 +494,10 @@ export function CalculatorPage({
                 {country.needsPower &&
                   field('powerHp', t(isElectric ? 'electricPower' : 'power'), { unit: 'hp' })}
                 {country.needsManufactureDate &&
-                  field('manufactureDate', t('manufactureDate'), { type: 'month', note: manufactureNote })}
+                  field('manufactureDate', t('manufactureDate'), {
+                    type: 'month',
+                    note: manufactureNote && <><strong>{manufactureNote.lead}</strong>{manufactureNote.period}</>,
+                  })}
               </div>
               <fieldset className="powertrain-field">
                 <legend>{t('powertrain')}</legend>
@@ -752,10 +736,9 @@ export function CalculatorPage({
                     <small className="usd-reference-hint">{t('usdReferenceHint')}</small>
                     <p>{t('notLanded')}</p>
                   </div>
-                  {(manufactureNote || result.assumptions.length > 0) && (
+                  {result.assumptions.length > 0 && (
                     <div className="calculation-assumptions" data-testid="calculation-assumptions">
                       <ul>
-                        {manufactureNote && <li>{manufactureNote}</li>}
                         {result.assumptions.map((key) => (
                           <li key={key}>{ta(key)}</li>
                         ))}

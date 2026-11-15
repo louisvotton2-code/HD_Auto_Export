@@ -82,7 +82,8 @@ async function expectContacts(
       url.origin + url.pathname,
     );
     const text = url.searchParams.get('text');
-    expect(text).toContain(stockCode);
+    if (/^(?:HX[0-9]+|HD-[0-9]+)$/.test(stockCode)) expect(text).toContain(stockCode);
+    else expect(text).not.toContain(stockCode);
     expect(text).toContain(`/${locale}/cars/${id}/`);
     expect(text).not.toMatch(/(?:里程|Mileage|Пробег):\s*0\s*km/i);
     expect(text).not.toMatch(/\b0(?:\.00)?\s*USD\b/);

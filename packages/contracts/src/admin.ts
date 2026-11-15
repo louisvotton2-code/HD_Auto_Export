@@ -329,7 +329,7 @@ export const MediaUploadRequestSchema = z.strictObject({
   vehicleId: IdSchema,
   filename: z.string().min(1).max(255).regex(/^[^/\\\u0000-\u001f]+$/).optional(),
   contentType: MediaContentTypeSchema,
-  rights: MediaRightsSchema,
+  rights: MediaRightsSchema.optional().describe('May be omitted for staff uploads to manual vehicles. Other vehicle sources require an explicit declaration.'),
   sizeBytes: z.number().int().min(1).max(10 * 1024 * 1024),
 });
 export const MediaUploadResponseSchema = responseSchema(z.strictObject({

@@ -21,6 +21,7 @@ import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
 import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
+import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
 
 export type Actor = { id: string; requestId: string };
@@ -54,15 +55,16 @@ function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized',priceView?
     if (!item || item.reviewStatus==='stale' || item.sourceVersion !== field.sourceVersion) return null;
     return {text:item.text, requestedLocale:locale, contentLocale:item.kind==='original'?field.sourceLanguage:locale, kind:item.kind,reviewed:curated&&item.reviewStatus==='approved'};
   };
-  const { configuration, ...projection } = row.projections?.[locale] ?? projectDisplay(row.id,p,locale,
+  const { configuration, source, display, ...projection } = row.projections?.[locale] ?? projectDisplay(row.id,p,locale,
     row.published_localization?{data:row.published_localization,bindings:row.published_bindings??{}}:undefined);
   return PublicVehicleSchema.parse({id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
-    source:p.source.kind==='external'?{kind:'external',platform:p.source.platform,listingUrl:p.source.listingUrl}:{kind:p.source.kind},
+    source:p.source.kind==='external' ? publicExternalSource() : view==='localized' ? source : {kind:p.source.kind},
     facts:p.facts, price:p.price,...(priceView==='usd'?{displayPrice:projectUsdPrice(p.price,quote)}:{}), content:{title:text('title'),description:text('description')},
     images:p.images, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
     sourceUpdatedAt:p.source.kind==='external'?p.source.sourceUpdatedAt:null, fetchedAt:p.source.kind==='external'?p.source.collectedAt:null,
     publishedAt:iso(row.published_at), detailPath:`/${locale}/cars/${row.id}/`,
-    ...(view==='localized'?projection:{}), ...(includeConfiguration?{configuration:configuration??null}:{}),
+    ...(view==='localized'?{...projection,display:p.source.kind==='external'&&display?publicExternalDisplay(display,locale):display}:{}),
+    ...(includeConfiguration?{configuration:configuration??null}:{}),
   });
 }
 /** Card SQL projects only the selected locale and cover before rows leave PostgreSQL. */
@@ -90,17 +92,18 @@ function staffCardSelect(locale: Locale, params: unknown[]) {
 function toCard(row:Row,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null):PublicVehicleCard {
   const p=row.publication_data!;
   const field=p.content.title,item=field.translations[locale]!;
-  const {configuration:_configuration,...projection}=row.projections?.[locale]??projectDisplay(row.id,p,locale,
+  const {configuration:_configuration,source,display,...projection}=row.projections?.[locale]??projectDisplay(row.id,p,locale,
     row.published_localization?{data:row.published_localization,bindings:{}}:undefined);
   const extras=p as Snapshot & Pick<PublicVehicleCard,'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'>;
   return PublicVehicleCardSchema.parse({id:row.id,stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
-    source:p.source.kind==='external'?{kind:'external',platform:p.source.platform,listingUrl:p.source.listingUrl}:{kind:p.source.kind},
+    source:p.source.kind==='external' ? publicExternalSource() : view==='localized' ? source : {kind:p.source.kind},
     facts:p.facts,price:p.price,...(priceView==='usd'?{displayPrice:projectUsdPrice(p.price,quote)}:{}),
     content:{title:{text:item.text,requestedLocale:locale,contentLocale:item.kind==='original'?field.sourceLanguage:locale,kind:item.kind,reviewed:p.source.kind==='manual'&&item.reviewStatus==='approved'}},
     images:p.images,availability:row.availability,availabilityCheckedAt:iso(row.availability_checked_at),
     sourceUpdatedAt:p.source.kind==='external'?p.source.sourceUpdatedAt:null,fetchedAt:p.source.kind==='external'?p.source.collectedAt:null,
-    publishedAt:iso(row.published_at),detailPath:`/${locale}/cars/${row.id}/`,...(view==='localized'?projection:{}),
-    ...(extras.identifiers?{identifiers:extras.identifiers}:{}),...(extras.manufacture?{manufacture:extras.manufacture}:{}),
+    publishedAt:iso(row.published_at),detailPath:`/${locale}/cars/${row.id}/`,
+    ...(view==='localized'?{...projection,display:p.source.kind==='external'&&display?publicExternalDisplay(display,locale):display}:{}),
+    ...(p.source.kind!=='external'&&extras.identifiers?{identifiers:extras.identifiers}:{}),...(extras.manufacture?{manufacture:extras.manufacture}:{}),
     ...(extras.vehicleClass?{vehicleClass:extras.vehicleClass}:{}),exportStatus:extras.exportStatus??'unknown'});
 }
 function canonical(value: unknown): string {
@@ -483,7 +486,27 @@ export class InventoryService {
     return this.db.transaction(tx=>idempotent(tx,actor,'vehicle.create',key,draft,async()=>{
       const id=randomUUID();
       if (draft.media.length) throw new ApiError(422,'MEDIA_NOT_READY','Create the vehicle before uploading images.');
+      if (draft.source.kind === 'manual') {
+        const { facts, content } = draft;
+        const required = [
+          [facts.make !== null, 'draft.facts.make', 'Make is required.'],
+          [facts.model !== null, 'draft.facts.model', 'Model is required.'],
+          [content.title.sourceLanguage === 'zh', 'draft.content.title.sourceLanguage', 'Use Chinese as the title source language.'],
+          [Boolean(content.title.sourceText?.trim()), 'draft.content.title.sourceText', 'Original title is required.'],
+          [facts.trim !== null, 'draft.facts.trim', 'Configuration name is required.'],
+          [facts.modelYear !== null, 'draft.facts.modelYear', 'Model year is required.'],
+          [facts.mileageKm !== null, 'draft.facts.mileageKm', 'Mileage is required; zero is valid.'],
+        ] as const;
+        const fields = required.filter(([provided]) => !provided)
+          .map(([, path, message]) => ({ path, message, code: 'REQUIRED_FOR_CREATION' }));
+        if (fields.length) throw new ApiError(422, 'INVALID_REQUEST', 'New manual vehicles require basic facts.', fields);
+      }
       const normalized=normalizeContent(draft);
+      if (normalized.source.kind === 'manual') {
+        normalized.facts.location ??= { country: 'CN', city: null, displayName: null };
+        normalized.internal.purchaseCost ??= { amount: null, currency: 'CNY' };
+        if (normalized.price.kind === 'asking') normalized.price.money ??= { amount: null, currency: 'CNY' };
+      }
       await tx.query('INSERT INTO vehicles(id) VALUES($1)',[id]);
       await tx.query('INSERT INTO vehicle_drafts(vehicle_id,data) VALUES($1,$2)',[id,JSON.stringify(normalized)]);
       await persistLocalization(tx,id,syncLocalization(id,normalized,emptyLocalization(),'zh'),1);

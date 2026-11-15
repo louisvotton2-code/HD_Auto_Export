@@ -14,10 +14,12 @@ export const liveConfiguration = VehicleConfigurationSchema.parse({
   version: 1, items: [{ name: '座位数', value: '5' }, { name: '内饰说明', value: '合成织物座椅' }],
 });
 
-export async function enterLiveConfiguration(page: Page) {
+export async function enterLiveConfiguration(page: Page, config = liveConfiguration) {
   await tab(page, '车辆配置');
-  await page.getByLabel('配置内容（JSON）', { exact: true }).fill(JSON.stringify(liveConfiguration, null, 2));
+  await page.getByLabel('配置内容（JSON）', { exact: true }).fill(JSON.stringify(config, null, 2));
   await expect(page.getByLabel('配置内容（JSON）', { exact: true })).not.toHaveAttribute('aria-invalid', 'true');
+  await page.getByRole('button', { name: '解析并核对配置' }).click();
+  await page.getByRole('button', { name: '人工核对无误' }).click();
 }
 
 export async function readLiveBundle(id: string, read: LiveRead) {
@@ -75,6 +77,8 @@ function syntheticDisplayTargets(ref: string): Targets {
   // Configuration translations preserve all fact tokens. In particular, the numeric value "5"
   // has no translation ref and must remain the server's original neutral value in every locale.
   const configuration: Record<string, Targets> = {
+    [`configuration.${vehicleConfigurationItemId('动力类型')}.name`]: { en: 'Powertrain', ru: 'Тип двигателя' },
+    [`configuration.${vehicleConfigurationItemId('动力类型')}.value`]: { en: 'Petrol', ru: 'Бензин' },
     [`configuration.${vehicleConfigurationItemId('座位数')}.name`]: { en: 'Seats', ru: 'Количество мест' },
     [`configuration.${vehicleConfigurationItemId('内饰说明')}.name`]: { en: 'Interior description', ru: 'Описание салона' },
     [`configuration.${vehicleConfigurationItemId('内饰说明')}.value`]: { en: 'Synthetic fabric seats', ru: 'Синтетические тканевые сиденья' },
@@ -86,10 +90,10 @@ function syntheticDisplayTargets(ref: string): Targets {
   return { en: 'Synthetic display text', ru: 'Синтетический текст' };
 }
 
-export function assertLivePublicConfiguration(value: PublicVehicle['configuration'], locale: Locale) {
+export function assertLivePublicConfiguration(value: PublicVehicle['configuration'], locale: Locale, config = liveConfiguration) {
   expect(value?.version).toBe(1);
-  expect(value?.items).toHaveLength(liveConfiguration.items.length);
-  for (const source of liveConfiguration.items) {
+  expect(value?.items).toHaveLength(config.items.length);
+  for (const source of config.items) {
     const id = vehicleConfigurationItemId(source.name);
     const item = value!.items.find(item => item.id === id);
     expect(item).toBeTruthy();

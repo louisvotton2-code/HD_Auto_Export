@@ -15,7 +15,7 @@ const FIRST_COMMON_YEAR = 1886;
 const MAX_COMMON_YEARS = 300;
 
 /** Numeric selections keep partial dates local; only a complete valid ISO value reaches the tax core. */
-export function NumericDateInput({ id, name, value, precision, label, locale, referenceYear, onChange, onBlur, describedBy, invalid = false }: {
+export function NumericDateInput({ id, name, value, precision, label, locale, referenceYear, onChange, onBlur, describedBy, invalid = false, limitToCurrentYear = false }: {
   id: string;
   name: string;
   value: string;
@@ -27,6 +27,7 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
   onBlur?: () => void;
   describedBy?: string;
   invalid?: boolean;
+  limitToCurrentYear?: boolean;
 }) {
   const [state, setState] = useState(() => ({ source: value, parts: numericDateParts(value), dayCleared: false }));
   useEffect(() => setState(previous => previous.source === value ? previous : { source: value, parts: numericDateParts(value), dayCleared: false }), [value]);
@@ -39,8 +40,8 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
   // Keep common vehicle-year choices bounded. A legitimate
   // saved year outside this window remains selectable instead of being replaced.
   const reference = Number.isFinite(referenceYear) ? Math.floor(referenceYear) : FIRST_COMMON_YEAR;
-  const lastYear = Math.max(FIRST_COMMON_YEAR, Math.min(FIRST_COMMON_YEAR + MAX_COMMON_YEARS - 1, reference + 5));
-  const years = Array.from({ length: lastYear - FIRST_COMMON_YEAR + 1 }, (_, index) => String(FIRST_COMMON_YEAR + index));
+  const lastYear = Math.max(FIRST_COMMON_YEAR, Math.min(FIRST_COMMON_YEAR + MAX_COMMON_YEARS - 1, reference + (limitToCurrentYear ? 0 : 5)));
+  const years = Array.from({ length: lastYear - FIRST_COMMON_YEAR + 1 }, (_, index) => String(lastYear - index));
   if (/^\d{4}$/.test(current.parts.year) && Number(current.parts.year) >= 1 && !years.includes(current.parts.year))
     years.push(current.parts.year);
   years.sort((left, right) => Number(right) - Number(left));
@@ -52,7 +53,7 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
     setState({ source: next.value, parts: next.parts, dayCleared: next.dayCleared || part !== 'day' && current.dayCleared });
     onChange(next.value);
   }
-  return <fieldset className={styles.group} aria-describedby={descriptions || undefined} data-numeric-date={name}>
+  return <fieldset className={styles.group} data-bounded={limitToCurrentYear || undefined} aria-describedby={descriptions || undefined} data-numeric-date={name}>
     <legend>{label}</legend>
     <input id={id} type="hidden" name={name} value={value} />
     <div className={styles.controls} data-precision={precision}>
@@ -63,7 +64,8 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
           aria-label={`${label}: ${words[part]}`} aria-invalid={invalid || invalidPart === part}
           aria-describedby={descriptions || undefined} onChange={event => edit(part, event.target.value)} onBlur={onBlur}>
           <option value="">—</option>
-          {options(part).map(option => <option key={option} value={option}>{option}</option>)}
+          {options(part).map(option => <option key={option} value={option}
+            disabled={part === 'year' && limitToCurrentYear && Number(option) > lastYear}>{option}</option>)}
         </select>
       </div>)}
     </div>

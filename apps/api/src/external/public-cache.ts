@@ -98,7 +98,7 @@ export class PublicCatalogCache {
     const validUntil = Math.min(expiresAt, checkedAt + PUBLIC_CATALOG_CACHE_MAX_TTL_MS, revision.fx?.expiresAt ?? Infinity);
     if (validUntil <= checkedAt) throw unavailable();
     // Includes deployment read policy: toggling external visibility cannot reuse a broader DTO.
-    const version = createHash('sha256').update(canonicalJson([4, revision.epoch, revision.revision,
+    const version = createHash('sha256').update(canonicalJson([5, revision.epoch, revision.revision,
       this.options.deployment ?? {environment:'test',releaseId:'unreleased'},
       !!this.options.externalCatalog, usd, usd ? revision.fx ?? null : null])).digest('hex');
     return { version, priceView: usd ? 'usd' : 'original',

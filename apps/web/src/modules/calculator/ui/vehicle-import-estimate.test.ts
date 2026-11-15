@@ -41,7 +41,7 @@ describe('detail calculator server enhancement boundary', () => {
     expect(html).not.toContain(messages[locale].Calculator.manufactureYearEstimate.replace('{year}', '2024'));
     expect(html).toMatch(/<fieldset[^>]*disabled=""/);
     expect(html).toContain('name="price"');
-    expect(html).toContain('value="23500.00"');
+    expect(html).toMatch(/name="price" value="23500"/);
     expect(html).toMatch(/<details[^>]*open=""/);
     expect(html).toContain('2026-10-22');
   });

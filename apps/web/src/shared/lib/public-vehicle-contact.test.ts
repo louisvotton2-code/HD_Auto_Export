@@ -20,7 +20,7 @@ describe('public vehicle contact drafts', () => {
       });
       for (const href of [links.telegram, links.whatsapp])
         expect(new URL(href).searchParams.get('text')).toBe(links.message);
-      expect(links.message).toContain('SHOW-ATTO-01');
+      expect(links.message).not.toContain('SHOW-ATTO-01');
       expect(links.message).toContain(vehicle.id);
       expect(links.message).not.toMatch(/Display example|展示样例|Демонстрационный|Third.party|第三方|Внешнее объявление/);
       expect(links.message).toContain(`https://cars.example.com${vehicle.detailPath}`);
@@ -44,13 +44,13 @@ describe('public vehicle contact drafts', () => {
     };
     const links = buildPublicVehicleContactLinks(vehicle, 'en');
     expect(links.message).toContain('similar vehicles');
-    expect(links.message).toContain('Reference price: 218000.50 CNY (≈ 30250 USD)');
+    expect(links.message).toContain('Reference price: 218,001 CNY (≈ 30,250 USD)');
     expect(links.message).not.toContain('Demo');
     vehicle.displayPrice = {
       status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable',
     };
     const originalOnly = buildPublicVehicleContactLinks(vehicle, 'en').message;
-    expect(originalOnly).toContain('Reference price: 218000.50 CNY');
+    expect(originalOnly).toContain('Reference price: 218,001 CNY');
     expect(originalOnly).not.toContain('USD');
   });
   it('refuses a mismatched public URL instead of sending the inquiry to a different vehicle', () => {

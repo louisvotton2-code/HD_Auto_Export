@@ -116,8 +116,8 @@ async function expectAmount(page: Page, amount: string) {
   const total = page.getByTestId('total');
   await expect(total).toBeVisible();
   await expect
-    .poll(async () => digits(await total.locator('strong').innerText()))
-    .toBe(digits(amount));
+    .poll(async () => (await total.locator('strong').innerText()).replace(/[^\d]/g, ''))
+    .toBe(digits(Number(amount).toFixed(2)));
 }
 
 async function expectUsdAmount(locator: Locator, amount: number) {
@@ -133,6 +133,13 @@ async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}`);
   // Wait for draft restoration before interacting with the native details element.
   await expect(page.locator('.reset-button')).toBeEnabled();
+}
+
+async function readExact(input: Locator) {
+  await input.focus();
+  const value = await input.inputValue();
+  await input.blur();
+  return value;
 }
 
 async function openAdvanced(page: Page) {
@@ -152,6 +159,7 @@ async function fillRussianReference(page: Page) {
   await page.locator('#transactionRate').fill(ruSample.transactionRate);
   await page.locator('#euroRate').fill(ruSample.euroRate);
   await fillNumericDate(page, 'customsDate', ruSample.customsDate);
+  await fillNumericDate(page, 'manufactureDate', ruSample.manufactureDate);
 }
 
 async function fillCountryReference(page: Page, fixture: CountryFixture, powertrainIndex = 0) {
@@ -179,10 +187,10 @@ async function fillCountryReference(page: Page, fixture: CountryFixture, powertr
 }
 
 async function expectReferenceAmount(page: Page) {
-  const total = page.getByTestId('total');
+  const total = page.getByTestId('total').or(page.getByTestId('manufacture-range-total'));
   await expect(total).toBeVisible();
   await expect
-    .poll(async () => Number(digits(await total.locator('strong').innerText())))
+    .poll(async () => Number(digits(await total.innerText())))
     .toBeGreaterThan(0);
 }
 
@@ -194,7 +202,8 @@ test('defaults calculate immediately with settings expanded and still allow manu
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
   await expect(page.locator('#powerHp')).toHaveValue('150');
-  await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
+  await expect(page.locator('#manufactureDate')).toHaveValue('');
+  await expect(page.getByTestId('manufacture-range-result')).toContainText('最近六年');
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expect(page.locator('#customsDate-year')).toBeVisible();
@@ -215,10 +224,14 @@ test('defaults calculate immediately with settings expanded and still allow manu
   await expectReferenceAmount(page);
   await openAdvanced(page);
 
-  const initialTotal = await page.getByTestId('total').locator('strong').innerText();
+  const initialTotal = await page.getByTestId('manufacture-range-total').innerText();
   await page.locator('#displacementCc').fill('1700');
   await expectReferenceAmount(page);
-  await expect(page.getByTestId('total').locator('strong')).not.toHaveText(initialTotal);
+  await expect(page.getByTestId('manufacture-range-total')).not.toHaveText(initialTotal);
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
+  await expect(page.getByTestId('total')).toBeVisible();
+  await page.locator('#manufactureDate-year').selectOption('');
+  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 });
 
 test('legacy empty prices do not relabel the CNY default as USD during draft migration', async ({
@@ -227,8 +240,8 @@ test('legacy empty prices do not relabel the CNY default as USD during draft mig
   await openCalculator(page);
   await openAdvanced(page);
   const defaultLocalValue =
-    Number(await page.locator('#price').inputValue()) *
-    Number(await page.locator('#transactionRate').inputValue());
+    Number(await readExact(page.locator('#price'))) *
+    Number(await readExact(page.locator('#transactionRate')));
   await page.evaluate(() => {
     sessionStorage.removeItem('hd-auto.calculator.draft.v2');
     sessionStorage.setItem(
@@ -245,8 +258,8 @@ test('legacy empty prices do not relabel the CNY default as USD during draft mig
   await page.reload();
   await openAdvanced(page);
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
-  const migratedPrice = Number(await page.locator('#price').inputValue());
-  const migratedRate = Number(await page.locator('#transactionRate').inputValue());
+  const migratedPrice = Number(await readExact(page.locator('#price')));
+  const migratedRate = Number(await readExact(page.locator('#transactionRate')));
   expect(migratedPrice).not.toBe(180000);
   expect(Math.abs(migratedPrice * migratedRate - defaultLocalValue)).toBeLessThanOrEqual(
     migratedRate * 0.011 + 0.001,
@@ -319,6 +332,7 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expectReferenceAmount(page);
   await fillNumericDate(page, 'customsDate', '2026-10-22');
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectAmount(page, '3605');
 
   await page.locator('.country-nav a[href^="/ru/calculator/kyrgyzstan"]').click();
@@ -354,7 +368,7 @@ test('fee rows, total and copied summary show USD and follow the manually entere
       .filter({ has: page.getByText(fee.label, { exact: true }) });
     await expect
       .poll(async () => digits(await row.locator('strong').first().innerText()))
-      .toBe(fee.local);
+      .toBe(fee.local + '00');
     await expectUsdAmount(row.getByTestId('fee-usd'), fee.usd);
   }
 
@@ -367,7 +381,7 @@ test('fee rows, total and copied summary show USD and follow the manually entere
       .filter({ has: page.getByText(fee.label, { exact: true }) });
     await expect
       .poll(async () => digits(await row.locator('strong').first().innerText()))
-      .toBe(fee.local);
+      .toBe(fee.local + '00');
     await expectUsdAmount(row.getByTestId('fee-usd'), fee.usdAt100);
   }
 
@@ -376,10 +390,10 @@ test('fee rows, total and copied summary show USD and follow the manually entere
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain('9,269.52 USD');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain('926,952 RUB');
-  expect(copied).toMatch(/908,211 RUB[^\n]*9,082\.11 USD/);
-  expect(copied).toMatch(/13,541 RUB[^\n]*135\.41 USD/);
-  expect(copied).toMatch(/5,200 RUB[^\n]*52(?:\.00)? USD/);
+  expect(copied).toContain('926,952.00 RUB');
+  expect(copied).toMatch(/908,211\.00 RUB[^\n]*9,082\.11 USD/);
+  expect(copied).toMatch(/13,541\.00 RUB[^\n]*135\.41 USD/);
+  expect(copied).toMatch(/5,200\.00 RUB[^\n]*52(?:\.00)? USD/);
 });
 
 test('ambiguous grouping separators are rejected rather than silently changing the amount', async ({
@@ -403,14 +417,14 @@ test('Georgia defaults need no price or FX and the three fuel groups update the 
 }) => {
   await openCalculator(page, 'georgia');
   await expectReferenceAmount(page);
-  await expect(page.getByTestId('total-usd')).toBeVisible();
-  await expect(page.getByTestId('total-usd')).toContainText('USD');
+  await expect(page.getByTestId('manufacture-range-usd')).toContainText('USD');
   await expect(page.locator('#price')).toHaveCount(0);
   await expect(page.locator('#transactionRate')).toHaveCount(0);
   await expect(page.locator('#steering')).toBeVisible();
   await openAdvanced(page);
   await expect(page.locator('#steering')).toHaveValue('left');
   await fillNumericDate(page, 'customsDate', '2026-10-22');
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectAmount(page, '3605');
   await expect(page.getByTestId('total')).toContainText('GEL');
 
@@ -483,8 +497,11 @@ test('switching language preserves destination, entered values and manually over
   );
   await expect(page.getByRole('button', { name: 'По умолчанию', exact: true })).toBeVisible();
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
+  await expect(page.locator('#transactionRate')).toHaveValue('81.97');
+  await expect(page.locator('#euroRate')).toHaveValue('94.70');
+  await page.locator('#transactionRate').focus();
   await expect(page.locator('#transactionRate')).toHaveValue('81.969182');
-  await expect(page.locator('#euroRate')).toHaveValue('94.7');
+  await page.locator('#transactionRate').blur();
   await expect(page.locator('#customsDate')).toHaveValue('2026-10-22');
 });
 
@@ -493,13 +510,13 @@ test('changing currency converts the price and preserves its value with the auto
 }) => {
   await openCalculator(page);
   await openAdvanced(page);
-  const initialPrice = Number(await page.locator('#price').inputValue());
-  const initialRate = Number(await page.locator('#transactionRate').inputValue());
+  const initialPrice = Number(await readExact(page.locator('#price')));
+  const initialRate = Number(await readExact(page.locator('#transactionRate')));
   const initialEuroRate = await page.locator('#euroRate').inputValue();
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
   await expect(page.locator('#price')).not.toHaveValue(String(initialPrice));
-  const convertedPrice = Number(await page.locator('#price').inputValue());
-  const convertedRate = Number(await page.locator('#transactionRate').inputValue());
+  const convertedPrice = Number(await readExact(page.locator('#price')));
+  const convertedRate = Number(await readExact(page.locator('#transactionRate')));
   expect(convertedPrice).toBeGreaterThan(0);
   expect(convertedRate).toBeGreaterThan(0);
   // A conversion rounded to cents must preserve the underlying local-currency value.
@@ -512,7 +529,7 @@ test('changing currency converts the price and preserves its value with the auto
   await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeEnabled();
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
   expect(
-    Math.abs(Number(await page.locator('#price').inputValue()) - initialPrice),
+    Math.abs(Number(await readExact(page.locator('#price'))) - initialPrice),
   ).toBeLessThanOrEqual(0.1);
   await expectReferenceAmount(page);
 });
@@ -541,7 +558,7 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
   await expect(page.locator('#powerHp')).toHaveValue('150');
-  await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
+  await expect(page.locator('#manufactureDate')).toHaveValue('');
   await expect(page.getByTestId('fx-status')).not.toContainText('手动');
   await expectReferenceAmount(page);
   await openAdvanced(page);
@@ -586,7 +603,9 @@ test('all seven destinations navigate correctly and provide default reference am
       `https://www.kmotors.shop/en/calculator${slug === 'russia' ? '' : `/${slug}`}`,
     );
     await expectReferenceAmount(page);
-    await expect(page.getByTestId('total-usd')).toContainText('USD');
+    const quote = page.getByTestId('total-usd').or(page.getByTestId('manufacture-range-usd'));
+    await expect(quote).toContainText('USD');
+
     await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeEnabled();
   }
 });
@@ -621,7 +640,7 @@ for (const fixture of countryFixtures) {
       }
 
       await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-      const localText = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(
+      const localText = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
         Number(expectedTotal),
       );
       await expect
@@ -688,13 +707,13 @@ test('AL annual luxury cost is shown and copied in both currencies without enter
   await page.locator('#displacementCc').fill('3000');
   await expectAmount(page, '241688');
   const extra = page.getByTestId('additional-costs').locator('[data-extra-cost="annualLuxury"]');
-  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('21000');
+  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('2100000');
   await expect(extra).toContainText('ALL');
   await expectUsdAmount(extra.locator('.fee-usd'), 259.95);
   await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('21,000 ALL (≈ 259.95 USD)');
+    .toContain('21,000.00 ALL (≈ 259.95 USD)');
 });
 
 test('currency switches convert price, freight and insurance together instead of changing their labels', async ({
@@ -706,12 +725,13 @@ test('currency switches convert price, freight and insurance together instead of
   await page.locator('#freight').fill('6900');
   await page.locator('#insurance').fill('690');
   const fields = ['price', 'freight', 'insurance'];
-  const initialRate = Number(await page.locator('#transactionRate').inputValue());
-  const original = await Promise.all(fields.map((field) => page.locator(`#${field}`).inputValue()));
+  const initialRate = Number(await readExact(page.locator('#transactionRate')));
+  const original = [];
+  for (const field of fields) original.push(await readExact(page.locator(`#${field}`)));
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
-  const dollarRate = Number(await page.locator('#transactionRate').inputValue());
+  const dollarRate = Number(await readExact(page.locator('#transactionRate')));
   for (const [index, field] of fields.entries()) {
-    const value = Number(await page.locator(`#${field}`).inputValue());
+    const value = Number(await readExact(page.locator(`#${field}`)));
     expect(value).not.toBe(Number(original[index]));
     expect(
       Math.abs(value * dollarRate - Number(original[index]) * initialRate),
@@ -722,7 +742,7 @@ test('currency switches convert price, freight and insurance together instead of
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
   for (const [index, field] of fields.entries()) {
     expect(
-      Math.abs(Number(await page.locator(`#${field}`).inputValue()) - Number(original[index])),
+      Math.abs(Number(await readExact(page.locator(`#${field}`))) - Number(original[index])),
     ).toBeLessThanOrEqual(0.1);
   }
   await expectReferenceAmount(page);

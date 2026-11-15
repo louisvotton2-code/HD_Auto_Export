@@ -21,6 +21,41 @@ export function workspaceDirty(base: VehicleTranslationBundle | null, data: Tran
   return !!base && !!data && !equal(workspaceData(base), data);
 }
 
+/** Check editable targets for every current source; Chinese is derived on save. */
+export function workspaceTranslationGaps(base: VehicleTranslationBundle, data: TranslationWorkspaceData) {
+  const missing: { ref: string; locale: 'en' | 'ru' }[] = [];
+  const check = (ref: string, field: TranslationWorkspaceData['content']['title']) => {
+    if (!field.sourceText?.trim()) return;
+    for (const locale of ['en', 'ru'] as const) {
+      const value = field.translations[locale];
+      if (!value?.text.trim() || value.sourceVersion !== field.sourceVersion || value.reviewStatus === 'stale') {
+        missing.push({ ref, locale });
+      }
+    }
+  };
+  check('content.title', data.content.title);
+  check('content.description', data.content.description);
+  const generationChanged = !equal(base.localization.data.facts.generation, data.localization.facts.generation);
+  for (const field of data.localization.fields) {
+    // The API issues a new source version on an edited generation. Old text cannot translate it.
+    if (field.ref !== 'generation' || !generationChanged) check(field.ref, field);
+  }
+  return missing;
+}
+
+/** Historical source language must be declared before the machine plan can run. */
+export function workspaceIsSourceDeclarationOnly(base: VehicleTranslationBundle, data: TranslationWorkspaceData) {
+  return data.sourceLanguageConfirmations.length > 0 &&
+    !workspaceDirty(base, { ...data, sourceLanguageConfirmations: [] });
+}
+
+/** Extra vehicle facts can be stored before translating the server-derived generation. */
+export function workspaceIsFactsOnly(base: VehicleTranslationBundle, data: TranslationWorkspaceData) {
+  const facts = base.localization.data.facts;
+  return !equal(facts, data.localization.facts) &&
+    !workspaceDirty(base, { ...data, localization: { ...data.localization, facts } });
+}
+
 /** The server, after an explicit PUT, derives authoritative Chinese without inventing human review. */
 export function workspaceNeedsChineseNormalization(bundle: VehicleTranslationBundle): boolean {
   return [...Object.values(bundle.vehicle.draft.content), ...bundle.localization.data.fields].some(field => {

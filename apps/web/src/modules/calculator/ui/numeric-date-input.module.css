@@ -10,3 +10,4 @@
 .feedback{display:block;margin-top:7px;color:#f3c98a;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 
 .group .part>select:disabled{opacity:.55;cursor:not-allowed}
+.group[data-bounded] .part>select{border-color:#79614f;background:#25211d;text-align:start;padding-inline-start:12px}

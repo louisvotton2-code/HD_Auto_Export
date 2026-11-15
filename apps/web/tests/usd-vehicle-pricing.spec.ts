@@ -16,7 +16,7 @@ const priceLine = (scope: Locator, type: 'original-price' | 'usd-approx') =>
   scope.locator(`[data-vehicle-${type}]`).filter({ visible: true }).first();
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
-  test(`${locale}: home, catalog, detail, saved cars and inquiry show source and rounded USD prices`, async ({ page }) => {
+  test(`${locale}: home, catalog, detail, saved cars and inquiry show source amounts and USD estimates`, async ({ page }) => {
     const number = new Intl.NumberFormat(locale);
     const expectPrices = async (scope: Locator) => {
       const original = priceLine(scope, 'original-price');
@@ -36,14 +36,16 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await expectPrices(home);
     await expect(providerLink(page.locator('main')).first()).toHaveAttribute('href', provider);
 
-    await page.goto(`/${locale}/cars/?q=HD-${convertedId}`);
+    await page.goto(`/${locale}/cars/?q=HD-000003`);
     const card = page.locator(`[data-public-vehicle="${convertedId}"]`);
     await expectPrices(card);
     await expect(page.locator('main [name=priceCurrency]')).toHaveValue('USD');
     await expect(page.locator('main [data-vehicle-rate-note] time')).toHaveCount(1);
     const inquiry = card.locator('a[href^="https://t.me/"]');
     const text = new URL((await inquiry.getAttribute('href'))!).searchParams.get('text');
-    expect(text).toContain('8000 CNY (≈ 1000 USD)');
+    expect(text).toContain('HD-000003');
+    expect(text).not.toContain('DCD-357217151');
+    expect(text).toContain(`${number.format(8000)} CNY (≈ ${number.format(1000)} USD)`);
     await card.locator('button[aria-pressed]').click();
     await page.locator('button[aria-controls=vehicle-favorites]').click();
     const drawer = page.locator('#vehicle-favorites');
@@ -81,7 +83,7 @@ test('USD boundaries are inclusive on the projected cents, while original reques
     expect((await request.get(`/api/v1/${resource}/?locale=en&view=localized&priceView=`)).status()).toBe(400);
   }
 
-  const q = `HD-${convertedId}`;
+  const q = 'HD-000003';
   await page.goto(`/en/cars/?q=${q}&${bounds}`);
   const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
   for (const resource of ['vehicles', 'vehicle-filters']) {
@@ -116,7 +118,7 @@ test('USD boundaries are inclusive on the projected cents, while original reques
   await expect(page.locator('main [data-public-vehicle]')).not.toHaveCount(1);
 });
 
-test('an unavailable conversion keeps the original amount, with whole dollars for a native USD price', async ({ request, page }) => {
+test('an unavailable conversion keeps the original amount, alongside native USD prices', async ({ request, page }) => {
   await setPublicFixtureState(request, { usdRateAvailable: false });
   await page.goto('/en/cars/');
   const main = page.locator('main');
@@ -128,6 +130,6 @@ test('an unavailable conversion keeps the original amount, with whole dollars fo
   await expect(main.locator('[data-vehicle-rate-note]')).toHaveCount(0);
   const href = await converted.locator('a[href^="https://wa.me/"]').getAttribute('href');
   const text = new URL(href!).searchParams.get('text');
-  expect(text).toContain('8000 CNY');
+  expect(text).toContain('8,000 CNY');
   expect(text).not.toContain('USD');
 });

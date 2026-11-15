@@ -79,3 +79,22 @@ test('formal FX refresh requires explicit database identity, production release 
  for(const change of [{networkEnabled:false},{nodeEnv:'test'},{mode:'synthetic'},{formalDatabase:'another_db'},{releaseId:'unreleased'},{databaseUrl:'postgresql://operator@db/formal_catalog?options=override'}])assert.throws(()=>assertFxRefreshAuthorization({...auth,...change}));
  assert.throws(()=>assertFxRefreshAuthorization({...auth,formalDatabase:undefined}));
 });
+
+test('one-time local preview FX accepts only the sample database and its permitted socket', () => {
+  const loopback = 'postgresql://operator:secret@127.0.0.1:5432/hd_local_preview';
+  const auth = { networkEnabled: true, mode: 'disabled', nodeEnv: 'development',
+    databaseUrl: `${loopback}?host=%2Fprivate%2Ftmp%2Fhd-test-socket`,
+    localPreview: { deploymentEnv: 'local', translationProvider: 'disabled' } };
+  assert.equal(assertFxRefreshAuthorization(auth), 'hd_local_preview');
+  assert.equal(assertFxRefreshAuthorization({ ...auth, databaseUrl: loopback }), 'hd_local_preview');
+  for (const change of [
+    { networkEnabled: false }, { nodeEnv: 'production' }, { nodeEnv: 'test' }, { mode: 'synthetic' }, { mode: 'synthetic-scale' },
+    { formalDatabase: 'hd_local_preview' }, { localPreview: { deploymentEnv: 'production' } },
+    { localPreview: { deploymentEnv: 'local', translationProvider: 'aliyun' } },
+    { databaseUrl: loopback.replace('127.0.0.1', 'remote.invalid') },
+    { databaseUrl: loopback.replace('postgresql:', 'https:') },
+    { databaseUrl: `${loopback}_test_abcd` }, { databaseUrl: `${loopback}#fragment` },
+    { databaseUrl: `${loopback}?host=remote.invalid` }, { databaseUrl: `${loopback}?host=%2Ftmp&host=%2Fprivate%2Ftmp` },
+    { databaseUrl: `${loopback}?host=%2Ftmp&dbname=other` }, { databaseUrl: 'password-sentinel' },
+  ]) assert.throws(() => assertFxRefreshAuthorization({ ...auth, ...change }), /^Error: Local preview FX network gate rejected\.$/);
+});

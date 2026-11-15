@@ -12,16 +12,20 @@ export function useActiveImageStatus({ imageRef, imageId, imageKey, onStatus }: 
 }) {
   useLayoutEffect(() => {
     if (!onStatus) return;
-    onStatus({ imageId, requestKey: imageKey, status: 'loading' });
+    let cancelled = false;
+    // A child layout effect can run before its preview owner's layout setup, including
+    // Strict Mode replay. Deliver in order after the commit and drop abandoned setups.
+    const notify = (status: VehicleGalleryImageStatus['status']) => queueMicrotask(() => {
+      if (!cancelled) onStatus({ imageId, requestKey: imageKey, status });
+    });
+    notify('loading');
     const currentImage = imageRef.current;
     if (!imageId || !imageKey || !currentImage) {
-      onStatus({ imageId, requestKey: imageKey, status: 'error' });
-      return;
+      notify('error');
+      return () => { cancelled = true; };
     }
 
     const image = currentImage;
-    const notify = onStatus;
-    let cancelled = false;
     let settled = false;
     let decoding = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -36,7 +40,7 @@ export function useActiveImageStatus({ imageRef, imageId, imageKey, onStatus }: 
       if (!ownsImage()) return;
       settled = true;
       detach();
-      notify({ imageId, requestKey: imageKey, status });
+      notify(status);
     }
     function failed() {
       finish('error');

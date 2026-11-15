@@ -39,13 +39,19 @@ before(async()=>{
 });
 after(async()=>{if(runtime)await runtime.app.close();if(created)await maintenance.pool.query(`DROP DATABASE "${name}"`);if(maintenance)await maintenance.close();if(root)await rm(root,{recursive:true,force:true});});
 const headers=(cookie=cookieA)=>({origin,cookie});
+function manualDraft() {
+  const draft = makeVehicleDraftFixture();
+  draft.media = [];
+  draft.facts.trim = { id: 'activity_trim', name: 'Synthetic activity trim' };
+  return draft;
+}
 const activity=async(id:string,cookie=cookieA,query='')=>{
  const result=await runtime.app.inject({method:'GET',url:`/api/v1/admin/vehicles/${id}/activity${query}`,headers:headers(cookie)});
  assert.equal(result.statusCode,200,result.body);assert.equal(result.headers['cache-control'],'no-store');return ActivityResponseSchema.parse(result.json()).data;
 };
 
 test('activity is session-derived, immutable, paginated and keeps real historical names across edits and bans',async()=>{
- const draft=makeVehicleDraftFixture();draft.media=[];const key=randomUUID();
+ const draft=manualDraft();const key=randomUUID();
  const request={method:'POST' as const,url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload:{draft}};
  const created=await runtime.app.inject(request);assert.equal(created.statusCode,201,created.body);let vehicle=created.json().data;
  assert.equal(vehicle.activity.created.actor.staffId,actorA);assert.equal(vehicle.activity.created.actor.name,'Operator a');
@@ -78,7 +84,7 @@ test('activity is session-derived, immutable, paginated and keeps real historica
 });
 
 test('media audit uses stable IDs; audit failure rolls the mutation back; old evidence stays unknown',async()=>{
- const draft=makeVehicleDraftFixture();draft.media=[];let vehicle=await runtime.inventory.create(draft,{id:actorA,requestId:randomUUID()},randomUUID());
+ const draft=manualDraft();let vehicle=await runtime.inventory.create(draft,{id:actorA,requestId:randomUUID()},randomUUID());
  const actor={id:actorA,requestId:randomUUID()};const bytes=await sharp({create:{width:8,height:8,channels:3,background:'#333333'}}).png().toBuffer();
  const permit=await runtime.media.create({vehicleId:vehicle.id,contentType:'image/png',sizeBytes:bytes.length,rights:{basis:'owned',note:'Synthetic'}},actor);
  const uploaded=await runtime.media.upload(permit.media.id,permit.media.version,bytes,'image/png',actor);const complete=await runtime.media.complete(uploaded.id,uploaded.version,actor);
@@ -112,7 +118,7 @@ test('external manual activity remains independent of refresh and old override s
 
 
 test('equivalent inventory timestamps do not add a version or successful activity for single and bulk writes',async()=>{
- const actor={id:actorA,requestId:randomUUID()},draft=makeVehicleDraftFixture();draft.media=[];
+ const actor={id:actorA,requestId:randomUUID()},draft=manualDraft();
  const created=await runtime.inventory.create(draft,actor,randomUUID());
  const first=await runtime.inventory.availability(created.id,{version:created.version,availability:'available',checkedAt:'2026-11-13T10:00:00Z'},actor);
  const count=(await activity(first.id)).items.length;
@@ -125,7 +131,7 @@ test('equivalent inventory timestamps do not add a version or successful activit
 
 
 test('historical translation suggestions remain visible evidence without replacing the last human edit',async()=>{
- const actor={id:actorA,requestId:randomUUID()},draft=makeVehicleDraftFixture();draft.media=[];
+ const actor={id:actorA,requestId:randomUUID()},draft=manualDraft();
  const vehicle=await runtime.inventory.create(draft,actor,randomUUID());const before=vehicle.activity!.lastModified;
  for(const operation of ['vehicle.translationSuggestions','vehicle.displayTranslationSuggestions'])await runtime.db.pool.query('INSERT INTO audit_events(id,actor_id,operation,vehicle_id,old_version,new_version,request_id,created_at) VALUES($1,$2,$3,$4,$5,$5,$6,clock_timestamp())',[randomUUID(),actorB,operation,vehicle.id,vehicle.version,randomUUID()]);
  assert.deepEqual((await runtime.inventory.getAdmin(vehicle.id)).activity!.lastModified,before);
@@ -134,7 +140,7 @@ test('historical translation suggestions remain visible evidence without replaci
 
 
 test('history rejects impossible cursor dates and orders late writes by database event time',async()=>{
- const draft=makeVehicleDraftFixture();draft.media=[];const actor={id:actorA,requestId:randomUUID()};
+ const draft=manualDraft();const actor={id:actorA,requestId:randomUUID()};
  const vehicle=await runtime.inventory.create(draft,actor,randomUUID());
  for(const at of ['0000-01-01T00:00:00.000000Z','2026-02-30T00:00:00.000000Z']){
   const cursor=Buffer.from(JSON.stringify({kind:'staff',resource:vehicle.id,at,id:randomUUID()})).toString('base64url');

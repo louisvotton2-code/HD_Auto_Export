@@ -8,7 +8,7 @@ describe('vehicle inspection report contact drafts', () => {
   it.each(['zh', 'en', 'ru'] as const)('preserves the %s vehicle, account and report request', (locale) => {
     const vehicle = makePublicVehicleFixture();
     vehicle.detailPath = `/${locale}/cars/${vehicle.id}/`;
-    vehicle.stockCode = 'HD-REPORT-&-01';
+    vehicle.stockCode = 'HD-000001';
     const ordinary = buildPublicVehicleContactLinks(vehicle, locale);
     const report = buildVehicleInspectionContactLinks(vehicle, locale);
     expect(report.message).toBe(`${externalDetailCopy[locale].requestReportMessage}\n\n${ordinary.message}`);

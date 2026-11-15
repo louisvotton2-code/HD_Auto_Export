@@ -68,7 +68,7 @@ export const detailContent = {
     budgetNote:
       'Reference estimates only. Confirm missing manufacture dates, engine capacity or power; unknown costs are not treated as zero.',
     basicInformation: 'Detailed vehicle information',
-    inquiry: 'Inquiry reference',
+    inquiry: 'Inquiry no.',
     mileage: 'Mileage',
     history: 'Vehicle history',
     transfers: 'Ownership transfers',
@@ -98,7 +98,7 @@ export const detailContent = {
     budgetNote:
       'Только предварительный расчёт. Уточните дату выпуска, объём или мощность, если они неизвестны; отсутствующие расходы не считаются нулевыми.',
     basicInformation: 'Подробная информация',
-    inquiry: 'Номер для обращения',
+    inquiry: '№ запроса',
     mileage: 'Пробег',
     history: 'История автомобиля',
     transfers: 'Количество переоформлений',

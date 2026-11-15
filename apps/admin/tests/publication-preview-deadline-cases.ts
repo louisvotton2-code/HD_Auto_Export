@@ -167,3 +167,20 @@ test('preview deadline rejects a wrong vehicle version and cancels its timer for
   await expect(page.getByText('请先保存修改', { exact: true })).toBeVisible();
   await expect(page.getByText(timeoutMessage, { exact: true })).toHaveCount(0); expect(api.previewConfirmations).toEqual([]);
 });
+
+test('preview shell without a frame handshake times out and never unlocks confirmation', async ({ page }) => {
+  const { ready, api } = await setup(page);
+  const element = page.locator(frameSelector);
+  const loadId = new URL((await element.getAttribute('src'))!, page.url()).searchParams.get('loadId')!;
+  const frame = await (await element.elementHandle())!.contentFrame();
+  await frame!.waitForLoadState('load');
+  await page.clock.fastForward(12_001);
+  await expect(page.getByText(/预览页面未响应/)).toBeVisible();
+  await expect(checkbox(page)).toBeDisabled();
+  await message(page, ready, 'ready');
+  await expect(checkbox(page)).toBeDisabled();
+  await reload(page, loadId);
+  await message(page, ready, 'ready');
+  await expect(checkbox(page)).toBeEnabled();
+  expect(api.previewConfirmations).toEqual([]);
+});

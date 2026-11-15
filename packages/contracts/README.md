@@ -33,13 +33,13 @@ pnpm --filter @hd/contracts test
 
 `AdminHomeSections` 为 `{version,sections:[{id,title:{zh,en,ru},vehicleIds}]}`，固定两个区块；公开响应隐藏空区块。必需的展示名称、译文和区块标题不接受纯空白。
 
-上传请求必须声明 `rights:{basis:'owned'|'permission'|'unverified',note,source?}`，`note` 是非空白的来源/授权说明；可选 source 为 `{listingUrl,imageUrl,collectedAt}`，两个 URL 使用 `SafeHttpUrlSchema`。管理媒体记录保留该声明，公开媒体不返回。external 发布必须逐图有 source，listingUrl 与车辆一致；unverified 仅表示本地许可待核验，不能作为生产许可。manual／demo 发布仍只接受 owned／permission。上传许可响应为 `data.{media,method,uploadUrl,expiresAt}`，文件通过认证的 PUT 地址传输。媒体完成仅说明已通过处理，公开授权仍由 API 根据有效发布引用控制；不公开上传原文件或整个本地存储目录。
+上传请求可为手录车源省略 `rights`。服务端默认按公司许可登记，并在同一事务记录员工、数据库时间和图片 ID。外部车源与演示样例上传仍须显式提供 `rights:{basis:'owned'|'permission'|'unverified',note,source?}`，`note` 是非空白的来源/授权说明；可选 source 为 `{listingUrl,imageUrl,collectedAt}`，两个 URL 使用 `SafeHttpUrlSchema`。管理媒体记录保留该声明，公开媒体不返回。external 发布必须逐图有 source，listingUrl 与车辆一致；unverified 仅表示本地许可待核验，不能作为生产许可。manual／demo 发布仍只接受 owned／permission。上传许可响应为 `data.{media,method,uploadUrl,expiresAt}`，文件通过认证的 PUT 地址传输。媒体完成仅说明已通过处理，公开授权仍由 API 根据有效发布引用控制；不公开上传原文件或整个本地存储目录。
 
 `PublicMediaQuerySchema` 只接受可选 `{variant:'thumb'}`，对应公开媒体宽度上限 240px、等比且不放大的 WebP 缩略图，竖图高度可超过 240px；其他变换参数拒绝。公开 images[].url 仍给原图地址，FE 可按 id 固定构造 `/api/v1/media/{id}?variant=thumb`，此形式通过 `MediaUrlSchema`。缩略图与原图执行相同的发布／删除可见性检查。
 
 ### 演示车辆边界
 
-公共 `SourceSchema` 支持 manual/external/demo，消费者必须识别 demo 的演示性质，不能将其标为真实库存。demo 价格只允许 `on_request` 且 `money:null`；制造日期、首次登记、里程、所在地必须为 null，登记状态必须为 unknown，管理草稿 VIN 必须为 null。年款、动力、排量、功率、车身和变速箱可使用有来源的车型规范资料，不能据此推造实车事实。
+公共 `PublicSourceSchema` 支持 manual/external/demo，消费者必须识别 demo 的演示性质，不能将其标为真实库存。demo 价格只允许 `on_request` 且 `money:null`；制造日期、首次登记、里程、所在地必须为 null，登记状态必须为 unknown，管理草稿 VIN 必须为 null。年款、动力、排量、功率、车身和变速箱可使用有来源的车型规范资料，不能据此推造实车事实。
 
 公开 demo 的库存固定 `availability:unknown`、`availabilityCheckedAt:null`。上述字段组合由草稿和公开 schema 校验；创建后禁止切换来源类型、禁止 demo 库存操作等业务限制由服务执行，使用 `DEMO_RESTRICTION`。不要通过更新 expectedVersion 自动绕过限制。
 
@@ -53,7 +53,7 @@ demo 发布是明确的非人审例外：服务允许当前原文版本、非空
 
 external 允许真实观察字段，未知保持 null；价格只能 reference／on_request，公开库存 unknown／null，公开文字 reviewed=false。服务负责三语当前版本、非空、pending／approved、非 stale、original 与原文匹配，以及图片发布条件。source.kind、external platform.id／externalId 创建后不可变；服务在包含回收站的记录中保证平台＋externalId 唯一，冲突使用 SOURCE_IDENTITY_CONFLICT，外部库存／身份限制使用 EXTERNAL_RESTRICTION。
 
-公开 `SourceSchema` 只返回 external 的 kind／platform／listingUrl，不返回 externalId、采集内部字段或图片依据。公开 fetchedAt 对应 collectedAt，sourceUpdatedAt 对应上游时间。`makeExternalVehicleDraftFixture()`、`makePublicExternalVehicleFixture()` 和 `contractFixtures.externalDraft/externalPublic` 是 example.invalid 合成样例；三语状态及来源与 demo fixture 同样明确，不是运营数据或外部接入证据。
+公开 `PublicSourceSchema` 的 external 保留 kind 和通用 platform，listingUrl 返回 null。已认证的员工记录和独立预览继续使用各自来源契约。导入的外部车源通过 `identifiers.inquiryCode` 返回 HX〔数字〕，上游 source 和 sourceId 槽位为空。外部车源的 fetchedAt 对应采集时间，sourceUpdatedAt 对应上游时间。`makeExternalVehicleDraftFixture()`、`makePublicExternalVehicleFixture()` 和 `contractFixtures.externalDraft/externalPublic` 是 example.invalid 合成样例；三语状态及来源与 demo fixture 同样明确，不是运营数据或外部接入证据。
 
 ### 回收站与历史回执
 

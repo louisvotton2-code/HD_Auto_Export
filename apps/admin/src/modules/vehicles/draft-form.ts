@@ -37,10 +37,10 @@ export function draftToForm(draft: VehicleDraftInput) {
     registrationStatus: facts.registrationStatus, powertrain: facts.powertrain,
     body: facts.body ?? ('' as const), transmission: facts.transmission ?? ('' as const),
     country: facts.location?.country ?? '', city: facts.location?.city ?? '', locationName: facts.location?.displayName ?? '',
-    priceKind: price.kind, amount: price.money?.amount ?? '', currency: price.money?.currency ?? 'USD', includes: price.includes.join('\n'),
+    priceKind: price.kind, amount: price.money?.amount ?? '', currency: price.money?.currency ?? 'CNY', includes: price.includes.join('\n'),
     titleLanguage: content.title.sourceLanguage, title: content.title.sourceText ?? '',
     descriptionLanguage: content.description.sourceLanguage, description: content.description.sourceText ?? '',
-    purchaseAmount: internal.purchaseCost?.amount ?? '', purchaseCurrency: internal.purchaseCost?.currency ?? 'USD',
+    purchaseAmount: internal.purchaseCost?.amount ?? '', purchaseCurrency: internal.purchaseCost?.currency ?? 'CNY',
     notes: internal.notes ?? '', supplierContact: internal.supplierContact ?? '', vin: internal.vin ?? '',
   };
 }
@@ -77,15 +77,19 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
     else Reflect.deleteProperty(result.facts, key);
   }
   const includes = result.price.includes;
+  const publicAmount = nullable(form.amount);
+  const publicCurrency = publicAmount !== null && !base.price.money?.amount ? 'CNY' : form.currency;
+  const purchaseAmount = nullable(form.purchaseAmount);
+  const purchaseCurrency = purchaseAmount !== null && !base.internal.purchaseCost?.amount ? 'CNY' : form.purchaseCurrency;
   result.price = form.priceKind === 'on_request' ? { kind: 'on_request', money: null, includes }
-    : form.priceKind === 'asking' ? { kind: 'asking', money: { amount: nullable(form.amount), currency: form.currency }, includes }
-    : { kind: 'reference', money: { amount: form.amount.trim(), currency: form.currency }, includes };
+    : form.priceKind === 'asking' ? { kind: 'asking', money: { amount: publicAmount, currency: publicCurrency }, includes }
+    : { kind: 'reference', money: { amount: form.amount.trim(), currency: publicCurrency }, includes };
   if (unchanged('priceKind', 'amount', 'currency')) result.price = structuredClone(base.price);
   if (!unchanged('titleLanguage')) result.content.title.sourceLanguage = form.titleLanguage.trim();
   if (!unchanged('title')) result.content.title.sourceText = nullable(form.title);
   if (!unchanged('descriptionLanguage')) result.content.description.sourceLanguage = form.descriptionLanguage.trim();
   if (!unchanged('description')) result.content.description.sourceText = nullable(form.description);
-  result.internal = { notes: nullable(form.notes), supplierContact: nullable(form.supplierContact), vin: nullable(form.vin), purchaseCost: { amount: nullable(form.purchaseAmount), currency: form.purchaseCurrency } };
+  result.internal = { notes: nullable(form.notes), supplierContact: nullable(form.supplierContact), vin: nullable(form.vin), purchaseCost: { amount: purchaseAmount, currency: purchaseCurrency } };
   for (const key of ['notes', 'supplierContact', 'vin'] as const) if (unchanged(key)) result.internal[key] = base.internal[key];
   if (unchanged('purchaseAmount', 'purchaseCurrency')) result.internal.purchaseCost = structuredClone(base.internal.purchaseCost);
   if (base.source.kind === 'external') result.source = sourceForKind('external', form, base.source);

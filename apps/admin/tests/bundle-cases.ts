@@ -20,6 +20,12 @@ function field(ref: string, sourceText: string, sourceLanguage = 'zh'): DisplayF
   return DisplayFieldSchema.parse({ ref, sourceLanguage, sourceText, sourceVersion: 1,
     sourceHash: syntheticHash(['synthetic-server-field', ref, sourceText, sourceLanguage]), translations: { zh: null, en: null, ru: null } });
 }
+function completeFixtureTranslations(field: AdminVehicle['draft']['content']['title']) {
+  for (const locale of ['en', 'ru'] as const) field.translations[locale] ??= {
+    text: locale === 'en' ? 'Fixture translation' : 'Тестовый перевод', kind: 'human', reviewStatus: 'pending',
+    sourceVersion: field.sourceVersion, humanEditVersion: 1, engineVersion: null,
+  };
+}
 async function expand(page: Page, label: string) {
   const input = page.getByLabel(`英文${label}`, { exact: true });
   if (!await input.isVisible()) await page.locator('.ant-collapse-header').filter({ hasText: '车辆展示资料' }).click();
@@ -74,8 +80,8 @@ test('bundle conflict retains body and display inputs and cancelling reload does
   const item = record(), saved = localization(item, [field('model', '合成中文车型')]);
   const api = await installApi(page, { items: [item], localizations: [saved] }); let puts = 0;
   await page.route(`**${path}`, route => { if (route.request().method() !== 'PUT') return route.fallback(); puts++; return reply(route, error('VERSION_CONFLICT'), 409); });
-  await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Local unsaved title'); await expand(page, '车型名称');
-  await page.getByLabel('英文车型名称', { exact: true }).fill('Local unsaved model');
+  await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Local unsaved title'); await page.getByLabel('俄文标题', { exact: true }).fill('Тестовый заголовок'); await expand(page, '车型名称');
+  await page.getByLabel('英文车型名称', { exact: true }).fill('Local unsaved model'); await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
   item.version++; saved.vehicleVersion = item.version; saved.revision++;
   saved.data.fields[0]!.translations.en = { text: 'Remote colleague model', kind: 'human', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 1, engineVersion: null };
   await bundleSave(page).click(); await expect(page.locator('.ant-alert-error').first()).toBeVisible();
@@ -94,8 +100,10 @@ test('bundle unsaved translations guard navigation and double-click saves body a
   const api = await installApi(page, { items: [item], localizations: [saved] }); let calls = 0, release!: () => void;
   const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**${path}`, async route => { if (route.request().method() !== 'PUT') return route.fallback(); calls++; await pause; return route.fallback(); });
-  await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Unsaved title'); await expand(page, '车型名称');
-  await page.getByLabel('英文车型名称', { exact: true }).fill('Unsaved model');
+  await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Unsaved title');
+  await expect(bundleSave(page)).toBeDisabled();
+  expect(calls).toBe(0); await page.getByLabel('俄文标题', { exact: true }).fill('Тестовый заголовок'); await expand(page, '车型名称');
+  await page.getByLabel('英文车型名称', { exact: true }).fill('Unsaved model'); await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
   await page.getByRole('button', { name: /返回车辆列表$/ }).click(); await expect(page.getByRole('dialog')).toContainText('离开当前草稿');
   await page.getByRole('button', { name: '继续编辑', exact: true }).click();
   await expect(await notes(page)).toBeDisabled(); await expect(page.getByRole('button', { name: /保存草稿$/ })).toHaveCount(0); await expect(page.getByRole('button', { name: '返回多语处理修改', exact: true })).toBeVisible();
@@ -109,6 +117,7 @@ test('bundle unsaved translations guard navigation and double-click saves body a
 test('bundle a delayed old atomic read cannot downgrade a newer vehicle or become its save baseline', async ({ page }) => {
   const item = record(), saved = localization(item, [field('model', '合成中文车型')]);
   const old = structuredClone(translationBundle(item, saved)); item.version = 2; item.draft.content.title.sourceText = '版本二中文标题'; saved.vehicleVersion = 2;
+  completeFixtureTranslations(item.draft.content.title); completeFixtureTranslations(saved.data.fields[0]!);
   const api = await installApi(page, { items: [item], localizations: [saved] }); let started = false, release!: () => void;
   const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**${path}`, async route => { if (route.request().method() !== 'GET') return route.fallback(); started = true; await pause; return reply(route, envelope(old)); });
@@ -140,6 +149,11 @@ test('bundle nullable extra facts stay unknown and generation references refresh
     translations: { zh: { text: 'E210 合成代系', kind: 'original', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 0, engineVersion: null }, en: null, ru: null } });
   await expand(page, '代系名称'); await expect(page.getByLabel('代系名称原文（只读）', { exact: true })).toHaveValue('E210 合成代系');
   await expect(page.getByLabel('英文代系名称', { exact: true })).toHaveValue(''); await expect(page.getByLabel('俄文代系名称', { exact: true })).toHaveValue('');
+  await expand(page, '车型名称');
+  await page.getByLabel('英文标题', { exact: true }).fill('Synthetic English title');
+  await page.getByLabel('俄文标题', { exact: true }).fill('Тестовый заголовок');
+  await page.getByLabel('英文车型名称', { exact: true }).fill('Synthetic English model');
+  await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
   await page.getByLabel('英文代系名称', { exact: true }).fill('Preserve this generation text');
   await page.getByLabel('俄文代系名称', { exact: true }).fill('Сохранить это поколение');
   const translated = await saveBundle(page); const beforeRename = translated.localization.data.fields.find(field => field.ref === 'generation')!;
@@ -170,7 +184,9 @@ test('bundle plans include every server-selected public field instead of the rem
 
 test('bundle display-only edits require a new preview confirmation before a single explicit publication', async ({ page }) => {
   const item = { ...record(), publicationState: 'published' as const, publishedRevisionId: 'before', publishedAt: '2026-11-08T08:00:00Z', hasUnpublishedChanges: false };
-  const saved = localization(item, [field('model', '合成中文车型')]); const api = await installApi(page, { items: [item], localizations: [saved] }); let publishes = 0;
+  const saved = localization(item, [field('model', '合成中文车型')]);
+  completeFixtureTranslations(item.draft.content.title); completeFixtureTranslations(saved.data.fields[0]!);
+  const api = await installApi(page, { items: [item], localizations: [saved] }); let publishes = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => { publishes++; Object.assign(item, { version: item.version + 1, hasUnpublishedChanges: false, publishedRevisionId: 'after' }); return reply(route, envelope(item)); });
   await openWorkspace(page, id); await expect(page.getByTestId('vehicle-publish')).toHaveCount(0); await expand(page, '车型名称');
   await page.getByLabel('英文车型名称', { exact: true }).fill('Revised English model'); await saveBundle(page);
@@ -201,7 +217,10 @@ for (const persisted of [false, true]) {
       }
       return route.abort('failed');
     });
-    await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Uncertain save title'); await expand(page, '车型名称'); await page.getByLabel('英文车型名称', { exact: true }).fill('Uncertain save model');
+    await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Uncertain save title');
+    await page.getByLabel('俄文标题', { exact: true }).fill('Тестовый заголовок');
+    await expand(page, '车型名称'); await page.getByLabel('英文车型名称', { exact: true }).fill('Uncertain save model');
+    await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
     await bundleSave(page).click(); await expect(page.getByTestId('translation-save-recover')).toBeEnabled();
     await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('Uncertain save title'); await expect(page.getByLabel('英文标题', { exact: true })).toBeDisabled();
     expect(writes).toHaveLength(1); const original = writes[0]!; await page.getByTestId('translation-save-recover').click();
@@ -237,8 +256,8 @@ for (const mismatch of ['content source', 'display source hash', 'vehicle versio
       if (mismatch === 'localization revision') input.localizationRevision++;
       return route.fallback({ postData: JSON.stringify(SaveVehicleTranslationBundleSchema.parse(input)) });
     });
-    await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Local body must stay unsaved'); await expand(page, '车型名称');
-    await page.getByLabel('英文车型名称', { exact: true }).fill('Local model must stay unsaved');
+    await openWorkspace(page, id); await page.getByLabel('英文标题', { exact: true }).fill('Local body must stay unsaved'); await page.getByLabel('俄文标题', { exact: true }).fill('Тестовый заголовок'); await expand(page, '车型名称');
+    await page.getByLabel('英文车型名称', { exact: true }).fill('Local model must stay unsaved'); await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
     await page.locator('.ant-collapse-header').filter({ hasText: '补充代系与驱动形式' }).click();
     await page.getByRole('textbox', { name: '代系名称', exact: true }).fill('本地新代系不能部分写入'); await select(page, '驱动形式', '后轮驱动');
     const response = page.waitForResponse(response => response.request().method() === 'PUT' && new URL(response.url()).pathname.endsWith('/translation-bundle'));

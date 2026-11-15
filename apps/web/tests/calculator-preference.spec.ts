@@ -1,3 +1,4 @@
+import { chooseVehicleDestination } from './helpers/vehicle-destination';
 import { expect, test } from '@playwright/test';
 import { resetPublicFixture } from './helpers/public-fixture';
 import { fillNumericDate } from './helpers/numeric-date';
@@ -14,7 +15,13 @@ test('numeric date dropdowns retain empty values, valid month choices, leap days
   await page.goto('/en/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('input[type="date"],input[type="month"]')).toHaveCount(0);
-  await expect(page.locator('[data-numeric-date="manufactureDate"] select')).toHaveCount(2);
+  const manufacture = page.locator('[data-numeric-date="manufactureDate"]');
+  await expect(manufacture.locator('select')).toHaveCount(2);
+  await expect(manufacture.locator('button')).toHaveCount(0);
+  const assumption = page.locator('#manufactureDate-note strong');
+  await expect(assumption).toContainText('January of each of the last six years');
+  await expect(assumption).toHaveCSS('color', 'rgb(255, 141, 141)');
+  await expect(assumption).toHaveCSS('font-weight', '700');
   await expect(page.locator('[data-numeric-date="customsDate"] select')).toHaveCount(3);
   await expect(page.locator('[data-numeric-date] input:not([type="hidden"])')).toHaveCount(0);
   for (const name of ['manufactureDate', 'customsDate']) {
@@ -75,10 +82,10 @@ test('stored country is read before a detail quote and only country survives mov
   await page.goto('/en/cars/fixture_car_3/');
   const budget = page.getByTestId('vehicle-import-estimate');
   await expect(budget).toHaveAttribute('data-country-ready', 'true');
-  await expect(budget.locator('[name="country"]')).toHaveValue('KZ');
+  await expect(budget).toHaveAttribute('data-country', 'KZ');
   const initial = await page.evaluate(() => (window as unknown as { __destinationObservation: { writes: string[]; wrongRuQuote: boolean } }).__destinationObservation);
   expect(initial).toEqual({ writes: [], wrongRuQuote: false });
-  await budget.locator('[name="country"]').selectOption('KG');
+  await chooseVehicleDestination(budget, 'KG');
   await budget.locator('[name="price"]').fill('77777');
   await budget.locator('[name="displacementCc"]').fill('2222');
   await fillNumericDate(budget, 'manufactureDate', '2010-01');
@@ -86,19 +93,19 @@ test('stored country is read before a detail quote and only country survives mov
   expect(await page.evaluate(storageKey => localStorage.getItem(storageKey), key)).toBe('KG');
   await page.goto('/en/cars/fixture_car_1/');
   await expect(budget).toHaveAttribute('data-country-ready', 'true');
-  await expect(budget.locator('[name="country"]')).toHaveValue('KG');
+  await expect(budget).toHaveAttribute('data-country', 'KG');
   await expect(budget.locator('[name="price"]')).not.toHaveValue('77777');
   await expect(budget.locator('[name="displacementCc"]')).not.toHaveValue('2222');
   await expect(budget.locator('[name="manufactureDate"]')).not.toHaveValue('2010-01');
   await expect(budget.locator('[name="transactionRate"]')).not.toHaveValue('999');
   expect(await page.evaluate(() => (window as unknown as { __destinationObservation: { wrongRuQuote: boolean } }).__destinationObservation.wrongRuQuote)).toBe(false);
   await page.evaluate(() => history.pushState(null, '', `${location.pathname}?country=UZ`));
-  await expect(budget.locator('[name="country"]')).toHaveValue('UZ');
+  await expect(budget).toHaveAttribute('data-country', 'UZ');
   await page.evaluate(() => history.pushState(null, '', `${location.pathname}?country=AM`));
-  await expect(budget.locator('[name="country"]')).toHaveValue('AM');
+  await expect(budget).toHaveAttribute('data-country', 'AM');
   await page.evaluate(() => history.back());
   await expect(page).toHaveURL(/\?country=UZ$/);
-  await expect(budget.locator('[name="country"]')).toHaveValue('UZ');
+  await expect(budget).toHaveAttribute('data-country', 'UZ');
   // Back's explicit URL wins over the newer AM storage value.
   expect(await page.evaluate(storageKey => localStorage.getItem(storageKey), key)).toBe('UZ');
 });

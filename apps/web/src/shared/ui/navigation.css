@@ -5,38 +5,36 @@
 .navigation-hint {
   pointer-events: none;
   position: absolute;
-  inset-inline-end: 3px;
-  top: 3px;
-  width: 5px;
-  height: 5px;
+  inset-inline-end: 1px;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px solid var(--brand-gold, #e5c05b);
+  border-inline-end-color: transparent;
   border-radius: 50%;
-  background: var(--brand-gold, #e5c05b);
   opacity: 0;
 }
 .navigation-hint[data-pending='true'] {
   opacity: 1;
-  animation: navigation-pulse 1s ease-in-out infinite;
+  animation: navigation-spin .9s linear infinite;
 }
 .site-navigation-progress {
   pointer-events: none;
   position: fixed;
   z-index: 200;
   inset: 0 0 auto;
-  height: 2px;
+  height: 4px;
   background: var(--brand-gold, #e5c05b);
   opacity: 0;
   transform: scaleX(0.25);
   transform-origin: left;
 }
-body:has(.navigation-hint[data-pending='true']) .site-navigation-progress {
+body:has(.navigation-hint[data-pending='true'], [data-link-pending='true']) .site-navigation-progress {
   opacity: 1;
   animation: navigation-progress 1.4s ease-in-out infinite;
 }
-@keyframes navigation-pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
+@keyframes navigation-spin { to { transform: rotate(1turn); } }
 @keyframes navigation-progress {
   50% {
     transform: scaleX(0.85);
@@ -45,7 +43,7 @@ body:has(.navigation-hint[data-pending='true']) .site-navigation-progress {
 }
 @media (prefers-reduced-motion: reduce) {
   .navigation-hint[data-pending='true'],
-  body:has(.navigation-hint[data-pending='true']) .site-navigation-progress {
+  body:has(.navigation-hint[data-pending='true'], [data-link-pending='true']) .site-navigation-progress {
     animation: none;
   }
 }

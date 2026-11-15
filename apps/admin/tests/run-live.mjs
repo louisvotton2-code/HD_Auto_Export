@@ -17,6 +17,17 @@ const externalCase = '(?:^| )real external catalog supports admin import, trial 
 const playwrightArgs = process.argv.slice(2);
 const trace = traceMode(process.env, playwrightArgs, translationProvider);
 const external = process.env.ADMIN_LIVE_EXTERNAL === 'synthetic-only';
+const webDev = process.env.ADMIN_LIVE_WEB_DEV;
+if (webDev !== undefined) {
+  if (webDev !== '1') throw new Error('Use ADMIN_LIVE_WEB_DEV=1 to opt in to a local Next development upstream.');
+  let target;
+  try { target = new URL(process.env.ADMIN_WEB_TARGET); } catch { /* Checked below before creating test resources. */ }
+  if (!target || target.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)
+    || !target.port || ['3318', '3319', '3322', '3363'].includes(target.port)
+    || target.username || target.password || target.pathname !== '/' || target.search || target.hash) {
+    throw new Error('ADMIN_LIVE_WEB_DEV=1 requires a separate loopback ADMIN_WEB_TARGET with an explicit port.');
+  }
+}
 if (process.env.ADMIN_LIVE_EXTERNAL && (!external || translationProvider !== 'disabled' ||
   playwrightArgs.length !== 2 || playwrightArgs[0] !== '--grep' || playwrightArgs[1] !== externalCase)) {
   throw new Error('External catalog tests require the single synthetic case with translation disabled.');

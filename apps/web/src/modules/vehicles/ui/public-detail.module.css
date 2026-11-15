@@ -30,6 +30,7 @@
 .mainColumn {
   grid-area: main;
   min-width: 0;
+  container: detail-main / inline-size;
 }
 .title {
   margin: 0;
@@ -125,21 +126,37 @@
   gap: 12px;
   margin-top: 20px;
 }
-.tiles:has([data-public-vehicle-vin]) {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+.tiles > .vinTile {
+  grid-column: 1 / -1;
 }
-.tiles:has([data-public-vehicle-vin]) > .mileageTile { grid-column: 1 / -1; }
+@container detail-main (min-width: 500px) {
+  .tiles:has(> .vinTile) {
+    grid-template-columns: minmax(224px, 1.75fr) minmax(104px, .85fr) minmax(148px, 1fr);
+  }
+  .tiles > .vinTile {
+    grid-column: auto;
+  }
+}
+.tiles > .vinTile > p:first-child > span {
+  width: 24px;
+  height: 24px;
+}
+.vinTile [data-vin-feedback="idle"],
+.vinTile [data-vin-feedback="copying"] {
+  min-height: 0;
+  margin: 0;
+}
 .tile {
   min-width: 0;
   border-radius: 12px;
-  padding: 16px;
+  padding: 16px 10px;
   background: #141414;
   border: 1px solid #4a4a4a4d;
 }
 .tile > p {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin: 0 0 8px;
   color: #8a8a8a;
   font-size: 12px;
@@ -156,12 +173,16 @@
   border-radius: 8px;
 }
 .tileIcon {
+  width: 24px;
+  height: 24px;
   background: #b677491a;
   color: #dc9b67;
 }
 .tile > strong,
 .tile > bdi {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
   color: #f5f0eb;
   font-size: 13px;
   font-weight: 600;
@@ -171,19 +192,8 @@
 .tile > bdi {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.referenceSource {
-  display: block;
-  margin-top: 6px;
-  color: #a89a8d;
-  font-size: 11px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.vinCode {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: .03em;
-}
 .mileageTile {
+  padding-inline: 12px;
   border-color: transparent;
   background: linear-gradient(135deg, #9d5e34, #794323);
 }
@@ -191,14 +201,20 @@
   color: #ffffffcc;
 }
 .mileageTile > strong {
-  font-size: 22px;
+  font-size: clamp(16px, 3.3cqi, 22px);
+}
+.mileageValue {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .mileageTile .tileIcon {
   background: #ffffff26;
   color: #fff;
 }
 .mileageTile small {
-  margin-inline-start: 6px;
   color: #ffffffcc;
   font-size: 0.72em;
   font-weight: 500;
@@ -609,9 +625,8 @@
   .tiles {
     gap: 8px;
   }
-  .tiles:has([data-public-vehicle-vin]) { grid-template-columns: minmax(0, 1fr); }
   .tile {
-    padding: 12px 9px;
+    padding: 12px;
   }
   .tile > strong,
   .tile > bdi {

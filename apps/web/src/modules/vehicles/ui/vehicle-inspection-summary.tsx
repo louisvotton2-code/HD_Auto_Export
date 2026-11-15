@@ -4,7 +4,6 @@ import type { DisplayText, PublicVehicle, PublicVehicleInline } from '@hd/contra
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import { inspectionSummaryCopy } from '../inspection-summary-copy';
-import { PublicVehicleContacts } from './public-vehicle-contacts';
 import styles from './public-detail.module.css';
 import summaryStyles from './vehicle-inspection-summary.module.css';
 
@@ -65,10 +64,11 @@ export function VehicleInspectionSummary({ vehicle, locale }: { vehicle: PublicV
         {(inline?.hasMoreConclusions || inline?.hasMoreDefects) && <p>{copy.more}</p>}
         <p className={summaryStyles.salesNote}>{copy.contact}</p>
       </> : <>
-        <p>{copy.unavailable}</p><p>{copy.application}</p>
-        <p className={summaryStyles.policy}>{copy.mismatch}<strong className={summaryStyles.refund}>{copy.refund}</strong>{copy.merchant}</p>
-        <p className={summaryStyles.policy}>{copy.match}<strong className={summaryStyles.customer}>{copy.customer}</strong>{copy.period}</p>
-        <PublicVehicleContacts vehicle={vehicle} locale={locale} variant="detail" />
+        <p className={summaryStyles.serviceIntro}>{copy.unavailable} {copy.application}</p>
+        <div className={summaryStyles.policies}>
+          <p className={summaryStyles.policy}>{copy.mismatch}<strong className={summaryStyles.merchant}>{copy.merchant}</strong>{copy.period}</p>
+          <p className={summaryStyles.policy}>{copy.match}<strong className={summaryStyles.customer}>{copy.customer}</strong>{copy.period}</p>
+        </div>
       </>}
     </div>
   </section>;

@@ -46,14 +46,12 @@ test('detail renders same-response inspection states without probing and keeps c
       await expect(service).toContainText('Для этого объявления сейчас нет доступного исторического отчёта об осмотре.');
       await expect(service).toContainText('задаток возвращается полностью');
       await expect(service).toContainText('осмотр оплачивает продавец');
-      await expect(service.locator('strong')).toHaveText(['задаток возвращается полностью', 'оплачивает клиент']);
-      await expect(service).toContainText('осмотр оплачивает клиент');
+      await expect(service.locator('strong')).toHaveText(['оплачивает продавец', 'оплачивает клиент']);
+      await expect(service).toContainText('осмотр стоимостью 60 USD оплачивает клиент');
+      await expect(service.locator('a')).toHaveCount(0);
       await expect(page.locator('[data-inspection-summary]')).toHaveCount(0);
       await expect(page.locator('main a[href*="/inspection/"]')).toHaveCount(0);
       await expect(service.locator('button')).toHaveCount(0);
-      const contacts = service.locator('[data-vehicle-contacts] a');
-      await expect(contacts).toHaveCount(2);
-      for (const link of await contacts.all()) await expect(link).toHaveAttribute('href', /^https:\/\/(?:t\.me|wa\.me)\//);
     }
     await expect(page.locator('[data-public-inspection-item]')).toHaveCount(0);
     await expect(page.locator('[data-public-vehicle-inspection]')).toHaveCount(0);

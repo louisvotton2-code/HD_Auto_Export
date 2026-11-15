@@ -11,7 +11,7 @@ import { TranslationEditor } from './translation-editor';
 import { DisplayTranslationsEditor } from './display-translations-editor';
 import {
   applyTranslationPlanResult, assertTranslationPlan, assertWorkspaceFresh, assertWorkspaceSnapshot, translationPlanConfirmation,
-  TranslationWorkspaceChanged, workspaceComparison, workspaceData, workspaceDirty, workspaceNeedsChineseNormalization, workspaceSaveRequest, type TranslationWorkspaceData,
+  TranslationWorkspaceChanged, workspaceComparison, workspaceData, workspaceDirty, workspaceNeedsChineseNormalization, workspaceSaveRequest, workspaceIsFactsOnly, workspaceIsSourceDeclarationOnly, workspaceTranslationGaps, type TranslationWorkspaceData,
 } from './workspace-model';
 import styles from './vehicle-translation-workspace.module.css';
 
@@ -128,6 +128,15 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
     if (running.current || latest.current.disabled || latest.current.hasUnsavedChanges || !s.base || !s.data || s.conflict || s.base.vehicle.version !== latest.current.vehicle.version ||
         (retry ? s.uncertain !== 'save' || !s.saveRetryAllowed : !!s.uncertain)) return;
     if (!retry) {
+      const declarationOnly = workspaceIsSourceDeclarationOnly(s.base, s.data);
+      if (s.data.sourceLanguageConfirmations.length && !declarationOnly) {
+        setError('原文语言确认须单独保存，请先处理当前译文修改。');
+        return;
+      }
+      if (!declarationOnly && !workspaceIsFactsOnly(s.base, s.data) && workspaceTranslationGaps(s.base, s.data).length) {
+        setError('请补齐所有当前原文对应的英俄译文后再保存。');
+        return;
+      }
       try { saveIntent.current = { base: structuredClone(s.base), body: JSON.stringify(workspaceSaveRequest(s.base, s.data)) }; }
       catch (failure) { setError(failure instanceof TranslationWorkspaceChanged ? failure.message : '请检查译文长度、来源及资料格式后再保存。'); return; }
     }
@@ -207,7 +216,7 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
     generateIntent.current = null; planBase.current = null;
     update({ data: adopted.data, uncertain: null, execution: result.status, costAccepted: false });
     setNotice(result.status === 'partial'
-      ? `本次有${adopted.missing}项译文未完成，成功的${adopted.applied}项已填入，保留${adopted.protected}项现有译文。可保存成功内容；未完成部分可能已产生费用，再试需重新确认新计划。`
+      ? `本次有${adopted.missing}项译文未完成，成功的${adopted.applied}项已填入，保留${adopted.protected}项现有译文。请手动补齐缺失译文后保存。未完成部分可能已产生费用。`
       : `已填入${adopted.applied}项译文，保留${adopted.protected}项现有译文。请编辑并保存全部多语资料。`);
   }
   async function generate() {
@@ -257,6 +266,11 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
   };
   const refLabel = (ref: string) => ref === 'content.title' ? '车辆标题' : ref === 'content.description' ? '车况描述'
     : (data?.localization.fields.find(field => field.ref === ref) ? fieldLabel(data.localization.fields.find(field => field.ref === ref)!) : '公开展示文字');
+  const gaps = base && data ? workspaceTranslationGaps(base, data) : [];
+  const declarationOnly = !!base && !!data && workspaceIsSourceDeclarationOnly(base, data);
+  const factsOnly = !!base && !!data && workspaceIsFactsOnly(base, data);
+  const declarationMixed = !!data?.sourceLanguageConfirmations.length && !declarationOnly;
+  const gapLabels = gaps.map(gap => `${refLabel(gap.ref)} · ${({ en: '英文', ru: '俄文' })[gap.locale]}`);
   const comparison = data && session.remote ? workspaceComparison(data, session.remote, fieldLabel) : [];
   const groups = data ? [
     { id: 'vehicle', label: '车辆展示资料', fields: data.localization.fields.filter(field => !field.ref.startsWith('configuration.') && !field.ref.startsWith('media.') && !field.ref.startsWith('price.includes.')) },
@@ -295,7 +309,9 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
         onChange={field => edit({ ...data, localization: { ...data.localization, fields: data.localization.fields.map(item => item.ref === field.ref ? field : item) } })} />
       <Collapse defaultActiveKey={[]} items={[{ key: 'facts', label: '补充代系与驱动形式', children: <>
         <Typography.Paragraph type="secondary">仅填写已知事实。修改代系后先保存，再编辑它对应的译文。</Typography.Paragraph>
-        <div className={styles.factFields}><Form.Item label="代系名称"><Input aria-label="代系名称" disabled={locked} maxLength={120} value={data.localization.facts.generation?.name ?? ''}
+        <div className={styles.factFields}>
+        <Form.Item label="基础资料中的车型"><Typography.Text>{base.vehicle.draft.facts.model?.name ?? '尚未填写车型'}</Typography.Text></Form.Item>
+        <Form.Item label="代系（选填）" extra="车型下的代际，例如第三代。车型及其译文在车型名称行核对。"><Input aria-label="代系名称" disabled={locked} maxLength={120} value={data.localization.facts.generation?.name ?? ''}
           onChange={event => { const name = event.target.value; if (name.trim() && !generationId.current) generationId.current = `manual_${crypto.randomUUID().replaceAll('-', '')}`;
             edit({ ...data, localization: { ...data.localization, facts: { ...data.localization.facts, generation: name.trim() ? { id: data.localization.facts.generation?.id ?? generationId.current!, name } : null } } }); }} /></Form.Item>
           <Form.Item label="驱动形式"><Select aria-label="驱动形式" disabled={locked} value={data.localization.facts.drivetrain ?? ''}
@@ -310,7 +326,10 @@ export function VehicleTranslationWorkspace(props: VehicleTranslationWorkspacePr
           { dataIndex: 'label', title: '字段' }, { dataIndex: 'local', title: '当前输入', render: text => <span className={styles.comparisonText}>{text}</span> },
           { dataIndex: 'remote', title: '服务端资料', render: text => <span className={styles.comparisonText}>{text}</span> },
         ]} /></Card>}
-      <div className={styles.saveRow}><Button data-testid="translation-bundle-save" type="primary" loading={session.phase === 'saving'} disabled={locked || (!dirty && !needsChineseNormalization)} onClick={() => void save()}>保存全部多语资料</Button>
+      {declarationMixed && <Alert showIcon type="warning" title="原文语言确认须单独保存，请先处理当前译文修改。" />}
+      {!declarationOnly && !factsOnly && !!gapLabels.length && <Alert showIcon type="warning" title="请补齐译文后保存"
+        description={gapLabels.slice(0, 6).join('、') + (gapLabels.length > 6 ? `等共 ${gapLabels.length} 项` : '')} />}
+      <div className={styles.saveRow}><Button data-testid="translation-bundle-save" type="primary" loading={session.phase === 'saving'} disabled={locked || declarationMixed || (!declarationOnly && !factsOnly && gaps.length > 0) || (!dirty && !needsChineseNormalization)} onClick={() => void save()}>{declarationOnly ? '保存中文原文确认' : factsOnly ? '保存代系与驱动形式' : '保存全部多语资料'}</Button>
         {session.uncertain === 'save' && session.saveRetryAllowed && <Button disabled={busy || props.hasUnsavedChanges || !!props.disabled} onClick={() => void save(true)}>重试原多语保存请求</Button>}
         <Button disabled={busy || props.hasUnsavedChanges} onClick={discardAndReload}>放弃修改并重新读取</Button></div>
     </>}

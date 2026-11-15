@@ -3,7 +3,6 @@ import {
   PublicLocaleQuerySchema,
   PublicVehicleDetailQuerySchema,
   PublicMediaQuerySchema,
-  PublicVehicleFiltersSchema,
   PublicVehicleSegmentQuerySchema,
   PublicVehicleInspectionQuerySchema,
 } from '@hd/contracts/public';
@@ -19,6 +18,7 @@ import type { Locale } from '@/i18n/routing';
 import { parseVehicleSegment, type VehicleSegmentKind } from '../public-segments';
 import { catalogQueryKeys, parseFilterQuery } from '../public-query';
 import {
+  publicFiltersSchema,
   legacyHomeSchema,
   legacyListSchema,
   localizedHomeSchema,
@@ -165,7 +165,7 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
       ? (localized ? localizedHomeSchema(locale, priceView) : legacyHomeSchema)
       : path === 'vehicles'
         ? (query.projection === 'card' ? localizedCardListSchema(locale, priceView) : localized ? localizedListSchema(locale, priceView) : legacyListSchema)
-        : PublicVehicleFiltersSchema;
+        : publicFiltersSchema;
     const value = await readPublicJson(
       upstream,
       schema as { parse: (value: unknown) => unknown },

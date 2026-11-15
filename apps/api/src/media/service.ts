@@ -12,6 +12,10 @@ type MediaRow = {id:string;vehicle_id:string;version:number;state:'pending'|'upl
   width:number|null;height:number|null;byte_size:number|null;expected_size:number;expires_at:Date;created_at:Date;rights:MediaRights};
 const dto=(r:MediaRow)=>MediaAssetSchema.parse({id:r.id,vehicleId:r.vehicle_id,version:r.version,status:r.state,contentType:r.content_type,
   sizeBytes:r.expected_size,width:r.width,height:r.height,rights:r.rights,previewPath:r.state==='ready'?`/api/v1/admin/media/${r.id}/preview`:null,createdAt:r.created_at.toISOString()});
+const companyDefaultRights: MediaRights = {
+  basis: 'permission',
+  note: 'Company authorization for staff-uploaded manual vehicle images.',
+};
 
 export class MediaService {
   constructor(private db:Database,private store:LocalMediaStore) {}
@@ -28,16 +32,27 @@ export class MediaService {
   }
   async create(input:MediaUploadRequest,actor:Actor) {
     return this.db.transaction(async tx=>{
-      const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[input.vehicleId]);
-      if(!vehicle.rowCount) throw notFound();
+      const vehicle=(await tx.query<{source_kind:string|null}>(`SELECT d.data #>> '{source,kind}' AS source_kind
+        FROM vehicles v LEFT JOIN vehicle_drafts d ON d.vehicle_id=v.id
+        WHERE v.id=$1 AND v.deleted_at IS NULL FOR UPDATE OF v`,[input.vehicleId])).rows[0];
+      if(!vehicle) throw notFound();
+      const usesCompanyDefault=input.rights===undefined;
+      if(usesCompanyDefault&&vehicle.source_kind!=='manual') {
+        const message='An explicit image rights declaration is required for this vehicle source.';
+        throw new ApiError(400,'INVALID_REQUEST',message,[{path:'rights',code:'INVALID_FIELD',message}]);
+      }
+      const rights=input.rights??companyDefaultRights;
       const count=await tx.query(`SELECT count(*)::int AS count FROM media_assets m WHERE m.vehicle_id=$1 AND m.state<>'deleted'
         AND (NOT EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)
           OR EXISTS(SELECT 1 FROM vehicle_drafts d WHERE d.vehicle_id=m.vehicle_id AND d.data->'media' @> jsonb_build_array(jsonb_build_object('id',m.id))))`,[input.vehicleId]);
       if(count.rows[0].count>=30) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','A vehicle can have at most 30 active images.');
       const id=randomUUID();
-      const result=await tx.query<MediaRow>(`INSERT INTO media_assets(id,vehicle_id,content_type,expected_size,rights,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '30 minutes') RETURNING *`,[id,input.vehicleId,input.contentType,input.sizeBytes,JSON.stringify(input.rights)]);
+      const result=await tx.query<MediaRow>(`INSERT INTO media_assets(id,vehicle_id,content_type,expected_size,rights,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '30 minutes') RETURNING *`,[id,input.vehicleId,input.contentType,input.sizeBytes,JSON.stringify(rights)]);
       const row=result.rows[0]!;
-      await audit(tx,actor,'media.create',input.vehicleId,null,1,activityChanges(null,{id,state:'pending'},`media.${id}`));
+      const changes=activityChanges(null,{
+        id,state:'pending',...(usesCompanyDefault?{rights:{basis:rights.basis,declaration:'company_default'}}:{}),
+      },`media.${id}`);
+      await audit(tx,actor,'media.create',input.vehicleId,null,1,changes);
       return {media:dto(row),method:'PUT' as const,uploadUrl:`/api/v1/admin/media/${id}/content`,expiresAt:row.expires_at.toISOString()};
     });
   }

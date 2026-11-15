@@ -8,6 +8,7 @@ test.beforeEach(async ({ page }) => {
 async function openCalculator(page: Page, country = 'uzbekistan', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}/`);
   await expect(page.locator('.reset-button')).toBeEnabled();
+  if (await page.locator('#manufactureDate').count()) await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toBeVisible();
 }
 
@@ -155,10 +156,10 @@ test('reset and destination changes close all details, and invalid input removes
   await openCalculator(page);
   await page.getByTestId('toggle-all-fee-details').click();
   await page.locator('.reset-button').click();
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectAllClosed(page);
   await page.getByTestId('toggle-all-fee-details').click();
-  await page.goto('/zh/calculator/armenia/');
-  await expect(page.locator('.reset-button')).toBeEnabled();
+  await openCalculator(page, 'armenia');
   await expectAllClosed(page);
   await page.getByTestId('toggle-all-fee-details').click();
   await page.locator('#price').fill('');

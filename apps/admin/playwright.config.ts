@@ -22,6 +22,7 @@ export default defineConfig({
     command: 'pnpm preview --port 3319',
     url: 'http://127.0.0.1:3319/admin/',
     reuseExistingServer: false,
+    env: { ADMIN_PREVIEW_WEB_DEV_PROXY: live && process.env.ADMIN_LIVE_WEB_DEV === '1' ? '1' : '0' },
     timeout: 60_000,
   },
 });

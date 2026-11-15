@@ -236,7 +236,11 @@ test('publication preview gates use current persisted data and an actor-specific
     async function assertPublishedMatchesPreview(previews: PublicationPreview[]) {
       for (const value of previews) {
         const before = value.vehicle, after = await publicDetail(before.id, value.locale);
-        assert.deepEqual(after.facts, before.facts); assert.deepEqual(after.source, before.source);
+        assert.deepEqual(after.facts, before.facts);
+        if (before.source.kind === 'external') {
+          assert.ok(before.source.listingUrl.startsWith('https://example.invalid/listings/'));
+          assert.deepEqual(after.source, { kind: 'external', platform: { id: 'external', name: 'External listing' }, listingUrl: null });
+        } else assert.deepEqual(after.source, before.source);
         const { status: _previewPriceStatus, displayPrice, ...price } = before.price;
         assert.deepEqual(after.price, price); assert.deepEqual(after.displayPrice, displayPrice);
         assert.deepEqual(after.images.map(({ id, alt, width, height, sortOrder, isCover }) => ({ id, alt, width, height, sortOrder, isCover })),
@@ -252,7 +256,10 @@ test('publication preview gates use current persisted data and an actor-specific
           reviewed: text.kind === 'catalog' || (before.source.kind === 'manual' && text.reviewStatus === 'approved') });
         assert.ok(after.display);
         for (const field of ['make', 'model', 'trim', 'generation', 'city', 'location', 'platform'] as const) {
-          assert.deepEqual(after.display[field], displayed(before.display[field]));
+          if (field === 'platform' && before.source.kind === 'external') {
+            assert.equal(after.display.platform.status, 'missing');
+            assert.equal(after.display.platform.text, null);
+          } else assert.deepEqual(after.display[field], displayed(before.display[field]));
         }
         assert.deepEqual(after.display.priceIncludes, before.display.priceIncludes.map(item => ({ id: item.id, value: displayed(item.value) })));
         assert.deepEqual(after.display.mediaAlt, before.display.mediaAlt.map(item => ({ mediaId: item.mediaId, value: displayed(item.value) })));
@@ -698,7 +705,7 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.equal((await get(vehicle.id)).publicationState, 'draft');
     });
 
-    await t.test('readiness rejects either missing publication migration dependency and recovers after restoration', async () => {
+    await t.test('readiness rejects missing publication or inquiry migration fields and recovers after restoration', async () => {
       assert.equal((await call({ url: '/health/ready' })).statusCode, 200);
       // Each rename commits so the separate HTTP request can observe it. This suite
       // owns only this random database, runs serially, and restores each name in finally.
@@ -707,6 +714,8 @@ test('publication preview gates use current persisted data and an actor-specific
           'ALTER TABLE preview_confirmations_test_hidden RENAME TO publication_preview_confirmations'],
         ['ALTER TABLE vehicles RENAME COLUMN public_content_revision TO preview_revision_test_hidden',
           'ALTER TABLE vehicles RENAME COLUMN preview_revision_test_hidden TO public_content_revision'],
+        ['ALTER TABLE external_listings RENAME COLUMN inquiry_number TO inquiry_number_test_hidden',
+          'ALTER TABLE external_listings RENAME COLUMN inquiry_number_test_hidden TO inquiry_number'],
       ]) {
         await app.db.pool.query(remove!);
         try {

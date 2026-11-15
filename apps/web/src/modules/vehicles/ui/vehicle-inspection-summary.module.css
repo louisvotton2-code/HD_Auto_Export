@@ -86,6 +86,18 @@
 .findings li > span { font-size: 12px; }
 .findings li p { margin: 6px 0 0; }
 .salesNote { padding: 14px; border: 1px solid #ac85595c; border-radius: 8px; color: #e8c99f; }
-.policy { padding: 12px 14px; background: #ffffff06; border-radius: 8px; }
-.refund { color: #b7f0ca; font-weight: 750; }
+.serviceIntro { color: #d8d0c6; }
+.policies {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.policies .policy {
+  margin: 0;
+  padding: 12px 14px;
+  background: #ffffff06;
+  border: 1px solid #ffffff14;
+  border-radius: 10px;
+}
+.merchant { color: #b7f0ca; font-weight: 750; }
 .customer { color: #ffdaa0; font-weight: 750; }

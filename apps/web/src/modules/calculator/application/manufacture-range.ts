@@ -1,6 +1,7 @@
 /** Internal import compatibility; the implementation and public facade stay in the pure core. */
 export {
   calculateManufactureRange,
+  calculateRecentJanuaryEstimates,
   isManufactureMonthRange,
   MAX_MANUFACTURE_RANGE_MONTHS,
 } from '../core/manufacture-range';

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { SUPPORTED_CURRENCIES, type Currency } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
+import { assertLocalPreviewTarget } from './local-preview-target.js';
 
 export type FxQuote = { version: string; asOf: string; expiresAt: string;
   source: 'exchange_rate_api' | 'synthetic'; rates: Partial<Record<Currency, string>> };
@@ -99,9 +100,10 @@ export const SYNTHETIC_FX_RATES = {
   a: { USD: '1', CNY: '7', EUR: '0.9', RUB: '80', KRW: '1000', KZT: '500', UZS: '12500', GEL: '2.5', AMD: '400', KGS: '90', ALL: '100', JPY: '150', GBP: '0.8', AED: '3.67' },
   b: { USD: '1', CNY: '8', EUR: '0.8', RUB: '100', KRW: '1200', KZT: '600', UZS: '13000', GEL: '3', AMD: '420', KGS: '100', ALL: '110', JPY: '160', GBP: '0.75', AED: '3.68' },
 } as const;
-async function assertDatabase(tx: FxQueryable, pattern: RegExp, expected?: string) {
+async function assertDatabase(tx: FxQueryable, expected: string | RegExp) {
   const name = (await tx.query<{ name: string }>('SELECT current_database() AS name')).rows[0]?.name;
-  if (!name || !pattern.test(name) || (expected !== undefined && name !== expected)) throw new Error('FX database scope rejected.');
+  const matches = typeof expected === 'string' ? name === expected : name !== undefined && expected.test(name);
+  if (!matches) throw new Error('FX database scope rejected.');
 }
 export async function seedSyntheticFx(db: Database, fixture: 'a' | 'b' | 'expired'): Promise<{ changed: boolean; quote: FxQuote }> {
   if (!['a', 'b', 'expired'].includes(fixture)) throw invalid();
@@ -115,8 +117,24 @@ export async function seedSyntheticFx(db: Database, fixture: 'a' | 'b' | 'expire
 }
 
 export type FxRefreshAuthorization = { networkEnabled: boolean; mode: string; nodeEnv: string; databaseUrl: string;
-  formalDatabase?: string; releaseId?: string };
+  formalDatabase?: string; releaseId?: string;
+  localPreview?: { deploymentEnv?: string; translationProvider?: string } };
+const localPreviewDatabase = 'hd_local_preview';
+
 export function assertFxRefreshAuthorization(auth: FxRefreshAuthorization) {
+  if (auth.localPreview) {
+    const rejected = () => new Error('Local preview FX network gate rejected.');
+    if (!auth.networkEnabled || auth.mode !== 'disabled' || auth.formalDatabase !== undefined) throw rejected();
+    let target: URL;
+    try {
+      target = new URL(assertLocalPreviewTarget({
+        NODE_ENV: auth.nodeEnv, HD_DEPLOYMENT_ENV: auth.localPreview.deploymentEnv, DATABASE_URL: auth.databaseUrl,
+        TRANSLATION_PROVIDER: auth.localPreview.translationProvider,
+      }));
+    } catch { throw rejected(); }
+    if (target.pathname !== `/${localPreviewDatabase}`) throw rejected();
+    return localPreviewDatabase;
+  }
   let url: URL;
   try { url = new URL(auth.databaseUrl); } catch { throw new Error('FX network gate rejected.'); }
   if (auth.formalDatabase !== undefined) {
@@ -156,7 +174,8 @@ async function fetchSnapshot(fetcher: typeof fetch): Promise<unknown> {
 export async function refreshFxQuote(db: Database, authorization: FxRefreshAuthorization, fetcher: typeof fetch = fetch):
 Promise<{ attempted: boolean; health: FxHealth }> {
   const expected = assertFxRefreshAuthorization(authorization);
-  await assertDatabase(db.pool, authorization.formalDatabase === undefined ? /^hd_ext_fx_preview_[a-z0-9_]+$/ : /^[A-Za-z_][A-Za-z0-9_]{0,62}$/, expected);
+  await assertDatabase(db.pool, expected);
+  const requireCny = authorization.localPreview !== undefined || authorization.formalDatabase !== undefined;
   const attempt = randomUUID();
   const claim = await db.pool.query(`WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
     UPDATE fx_refresh_state SET attempt_id=$1,last_attempt_at=clock.now,next_attempt_at=clock.now+interval '24 hours',outcome='pending'
@@ -167,7 +186,7 @@ Promise<{ attempted: boolean; health: FxHealth }> {
     await db.transaction(async tx => {
       const now = (await tx.query<{ now: Date }>('SELECT clock_timestamp() AS now')).rows[0]!.now;
       const quote = parseProviderFx(response, now);
-      if (authorization.formalDatabase !== undefined && !quote.rates.CNY) throw invalid();
+      if (requireCny && !quote.rates.CNY) throw invalid();
       await saveQuote(tx, quote);
       const finished = await tx.query("UPDATE fx_refresh_state SET outcome='success' WHERE id=1 AND attempt_id=$1 RETURNING id", [attempt]);
       if (finished.rowCount !== 1) throw new Error('FX claim changed.');

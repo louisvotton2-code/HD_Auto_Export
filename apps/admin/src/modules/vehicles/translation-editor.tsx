@@ -60,7 +60,7 @@ export function TranslationEditor({ name, value, sourceText, sourceLanguage, onC
         const helpId = `${id}-help`;
         return <Card size="small" className={styles.language} key={locale} title={<Space><span className={styles.languageCode}>{languageCodes[locale]}</span>{translationLocaleLabels[locale]}</Space>}>
           <Form.Item label={`${translationLocaleLabels[locale]}${fieldName}`} htmlFor={id} required={name === 'title' || requiredForPublish}>
-            <Input.TextArea id={id} name={id} aria-label={`${translationLocaleLabels[locale]}${fieldName}`} value={translation?.text ?? ''} autoSize={{ minRows: name === 'title' ? 3 : 5, maxRows: 10 }} maxLength={10000} disabled={disabled} aria-describedby={helpId} placeholder={`填写${translationLocaleLabels[locale]}${fieldName}`} onChange={event => onChange(editTranslation(value, locale, event.target.value, sourceText, sourceLanguage, revisions.current[locale]))} />
+            <Input.TextArea id={id} name={id} aria-label={`${translationLocaleLabels[locale]}${fieldName}`} value={translation?.text ?? ''} autoSize={{ minRows: name === 'title' ? 3 : 5, maxRows: 10 }} maxLength={10000} disabled={disabled || !source.text?.trim()} aria-describedby={helpId} placeholder={`填写${translationLocaleLabels[locale]}${fieldName}`} onChange={event => onChange(editTranslation(value, locale, event.target.value, sourceText, sourceLanguage, revisions.current[locale]))} />
           </Form.Item>
           <div id={helpId} className={styles.provenance}>{translation ? kindLabels[translation.kind] : '尚无译文，可生成或直接填写。'}{state === 'stale' && !source.changed && <span className={styles.stale}>原文已更新，请重新生成或修改译文。</span>}</div>
         </Card>;

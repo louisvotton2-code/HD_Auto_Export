@@ -3,7 +3,6 @@ import type { CalculationInput, Powertrain } from '../core/types';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, createDefaultInput } from './defaults';
 import { readManufactureEstimate } from './manufacture-estimate';
-import { isManufactureMonthRange, type ManufactureMonthRange } from './manufacture-range';
 
 export const CALCULATOR_DRAFT_STORAGE_KEY = 'hd-auto.calculator.draft.v2';
 export const LEGACY_CALCULATOR_DRAFT_STORAGE_KEY = 'aurex.calculator.draft.v1';
@@ -16,6 +15,10 @@ export const CALCULATOR_POWERTRAINS: readonly Powertrain[] = [
   'bev',
 ];
 
+export function createCalculatorFormInput(country: CountryRecord, date: string, rates: ExchangeRateSnapshot): CalculationInput {
+  return { ...createDefaultInput(country.code, date, rates), manufactureDate: '' };
+}
+
 export interface StoredCalculatorDraft {
   current: string | null;
   legacy?: string | null;
@@ -24,7 +27,6 @@ export interface StoredCalculatorDraft {
 export interface RestoredCalculatorDraft {
   input: CalculationInput;
   manualRates: boolean;
-  manufactureRange?: ManufactureMonthRange;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -43,7 +45,7 @@ export function restoreCalculatorDraft(
   date: string,
   rates: ExchangeRateSnapshot,
 ): RestoredCalculatorDraft {
-  const fallback = createDefaultInput(country.code, date, rates);
+  const fallback = createCalculatorFormInput(country, date, rates);
   try {
     const current = Boolean(raw.current);
     const record: unknown = JSON.parse(raw.current || raw.legacy || 'null');
@@ -97,9 +99,7 @@ export function restoreCalculatorDraft(
         if (typeof draft[key] === 'string' && draft[key].length <= 64) next[key] = draft[key];
     }
     if (current && readManufactureEstimate(record.manufactureEstimate, draft.manufactureDate)) next.manufactureDate = '';
-    const manufactureRange = current && draft.country === country.code && next.manufactureDate === ''
-      && isManufactureMonthRange(record.manufactureRange) ? record.manufactureRange : undefined;
-    return { input: next, manualRates, ...(manufactureRange ? { manufactureRange } : {}) };
+    return { input: next, manualRates };
   } catch {
     return { input: fallback, manualRates: false };
   }

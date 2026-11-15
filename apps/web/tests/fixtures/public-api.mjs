@@ -147,8 +147,9 @@ function vehicle(id, locale, overrides = {}) {
   return PublicVehicleSchema.parse({
     ...base,
     id,
-    ...(id === 'fixture_car_3' ? { identifiers: { inquiryCode: 'DCD-357217151', sourceId: '357217151', source: 'dongchedi', vin: 'LHGCM82633A004352' } } : {}),
-    stockCode: demo ? 'SHOW-ALPHA' : id === 'fixture_future' ? 'HD-FUTURE-01' : `HD-${id}`,
+    ...(id === 'fixture_car_3' ? { identifiers: { inquiryCode: 'DCD-357217151', sourceId: '357217151', source: 'dongchedi', vin: 'LHGCM82633A004352' } }
+      : external ? { identifiers: { inquiryCode: 'HX100001', sourceId: null, source: null, vin: null } } : {}),
+    stockCode: demo ? 'SHOW-ALPHA' : id === 'fixture_future' ? 'HD-FUTURE-01' : id === 'fixture_car_3' ? 'HD-000003' : `HD-${id}`,
     source: external
       ? {
           kind: 'external',
@@ -575,7 +576,7 @@ function searchMatches(row, q) {
   const needle = q?.trim().toLocaleLowerCase();
   return (
     !needle ||
-    [row.content.title.text, row.stockCode, row.facts.make?.name, row.facts.model?.name].some(
+    [row.content.title.text, row.stockCode, row.identifiers?.inquiryCode, row.facts.make?.name, row.facts.model?.name].some(
       (text) => text?.toLocaleLowerCase().includes(needle),
     )
   );
@@ -886,6 +887,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         : [];
       const makeImport = (kind, detail = false) => {
         const item = makeImportedPublicVehicleFixture(locale, kind, detail);
+        item.identifiers = { sourceId: null, source: null, vin: item.identifiers?.vin ?? null,
+          inquiryCode: 'HX' + String(100001 + importStates.indexOf(kind)) };
         // Relative deadlines keep the otherwise unchanged synthetic remote records usable
         // on any test date, and let cache tests shorten their signed-media lifetime.
         for (const image of item.images) if (image.remote) {

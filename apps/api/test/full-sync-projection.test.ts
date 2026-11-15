@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { mock,test } from 'node:test';
-import { PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
+import { PublicFilterQuerySchema, PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
+import { ExternalListingListQuerySchema } from '@hd/contracts/admin';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { InventoryService } from '../src/vehicles/service.js';
 import { ExternalStore } from '../src/external/store.js';
 import { applyFullSource, bindAlias, ensureMember } from '../src/external/full-sync/apply.js';
-import { configureFullSync } from '../src/external/full-sync/engine.js';
+import { configureFullSync, markFullSyncAccess } from '../src/external/full-sync/engine.js';
+import { listExternalListings } from '../src/external/listings.js';
 import type { Source } from '../src/external/full-sync/types.js';
 import type { SourceDocument } from '../src/external/sources/index.js';
 import {persistSourceDocument} from '../src/external/sources/index.js';
@@ -29,6 +31,19 @@ test('full-source apply preserves staff edits and promotes an active canonical b
   try {
     await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;address.pathname=`/${name}`;db=createDatabase(address.toString(),3);
     const database=db;await migrateDatabase(database);
+    await t.test('the inquiry migration backfills existing rows and advances beyond them', async () => {
+      const sql = await readFile(new URL('../migrations/0027_external_inquiry_numbers.sql', import.meta.url), 'utf8');
+      await database.transaction(async tx => {
+        // A temporary legacy table shadows the migrated table for this connection only.
+        await tx.query('CREATE TEMP TABLE external_listings(id uuid PRIMARY KEY, platform_id text, external_id text) ON COMMIT DROP');
+        await tx.query('INSERT INTO pg_temp.external_listings(id) VALUES ($1), ($2)', [randomUUID(), randomUUID()]);
+        await tx.query(sql);
+        const before = await tx.query('SELECT inquiry_number::text FROM pg_temp.external_listings ORDER BY inquiry_number');
+        assert.deepEqual(before.rows.map(row => row.inquiry_number), ['1', '2']);
+        const inserted = await tx.query('INSERT INTO pg_temp.external_listings(id) VALUES ($1) RETURNING inquiry_number::text', [randomUUID()]);
+        assert.equal(inserted.rows[0]!.inquiry_number, '3');
+      });
+    });
     const actor={id:'full-projection-admin',requestId:randomUUID()};
     await database.pool.query("INSERT INTO staff(id,name,email,role,banned) VALUES($1,'Synthetic projection operator','full-projection@example.invalid','admin',false)",[actor.id]);
     await configureFullSync(database,actor,'full');
@@ -46,6 +61,7 @@ test('full-source apply preserves staff edits and promotes an active canonical b
         trim:{id:'fixture-trim',name:'Variant',nameZh:'测试配置'},modelYear:2024,manufactureDate:'2024-02',firstRegistration:'2024-03',
         mileageKm:12000,price:{cny:70000},fuel:'Petrol',transmission:'Automatic',powerKw:100,powerHp:136,
         specs:{displacementCc:1998},photos:['https://erscglobal2.autoimg.cn/synthetic-full-projection.jpg'],hasInspectionReport:false,
+        alsoListedOn:[{url:'https://www.che168.com/dealer/1/900009.html'}],nameplate:{vin:'LHGCM82633A004352'},
         seller:{phone:'PRIVATE_SELLER_PHONE_MARKER'},unknownPrivate:{secret:'PRIVATE_FULL_RAW_MARKER'},
       },
     }));
@@ -58,15 +74,27 @@ test('full-source apply preserves staff edits and promotes an active canonical b
         documents:operation==='upsert'?documents(source):[],at,batchId});
       return member.canonical_id as string;
     });
-    const listing=(source:Source)=>database.pool.query<{id:string;formal_canonical_id:string;formal_primary:boolean;upstream_state:string}>(
-      "SELECT id,formal_canonical_id,formal_primary,upstream_state FROM external_listings WHERE provider='chinacarapi' AND platform_id=$1 AND external_id=$2",[source,sourceIds[source]]).then(result=>result.rows[0]!);
+    const listing=(source:Source)=>database.pool.query<{id:string;inquiry_number:string;formal_canonical_id:string;formal_primary:boolean;upstream_state:string}>(
+      "SELECT id,inquiry_number::text,formal_canonical_id,formal_primary,upstream_state FROM external_listings WHERE provider='chinacarapi' AND platform_id=$1 AND external_id=$2",[source,sourceIds[source]]).then(result=>result.rows[0]!);
     const visible=async(locale:Locale)=>PublicVehicleCardListSchema.parse(await inventory.listPublic(PublicVehicleQuerySchema.parse({locale,view:'localized',projection:'card'}),'synthetic-projection'));
     const assertPublic=async(expected:string)=>{
+      const { inquiry_number } = (await database.pool.query('SELECT inquiry_number::text FROM external_listings WHERE id=$1', [expected])).rows[0]!;
+      const inquiryCode = `HX${inquiry_number}`;
       for(const locale of locales){
         const page=await visible(locale);assert.equal(page.meta.total,1);assert.deepEqual(page.data.items.map(item=>item.id),[`ext-${expected}`]);
         const detail=await inventory.getPublic(`ext-${expected}`,locale,'localized');
-        assert.equal(detail.id,`ext-${expected}`);assert.equal(detail.source.kind,'external');
-        for(const value of [page,detail])assert.doesNotMatch(JSON.stringify(value),/PRIVATE_FULL_RAW_MARKER|PRIVATE_SELLER_PHONE_MARKER|unknownPrivate|source_data|full-projection-admin/);
+        assert.deepEqual(detail.external?.detail?.relatedListingUrls, []);
+        for (const vehicle of [page.data.items[0]!, detail]) {
+          assert.equal(vehicle.id, `ext-${expected}`);
+          assert.equal(vehicle.detailPath, `/${locale}/cars/ext-${expected}/`);
+          assert.equal(vehicle.stockCode, inquiryCode);
+          assert.deepEqual(vehicle.identifiers, { inquiryCode, sourceId: null, source: null, vin: 'LHGCM82633A004352' });
+          assert.deepEqual(vehicle.source, { kind: 'external', platform: { id: 'external', name: 'External listing' }, listingUrl: null });
+          assert.equal(vehicle.display?.platform.status, 'missing');
+          assert.deepEqual(vehicle.price.money, { amount: '70000.00', currency: 'CNY' });
+          assert.equal(vehicle.availability, 'unknown');
+          assert.doesNotMatch(JSON.stringify(vehicle), /PRIVATE_FULL_RAW_MARKER|PRIVATE_SELLER_PHONE_MARKER|unknownPrivate|source_data|full-projection-admin|"(?:900001|900002|900009)"|che168\.com|dongchedi\.com/);
+        }
       }
     };
     let canonical='',primaryId='',backupId='';
@@ -79,6 +107,37 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       assert.deepEqual(bound,[{source:'che168',external_id:sourceIds.che168}]);
       assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_vehicle_extras WHERE listing_id=$1',[primaryId])).rows[0].n,3);
     });
+    await t.test('the same exact inquiry code works in public and private search while historical references stay private', async () => {
+      const primary = await listing('che168');
+      const inquiryCode = `HX${primary.inquiry_number}`;
+      const permanentId = `ext-${primary.id}`;
+      const originalUrl = `https://www.che168.com/dealer/1/${sourceIds.che168}.html`;
+      const hex = primary.id.replaceAll('-', '').toUpperCase();
+      const oldCode = `HDX-${hex.slice(0, 12)}${hex.slice(-4)}`;
+      const staff = await store.getListing(permanentId, 'en');
+      assert.equal(staff.inquiryCode, inquiryCode);
+      assert.equal(staff.identity.externalId, sourceIds.che168);
+      assert.equal(staff.source?.listingUrl, originalUrl);
+      assert.deepEqual(staff.source?.relatedListingUrls, ['https://www.che168.com/dealer/1/900009.html']);
+      for (const q of [inquiryCode.toLowerCase(), oldCode, `che168-${sourceIds.che168}`, permanentId, originalUrl]) {
+        const result = await listExternalListings(database, ExternalListingListQuerySchema.parse({ locale: 'en', q }));
+        assert.deepEqual(result.items.map(item => [item.id, item.inquiryCode]), [[permanentId, inquiryCode]], q);
+      }
+      for (const [q, total] of [[inquiryCode.toLowerCase(), 1], [`che168-${sourceIds.che168}`, 0], ['HX9223372036854775808', 0]] as const) {
+        const result = await inventory.listPublic(PublicVehicleQuerySchema.parse({ locale: 'en', view: 'localized', projection: 'card', q }), 'inquiry-lookup');
+        assert.equal(result.meta.total, total, q);
+        const filters = await inventory.filters(PublicFilterQuerySchema.parse({ locale: 'en', view: 'localized', q }));
+        assert.equal(filters.total, total, q);
+      }
+      // The hint uses the UUID internally, even when the response no longer contains supplier identity.
+      await markFullSyncAccess(database, primary.id);
+      const lastAccessed = async () => (await database.pool.query('SELECT last_accessed_at FROM external_full_members WHERE source=$1 AND external_id=$2',
+        ['che168', sourceIds.che168])).rows[0]!.last_accessed_at;
+      const touched = await lastAccessed();
+      assert.ok(touched instanceof Date);
+      await markFullSyncAccess(database, primary.id);
+      assert.deepEqual(await lastAccessed(), touched);
+    });
     await t.test('verified second-source alias remains private while original staff corrections survive refresh',async()=>{
       await database.transaction(async tx=>{
         await ensureMember(tx,'dongchedi',sourceIds.dongchedi);
@@ -86,6 +145,8 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       });
       assert.equal(await apply('dongchedi'),canonical);const second=await listing('dongchedi');backupId=second.id;
       assert.notEqual(primaryId,backupId);assert.equal(second.formal_primary,false);assert.equal(second.formal_canonical_id,canonical);
+      const first = await listing('che168');
+      assert.ok(BigInt(second.inquiry_number) > BigInt(first.inquiry_number));
       assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_catalog')).rows[0].n,1);
       for(const [id,title,mileage] of [[primaryId,'Employee primary title',9100],[backupId,'Employee backup title',8200]] as const){
         const current=await store.getListing(`ext-${id}`,'en');assert.ok(current.sourceHashes.title);
@@ -95,6 +156,8 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       }
       await apply('che168');await apply('dongchedi');
       assert.equal((await listing('che168')).id,primaryId);assert.equal((await listing('dongchedi')).id,backupId);
+      assert.equal((await listing('che168')).inquiry_number, first.inquiry_number);
+      assert.equal((await listing('dongchedi')).inquiry_number, second.inquiry_number);
       assert.deepEqual((await store.getListing(`ext-${primaryId}`,'en')).overrides,primaryOverrides);
       assert.deepEqual((await store.getListing(`ext-${backupId}`,'en')).overrides,backupOverrides);
       const primary=(await visible('en')).data.items[0]!;assert.equal(primary.content.title.text,'Employee primary title');assert.equal(primary.content.title.kind,'human');assert.equal(primary.facts.mileageKm,9100);

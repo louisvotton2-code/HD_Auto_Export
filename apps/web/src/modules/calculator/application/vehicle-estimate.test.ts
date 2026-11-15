@@ -3,7 +3,6 @@ import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { calculateImportEstimate, type CountryCode } from '../index';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
 import { createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput } from './vehicle-estimate';
-import { vehicleManufacturePrefill } from './manufacture-estimate';
 
 const date = '2026-11-08';
 const rates = createReferenceSnapshot();
@@ -29,24 +28,22 @@ describe('vehicle facts to import estimate', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.facts.firstRegistration = { precision: 'day', value: '2024-05-15' };
     vehicle.facts.manufacturedAt = null;
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '' });
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.facts.manufacturedAt = { precision: 'year', value: '2023' };
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '' });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.facts.manufacturedAt = { precision: 'day', value: '2024-03-28' };
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2024-03' });
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03');
   });
 
-  it('uses formal ranges as ranges, expands year endpoints, and prioritizes exact evidence', () => {
+  it('leaves the manufacture month empty for a source range and prefills an exact date when supplied', () => {
     const vehicle = knownVehicle();
     vehicle.facts.manufacturedAt = null;
     vehicle.manufacture = { date: null, range: {
       earliest: { precision: 'year', value: '2021' }, latest: { precision: 'year', value: '2024' },
     }, source: 'supplier', basis: null };
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '', range: { from: '2021-01', to: '2024-12' } });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.manufacture.date = { precision: 'day', value: '2023-04-15' };
-    expect(vehicleManufacturePrefill(vehicle, date)).toEqual({ value: '2023-04' });
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2023-04');
   });
 
   it('does not substitute a kW or another scope when direct hp is missing', () => {

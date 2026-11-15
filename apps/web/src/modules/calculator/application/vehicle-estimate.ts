@@ -1,7 +1,7 @@
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { CalculationInput, CountryCode, Powertrain } from '../index';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
-import { vehicleManufacturePrefill } from './manufacture-estimate';
+import { vehicleManufactureMonth } from './manufacture-estimate';
 
 /** The UI can leave unknown enums empty; the core's required-field checks accept empty text. */
 export type VehicleEstimateDraft = Omit<CalculationInput, 'powertrain' | 'condition' | 'steering'> & {
@@ -33,7 +33,7 @@ export function createVehicleEstimateDraft(
     // The public adapter supplies the confirmed hp field. Do not infer it from another power scope.
     powerHp: typeof facts.powerHp === 'number' && Number.isFinite(facts.powerHp) && facts.powerHp > 0
       ? String(facts.powerHp) : '',
-    manufactureDate: vehicleManufacturePrefill(vehicle, date).value,
+    manufactureDate: vehicleManufactureMonth(vehicle),
     customsDate: date,
     freight: '',
     insurance: '',
