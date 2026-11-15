@@ -55,7 +55,7 @@ function listingTitle(row: ListingRow, locale: ExternalListingListQuery['locale'
   );
   if (edit) return edit.text;
   const { original, translations } = copy.title;
-  return original.contentLocale.split('-')[0] === locale ? original.text : translations[locale]?.text ?? original.text;
+  return translations[locale]?.text ?? original.text;
 }
 
 function searchWhere(query: ExternalListingListQuery, values: unknown[]): string {

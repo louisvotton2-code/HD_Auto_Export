@@ -10,9 +10,10 @@ import type {Database} from '../../db/index.js';
 import {verifyCatalogCsv,persistSourceResponse,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {jsonHash} from '../normalize.js';
+import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formalWithdrawal,isFormalListingAdmitted,rememberFormalWithdrawal,FORMAL_LISTING_LIMIT,FORMAL_LISTING_LIMIT_CODE} from '../formal-admission.js';
 import {runSourceMaintenance} from './maintenance.js';
 import {syncAccount} from './quota.js';
-import {capacitySample,capacityBinding,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk} from './capacity.js';
+import {capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk} from './capacity.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,parseAlias} from './apply.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
@@ -20,12 +21,13 @@ const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as co
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
 const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC_OPERATION_FAILED';
 export async function configureFullSync(db:Database,actor:Actor,mode:'full'|'continuous'){
+ if(!await formalAdmissionInstalled(db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
  return db.transaction(async tx=>{
   if(!(await tx.query("SELECT id FROM staff WHERE id=$1 AND role='admin' AND NOT banned",[actor.id])).rowCount)throw new FullSyncError('SYNC_ADMIN_REQUIRED');
   await tx.query(`INSERT INTO staff(id,name,email,role,banned) VALUES($1,'ChinaCarAPI import service','chinacarapi-worker@example.invalid','editor',true) ON CONFLICT(id) DO NOTHING`,[SERVICE_ACTOR]);
   if(!(await tx.query(`SELECT id FROM staff s WHERE id=$1 AND banned AND NOT EXISTS(SELECT 1 FROM staff_accounts a WHERE a.user_id=s.id) AND NOT EXISTS(SELECT 1 FROM staff_sessions t WHERE t.user_id=s.id)`,[SERVICE_ACTOR])).rowCount)throw new FullSyncError('SYNC_SERVICE_INVALID');
   await tx.query("UPDATE external_full_sync SET capacity_baseline=coalesce(capacity_baseline,jsonb_build_object('walLsn',pg_current_wal_lsn()::text,'databaseBytes',pg_database_size(current_database()),'at',clock_timestamp())) WHERE id=1");
-  await tx.query("INSERT INTO external_full_members(source,external_id,canonical_id,state,event_order,business_at,locales,last_detail_at,applied_generation) SELECT l.platform_id,l.external_id,l.formal_canonical_id,l.upstream_state,coalesce(i.business_order,0),coalesce(i.business_at,l.fetched_at),'{}',l.fetched_at,1 FROM external_listings l LEFT JOIN external_ingestion_identity_state i ON i.provider=l.provider AND i.source=l.platform_id AND i.external_id=l.external_id WHERE l.provider='chinacarapi' AND l.formal_canonical_id IS NOT NULL ON CONFLICT DO NOTHING");
+  await tx.query("INSERT INTO external_full_members(source,external_id,canonical_id,state,event_order,business_at,locales,last_detail_at,applied_generation) SELECT l.platform_id,l.external_id,l.formal_canonical_id,l.upstream_state,coalesce(i.business_order,0),coalesce(i.business_at,l.fetched_at),'{}',l.fetched_at,1 FROM external_listings l LEFT JOIN external_ingestion_identity_state i ON i.provider=l.provider AND i.source=l.platform_id AND i.external_id=l.external_id WHERE l.provider='chinacarapi' AND l.formal_canonical_id IS NOT NULL AND EXISTS(SELECT 1 FROM external_formal_admissions a WHERE a.source=l.platform_id AND a.external_id=l.external_id) ON CONFLICT DO NOTHING");
   await tx.query("UPDATE external_full_members SET locales=ARRAY['zh','en','ru'] WHERE state='active' AND last_detail_at IS NOT NULL AND cardinality(locales)=0 AND desired_generation=applied_generation");
   await tx.query('UPDATE external_full_sync SET enabled=true,paused=false,mode=$1,triggered_by=$2,version=version+1,updated_at=now() WHERE id=1',[mode,actor.id]);
  });
@@ -44,7 +46,9 @@ export class FullSyncWorker{
  private lock:PoolClient|null=null;private lost=false;private fence:string|null=null;
  constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource){}
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
- async acquire(){const c=await this.db.pool.connect();if(!(await c.query('SELECT pg_try_advisory_lock(78291333) AS ok')).rows[0].ok){c.release();return false;}
+ async acquire(){
+  if(!await formalAdmissionInstalled(this.db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
+  const c=await this.db.pool.connect();if(!(await c.query('SELECT pg_try_advisory_lock(78291333) AS ok')).rows[0].ok){c.release();return false;}
   this.lock=c;c.on('error',()=>{this.lost=true;});this.fence=String((await this.db.pool.query('UPDATE external_full_sync SET worker_fence=worker_fence+1 WHERE id=1 RETURNING worker_fence')).rows[0]!.worker_fence);return true;}
  async close(){if(this.lock){try{await this.lock.query('SELECT pg_advisory_unlock(78291333)');}finally{this.lock.release();this.lock=null;}}}
  private async alive(){if(!this.lock||this.lost)throw new FullSyncError('SYNC_LEASE_LOST');await this.lock.query('SELECT 1');}
@@ -64,10 +68,11 @@ export class FullSyncWorker{
   if(!sampleRepair){if(s.capacity_pending)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(Number(s.last_capacity_sample)>0)await this.checkCapacityDecision(s,disk);}
  }
  private async checkCapacityDecision(state:Record<string,any>,disk:CapacityDisk){
-  const snap=(await this.db.pool.query("SELECT id,rows FROM external_full_snapshots WHERE state IN('verified','applying','complete') ORDER BY created_at DESC LIMIT 1")).rows[0];
+  const snap=(await this.db.pool.query("SELECT s.id,s.rows,s.target_rows,a.admitted_count FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE a.id=1 AND s.state IN('verified','applying','complete') ORDER BY s.created_at DESC LIMIT 1")).rows[0];
+  const target=snap?capacityTarget(snap):0;
   const sample=await capacitySample(this.db),prior=state.capacity_baseline?.detailSample;
-  const enough=snap&&Number(snap.rows)>0&&sample.details>0&&sample.details<=10000&&sample.details>=Math.min(10000,Number(snap.rows))&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details&&validMeasuredCohort(prior,sample);
-  const result=enough?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,capacityBinding(snap.id,Number(snap.rows),sample,prior),disk,Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0)):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'};
+  const enough=snap&&target>0&&sample.details>0&&sample.details<=10000&&sample.details>=capacitySampleTarget(snap)&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details&&validMeasuredCohort(prior,sample);
+  const result=enough?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,capacityBinding(snap.id,target,sample,prior),disk,Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0)):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'};
   if(!result.allowed){await this.db.pool.query('UPDATE external_full_sync SET capacity_pending=true WHERE id=1');throw new FullSyncError(result.code!);}
  }
  /** 2000-event page staged in 100-event transactions. Cursor advances only after every chunk and raw evidence is durable. */
@@ -94,23 +99,64 @@ export class FullSyncWorker{
   });return page.hasMore;
  }
  async applyEvents(withdrawOnly=false){
-  await this.alive();const events=(await this.db.pool.query(`SELECT * FROM external_full_events WHERE applied_at IS NULL AND ($1=false OR operation='withdraw') ORDER BY (operation='withdraw') DESC,event_id LIMIT 100`,[withdrawOnly])).rows;
-  for(const event of events)await this.transaction(async tx=>{
-   await tx.query('SELECT pg_advisory_xact_lock(78291332)');
-   const member=await ensureMember(tx,event.source,event.external_id);
-   const newer=BigInt(event.event_id)>BigInt(member.event_order)&&new Date(event.business_at).getTime()>=new Date(member.business_at).getTime();
-   if(newer){
-    const withdraw=event.operation==='withdraw',canActivate=member.state!=='withdrawn'||event.operation==='relist';
-    await tx.query(`UPDATE external_full_members SET event_order=$3,business_at=$4,desired_generation=desired_generation+1,verification_pending=false,
-      state=CASE WHEN $5 THEN 'withdrawn' WHEN $6 THEN 'pending' ELSE state END,locales=CASE WHEN $5 THEN locales ELSE '{}'::text[] END WHERE source=$1 AND external_id=$2`,[event.source,event.external_id,event.event_id,event.business_at,withdraw,canActivate]);
-    const next=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[event.source,event.external_id])).rows[0]!;
-    if(withdraw){const docs=await loadSourceDocumentRefs(tx,event.document_refs);await this.apply(tx,{source:event.source,externalId:event.external_id,canonicalId:next.canonical_id,operation:'withdraw',documents:docs,at:new Date(event.business_at).toISOString(),batchId:randomUUID()});
-     for(const kind of ['detail','report'])await releaseSourceReferences(tx,'pending',workRef(event.source,event.external_id,kind));await tx.query('DELETE FROM external_full_work WHERE source=$1 AND external_id=$2',[event.source,event.external_id]);
-    }else if(canActivate)await queue(tx,event.source,event.external_id,'detail',next.desired_generation,100);
+  await this.alive();
+  const events=(await this.db.pool.query(`SELECT e.*,a.external_id IS NOT NULL AS admitted,
+   admission.admitted_count >= $2 AS at_limit FROM external_full_events e
+   CROSS JOIN external_formal_admission_state admission
+   LEFT JOIN external_formal_admissions a USING(source,external_id)
+   WHERE admission.id=1 AND e.applied_at IS NULL AND ($1=false OR e.operation='withdraw')
+   ORDER BY (e.operation='withdraw') DESC,admitted DESC,e.event_id LIMIT 100`,[withdrawOnly,FORMAL_LISTING_LIMIT])).rows;
+  let expansionAllowed:boolean|undefined,completed=0;
+  for(const event of events){
+   const withdraw=event.operation==='withdraw';
+   if(!withdraw&&!event.admitted&&!event.at_limit&&expansionAllowed===undefined){
+    try{await this.heavy();expansionAllowed=true;}
+    catch(error){
+     if(!(error instanceof FullSyncError&&(error.code==='SYNC_HEAVY_PAUSED'||error.code.startsWith('SYNC_CAPACITY_'))))throw error;
+     expansionAllowed=false;
+    }
    }
-   await tx.query('UPDATE external_full_events SET applied_at=clock_timestamp() WHERE event_id=$1 AND applied_at IS NULL',[event.event_id]);
-   await tx.query('UPDATE external_full_sync SET applied_events=applied_events+1 WHERE id=1');await releaseSourceReferences(tx,'pending',`full-event:${event.event_id}`);
-  });return events.length;
+   const processed=await this.transaction(async tx=>{
+    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+    const known=await isFormalListingAdmitted(tx,event.source,event.external_id);
+    const at=new Date(event.business_at);
+    const tombstone=known||withdraw?undefined:await formalWithdrawal(tx,event.source,event.external_id);
+    const blockedByWithdrawal=tombstone&&(event.operation!=='relist'||BigInt(event.event_id)<=BigInt(tombstone.business_order)||at<tombstone.business_at);
+    let admitted=known,excluded=false;
+    if(!known&&withdraw)await rememberFormalWithdrawal(tx,event.source,event.external_id,event.event_id,at);
+    if(!known&&!withdraw&&!blockedByWithdrawal){
+     const gates=(await tx.query(`SELECT admitted_count >= $1 AS at_limit,
+        enabled AND NOT paused AND NOT disk_paused AND NOT capacity_pending AS can_expand
+        FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`,[FORMAL_LISTING_LIMIT])).rows[0]!;
+     if(!gates.at_limit&&(!expansionAllowed||!gates.can_expand))return false;
+     if(!gates.at_limit)admitted=await admitFormalListing(tx,event.source,event.external_id);
+     excluded=!admitted;
+    }
+    if(admitted){
+     const member=await ensureMember(tx,event.source,event.external_id);
+     const newer=BigInt(event.event_id)>BigInt(member.event_order)&&at>=new Date(member.business_at);
+     if(newer){
+      const canActivate=member.state!=='withdrawn'||event.operation==='relist';
+      await tx.query(`UPDATE external_full_members SET event_order=$3,business_at=$4,desired_generation=desired_generation+1,verification_pending=false,
+        state=CASE WHEN $5 THEN 'withdrawn' WHEN $6 THEN 'pending' ELSE state END,locales=CASE WHEN $5 THEN locales ELSE '{}'::text[] END WHERE source=$1 AND external_id=$2`,[event.source,event.external_id,event.event_id,event.business_at,withdraw,canActivate]);
+      const next=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[event.source,event.external_id])).rows[0]!;
+      if(withdraw){const docs=await loadSourceDocumentRefs(tx,event.document_refs);await this.apply(tx,{source:event.source,externalId:event.external_id,canonicalId:next.canonical_id,operation:'withdraw',documents:docs,at:at.toISOString(),batchId:randomUUID()});
+       for(const kind of ['detail','report'])await releaseSourceReferences(tx,'pending',workRef(event.source,event.external_id,kind));await tx.query('DELETE FROM external_full_work WHERE source=$1 AND external_id=$2',[event.source,event.external_id]);
+      }else if(canActivate){
+       if(event.operation==='relist')await clearFormalWithdrawal(tx,event.source,event.external_id,at,event.event_id);
+       await queue(tx,event.source,event.external_id,'detail',next.desired_generation,100);
+      }
+     }
+    }
+    const marked=await tx.query('UPDATE external_full_events SET applied_at=clock_timestamp(),error_code=$2 WHERE event_id=$1 AND applied_at IS NULL',
+     [event.event_id,excluded?FORMAL_LISTING_LIMIT_CODE:null]);
+    if(marked.rowCount)await tx.query('UPDATE external_full_sync SET applied_events=applied_events+1 WHERE id=1');
+    await releaseSourceReferences(tx,'pending',`full-event:${event.event_id}`);
+    return Boolean(marked.rowCount);
+   });
+   if(processed)completed++;
+  }
+  return completed;
  }
  async snapshot(){
   // Freeze CSV expansion while the first detail sample waits for reports/capacity approval.
@@ -142,7 +188,9 @@ export class FullSyncWorker{
    await this.alive();const compressed=snapshot.path+'.gz';await pipeline(createReadStream(snapshot.path),createGzip(),createWriteStream(compressed,{mode:0o600}));
    const finalized=await this.transaction(async tx=>{
     if(!await physicalCleanupAllowed(tx))return false;
-    await tx.query("UPDATE external_full_snapshots SET state='verified',rows=$2,source_counts=$3,path=$4 WHERE id=$1",[snapshot.id,proof.rows,JSON.stringify(proof.sourceCounts),compressed]);
+    const target=await verifiedSnapshotTarget(tx,snapshot.id);
+    await tx.query("UPDATE external_full_snapshots SET state='verified',rows=$2,source_counts=$3,path=$4,target_rows=$5 WHERE id=$1",
+     [snapshot.id,proof.rows,JSON.stringify(proof.sourceCounts),compressed,target]);
     await unlink(snapshot.path);return true;
    });
    if(!finalized)return; // Retain the original path and retry after the backup lease is explicitly released.
@@ -156,15 +204,15 @@ export class FullSyncWorker{
   const wal=(await this.db.pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes',[state.capacity_baseline?.walLsn??'0/0'])).rows[0]!.bytes;
   const sample=await capacitySample(this.db),details=sample.details;
   const processed=Number((await this.db.pool.query('SELECT count(*) AS n FROM external_full_members WHERE last_detail_at IS NOT NULL')).rows[0].n);
-  const completedSnapshot=(await this.db.pool.query('SELECT rows FROM external_full_snapshots WHERE id=$1',[snapshotId])).rows[0];
+  const completedSnapshot=(await this.db.pool.query('SELECT s.rows,s.target_rows,a.admitted_count FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE s.id=$1 AND a.id=1',[snapshotId])).rows[0];
   const compressed=(await this.db.pool.query('SELECT sum(octet_length(compressed))::text AS bytes,count(*) FILTER(WHERE compressed IS NULL)::integer AS uncompacted FROM external_source_blobs')).rows[0]!;
   let archiveBytes=0;for(const entry of await readdir(this.directory,{withFileTypes:true})){if(entry.isFile())archiveBytes+=(await stat(path.join(this.directory,entry.name))).size;}
-  const rows=Number(completedSnapshot?.rows)||0;
+  const rows=completedSnapshot?capacityTarget(completedSnapshot):0;
   // CSV staging already contains the full export, including its indexes/TOAST. It is not a detail sample.
   const sqlStagingBytes=relations.filter(r=>r.relation==='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
   const businessBytes=relations.filter(r=>r.relation!=='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
   // The cohort stays fixed after first acceptance; later catalog growth must not be divided by just those 10000 members.
-  const ready=rows>0&&details>0&&details<=10000&&details>=Math.min(10000,rows)&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
+  const ready=completedSnapshot&&rows>0&&details>0&&details<=10000&&details>=capacitySampleTarget(completedSnapshot)&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
   const prior=state.capacity_baseline?.detailSample;
   const validPrior=validMeasuredCohort(prior,sample),mean=businessBytes/Math.max(1,processed);
   const measuredSample:MeasuredCohort|null=ready&&sample.withdrawn===0&&(!validPrior||prior.stateHash!==sample.state_hash)?{model:'measured-cohort-v2',cohortHash:sample.cohort_hash,stateHash:sample.state_hash,snapshotId,sampleRows:details,targetRows:rows,bytesPerDetail:Math.max(mean,validPrior?prior.bytesPerDetail:0),at:new Date().toISOString()}:validPrior?prior:null;
@@ -176,7 +224,7 @@ export class FullSyncWorker{
   const admission=enoughSample?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE',decision:null};
   const allowed=admission.allowed&&state.enabled&&!state.paused;
   const code=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':admission.code;
-  const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
+  const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(completedSnapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
     estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 or hd-ext09-daily-two-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
   await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2,
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);
@@ -200,9 +248,19 @@ export class FullSyncWorker{
  private async promoteSnapshotChunk(id:string){
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
    const snap=(await tx.query("SELECT * FROM external_full_snapshots WHERE id=$1 AND state IN('verified','applying') FOR UPDATE",[id])).rows[0];if(!snap)return 0;
-   const rows=(await tx.query('SELECT * FROM external_full_stage WHERE snapshot_id=$1 AND row_number>$2 ORDER BY row_number LIMIT 100',[id,snap.apply_cursor])).rows;
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
-   for(const entry of rows){let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
+   const atLimit=(await tx.query<{reached:boolean}>('SELECT admitted_count >= $1 AS reached FROM external_formal_admission_state WHERE id=1',[FORMAL_LISTING_LIMIT])).rows[0]!.reached;
+   // When full, jump over unadmitted rows but still refresh every admitted
+   // member in the export, including those after the first 100000 CSV rows.
+   const eligible=atLimit?'AND EXISTS(SELECT 1 FROM external_formal_admissions a WHERE a.source=s.source AND a.external_id=s.external_id)':'';
+   const rows=(await tx.query(`SELECT s.*,i.business_at AS withdrawn_at FROM external_full_stage s
+     LEFT JOIN external_ingestion_identity_state i ON i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id AND i.withdrawn
+     WHERE snapshot_id=$1 AND row_number>$2 ${eligible}
+     ORDER BY row_number LIMIT 100`,[id,snap.apply_cursor])).rows;
+   for(const entry of rows){
+    if(entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at))continue;
+    if(!await admitFormalListing(tx,entry.source,entry.external_id))continue;
+    let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
     const alias=parseAlias(row.duplicate_of);if(alias)await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString());
     m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
     const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd'].includes(key)));const rowHash=jsonHash(stableRow);
@@ -211,12 +269,14 @@ export class FullSyncWorker{
      const docs:SourceDocument[]=[{identity:identity(entry.source,entry.external_id),kind:'csv',locale:'und',observedAt:new Date(snap.generated_at).toISOString(),sourceUpdatedAt:null,payload:row}];
      const updated=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,last_snapshot=$3,verification_pending=false,has_report=$4,
       business_at=$5,csv_hash=$6,state='pending',locales='{}' WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[entry.source,entry.external_id,id,['true','1'].includes(row.has_report),snap.generated_at,rowHash])).rows[0]!;
+     if(entry.withdrawn_at)await clearFormalWithdrawal(tx,entry.source,entry.external_id,new Date(snap.generated_at));
      await queue(tx,entry.source,entry.external_id,'detail',updated.desired_generation,50);
      const refs=await archiveSourceDocuments(tx,docs,workRef(entry.source,entry.external_id,'detail'));
      await tx.query('UPDATE external_full_work SET document_refs=$3 WHERE source=$1 AND external_id=$2 AND kind=\'detail\'',[entry.source,entry.external_id,JSON.stringify(refs)]);
     }else await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
    }
-   const last=rows.at(-1)?.row_number??snap.apply_cursor,complete=BigInt(last)>=BigInt(snap.rows);
+   const last=atLimit&&rows.length<100?snap.rows:rows.at(-1)?.row_number??snap.apply_cursor;
+   const complete=BigInt(last)>=BigInt(snap.rows);
    await tx.query("UPDATE external_full_snapshots SET state=$2,apply_cursor=$3,completed_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1",[id,complete?'complete':'applying',last,complete]);
    if(complete)await tx.query("UPDATE external_full_sync SET next_snapshot_at=now()+interval '1 day' WHERE id=1");
    return rows.length;
@@ -257,7 +317,7 @@ export class FullSyncWorker{
    const docs=await loadSourceDocumentRefs(tx,current.document_refs),detail=docs.find(d=>d.kind==='detail'&&d.locale==='en')?.payload as Record<string,unknown>|undefined;
    // Explicit active/removed evidence is different from HTTP notFound, which remains unresolved.
    const withdrawn=detail?.status==='removed'||detail?.status==='withdrawn';
-   if(Array.isArray(detail?.alsoListedOn))for(const entry of detail.alsoListedOn){if(entry&&typeof entry==='object'&&'source' in entry&&'id' in entry&&['che168','dongchedi'].includes(String(entry.source))&&/^\d{1,100}$/.test(String(entry.id)))await bindAlias(tx,job.source,job.external_id,{source:entry.source as Source,id:String(entry.id)},new Date().toISOString());}
+   if(Array.isArray(detail?.alsoListedOn))for(const entry of detail.alsoListedOn){if(entry&&typeof entry==='object'&&'source' in entry&&'id' in entry&&['che168','dongchedi'].includes(String(entry.source))&&/^\d{1,100}$/.test(String(entry.id)))await bindAlias(tx,job.source,job.external_id,{source:entry.source as Source,id:String(entry.id)},new Date().toISOString(),!restrictToSample);}
    const canonical=(await tx.query('SELECT canonical_id FROM external_full_members WHERE source=$1 AND external_id=$2',[job.source,job.external_id])).rows[0]!.canonical_id;
    const at=new Date().toISOString();
    await tx.query(`UPDATE external_full_members SET state=$3,locales=$4,applied_generation=desired_generation,last_detail_at=$5,verification_pending=false,
@@ -316,10 +376,12 @@ export class FullSyncWorker{
   await this.db.pool.query("UPDATE external_full_sync SET next_maintenance_at=(date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' WHERE id=1");
  }
  async sampleRemaining(){
-  const row=(await this.db.pool.query(`SELECT last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL) AS sampled,
-   (SELECT rows FROM external_full_snapshots WHERE rows>0 ORDER BY created_at DESC LIMIT 1) AS target FROM external_full_sync WHERE id=1`)).rows[0]!;
+  const row=(await this.db.pool.query(`SELECT fs.last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL) AS sampled,
+   s.rows,s.target_rows,a.admitted_count FROM external_full_sync fs CROSS JOIN external_formal_admission_state a
+   LEFT JOIN LATERAL (SELECT rows,target_rows FROM external_full_snapshots WHERE rows>0 ORDER BY created_at DESC LIMIT 1) s ON true
+   WHERE fs.id=1 AND a.id=1`)).rows[0]!;
   if(Number(row.last_capacity_sample)>0)return 500;
-  const target=Number(row.target)>0?Math.min(10000,Number(row.target)):10000;
+  const target=row.rows===null?10000:capacitySampleTarget(row);
   return Math.max(0,target-Number(row.sampled));
  }
  async sampleSaturated(){return await this.sampleRemaining()===0;}
@@ -357,9 +419,9 @@ export class FullSyncWorker{
    // Withdrawal application is first and remains available when heavy work is paused or disk usage is high.
    await this.applyEvents(true);
    if(s.since_at&&new Date(s.next_delta_at).getTime()<=Date.now())try{await this.receiveDelta();}catch(e){if(e instanceof FullSyncError&&e.code==='SYNC_CURSOR_EXPIRED')await this.recover();else throw e;}
-   await this.applyEvents(true);const disk=await this.space();if(s.paused||disk.used>=.70)return;
-   await this.applyEvents();await runSourceMaintenance(this.db);
-   if(s.capacity_pending){
+   await this.applyEvents();const disk=await this.space(),current=await this.state();if(current.paused||disk.used>=.70)return;
+   await runSourceMaintenance(this.db);
+   if(current.capacity_pending){
     // New events may invalidate the sample after a failed estimate. Repair only that sample before rechecking.
     if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily(true);
     await this.details(true);for(let reports=0;reports<20;reports++){if(!await this.report(true))break;}

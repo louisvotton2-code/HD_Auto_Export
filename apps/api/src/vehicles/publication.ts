@@ -8,11 +8,10 @@ import { readFxQuote } from '../external/fx.js';
 import { canonicalJson } from '../external/normalize.js';
 import { ApiError, conflict } from '../errors.js';
 import type { LocalMediaStore } from '../media/storage.js';
-import { locales } from './content.js';
+import { hasTranslationText, locales } from './content.js';
 import { projectUsdPrice } from './usd-price.js';
 import { resolveDisplay, type StoredLocalization } from './localization.js';
 import { projectConfiguration } from './configuration.js';
-import { validateTranslationTokens } from './translation-plans.js';
 import { getStaffReport } from '../external/reports.js';
 
 export type PublicationRow = { id: string; stock_number: string; version: number; public_content_revision: number;
@@ -32,7 +31,7 @@ export async function requirePublicationActor(tx: PoolClient, actorId: string) {
 
 function previewText(field: VehicleDraftInput['content']['title'] | undefined, locale: Locale): PublicationPreviewText {
   const value = field?.translations[locale];
-  if (!field || !value) return { text: null, requestedLocale: locale, contentLocale: null,
+  if (!field || !hasTranslationText(value)) return { text: null, requestedLocale: locale, contentLocale: null,
     kind: null, reviewStatus: 'missing', sourceVersion: null };
   return { text: value.text, requestedLocale: locale, contentLocale: value.kind === 'original' ? field.sourceLanguage : locale,
     kind: value.kind, reviewStatus: value.sourceVersion === field.sourceVersion ? value.reviewStatus : 'stale', sourceVersion: value.sourceVersion };
@@ -70,23 +69,13 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
   if (!draft.content.title.sourceText?.trim()) missing('draft.content.title.sourceText', 'Original title is required.');
   for (const language of locales) for (const name of ['title', 'description'] as const) {
     const field = draft.content[name], translated = field.translations[language];
-    if (!staffInventory && name === 'description' && field.sourceText === null && locales.every(l => !field.translations[l])) continue;
-    if (staffInventory && field.sourceLanguage!=='zh') missing(`draft.content.${name}.sourceLanguage`, 'Confirm the current Chinese source language.', 'localization');
-    if (language==='zh' && field.sourceLanguage==='zh' && translated?.text!==field.sourceText)
-      missing(`draft.content.${name}.translations.zh`, 'Save the bundle to derive Chinese from its authoritative source.', 'localization');
-    if (!translated?.text.trim() || translated.sourceVersion !== field.sourceVersion ||
-      translated.reviewStatus === 'stale')
-      missing(`draft.content.${name}.translations.${language}`, 'A complete translation of the current source is required.', 'localization');
-    if (translated?.kind === 'original' && (language !== field.sourceLanguage.split('-')[0] || translated.text !== field.sourceText))
-      missing(`draft.content.${name}.translations.${language}.kind`, 'Original text must match its source and language.', 'localization');
+    if (!staffInventory && name === 'description' && !field.sourceText?.trim() && !locales.some(l => hasTranslationText(field.translations[l]))) continue;
+    if (!hasTranslationText(translated))
+      missing(`draft.content.${name}.translations.${language}`, 'A nonempty translation is required.', 'localization');
   }
   for (const field of localization.data.fields) for (const language of locales) {
-    const value = field.translations[language];
-    if (staffInventory && field.sourceLanguage!=='zh') missing(`localization.${field.ref}.sourceLanguage`, 'Confirm the current Chinese source language.', 'localization');
-    if (!value || value.sourceVersion !== field.sourceVersion || value.reviewStatus === 'stale')
-      missing(`localization.${field.ref}.${language}`, 'A complete display translation of the current source is required.', 'localization');
-    if (value && field.ref.startsWith('configuration.') && language!=='zh' && !validateTranslationTokens(field.sourceText,value.text))
-      missing(`localization.${field.ref}.${language}`, 'Configuration translation changes a source fact token.', 'localization');
+    if (!hasTranslationText(field.translations[language]))
+      missing(`localization.${field.ref}.${language}`, 'A nonempty display translation is required.', 'localization');
   }
   if (draft.media.filter(m => m.isCover).length !== 1) missing('draft.media', 'One ready cover is required.');
   const { rows: media } = await tx.query<MediaRow>('SELECT * FROM media_assets WHERE vehicle_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR SHARE',
@@ -170,13 +159,14 @@ export function publicationReadiness(prepared: PublicationPreparation, confirmat
   return PublishReadinessSchema.parse({ schemaVersion: 1, vehicleId: preview.vehicle.id, vehicleVersion: preview.vehicleVersion,
     publicContentRevision: preview.publicContentRevision, fingerprint: preview.fingerprint, locale: preview.locale,
     requiredFieldsReady, localizationReady, previewConfirmed: confirmed, canPublish: requiredFieldsReady && localizationReady && confirmed,
-    issues, confirmation: confirmed ? { locale: confirmation.locale, confirmedAt: confirmation.confirmed_at.toISOString(), expiresAt: confirmation.expires_at.toISOString() } : null });
+    issues,
+    confirmation: confirmed ? { locale: confirmation.locale, confirmedAt: confirmation.confirmed_at.toISOString(), expiresAt: confirmation.expires_at.toISOString() } : null });
 }
 
 export function requirePublicationReady(readiness: PublishReadiness, includePreview = true) {
   const issues = readiness.issues.filter(i => includePreview || i.stage !== 'preview');
   if (issues.length) throw new ApiError(422, 'PUBLISH_VALIDATION_FAILED', 'Vehicle is not ready to publish.',
-    issues.slice(0, 100).map(({ path, code, message }) => ({ path, code, message })));
+    issues.map(({ path, code, message }) => ({ path, code, message })));
 }
 
 export function checkPreviewProof(preview: PublicationPreview, input: ConfirmPublicationPreviewRequest) {

@@ -45,13 +45,13 @@ test('parent identity, country and price group changes invalidate affected field
   const originalAlt=saved.data.fields.find(field=>field.ref.endsWith('.alt'))!;assert.deepEqual(after.data.fields.find(field=>field.ref===originalAlt.ref),originalAlt);
   const onlyPrice=structuredClone(draft);if(onlyPrice.price.money)onlyPrice.price.money.amount='999.00';assert.deepEqual(syncLocalization(id,onlyPrice,saved).data.fields,saved.data.fields);
 });
-test('human edits and source revisions reject old suggestions, public projection hides stale fields',()=>{
+test('human edits reject old suggestions while archived nonblank display text still projects',()=>{
   const {draft,saved}=reviewed();const input=structuredClone(saved.data);const model=input.fields.find(field=>field.ref==='model')!;
   model.translations.en!.humanEditVersion--;assert.throws(()=>applyLocalizationInput(id,draft,saved,input));
   const machine=structuredClone(saved.data);Object.assign(machine.fields.find(field=>field.ref==='model')!.translations.en!,{kind:'machine',text:'old job',engineVersion:'test'});assert.throws(()=>applyLocalizationInput(id,draft,saved,machine));
   const changed=structuredClone(draft);changed.facts.model!.name='车型乙';const state=syncLocalization(id,changed,saved);
   assert.equal(state.data.fields.find(field=>field.ref==='model')!.translations.en!.text,'en 车型甲');
-  assert.equal(projectDisplay(id,changed,'en',state).display!.model.status,'missing');
+  assert.deepEqual(projectDisplay(id,changed,'en',state).display!.model,{text:'en 车型甲',requestedLocale:'en',contentLocale:'en',status:'ready',provenance:'human',reviewed:false});
   const chinese=projectDisplay(id,changed,'zh',state).display!.model;
   assert.deepEqual(chinese,{text:'车型乙',requestedLocale:'zh',contentLocale:'zh',status:'ready',provenance:'original',reviewed:false});
 });
@@ -66,4 +66,31 @@ test('vehicle/media UUID casing does not change display bindings or alt projecti
   assert.deepEqual(syncLocalization(id.toUpperCase(),upper,saved).data,saved.data);
   const projection=projectDisplay(id.toUpperCase(),{...upper,images:upper.media.map(media=>({...media,url:`/api/v1/media/${media.id}`,width:32,height:32}))},'en',saved);
   assert.equal(projection.images[0]!.alt,'en 照片甲');
+});
+
+test('configuration text remains available after metadata changes; source identity and manual edits remain protected', () => {
+  const draft = source();
+  draft.configuration = { version: 1, items: [{ name: '家用交流充电功率(kW)', value: '测试' }] };
+  const current = syncLocalization(id, draft);
+  const field = current.data.fields.find(entry => entry.sourceText === '家用交流充电功率(kW)')!;
+  field.translations.ru = { text: 'Мощность зарядки постоянным током (кВт)', kind:'human',
+    reviewStatus:'approved', sourceVersion:field.sourceVersion, humanEditVersion:3, engineVersion:null };
+  const retained = applyLocalizationInput(id,draft,current,current.data);
+  assert.deepEqual(retained.data.fields.find(entry => entry.ref === field.ref),field);
+
+  const newLanguage=structuredClone(current.data);
+  newLanguage.fields.find(entry => entry.ref === field.ref)!.sourceLanguage='zh';
+  const changed = applyLocalizationInput(id,draft,current,newLanguage).data.fields.find(entry => entry.ref === field.ref)!;
+  assert.equal(changed.translations.ru?.text, field.translations.ru.text);
+  assert.equal(changed.translations.ru?.reviewStatus, 'stale');
+
+  const forged = structuredClone(current.data);
+  forged.fields.find(entry => entry.ref === field.ref)!.sourceHash = 'f'.repeat(64);
+  assert.throws(() => applyLocalizationInput(id,draft,current,forged), {code:'VERSION_CONFLICT'});
+  const replaced = structuredClone(current.data);
+  Object.assign(replaced.fields.find(entry => entry.ref === field.ref)!.translations.ru!, { kind: 'machine', engineVersion: 'test' });
+  assert.throws(() => applyLocalizationInput(id,draft,current,replaced), {code:'VERSION_CONFLICT'});
+  const blank = structuredClone(current.data);
+  blank.fields.find(entry => entry.ref === field.ref)!.translations.ru!.text = ' \u00a0\u2003 ';
+  assert.equal(applyLocalizationInput(id,draft,current,blank).data.fields.find(entry => entry.ref === field.ref)!.translations.ru, null);
 });

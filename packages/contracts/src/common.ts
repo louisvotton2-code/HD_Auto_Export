@@ -112,13 +112,16 @@ export const FieldErrorSchema = z.strictObject({
   code: z.string().min(1).max(100),
   message: z.string().min(1).max(500),
 });
+/** Bounds complete publication diagnostics for all valid drafts, including 200 configuration items. */
+export const MAX_PUBLICATION_ISSUES = 4000;
 export const ApiErrorSchema = z.strictObject({
   error: z.strictObject({
     code: ErrorCodeSchema,
     message: z.string().min(1).max(1000),
-    fields: z.array(FieldErrorSchema).max(100).optional(),
+    fields: z.array(FieldErrorSchema).max(MAX_PUBLICATION_ISSUES).optional(),
     retryable: z.boolean(),
-  }),
+  }).refine(error => error.code === 'PUBLISH_VALIDATION_FAILED' || (error.fields?.length ?? 0) <= 100,
+    { path: ['fields'], message: 'Only publication validation can return more than 100 field errors.' }),
   meta: RequestMetaSchema,
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;

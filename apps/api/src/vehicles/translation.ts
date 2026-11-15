@@ -43,8 +43,8 @@ async function readUpstream(response:Response):Promise<unknown> {
   finally{await reader.cancel();}
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
-function usableText(value:unknown,source:string):string {
-  if(typeof value!=='string' || !value.trim() || value.length>10_000 || (value===source && /\p{Script=Han}/u.test(source)))throw upstream();
+function usableText(value:unknown):string {
+  if(typeof value!=='string' || !value.trim() || value.length>10_000)throw upstream();
   return value;
 }
 
@@ -61,7 +61,7 @@ export class LibreTranslateProvider implements TranslationProvider {
       const response=await this.fetcher(new URL('/translate',this.config.libreUrl),{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({q:text,source:'zh',target,format:'text',...(this.config.libreApiKey?{api_key:this.config.libreApiKey}:{})}),
         signal:AbortSignal.any([signal,AbortSignal.timeout(12_000)])});
-      const result=await readUpstream(response) as {translatedText?:unknown};return usableText(result.translatedText,text);
+      const result=await readUpstream(response) as {translatedText?:unknown};return usableText(result.translatedText);
     }catch(error){if(error instanceof ApiError)throw error;throw upstream();}
   }
 }
@@ -97,8 +97,7 @@ export class AliyunGeneralProvider implements TranslationProvider {
       const result=body as {Code?:unknown;Data?:{Translated?:unknown}};
       // The international endpoint also returns the exact string "200" in successful responses.
       if(result.Code!==200 && result.Code!=='200') throw upstream();
-      // Never disguise an untranslated Chinese source as successful machine output.
-      return usableText(result.Data?.Translated,text);
+      return usableText(result.Data?.Translated);
     } catch(error) {if(error instanceof ApiError)throw error;throw upstream();}
   }
 }

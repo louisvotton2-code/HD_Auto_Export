@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import type { InjectOptions } from 'fastify';
 import { makeVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { VehicleTranslationBundleResponseSchema, TranslationPlanResponseSchema, TranslationPlanResultResponseSchema,
-  TranslationPlanStatusResponseSchema, type VehicleTranslationBundle, type TranslationPlanResult, type SaveVehicleTranslationBundle } from '@hd/contracts/admin';
+  TranslationPlanStatusResponseSchema, RecoverableTranslationPlanResponseSchema, type VehicleTranslationBundle, type TranslationPlanResult, type SaveVehicleTranslationBundle } from '@hd/contracts/admin';
 import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/index.js';
@@ -28,12 +28,28 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
   const maintenance=createDatabase(await transport(base),2),mediaRoot=await mkdtemp(path.join(tmpdir(),'hd-ux11-workspace-'));
   const network=t.mock.method(globalThis,'fetch',async()=>{throw new Error('Real network is forbidden.');});
   let runtime:Awaited<ReturnType<typeof buildApp>>|undefined,created=false,calls=0,counter=0;
+  let rejectedText: string | undefined;
+  const providerCalls: Array<{ text: string; target: 'en' | 'ru' }> = [];
+  let reservedCharacters = 0;
+  const russianFactTranslations = new Map([
+    ['直流快充电量范围', 'Диапазон заряда при быстрой зарядке постоянным током'],
+    ['4向电动调节', 'Электрорегулировка в 4 направлениях'],
+  ]);
   const origin='http://127.0.0.1:3318';
   try {
     await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;
     const config=readConfig({NODE_ENV:'test',DATABASE_URL:url.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),AUTH_BASE_URL:origin,
       TRUSTED_ORIGINS:origin,MEDIA_ROOT:mediaRoot,TRANSLATION_PROVIDER:'disabled'});
-    const translator=new VehicleTranslator({engineVersion:'synthetic-ux11:1',async translate(text,target){calls++;return `${target==='en'?'Translated':'Перевод'} ${text}`;}},50000);
+    const translator=new VehicleTranslator({engineVersion:'synthetic-ux11:1',async translate(text,target){
+      calls++;
+      providerCalls.push({text,target});
+      if(text==='4向电动调节'&&target==='en')return '4-way power adjustment';
+      if(text==='直流快充电量范围'&&target==='en')return 'State-of-charge range during DC fast charging';
+      const russian = russianFactTranslations.get(text);
+      if(target==='ru'&&russian)return russian;
+      if (text === rejectedText && target === 'ru') return '  ';
+      return `${target==='en'?'Translated':'Перевод'} ${text}`;
+    }},50000,'libretranslate',{async reserve(characters){reservedCharacters+=characters;}});
     const app=runtime=await buildApp({...config,databaseUrl:await transport(url)},{translator});await migrateDatabase(app.db);
     const call=(options:InjectOptions)=>app.app.inject({...options,remoteAddress:`198.51.${Math.floor(counter/240)}.${++counter%240+1}`});
     async function login(label:string){const email=`${label}@example.invalid`,password='Synthetic_workspace_password_1!';await createStaff(app.auth,{email,password,name:label,role:'editor'});
@@ -73,6 +89,10 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
       suggestions=TranslationPlanResultResponseSchema.parse(generated.json()).data;assert.equal(suggestions.status,'completed',generated.body);const used=calls;assert.ok(used>0);
       const replay=await call({method:'POST',url:`${route}/translation-plans/${plan.id}/generate`,headers:{...headers,'idempotency-key':key},payload:confirmation});assert.equal(replay.statusCode,200,replay.body);assert.equal(calls,used);
       const status=await call({method:'GET',url:`${route}/translation-plans/${plan.id}`,headers});assert.equal(TranslationPlanStatusResponseSchema.parse(status.json()).data.state,'completed');assert.equal(calls,used);
+      const recovery=await call({url:route+'/translation-plans/recoverable',headers});
+      assert.equal(recovery.statusCode,200,recovery.body);
+      assert.deepEqual(RecoverableTranslationPlanResponseSchema.parse(recovery.json()).data,{plan,result:suggestions});
+      assert.equal(calls,used);
       assert.equal((await getBundle()).vehicle.version,bundle.vehicle.version);
       const legacy=await call({method:'POST',url:`${route}/translation-suggestions`,headers:{...headers,'idempotency-key':randomUUID()},payload:{version:bundle.vehicle.version}});
       assert.equal(legacy.statusCode,422,legacy.body);assert.equal(legacy.json().error.code,'TRANSLATION_CONFIRMATION_REQUIRED');assert.equal(calls,used);
@@ -198,35 +218,485 @@ test('UX11 workspace persists configuration and atomically adopts confirmed plan
       assert.equal(recovered.statusCode,200,recovered.body);assert.equal(recovered.json().data.status,'partial');assert.equal(calls,used);
       assert.equal((await stored()).segments.find(item=>item.field_ref===segment.field_ref&&item.target_locale===segment.target_locale)!.state,'outcome_unknown');
     });
-    await t.test('legacy sources require explicit bundle confirmation and Chinese text always derives from its source',async()=>{
-      const original=await getBundle(),legacy=structuredClone(original.vehicle.draft);
-      legacy.content.title.sourceLanguage='und';
-      legacy.content.title.translations.zh={...legacy.content.title.translations.zh!,text:'历史独立中文槽位',kind:'human',reviewStatus:'approved'};
-      // Model a pre-sidecar record in this isolated database, without changing any runtime inventory.
-      await app.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[id,JSON.stringify(legacy)]);
-      await app.db.pool.query('DELETE FROM vehicle_localizations WHERE vehicle_id=$1',[id]);
-      let bundle=await getBundle();assert.ok(bundle.sourceLanguageConfirmationRequired.includes('content.title'));
-      assert.ok(bundle.sourceLanguageConfirmationRequired.includes('model'));
-      const bypass=structuredClone(bundle.vehicle.draft);bypass.content.title.sourceLanguage='zh';
-      const oldSave=await call({method:'PATCH',url:route,headers,payload:{version:bundle.vehicle.version,draft:bypass}});assert.equal(oldSave.statusCode,409,oldSave.body);
-      const display=structuredClone(bundle.localization.data);display.fields.find(field=>field.ref==='model')!.sourceLanguage='zh';
-      const oldDisplay=await call({method:'PUT',url:`${route}/localization`,headers,payload:{vehicleVersion:bundle.vehicle.version,revision:bundle.localization.revision,data:display}});assert.equal(oldDisplay.statusCode,409,oldDisplay.body);
-      const notes=structuredClone(bundle.vehicle.draft);notes.internal.notes='Private legacy edit';
-      const savedNotes=await call({method:'PATCH',url:route,headers,payload:{version:bundle.vehicle.version,draft:notes}});assert.equal(savedNotes.statusCode,200,savedNotes.body);
-      bundle=await getBundle();assert.ok(bundle.sourceLanguageConfirmationRequired.includes('model'),'saving notes cannot silently confirm historical display sources');
-      const used=calls,blocked=await call({method:'POST',url:`${route}/translation-plans`,headers,payload:{version:bundle.vehicle.version}});assert.equal(blocked.statusCode,422,blocked.body);assert.equal(calls,used);
-      const input=saveInput(bundle);input.sourceLanguageConfirmations=bundle.sourceLanguageConfirmationRequired;
-      const confirmed=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:input});assert.equal(confirmed.statusCode,200,confirmed.body);
-      bundle=VehicleTranslationBundleResponseSchema.parse(confirmed.json()).data;assert.deepEqual(bundle.sourceLanguageConfirmationRequired,[]);
-      assert.equal(bundle.vehicle.draft.content.title.translations.zh?.text,bundle.vehicle.draft.content.title.sourceText);
-      assert.equal(bundle.vehicle.draft.content.title.translations.zh?.kind,'original');assert.equal(bundle.vehicle.draft.content.title.translations.zh?.reviewStatus,'pending');
-      const mismatched=structuredClone(bundle.vehicle.draft);mismatched.content.title.translations.zh={...mismatched.content.title.translations.zh!,text:'另一历史人改中文',kind:'human',reviewStatus:'approved'};
-      await app.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[id,JSON.stringify(mismatched)]);
-      const readiness=await call({method:'GET',url:`${route}/publish-readiness`,headers});
-      assert.ok(readiness.json().data.issues.some((issue:{path:string})=>issue.path==='draft.content.title.translations.zh'));
-      bundle=await getBundle();const repaired=await call({method:'PUT',url:`${route}/translation-bundle`,headers,payload:saveInput(bundle)});assert.equal(repaired.statusCode,200,repaired.body);
-      const text=repaired.json().data.vehicle.draft.content.title;assert.equal(text.translations.zh.text,text.sourceText);assert.equal(text.translations.zh.reviewStatus,'pending');
+    await t.test('legacy source language never blocks planning or nonblank translations', async () => {
+      const original = await getBundle(), legacy = structuredClone(original.vehicle.draft);
+      legacy.content.title.sourceLanguage = 'und';
+      legacy.content.title.translations.zh = { ...legacy.content.title.translations.zh!,
+        text: '历史独立中文槽位', kind: 'human', reviewStatus: 'approved' };
+      // Model a pre-sidecar record in this isolated database.
+      await app.db.pool.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1', [id, JSON.stringify(legacy)]);
+      await app.db.pool.query('DELETE FROM vehicle_localizations WHERE vehicle_id=$1', [id]);
+      let bundle = await getBundle();
+      assert.deepEqual(bundle.sourceLanguageConfirmationRequired, []);
+      assert.equal(bundle.vehicle.draft.content.title.sourceLanguage, 'und');
+      assert.equal(bundle.localization.data.fields.find(field => field.ref === 'model')?.sourceLanguage, 'und');
+
+      const display = structuredClone(bundle.localization.data);
+      display.fields.find(field => field.ref === 'model')!.sourceLanguage = 'zh';
+      const oldDisplay = await call({ method: 'PUT', url: route + '/localization', headers,
+        payload: { vehicleVersion: bundle.vehicle.version, revision: bundle.localization.revision, data: display } });
+      assert.equal(oldDisplay.statusCode, 409, oldDisplay.body);
+
+      const readiness = await call({ url: route + '/publish-readiness', headers });
+      assert.equal(readiness.statusCode, 200, readiness.body);
+      assert.ok(!readiness.json().data.issues.some((issue: { path: string }) =>
+        issue.path.endsWith('.sourceLanguage') || issue.path === 'draft.content.title.translations.zh'));
+      const used = calls;
+      const estimate = await call({ method: 'POST', url: route + '/translation-plans', headers,
+        payload: { version: bundle.vehicle.version, scope: 'missing' } });
+      assert.equal(estimate.statusCode, 200, estimate.body);
+      assert.ok(TranslationPlanResponseSchema.parse(estimate.json()).data.fields.some(field => field.ref === 'model'));
+      assert.equal(calls, used);
+
+      const quote = async (version: number) => {
+        const result = await call({ method: 'POST', url: route + '/translation-plans', headers, payload: { version } });
+        assert.equal(result.statusCode, 200, result.body);
+        return TranslationPlanResponseSchema.parse(result.json()).data;
+      };
+      const beforeQuote = await quote(bundle.vehicle.version);
+      const originalTitle = bundle.vehicle.draft.content.title;
+      const basics = structuredClone(bundle.vehicle.draft);
+      basics.content.title.sourceLanguage = 'zh';
+      basics.content.title.sourceText = '明确修改的中文标题';
+      basics.content.description.sourceLanguage = 'zh';
+      basics.content.description.sourceText = '明确修改的中文车况';
+      const saveRequest = { version: bundle.vehicle.version, draft: basics };
+      const saved = await call({ method: 'PATCH', url: route, headers, payload: saveRequest });
+      assert.equal(saved.statusCode, 200, saved.body);
+      assert.equal((await call({method:'PATCH',url:route,headers,payload:saveRequest})).statusCode,409);
+      bundle = await getBundle();
+      const title = bundle.vehicle.draft.content.title;
+      assert.equal(title.sourceLanguage, 'zh');
+      assert.equal(title.sourceText, basics.content.title.sourceText);
+      assert.equal(title.sourceVersion, originalTitle.sourceVersion + 1);
+      for (const locale of ['zh','en','ru'] as const)
+        assert.equal(title.translations[locale]?.text, originalTitle.translations[locale]?.text);
+      const currentQuote = await quote(bundle.vehicle.version);
+      assert.notEqual(currentQuote.fields.find(field=>field.ref==='content.title')?.sourceHash,
+        beforeQuote.fields.find(field=>field.ref==='content.title')?.sourceHash);
+      const stalePlan = await call({method:'POST',url:`${route}/translation-plans/${beforeQuote.id}/generate`,
+        headers:{...headers,'idempotency-key':randomUUID()},payload:{confirmed:true,sourceFingerprint:beforeQuote.sourceFingerprint,
+          maximumCharacters:beforeQuote.estimate.maximumCharacters,acceptUnknownCost:true}});
+      assert.equal(stalePlan.statusCode,409,stalePlan.body);
+      assert.equal(calls,used);
+      const audit=(await app.db.pool.query(`SELECT changes FROM audit_events WHERE vehicle_id=$1 AND operation='vehicle.save'
+        ORDER BY new_version DESC LIMIT 1`,[id])).rows[0]!.changes;
+      assert.ok(audit.some((change:{path:string;after:unknown})=>change.path==='draft.content.title.sourceLanguage'&&change.after==='zh'));
+      assert.ok(audit.some((change:{path:string;after:unknown})=>change.path==='draft.content.title.sourceText'&&change.after===basics.content.title.sourceText));
+
+      const input = saveInput(bundle);
+      input.sourceLanguageConfirmations = ['model'];
+      const edited = await call({ method: 'PUT', url: route + '/translation-bundle', headers, payload: input });
+      assert.equal(edited.statusCode, 200, edited.body);
+      bundle = VehicleTranslationBundleResponseSchema.parse(edited.json()).data;
+      assert.equal(bundle.vehicle.draft.content.title.sourceLanguage, 'zh');
+      assert.equal(bundle.localization.data.fields.find(field => field.ref === 'model')?.sourceLanguage, 'zh');
+      assert.deepEqual(bundle.sourceLanguageConfirmationRequired, []);
+      assert.equal(bundle.vehicle.draft.content.title.translations.zh?.text, '历史独立中文槽位');
+      assert.equal(bundle.vehicle.draft.content.title.translations.zh?.kind, 'human');
     });
+    await t.test('missing scope only fills empty slots and partially used paid receipts survive source edits', async () => {
+      const sample = structuredClone(draft);
+      sample.facts.model = { id: 'missing_scope_model', name: '补译专用车型' };
+      const seatLabel = '补译专用座椅', priorSeatText = '补译专用真皮', nextSeatText = '补译专用混合材质';
+      sample.configuration = { version: 1, items: [{ name: '排量(cc)', value: '1989' }, { name: seatLabel, value: priorSeatText }] };
+      const { title, description } = sample.content;
+      title.sourceText = '补译专用测试车 120 kW';
+      description.sourceText = '4向电动调节';
+      const machine = (field: { sourceVersion: number }, text: string, reviewStatus: 'pending' | 'stale' = 'pending') =>
+        ({ text, kind: 'machine' as const, reviewStatus, sourceVersion: field.sourceVersion, humanEditVersion: 0, engineVersion: 'fixture:previous' });
+      const human = (field: { sourceVersion: number }, text: string, reviewStatus: 'approved' | 'stale') =>
+        ({ ...machine(field, text), kind: 'human' as const, reviewStatus, engineVersion: null });
+      title.translations.en = machine(title, 'Saved title 120 kW');
+      description.translations.ru = human(description, 'Сохранено сотрудником', 'stale');
+      const created = await call({ method: 'POST', url: '/api/v1/admin/vehicles',
+        headers: { ...headers, 'idempotency-key': randomUUID() }, payload: { draft: sample } });
+      assert.equal(created.statusCode, 201, created.body);
+      const vehicleUrl = '/api/v1/admin/vehicles/' + created.json().data.id;
+      const bundleUrl = vehicleUrl + '/translation-bundle', planUrl = vehicleUrl + '/translation-plans';
+      async function read() {
+        const response = await call({ url: bundleUrl, headers });
+        assert.equal(response.statusCode, 200, response.body);
+        return VehicleTranslationBundleResponseSchema.parse(response.json()).data;
+      }
+      async function save(input: SaveVehicleTranslationBundle) {
+        const response = await call({ method: 'PUT', url: bundleUrl, headers, payload: input });
+        assert.equal(response.statusCode, 200, response.body);
+        return VehicleTranslationBundleResponseSchema.parse(response.json()).data;
+      }
+      async function createPlan(version: number, scope?: 'missing') {
+        const response = await call({ method: 'POST', url: planUrl, headers, payload: { version, scope } });
+        assert.equal(response.statusCode, 200, response.body);
+        return TranslationPlanResponseSchema.parse(response.json()).data;
+      }
+      async function recover() {
+        const response = await call({ url: planUrl + '/recoverable', headers });
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(response.headers['cache-control'], 'no-store');
+        return RecoverableTranslationPlanResponseSchema.parse(response.json()).data;
+      }
+      const mapping = saveInput(await read());
+      const seatName = mapping.localization.fields.find(field => field.sourceText === seatLabel)!.ref;
+      const seatValue = mapping.localization.fields.find(field => field.sourceText === priorSeatText)!.ref;
+      const configRef = mapping.localization.fields.find(field => field.sourceText === '排量(cc)')!.ref;
+      for (const field of mapping.localization.fields) {
+        if (field.ref === 'model') {
+          field.translations.en = { ...machine(field, 'Old model', 'stale'), sourceVersion: field.sourceVersion + 1 };
+        } else if (![seatName, seatValue].includes(field.ref)) {
+          field.translations.en = human(field, 'Reviewed ' + field.sourceText, 'approved');
+        }
+        field.translations.ru = human(field, field.ref === configRef ? 'Рабочий объём (kW)' : 'Проверено ' + field.sourceText, 'approved');
+      }
+      let bundle = await save(mapping);
+      const retained = structuredClone(bundle.localization.data.fields.find(field => field.ref === configRef)!);
+      const retainedModel = structuredClone(bundle.localization.data.fields.find(field => field.ref === 'model')!);
+      assert.equal(retained.translations.ru?.text, 'Рабочий объём (kW)');
+      assert.equal(retainedModel.translations.en?.reviewStatus, 'stale');
+      assert.notEqual(retainedModel.translations.en?.sourceVersion, retainedModel.sourceVersion);
+      const exactTargets = (plan: Awaited<ReturnType<typeof createPlan>>) => plan.fields.map(field => [field.ref, field.targets]);
+      const before = providerCalls.length, budgetBefore = reservedCharacters;
+      const legacy = await createPlan(bundle.vehicle.version);
+      assert.ok(legacy.fields.length > 4 && legacy.fields.every(field => field.targets === undefined));
+      const denied = await call({ method: 'POST', url: planUrl, headers,
+        payload: { version: bundle.vehicle.version, scope: 'missing', targets: ['en'], sourceText: 'forged' } });
+      assert.equal(denied.statusCode, 400, denied.body);
+      const plan = await createPlan(bundle.vehicle.version, 'missing');
+      assert.deepEqual(exactTargets(plan), [['content.title', ['ru']], ['content.description', ['en']], [seatName, ['en']], [seatValue, ['en']]]);
+      assert.notEqual(plan.sourceFingerprint, legacy.sourceFingerprint);
+      assert.equal(plan.estimate.maximumRequests, 4);
+      assert.equal(plan.estimate.maximumCharacters, plan.fields.reduce((sum, field) => sum + field.sourceText.length, 0));
+      assert.equal(providerCalls.length, before);
+      const request = (value: typeof plan, key = randomUUID()) => ({
+        method: 'POST' as const, url: planUrl + '/' + value.id + '/generate', headers: { ...headers, 'idempotency-key': key },
+        payload: { confirmed: true, sourceFingerprint: value.sourceFingerprint, maximumCharacters: value.estimate.maximumCharacters, acceptUnknownCost: true },
+      });
+      async function send(options: ReturnType<typeof request>) {
+        const response = await call(options);
+        assert.equal(response.statusCode, 200, response.body);
+        return TranslationPlanResultResponseSchema.parse(response.json()).data;
+      }
+      function adopt(current: VehicleTranslationBundle, result: TranslationPlanResult, refs?: string[]) {
+        const input = structuredClone(saveInput(current));
+        for (const field of result.fields) {
+          if (refs && !refs.includes(field.ref)) continue;
+          const target = field.ref === 'content.title' ? input.content.title : field.ref === 'content.description' ? input.content.description :
+            input.localization.fields.find(candidate => candidate.ref === field.ref)!;
+          for (const locale of ['en', 'ru'] as const) {
+            const suggestion = field.translations[locale];
+            if (suggestion && !target.translations[locale]?.text.trim()) target.translations[locale] = suggestion;
+          }
+        }
+        return input;
+      }
+      const generation = request(plan), titleText = title.sourceText!;
+      rejectedText = titleText;
+      let partial: TranslationPlanResult;
+      try { partial = await send(generation); } finally { rejectedText = undefined; }
+      assert.equal(partial.status, 'partial');
+      assert.deepEqual(partial.failures, [{ ref: 'content.title', targetLocale: 'ru', code: 'invalid_result' }]);
+      assert.deepEqual(providerCalls.slice(before), plan.fields.map(field => ({ text: field.sourceText, target: field.targets![0] })));
+      assert.equal(reservedCharacters - budgetBefore, plan.estimate.maximumCharacters);
+      assert.deepEqual(await send(generation), partial);
+      const status = await call({ url: planUrl + '/' + plan.id, headers });
+      assert.deepEqual(TranslationPlanStatusResponseSchema.parse(status.json()).data.result, partial);
+      const storedPlan = async () => (await app.db.pool.query('SELECT * FROM translation_plans WHERE id=$1', [plan.id])).rows[0];
+      const beforeRecovery = await storedPlan(), paidBeforeRecovery = providerCalls.length, reservedBeforeRecovery = reservedCharacters;
+      const anonymous = await call({ url: planUrl + '/recoverable' });
+      assert.equal(anonymous.statusCode, 401, anonymous.body);
+      const otherStaff = await call({ url: planUrl + '/recoverable', headers: { origin, cookie: other } });
+      assert.equal(otherStaff.statusCode, 200, otherStaff.body);
+      assert.equal(RecoverableTranslationPlanResponseSchema.parse(otherStaff.json()).data, null);
+      assert.doesNotMatch(otherStaff.body, new RegExp(plan.id));
+      assert.deepEqual(await recover(), { plan, result: partial });
+
+      const historical = structuredClone(partial);
+      historical.fields.find(field => field.ref === 'content.description')!.translations.en!.text = '5-way power adjustment';
+      await app.db.pool.query('UPDATE translation_plans SET result=$2 WHERE id=$1', [plan.id, JSON.stringify(historical)]);
+      try {
+        assert.deepEqual(await recover(), { plan, result: historical });
+      } finally {
+        await app.db.pool.query('UPDATE translation_plans SET result=$2 WHERE id=$1', [plan.id, JSON.stringify(partial)]);
+      }
+      const forgedHash = 'f'.repeat(64);
+      await app.db.pool.query("UPDATE translation_plans SET plan=jsonb_set(plan,'{sourceFingerprint}',to_jsonb($2::text)),result=jsonb_set(result,'{sourceFingerprint}',to_jsonb($2::text)) WHERE id=$1", [plan.id, forgedHash]);
+      try {
+        assert.equal(await recover(), null);
+      } finally {
+        await app.db.pool.query('UPDATE translation_plans SET plan=$2,result=$3 WHERE id=$1', [plan.id, JSON.stringify(plan), JSON.stringify(partial)]);
+      }
+
+      const savedTitle = structuredClone(bundle.vehicle.draft.content.title.translations.en);
+      const savedHuman = structuredClone(bundle.vehicle.draft.content.description.translations.ru);
+      const partialSave = adopt(bundle, partial, ['content.description']);
+      partialSave.content.description.translations.en = { ...partialSave.content.description.translations.en!,
+        text: 'Employee retained 5-way adjustment text', kind: 'human', engineVersion: null };
+      bundle = await save(partialSave);
+      const changed = structuredClone(bundle.vehicle.draft);
+      changed.configuration!.items.find(item => item.name === seatLabel)!.value = nextSeatText;
+      const edited = await call({ method: 'PATCH', url: vehicleUrl, headers, payload: { version: bundle.vehicle.version, draft: changed } });
+      assert.equal(edited.statusCode, 200, edited.body);
+      bundle = await read();
+      const receipt = await recover();
+      assert.deepEqual(receipt, { plan, result: partial,
+        adoptionBase: { vehicleVersion: bundle.vehicle.version, localizationRevision: bundle.localization.revision },
+        blockedTargets: [{ ref: 'content.description', targetLocale: 'en' }, { ref: seatValue, targetLocale: 'en' }],
+      });
+      assert.deepEqual(await storedPlan(), beforeRecovery);
+      assert.equal(providerCalls.length, paidBeforeRecovery);
+      assert.equal(reservedCharacters, reservedBeforeRecovery);
+
+      const overwrite = adopt(bundle, partial, [seatName]);
+      overwrite.content.description.translations.en = { ...partial.fields.find(field => field.ref === 'content.description')!.translations.en!,
+        humanEditVersion: bundle.vehicle.draft.content.description.translations.en!.humanEditVersion };
+      const protectedSave = await call({ method: 'PUT', url: bundleUrl, headers, payload: overwrite });
+      assert.equal(protectedSave.statusCode, 409, protectedSave.body);
+
+      bundle = await save(adopt(bundle, receipt!.result, [seatName]));
+      assert.equal(await recover(), null);
+      assert.deepEqual(bundle.vehicle.draft.content.title.translations.en, savedTitle);
+      assert.deepEqual(bundle.vehicle.draft.content.description.translations.ru, savedHuman);
+      assert.equal(bundle.vehicle.draft.content.description.translations.en?.text, 'Employee retained 5-way adjustment text');
+      assert.equal(bundle.localization.data.fields.find(field => field.ref === seatValue)?.translations.en, null);
+      assert.deepEqual(bundle.localization.data.fields.find(field => field.ref === configRef), retained);
+      assert.deepEqual(bundle.localization.data.fields.find(field => field.ref === 'model'), retainedModel);
+
+      const forgedSource = structuredClone(saveInput(bundle));
+      forgedSource.localization.fields.find(field => field.ref === configRef)!.sourceText += '篡改';
+      const forbiddenSave = await call({ method: 'PUT', url: bundleUrl, headers, payload: forgedSource });
+      assert.equal(forbiddenSave.statusCode, 409, forbiddenSave.body);
+      const direct = structuredClone(bundle.localization.data);
+      direct.fields.find(field => field.ref === configRef)!.translations.ru!.text = 'Рабочий объём (kWh)';
+      const directSave = await call({ method: 'PUT', url: vehicleUrl + '/localization', headers, payload: {
+        vehicleVersion: bundle.vehicle.version, revision: bundle.localization.revision, data: direct,
+      } });
+      assert.equal(directSave.statusCode, 200, directSave.body);
+      bundle = await read();
+      assert.equal(bundle.localization.data.fields.find(field => field.ref === configRef)?.translations.ru?.text, 'Рабочий объём (kWh)');
+      const readiness = await call({ url: vehicleUrl + '/publish-readiness', headers });
+      assert.equal(readiness.statusCode, 200, readiness.body);
+      assert.ok(!readiness.json().data.issues.some((issue: { path: string }) => issue.path === 'localization.' + configRef + '.ru'));
+
+      const retry = await createPlan(bundle.vehicle.version, 'missing');
+      assert.deepEqual(exactTargets(retry), [['content.title', ['ru']], [seatValue, ['en']]]);
+      const retried = await send(request(retry));
+      assert.equal(retried.status, 'completed');
+      assert.deepEqual(providerCalls.slice(before + 4), [{ text: titleText, target: 'ru' }, { text: nextSeatText, target: 'en' }]);
+      bundle = await save(adopt(bundle, retried));
+      const empty = await createPlan(bundle.vehicle.version, 'missing');
+      assert.deepEqual(empty.fields, []);
+      assert.equal(empty.estimate.maximumCharacters, 0);
+      assert.equal(empty.estimate.maximumRequests, 0);
+      const emptyRequest = request(empty), emptyResult = await send(emptyRequest);
+      assert.deepEqual([emptyResult.status, emptyResult.fields, emptyResult.failures], ['completed', [], []]);
+      assert.deepEqual(await send(emptyRequest), emptyResult);
+      assert.equal(providerCalls.length, before + 6);
+      assert.equal(reservedCharacters - budgetBefore, plan.estimate.maximumCharacters + retry.estimate.maximumCharacters);
+      assert.equal((await app.db.pool.query("SELECT id FROM translation_plans WHERE id=$1 AND state='finished' AND NOT EXISTS(SELECT 1 FROM translation_plan_segments WHERE plan_id=$1)", [empty.id])).rowCount, 1);
+      assert.equal((await read()).vehicle.draft.content.description.translations.ru?.reviewStatus, 'stale');
+    });
+    await t.test('two vehicles use the same exact configuration names without provider calls or quota', async () => {
+      const before = providerCalls.length, quota = reservedCharacters;
+      const fingerprints = new Set<string>();
+      const labels = new Map([
+        ['整车OTA升级', 'Обновление всего автомобиля по воздуху'], ['长度(mm)', 'Длина (мм)'],
+      ]);
+      for (const suffix of ['A', 'B']) {
+        const sample = structuredClone(draft);
+        sample.content.title.sourceText = `隔离词典用车 ${suffix}`;
+        sample.configuration = { version: 1, items: [{ name: '整车OTA升级', value: '12' }, { name: '长度(mm)', value: '4200' }] };
+        const created = await call({ method: 'POST', url: '/api/v1/admin/vehicles', headers: { ...headers, 'idempotency-key': randomUUID() }, payload: { draft: sample } });
+        assert.equal(created.statusCode, 201, created.body);
+        const path = '/api/v1/admin/vehicles/' + created.json().data.id;
+        const bundleUrl = path + '/translation-bundle', planUrl = path + '/translation-plans';
+        const read = await call({ url: bundleUrl, headers });
+        const input = saveInput(VehicleTranslationBundleResponseSchema.parse(read.json()).data);
+        for (const field of [input.content.title, input.content.description, ...input.localization.fields]) {
+          for (const target of ['en', 'ru'] as const) {
+            if (field.sourceText === null || (target === 'ru' && 'ref' in field && typeof field.ref === 'string' && field.ref.endsWith('.name') && labels.has(field.sourceText))) continue;
+            const prefix = target === 'en' ? 'Reviewed ' : 'Проверено ';
+            const text = field.sourceText === '整车OTA升级' ? 'Over-the-Air (OTA) vehicle upgrades' : prefix + field.sourceText;
+            field.translations[target] = { text, kind: 'human', reviewStatus: 'approved', sourceVersion: field.sourceVersion,
+              humanEditVersion: field.translations[target]?.humanEditVersion ?? 0, engineVersion: null };
+          }
+        }
+        const saved = await call({ method: 'PUT', url: bundleUrl, headers, payload: input });
+        assert.equal(saved.statusCode, 200, saved.body);
+        const bundle = VehicleTranslationBundleResponseSchema.parse(saved.json()).data;
+        const estimate = async (useCatalog?: true) => {
+          const response = await call({ method: 'POST', url: planUrl, headers, payload: { version: bundle.vehicle.version, scope: 'missing', useCatalog } });
+          assert.equal(response.statusCode, 200, response.body);
+          return TranslationPlanResponseSchema.parse(response.json()).data;
+        };
+        const generate = (plan: Awaited<ReturnType<typeof estimate>>) => ({
+          method: 'POST' as const, url: `${planUrl}/${plan.id}/generate`, headers: { ...headers, 'idempotency-key': randomUUID() },
+          payload: { confirmed: true, sourceFingerprint: plan.sourceFingerprint, maximumCharacters: plan.estimate.maximumCharacters, acceptUnknownCost: false },
+        });
+        const legacy = await estimate();
+        assert.equal(legacy.catalogVersion, undefined);
+        assert.equal(legacy.estimate.maximumRequests, 2);
+        assert.equal(legacy.estimate.cost.status, 'unknown');
+        const declined = await call(generate(legacy));
+        assert.equal(declined.statusCode, 422, declined.body);
+        assert.match(declined.body, /TRANSLATION_CONFIRMATION_REQUIRED/);
+
+        const plan = await estimate(true);
+        fingerprints.add(plan.sourceFingerprint);
+        assert.notEqual(plan.sourceFingerprint, legacy.sourceFingerprint);
+        assert.equal(plan.catalogVersion, 'config-catalog:v1');
+        assert.equal(plan.estimate.maximumCharacters, 0);
+        assert.equal(plan.estimate.maximumRequests, 0);
+        assert.deepEqual(plan.estimate.cost, { status: 'no_supplier_calls', amount: 0, currency: null, freeAllowanceCharacters: null });
+        assert.deepEqual(new Set(plan.fields.map(field => field.sourceText)), new Set(labels.keys()));
+        assert.ok(plan.fields.every(field => field.targets?.join() === 'ru' && field.catalogTargets?.join() === 'ru'));
+        const request = generate(plan);
+        const generated = await call(request);
+        assert.equal(generated.statusCode, 200, generated.body);
+        const result = TranslationPlanResultResponseSchema.parse(generated.json()).data;
+        assert.equal(result.status, 'completed');
+        assert.deepEqual(result.failures, []);
+        const adopted = saveInput(bundle);
+        for (const field of result.fields) {
+          const suggestion = field.translations.ru!;
+          assert.equal(suggestion.text, labels.get(field.sourceText));
+          assert.equal(suggestion.kind, 'machine');
+          assert.equal(suggestion.reviewStatus, 'pending');
+          assert.equal(suggestion.engineVersion, 'config-catalog:v1');
+          adopted.localization.fields.find(item => item.ref === field.ref)!.translations.ru = suggestion;
+        }
+        const segments = await app.db.pool.query('SELECT count(*)::int AS count FROM translation_plan_segments WHERE plan_id=$1', [plan.id]);
+        assert.equal(segments.rows[0].count, 0);
+        assert.deepEqual(TranslationPlanResultResponseSchema.parse((await call(request)).json()).data, result);
+        const recovery = await call({ url: `${planUrl}/recoverable`, headers });
+        assert.equal(recovery.statusCode, 200, recovery.body);
+        assert.deepEqual(RecoverableTranslationPlanResponseSchema.parse(recovery.json()).data, { plan, result });
+        const invalid = structuredClone(adopted);
+        invalid.localization.fields.find(field => field.sourceText === '整车OTA升级')!.translations.ru!.text = 'OTA-обновление всего автомобиля';
+        const forged = await call({ method: 'PUT', url: bundleUrl, headers, payload: invalid });
+        assert.equal(forged.statusCode, 400, forged.body);
+        const invalidBody = structuredClone(adopted);
+        invalidBody.content.title.translations.en!.engineVersion = 'config-catalog:v1';
+        const forgedBody = await call({ method: 'PUT', url: bundleUrl, headers, payload: invalidBody });
+        assert.equal(forgedBody.statusCode, 400, forgedBody.body);
+        const persisted = await call({ method: 'PUT', url: bundleUrl, headers, payload: adopted });
+        assert.equal(persisted.statusCode, 200, persisted.body);
+        const ota = VehicleTranslationBundleResponseSchema.parse(persisted.json()).data.localization.data.fields.find(field => field.sourceText === '整车OTA升级')!;
+        assert.equal(ota.translations.en?.text, 'Over-the-Air (OTA) vehicle upgrades');
+        assert.equal(ota.translations.ru?.engineVersion, 'config-catalog:v1');
+      }
+      assert.equal(fingerprints.size, 2);
+      assert.equal(providerCalls.length, before);
+      assert.equal(reservedCharacters, quota);
+    });
+
+    await t.test('nonblank Russian text remains complete through generation, save and publication readiness', async () => {
+      const sample = structuredClone(draft);
+      sample.configuration = { version: 1, items: [
+        { name: '直流快充电量范围', value: '20–80%' },
+        { name: '驾驶座调节', value: '4向电动调节' },
+      ] };
+      const created = await call({ method: 'POST', url: '/api/v1/admin/vehicles', headers: { ...headers, 'idempotency-key': randomUUID() }, payload: { draft: sample } });
+      assert.equal(created.statusCode, 201, created.body);
+      const vehicleId = created.json().data.id;
+      const vehicleUrl = '/api/v1/admin/vehicles/' + vehicleId;
+      const bundleUrl = vehicleUrl + '/translation-bundle', planUrl = vehicleUrl + '/translation-plans';
+      const read = await call({ url: bundleUrl, headers });
+      const input = saveInput(VehicleTranslationBundleResponseSchema.parse(read.json()).data);
+      const planned = await call({ method: 'POST', url: planUrl, headers, payload: { version: input.version, scope: 'missing' } });
+      assert.equal(planned.statusCode, 200, planned.body);
+      const plan = TranslationPlanResponseSchema.parse(planned.json()).data;
+      const generated = await call({ method: 'POST', url: planUrl + '/' + plan.id + '/generate',
+        headers: { ...headers, 'idempotency-key': randomUUID() }, payload: {
+          confirmed: true, sourceFingerprint: plan.sourceFingerprint, maximumCharacters: plan.estimate.maximumCharacters, acceptUnknownCost: true,
+        } });
+      assert.equal(generated.statusCode, 200, generated.body);
+      const result = TranslationPlanResultResponseSchema.parse(generated.json()).data;
+      assert.equal(result.status, 'completed', JSON.stringify(result.failures));
+      for (const field of result.fields) {
+        const target = field.ref === 'content.title' ? input.content.title : field.ref === 'content.description' ? input.content.description :
+          input.localization.fields.find(candidate => candidate.ref === field.ref)!;
+        for (const locale of ['en', 'ru'] as const) {
+          const suggestion = field.translations[locale];
+          if (suggestion) target.translations[locale] = suggestion;
+        }
+      }
+      const charging = input.localization.fields.find(field => field.sourceText === '直流快充电量范围')!;
+      const adjustment = input.localization.fields.find(field => field.sourceText === '4向电动调节')!;
+      assert.ok(charging.ref.endsWith('.name'));
+      assert.ok(adjustment.ref.endsWith('.value'));
+      for (const field of [charging, adjustment]) {
+        assert.equal(field.translations.ru?.text, russianFactTranslations.get(field.sourceText));
+        assert.equal(field.translations.ru?.reviewStatus, 'pending');
+      }
+
+      const attempt = (payload: SaveVehicleTranslationBundle) => call({ method: 'PUT', url: bundleUrl, headers, payload });
+      const persisted = await attempt(input);
+      assert.equal(persisted.statusCode, 200, persisted.body);
+      const saved = VehicleTranslationBundleResponseSchema.parse(persisted.json()).data;
+      const check = async () => {
+        const response = await call({ url: vehicleUrl + '/publish-readiness?locale=ru', headers });
+        assert.equal(response.statusCode, 200, response.body);
+        return response.json().data;
+      };
+      const ready = await check();
+      const factPaths = [charging, adjustment].map(field => 'localization.' + field.ref + '.ru');
+      assert.ok(!ready.issues.some((issue: { path: string }) => factPaths.includes(issue.path)));
+      assert.equal(ready.localizationReady, true);
+      assert.equal(saved.vehicle.publicationState, 'draft');
+      assert.equal(ready.previewConfirmed, false);
+
+      const edited = structuredClone(saveInput(saved));
+      const manualText = new Map([[charging.ref, 'Диапазон заряда при быстрой зарядке переменным током'],
+        [adjustment.ref, 'Ручная регулировка в 4 направлениях']]);
+      for (const [ref, text] of manualText) {
+        const field = edited.localization.fields.find(item => item.ref === ref)!;
+        field.translations.ru = { ...field.translations.ru!, text, kind: 'human', engineVersion: null };
+      }
+      const accepted = await attempt(edited);
+      assert.equal(accepted.statusCode, 200, accepted.body);
+      const revised = VehicleTranslationBundleResponseSchema.parse(accepted.json()).data;
+      for (const [ref, text] of manualText)
+        assert.equal(revised.localization.data.fields.find(field => field.ref === ref)?.translations.ru?.text, text);
+      const updated = await check();
+      assert.equal(updated.localizationReady, true);
+      assert.equal(updated.translationWarnings, undefined);
+      assert.ok(!updated.issues.some((issue: { path: string }) => factPaths.includes(issue.path)));
+    });
+
+    await t.test('nonblank human body text can be retained and rebound across source changes', async () => {
+      for (const sourceText of ['额定功率100 kW', '额定功率85 kW。']) {
+        const sample = structuredClone(draft);
+        sample.content.description.sourceText = '额定功率85 kW';
+        sample.content.description.translations.ru = { text: 'Номинальная мощность 85 кВт', kind: 'human',
+          reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 0, engineVersion: null };
+        const created = await call({ method: 'POST', url: '/api/v1/admin/vehicles',
+          headers: { ...headers, 'idempotency-key': randomUUID() }, payload: { draft: sample } });
+        assert.equal(created.statusCode, 201, created.body);
+        const vehicle = created.json().data;
+        const vehicleUrl = '/api/v1/admin/vehicles/' + vehicle.id, bundleUrl = vehicleUrl + '/translation-bundle';
+        vehicle.draft.content.description.sourceText = sourceText;
+        const edited = await call({ method: 'PATCH', url: vehicleUrl, headers, payload: { version: vehicle.version, draft: vehicle.draft } });
+        assert.equal(edited.statusCode, 200, edited.body);
+        const read = async () => VehicleTranslationBundleResponseSchema.parse((await call({ url: bundleUrl, headers })).json()).data;
+        const current = await read(), input = structuredClone(saveInput(current));
+        const previous = current.vehicle.draft.content.description.translations.ru!;
+        assert.equal(previous.reviewStatus, 'stale');
+        const retained = input.content.description.translations.ru!;
+        const rebound = { ...retained, sourceVersion: input.content.description.sourceVersion, reviewStatus: 'pending' as const };
+        const replay = await call({ method: 'PUT', url: bundleUrl, headers, payload: input });
+        assert.equal(replay.statusCode, 200, replay.body);
+        const replayed = VehicleTranslationBundleResponseSchema.parse(replay.json()).data;
+        assert.equal(replayed.vehicle.version, current.vehicle.version);
+        assert.deepEqual(replayed.vehicle.draft.content.description.translations.ru, previous);
+
+        input.content.description.translations.ru = rebound;
+        const saved = await call({ method: 'PUT', url: bundleUrl, headers, payload: input });
+        assert.equal(saved.statusCode, 200, saved.body);
+        const after = await read();
+        assert.equal(after.vehicle.version, current.vehicle.version + 1);
+        assert.deepEqual(after.vehicle.draft.content.description.translations.ru, rebound);
+      }
+    });
+
     await t.test('readiness requires both new migrations even when the external catalog is disabled',async()=>{
       assert.equal((await call({method:'GET',url:'/health/ready'})).statusCode,200);
       for(const table of ['translation_plan_segments','external_inspection_enrichment']) {

@@ -18,7 +18,7 @@ export const DisplayRefSchema=z.string().max(450).regex(/^(?:make|model|trim|gen
   return true;
 });
 export const DisplayTranslationSchema=z.strictObject({
-  text:z.string().min(1).max(500).regex(/\S/),kind:z.enum(['original','machine','human']),
+  text:z.string().max(500),kind:z.enum(['original','machine','human']),
   reviewStatus:z.enum(['pending','approved','stale']),sourceVersion:VersionSchema,
   humanEditVersion:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),engineVersion:z.string().min(1).max(200).nullable(),
 });

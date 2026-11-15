@@ -7,8 +7,9 @@ export function projectConfiguration(configuration: VehicleConfiguration | null 
   if (!configuration) return null;
   return ConfigurationDisplaySchema.parse({ version: configuration.version, items: configuration.items.map(item => {
     const id = vehicleConfigurationItemId(item.name);
-    return { id, name: resolve(`configuration.${id}.name`), value: configurationValueNeedsTranslation(item.value)
-      ? resolve(`configuration.${id}.value`)
+    const localizedValue=resolve(`configuration.${id}.value`);
+    return { id, name: resolve(`configuration.${id}.name`), value: localizedValue.status==='ready'||configurationValueNeedsTranslation(item.value)
+      ? localizedValue
       : { status: 'ready', text: item.value, requestedLocale: locale, contentLocale: 'und', provenance: 'original', reviewed: false } };
   }) });
 }

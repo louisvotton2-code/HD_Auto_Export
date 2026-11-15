@@ -81,7 +81,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const mediaStore=new LocalMediaStore(config.mediaRoot);
   const inventory=new InventoryService(db,config.externalCatalog,mediaStore);
   const translator=options.translator??createVehicleTranslator(config.translation,new PgTranslationBudget(db));
-  const translationPlans=new TranslationPlanService(db,translator,(id,who)=>inventory.translationPlanInput(id,who));
+  const translationPlans=new TranslationPlanService(db,translator,(id,who,scope)=>inventory.translationPlanInput(id,who,scope));
   const media=new MediaService(db,mediaStore);
   const activity=new ActivityService(db);
   const segments=new VehicleSegments(db,inventory);
@@ -306,6 +306,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.post('/api/v1/admin/vehicles/:id/translation-plans/:planId/generate',{schema:adminSchema('generateConfirmedVehicleTranslationPlan',{params:PlanParams,body:adm.GenerateTranslationPlanRequestSchema,headers:idemHeader,response:{200:adm.TranslationPlanResultResponseSchema,...errorResponses}})},async request=>{
     const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.generate(id,planId,request.body as adm.GenerateTranslationPlanRequest,actor(request),request.headers['idempotency-key'] as string),request);
   });
+  app.get('/api/v1/admin/vehicles/:id/translation-plans/recoverable',{schema:adminSchema('getRecoverableVehicleTranslationPlan',{params:IdParams,response:{200:adm.RecoverableTranslationPlanResponseSchema,...errorResponses}})},
+    async request=>response(await translationPlans.recoverable((request.params as {id:string}).id,actor(request)),request));
   app.get('/api/v1/admin/vehicles/:id/translation-plans/:planId',{schema:adminSchema('getVehicleTranslationPlanStatus',{params:PlanParams,response:{200:adm.TranslationPlanStatusResponseSchema,...errorResponses}})},async request=>{
     const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.status(id,planId,actor(request)),request);
   });

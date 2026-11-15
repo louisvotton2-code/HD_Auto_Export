@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
+import {admitFormalListing,isFormalListingAdmitted,FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 import {persistSourceResponse} from '../sources/index.js';
 import {EventSchema,ManifestSchema,hash,identityKey,IngestionError,WORKER_LIMITS,type IngestionEvent,type Manifest,type Lane,type SourceApplier} from './types.js';
 export const SERVICE_ACTOR='chinacarapi-ingestion-worker';
@@ -98,18 +99,22 @@ export class FixedScopeWorker{
   return this.db.transaction(async tx=>{
    const job=(await tx.query<Job>(`SELECT * FROM external_ingestion_jobs WHERE id=$1 AND lease_owner=$2 AND fence=$3 AND lease_until>clock_timestamp() FOR UPDATE`,[lease.jobId,lease.owner,lease.fence])).rows[0];
    if(!job)fail('INGESTION_LEASE_LOST');await serviceActor(tx);
-   // Unhydrated deltas may pass only when obsolete under the same source-time/order rules below.
+   // Unhydrated deltas may also complete when the identity is excluded by
+   // the permanent ceiling. Keep known identities eligible for hydration.
    // Use the first event document (null falls back to observed_at), with JavaScript millisecond precision.
    const rows=(await tx.query<{seq:string;event_key:string;provider:'chinacarapi';source:'che168'|'dongchedi';external_id:string;operation:IngestionEvent['operation'];business_order:string;observed_at:Date;document:IngestionEvent['document'];canonical_id:string;lane:Lane;snapshot_hash:string|null}>(`SELECT e.*,coalesce(e.hydrated_document,e.document) AS document,m.canonical_id FROM external_ingestion_events e JOIN external_ingestion_members m USING(job_id,provider,source,external_id)
     WHERE e.job_id=$1 AND completed_at IS NULL AND ($2 OR (operation='withdraw' AND lane='delta'))
     AND (operation='withdraw' OR lane<>'delta' OR hydrated_document IS NOT NULL OR EXISTS(
+     SELECT 1 FROM external_formal_admission_state a WHERE a.id=1 AND a.admitted_count >= $4
+      AND NOT EXISTS(SELECT 1 FROM external_formal_admissions f WHERE f.source=e.source AND f.external_id=e.external_id)
+    ) OR EXISTS(
      SELECT 1 FROM external_ingestion_identity_state i WHERE i.provider=e.provider AND i.source=e.source AND i.external_id=e.external_id AND (
       i.business_order>e.business_order OR (i.withdrawn AND (e.operation<>'relist' OR i.business_order>=e.business_order))
       OR (i.business_order=e.business_order AND e.observed_at<i.observed_at)
       OR date_trunc('milliseconds',i.business_at)>date_trunc('milliseconds',coalesce((
        SELECT doc->>'sourceUpdatedAt' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.document)='array' THEN e.document ELSE '[]'::jsonb END) WITH ORDINALITY AS entries(doc,position)
        WHERE doc->>'kind'='event' ORDER BY position LIMIT 1)::timestamptz,e.observed_at)))))
-    ORDER BY (operation='withdraw') DESC,seq LIMIT $3`,[lease.jobId,job.state==='ready',WORKER_LIMITS.batch])).rows;
+    ORDER BY (operation='withdraw') DESC,seq LIMIT $3`,[lease.jobId,job.state==='ready',WORKER_LIMITS.batch,FORMAL_LISTING_LIMIT])).rows;
    if(rows.length)await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    for(const row of rows){
     const event:IngestionEvent={key:row.event_key,identity:{provider:row.provider,source:row.source,externalId:row.external_id},operation:row.operation,businessOrder:row.business_order,observedAt:row.observed_at.toISOString(),document:row.document,...(row.snapshot_hash?{snapshotHash:row.snapshot_hash}:{})};
@@ -122,13 +127,16 @@ export class FixedScopeWorker{
     const newerSnapshot=!invalidSnapshot&&row.lane==='snapshot'&&previous&&Date.parse(event.observedAt)>previous.business_at.getTime();
     const obsolete=invalidSnapshot?true:previous&&Date.parse(businessAt)<previous.business_at.getTime()?true:newerSnapshot?false:
      isObsolete(event,previous?{businessOrder:previous.business_order,withdrawn:previous.withdrawn,observedAt:previous.observed_at.toISOString()}:null);
-    await this.apply(tx,event,{obsolete,jobId:job.id,canonicalId:row.canonical_id,triggeredBy:job.triggered_by,actor:{id:SERVICE_ACTOR,requestId:`ingest:${job.id}:${row.seq}`}});
-    if(!obsolete){
-     if(row.lane==='delta')await tx.query('UPDATE external_ingestion_members SET verification_pending=false WHERE job_id=$1 AND provider=$2 AND source=$3 AND external_id=$4',[job.id,...params]);
+    const unknownWithdrawal=row.operation==='withdraw'&&!await isFormalListingAdmitted(tx,row.source,row.external_id);
+    const excluded=!obsolete&&row.operation!=='withdraw'&&!await admitFormalListing(tx,row.source,row.external_id);
+    if(!excluded&&!unknownWithdrawal)await this.apply(tx,event,{obsolete,jobId:job.id,canonicalId:row.canonical_id,triggeredBy:job.triggered_by,actor:{id:SERVICE_ACTOR,requestId:`ingest:${job.id}:${row.seq}`}});
+    if(excluded||!obsolete&&row.lane==='delta')
+     await tx.query('UPDATE external_ingestion_members SET verification_pending=false WHERE job_id=$1 AND provider=$2 AND source=$3 AND external_id=$4',[job.id,...params]);
+    if(!obsolete&&!excluded){
      await tx.query(`INSERT INTO external_ingestion_identity_state(provider,source,external_id,business_order,withdrawn,observed_at,business_at) VALUES($1,$2,$3,$4,$5,$6,$7)
       ON CONFLICT(provider,source,external_id) DO UPDATE SET business_order=greatest(external_ingestion_identity_state.business_order,excluded.business_order),withdrawn=excluded.withdrawn,observed_at=excluded.observed_at,business_at=excluded.business_at`,[...params,row.business_order,row.operation==='withdraw',row.observed_at,businessAt]);
     }
-    await tx.query('UPDATE external_ingestion_events SET completed_at=clock_timestamp(),outcome=$3 WHERE job_id=$1 AND seq=$2',[job.id,row.seq,obsolete?'obsolete':'applied']);
+    await tx.query('UPDATE external_ingestion_events SET completed_at=clock_timestamp(),outcome=$3 WHERE job_id=$1 AND seq=$2',[job.id,row.seq,obsolete?'obsolete':excluded?'excluded_limit':'applied']);
    }
    const result=(await tx.query<{applied_seq:string;state:string}>(`UPDATE external_ingestion_jobs SET applied_seq=coalesce((SELECT min(seq)-1 FROM external_ingestion_events WHERE job_id=$1 AND completed_at IS NULL),received_seq),
     state=CASE WHEN state='ready' AND completed_lanes->>'snapshot'='true' AND completed_lanes->>'delta'='true' AND NOT EXISTS(SELECT 1 FROM external_ingestion_events WHERE job_id=$1 AND completed_at IS NULL) AND NOT EXISTS(SELECT 1 FROM external_ingestion_members WHERE job_id=$1 AND verification_pending) THEN 'complete' ELSE state END,

@@ -30,7 +30,7 @@ export function staffLoginEmail(input: string): string {
 }
 
 export const LocalizedTextSchema = z.strictObject({
-  text: z.string().min(1).max(10_000).regex(/\S/, 'Display text cannot be blank'),
+  text: z.string().max(10_000),
   kind: TranslationKindSchema,
   reviewStatus: z.enum(['pending', 'approved', 'stale']),
   sourceVersion: VersionSchema,
