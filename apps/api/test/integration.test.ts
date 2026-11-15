@@ -414,11 +414,28 @@ test('confirmed translation plans enforce auth, origin, versions and idempotency
   assert.deepEqual((await call(request)).json().data,suggested);
   const keyConflict=await call({...request,payload:{version:vehicle.version}});assert.equal(keyConflict.statusCode,409);assert.equal(keyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
   const planKeyConflict=await call({...generateRequest,payload:{...generateRequest.payload,maximumCharacters:prepared.estimate.maximumCharacters+1}});assert.equal(planKeyConflict.statusCode,409);assert.equal(planKeyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
-  // Existing und declarations require an explicit bundle confirmation, never automatic relabeling.
+  // A saved nonblank title with an und tag is eligible for an estimate without relabeling the draft.
+  const beforeRetagging=await plan(vehicle);
   await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,title,sourceLanguage}','\"und\"') WHERE vehicle_id=$1",[vehicle.id]);
-  const unsupported=await call({method:'POST',url:planUrl,headers:headers(),payload:{version:vehicle.version}});assert.equal(unsupported.statusCode,422);assert.equal(unsupported.json().error.code,'TRANSLATION_SOURCE_UNSUPPORTED');
-  const priorCalls=translationCalls;translationHook=async()=>{throw new Error('Provider must not run for historical replay');};
-  try {assert.deepEqual((await call(request)).json().data,suggested);assert.equal(translationCalls,priorCalls);}finally{translationHook=null;}
+  const reservations=async()=>(await runtime.db.pool.query('SELECT count(*)::int AS n FROM translation_budget_reservations')).rows[0].n;
+  const priorCalls=translationCalls,priorReservations=await reservations();
+  translationHook=async()=>{throw new Error('Provider must not run for an estimate or historical replay');};
+  try {
+    const estimate=await plan(vehicle);
+    assert.equal(estimate.vehicleVersion,vehicle.version);
+    const nextTitle=estimate.fields.find(field=>field.ref==='content.title');
+    const previousTitle=beforeRetagging.fields.find(field=>field.ref==='content.title');
+    assert.ok(nextTitle&&previousTitle);
+    assert.notEqual(nextTitle.sourceHash,previousTitle.sourceHash);
+    assert.deepEqual(nextTitle,{...previousTitle,sourceHash:nextTitle.sourceHash});
+    assert.deepEqual(estimate.estimate,beforeRetagging.estimate);
+    assert.equal((await runtime.inventory.getAdmin(vehicle.id)).draft.content.title.sourceLanguage,'und');
+    const stale=await call(generation(beforeRetagging));
+    assert.equal(stale.statusCode,409,stale.body);
+    assert.deepEqual((await call(request)).json().data,suggested);
+    assert.equal(translationCalls,priorCalls);
+    assert.equal(await reservations(),priorReservations);
+  } finally {translationHook=null;}
 });
 test('translation results racing with an edit are rejected and upstream failures never change the draft',async()=>{
   const input=draft();input.content.title.sourceText=`隔离旧建议${randomUUID()}`;input.content.description.sourceText=null;let vehicle=await create(input);

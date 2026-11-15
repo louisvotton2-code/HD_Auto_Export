@@ -29,12 +29,28 @@ test('formal full synchronization has durable independent receipt/application an
   await db.pool.query('CREATE TABLE full_test_effects(source text,external_id text,operation text)');
   const apply:FullApply=async(tx,input)=>{await tx.query('INSERT INTO full_test_effects VALUES($1,$2,$3)',[input.source,input.externalId,input.operation]);};
   worker=new FullSyncWorker(db,client,directory,apply);assert.equal(await worker.acquire(),true);
+  worker.space=async()=>({used:0,available:1024**4,total:1024**4});
+  const withdrawalState=async()=>(await database.pool.query(`SELECT business_order::text,withdrawn
+   FROM external_ingestion_identity_state WHERE provider='chinacarapi' AND source='che168' AND external_id='123'`)).rows[0];
+  const assertNotAdmitted=async()=>{
+   const footprint=(await database.pool.query(`SELECT
+    EXISTS(SELECT 1 FROM external_formal_admissions WHERE source='che168' AND external_id='123') AS admitted,
+    EXISTS(SELECT 1 FROM external_full_members WHERE source='che168' AND external_id='123') AS member,
+    EXISTS(SELECT 1 FROM external_full_work WHERE source='che168' AND external_id='123') AS queued`)).rows[0];
+   assert.deepEqual(footprint,{admitted:false,member:false,queued:false});
+  };
   await t.test('raw page durable before application, replay idempotent and withdrawal wins',async()=>{
    await worker!.receiveDelta();let s=await fullSyncStatus(database);assert.equal(s.receivedEvents,2);assert.equal(s.appliedEvents,0);
    await worker!.receiveDelta();assert.equal((await fullSyncStatus(database)).receivedEvents,2);
-   await worker!.applyEvents(true);await worker!.applyEvents();s=await fullSyncStatus(database);assert.equal(s.appliedEvents,2);
-   assert.equal((await database.pool.query("SELECT state FROM external_full_members WHERE external_id='123'")).rows[0].state,'withdrawn');
-   assert.deepEqual((await database.pool.query('SELECT operation FROM full_test_effects')).rows,[{operation:'withdraw'}]);
+   assert.equal(await worker!.applyEvents(true),1);
+   const pending=(await database.pool.query(`SELECT operation FROM external_full_events WHERE applied_at IS NULL ORDER BY event_id`)).rows;
+   assert.deepEqual(pending,[{operation:'upsert'}]);
+   assert.deepEqual(await withdrawalState(),{business_order:'2',withdrawn:true});
+   await assertNotAdmitted();
+   assert.equal(await worker!.applyEvents(),1);s=await fullSyncStatus(database);assert.equal(s.appliedEvents,2);
+   assert.deepEqual(await withdrawalState(),{business_order:'2',withdrawn:true});
+   await assertNotAdmitted();
+   assert.deepEqual((await database.pool.query('SELECT operation FROM full_test_effects')).rows,[]);
   });
   await t.test('pause/resume uses version and immutable idempotent status snapshots',async()=>{
    const before=await fullSyncStatus(database),key=randomUUID(),input={version:before.version,action:'pause' as const};
@@ -51,9 +67,12 @@ test('formal full synchronization has durable independent receipt/application an
   });
   await t.test('only a newer explicit relist clears a withdrawn fence',async()=>{
    feed=[...feed,{id:3,source:'che168',vehicleId:'123',type:'price',at:'2026-11-14T00:00:02.000Z'}];await worker!.receiveDelta();await worker!.applyEvents();
-   assert.equal((await database.pool.query("SELECT state FROM external_full_members WHERE external_id='123'")).rows[0].state,'withdrawn');
+   assert.deepEqual(await withdrawalState(),{business_order:'2',withdrawn:true});
+   await assertNotAdmitted();
    feed.push({id:4,source:'che168',vehicleId:'123',type:'relisted',at:'2026-11-14T00:00:03.000Z'});await worker!.receiveDelta();await worker!.applyEvents();
-   assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_work WHERE source='che168' AND external_id='123'")).rows[0].n,1);
+   assert.deepEqual(await withdrawalState(),{business_order:'4',withdrawn:false});
+   assert.equal((await database.pool.query("SELECT state FROM external_full_members WHERE source='che168' AND external_id='123'")).rows[0].state,'pending');
+   assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_work WHERE source='che168' AND external_id='123' AND kind='detail'")).rows[0].n,1);
   });
   await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async()=>{
    const snapshotId=randomUUID(),archivePath=path.join(directory,`${snapshotId}.csv.gz`),archive=Buffer.alloc(8192,1);
@@ -274,10 +293,20 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_members WHERE external_id='456'")).rows[0].n,0);
   });
   await t.test('410 preserves source membership and queued events and has a finite bound',async()=>{
-   const count=(await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n;
+   const queued:Change={id:feed.at(-1)!.id+1,source:'che168',vehicleId:'424242',type:'new',at};
+   feed.push(queued);
+   await worker!.receiveDelta();
+   const retained=async()=>({
+    members:(await database.pool.query('SELECT source,external_id,canonical_id,state FROM external_full_members ORDER BY source,external_id')).rows,
+    events:(await database.pool.query(`SELECT event_id::text,source,external_id,operation,applied_at,document_refs
+     FROM external_full_events ORDER BY event_id`)).rows,
+   });
+   const before=await retained();
+   const received=before.events.find(event=>event.event_id===String(queued.id));
+   assert.equal(received?.applied_at,null);
+   assert.ok(received?.document_refs.length);
    await worker!.recover();await worker!.recover();await assert.rejects(worker!.recover(),/SYNC_RECOVERY_LIMIT/);
-   assert.equal((await database.pool.query('SELECT count(*) AS n FROM external_full_members')).rows[0].n,count);
-   assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_full_events')).rows[0].n,10);
+   assert.deepEqual(await retained(),before);
   });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });
