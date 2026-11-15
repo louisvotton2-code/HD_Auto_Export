@@ -1,0 +1,16 @@
+import { VehicleFactsSchema } from '@hd/contracts/admin';
+import type { DraftForm } from './draft-form';
+
+/** Only the first step gates new draft saves. The publication checklist still applies later. */
+export function basicDraftIssues(form: DraftForm): (keyof DraftForm)[] {
+  const issues: (keyof DraftForm)[] = [];
+  if (!form.makeId || !form.makeName.trim()) issues.push('makeName');
+  if (!form.modelId || !form.modelName.trim()) issues.push('modelName');
+  if (!form.title.trim()) issues.push('title');
+  if (!form.trimId || !form.trimName.trim()) issues.push('trimName');
+  if (!/^\d{4}$/.test(form.modelYear.trim()) ||
+      !VehicleFactsSchema.shape.modelYear.safeParse(Number(form.modelYear)).success) issues.push('modelYear');
+  if (!/^\d+$/.test(form.mileageKm.trim()) ||
+      !VehicleFactsSchema.shape.mileageKm.safeParse(Number(form.mileageKm)).success) issues.push('mileageKm');
+  return issues;
+}

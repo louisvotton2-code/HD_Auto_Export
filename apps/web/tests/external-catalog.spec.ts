@@ -1,3 +1,4 @@
+import { chooseVehicleDestination } from './helpers/vehicle-destination';
 import { expectInlineInspection } from './helpers/inline-inspection';
 import { expect, test } from '@playwright/test';
 import { externalFixtureId, makeImportedPublicVehicleFixture } from '@hd/contracts/fixtures';
@@ -46,7 +47,7 @@ test('a direct photo error is reported once and detail shows only a report summa
   await expect(card.locator('[data-vehicle-photo-unavailable]')).toBeVisible();
   await expect(card.locator('h2')).toHaveAttribute('lang', 'en');
   await expect(card.locator('[data-vehicle-original-price]')).toHaveText('¥ 128,000.5');
-  await expect(card.locator('[data-vehicle-usd-approx]')).toHaveText('≈ 16,000 USD');
+  await expect(card.locator('[data-vehicle-usd-approx]')).toHaveText('≈ 16,000.06 USD');
   const response = await report;
   expect(response.status()).toBe(202);
   expect(response.request().postDataJSON()).toEqual({ revision: 1 });
@@ -133,18 +134,19 @@ test('inline report contacts retain vehicle identity and named destinations with
       expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
       const draft = url.searchParams.get('text')!;
       expect(draft).toContain(title);
-      expect(draft).toContain('EXT-000001');
+      expect(draft).toContain('HX100001');
+      expect(draft).not.toContain('EXT-000001');
       expect(draft).toContain(`/${locale}/cars/${id}/`);
     }
-    const destination = page.getByTestId('vehicle-import-estimate').locator('[name="country"]');
+    const budget = page.getByTestId('vehicle-import-estimate');
+    const destination = budget.getByTestId('vehicle-destination-picker');
     const initialCountry = locale === 'zh' ? 'RU' : 'KZ';
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country-ready', 'true');
-    await expect(destination).toHaveValue(initialCountry);
-    await expect(destination.locator('option:checked')).toHaveText(countryNames[locale][initialCountry]);
-    await expect(destination.locator('option')).toHaveCount(7);
-    await destination.selectOption('KZ');
-    await expect(destination).toHaveValue('KZ');
-    await expect(destination.locator('option:checked')).toHaveText(countryNames[locale].KZ);
+    await expect(budget).toHaveAttribute('data-country', initialCountry);
+    await expect(destination).toHaveText(countryNames[locale][initialCountry]);
+    await expect(budget.locator('[data-country-option] img')).toHaveCount(7);
+    await chooseVehicleDestination(budget, 'KZ');
+    await expect(destination).toHaveText(countryNames[locale].KZ);
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
     await expect(page.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
     const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();

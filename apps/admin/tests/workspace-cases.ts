@@ -3,7 +3,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import { TranslationPlanResultSchema, TranslationPlanStatusSchema, type AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, localization, reply, translationBundle, translationResult, vehicle } from './api-fixture';
 import { bundleSave, confirmPlan, generateSuggestions, noReviewControls, openWorkspace, planButton, recoverResult, requestPlan, saveBundle } from './translation-test-helpers';
-import { tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, tab } from './ui-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 const bundlePath = `/api/v1/admin/vehicles/${id}/translation-bundle`;
@@ -32,8 +32,7 @@ async function expectUnfilled(page: Page) {
 
 test('workspace Chinese-first save generates original Chinese and machine pending targets without automatically saving', async ({ page }) => {
   const api = await installApi(page, { createdId: id }); await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
-  await page.getByLabel('标题原文', { exact: true }).fill('中文权威原文');
+  await fillRequiredVehicleBasics(page, '中文权威原文');
   await tab(page, '价格与内部信息'); await page.getByLabel('车况描述', { exact: true }).fill('这段中文只用于合成浏览器验证。');
   await tab(page, '公开字段多语'); await expect(planButton(page)).toHaveCount(0);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect(page).toHaveURL(new RegExp(`${id}$`));
@@ -210,6 +209,10 @@ test('workspace historical Chinese mismatch can be synchronized explicitly witho
   const item = record(); item.draft.content.title.translations.zh = { text: '历史错误中文槽', kind: 'human', reviewStatus: 'approved', sourceVersion: 1, humanEditVersion: 7, engineVersion: null };
   item.draft.content.title.translations.en = { text: 'Protected English', kind: 'human', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 3, engineVersion: null };
   item.draft.content.title.translations.ru = { text: 'Сохранённый русский', kind: 'human', reviewStatus: 'approved', sourceVersion: 1, humanEditVersion: 5, engineVersion: null };
+  for (const locale of ['en', 'ru'] as const) item.draft.content.description.translations[locale] = {
+    text: locale === 'en' ? 'Existing English description' : 'Сохранённое описание',
+    kind: 'human', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 1, engineVersion: null,
+  };
   const before = structuredClone(item.draft.content.title); const api = await installApi(page, { items: [item], publicationDefaultConfirmed: false });
   await openWorkspace(page, id); await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveValue(before.sourceText!);
   await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveAttribute('readonly', ''); await expect(page.getByLabel('中文标题', { exact: true })).toHaveCount(0);

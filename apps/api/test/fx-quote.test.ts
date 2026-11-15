@@ -275,8 +275,12 @@ test('authorization failures make no provider call and cannot consume a claim', 
   let calls = 0; const fetcher: typeof fetch = async () => { calls++; return response(provider()); };
   const original = await claim();
   const otherDatabase = new URL(testAddress); otherDatabase.pathname = '/hd_ext_fx_preview_other';
+  const localPreviewAddress = new URL(address); localPreviewAddress.pathname = '/hd_local_preview';
+  // A correctly formed local-preview URL still fails if the real connection reports a different database.
+  const localPreview = { networkEnabled: true, mode: 'disabled', nodeEnv: 'development',
+    databaseUrl: localPreviewAddress.toString(), localPreview: { deploymentEnv: 'local', translationProvider: 'disabled' } };
   for (const denied of [{ ...authorization, networkEnabled: false }, { ...authorization, mode: 'synthetic-scale' },
-    { ...authorization, nodeEnv: 'production' }, { ...authorization, databaseUrl: otherDatabase.toString() }]) {
+    { ...authorization, nodeEnv: 'production' }, { ...authorization, databaseUrl: otherDatabase.toString() }, localPreview]) {
     await assert.rejects(refreshFxQuote(db, denied, fetcher), /FX (?:network gate|database scope) rejected/);
   }
   assert.equal(calls, 0); assert.deepEqual(await claim(), original); assert.equal(await stored(), undefined);

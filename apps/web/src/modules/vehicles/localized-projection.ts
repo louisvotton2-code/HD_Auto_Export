@@ -5,8 +5,10 @@ import {
   type PublicVehicleCard,
   PublicVehicleResponseSchema,
   PublicVehicleInlineResponseSchema,
+  PublicVehicleFiltersSchema,
   type PublicVehicle,
 } from '@hd/contracts/public';
+import { clearPrivateVehicleText } from './public-text';
 import type { Locale } from '@/i18n/routing';
 
 /** A localized request must not silently accept the legacy raw-language projection. */
@@ -49,7 +51,7 @@ export const localizedVehicleSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicVehicleResponseSchema.parse(value);
     validateVehicle(result.data, locale, priceView, true);
-    return result;
+    return clearPrivateVehicleText(result);
   },
 });
 /** New fields are accepted only for the explicit inline detail projection. */
@@ -65,14 +67,14 @@ export const localizedInlineVehicleSchema = (locale: Locale, priceView?: 'usd') 
     ];
     for (const field of fields) if (field && field.requestedLocale !== locale)
       throw new Error('Localized inline detail mismatch');
-    return result;
+    return clearPrivateVehicleText(result);
   },
 });
 export const localizedListSchema = (locale: Locale, priceView?: 'usd') => ({
   parse(value: unknown) {
     const result = PublicVehicleListSchema.parse(value);
     for (const vehicle of result.data.items) validateVehicle(vehicle, locale, priceView);
-    return result;
+    return clearPrivateVehicleText(result);
   },
 });
 /** Explicit card projection rejects descriptions, full galleries and all detail-only collections. */
@@ -82,7 +84,7 @@ export const localizedCardListSchema = (locale: Locale, priceView?: 'usd') => ({
     for (const vehicle of result.data.items) {
       validateCard(vehicle, locale, priceView);
     }
-    return result;
+    return clearPrivateVehicleText(result);
   },
 });
 function validateCard(vehicle: PublicVehicleCard, locale: Locale, priceView?: 'usd') {
@@ -101,19 +103,21 @@ export const localizedHomeSchema = (locale: Locale, priceView?: 'usd') => ({
     const result = PublicHomeSectionsSchema.parse(value);
     for (const section of result.data.sections)
       for (const vehicle of section.vehicles) validateVehicle(vehicle, locale, priceView);
-    return result;
+    return clearPrivateVehicleText(result);
   },
 });
 
 // The editorial view is also used by sitemap traversal, so imports must stay out of its pages.
 export const legacyListSchema = PublicVehicleListSchema.refine((result) =>
   result.data.items.every((vehicle) => !vehicle.external && !vehicle.displayPrice),
-);
+).transform(clearPrivateVehicleText);
 export const legacyHomeSchema = PublicHomeSectionsSchema.refine((result) =>
   result.data.sections.every((section) =>
     section.vehicles.every((vehicle) => !vehicle.external && !vehicle.displayPrice),
   ),
-);
+).transform(clearPrivateVehicleText);
 export const legacyVehicleSchema = PublicVehicleResponseSchema.refine(
   (result) => !result.data.external && !result.data.displayPrice,
-);
+).transform(clearPrivateVehicleText);
+
+export const publicFiltersSchema = PublicVehicleFiltersSchema.transform(clearPrivateVehicleText);

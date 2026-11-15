@@ -1,5 +1,12 @@
 import type { Locale } from '@/i18n/routing';
-import type { DestinationCountryCode } from '@/shared/lib/destination-country';
+import { DESTINATION_COUNTRIES, type DestinationCountryCode } from '@/shared/lib/destination-country';
+
+const calculatorCountries = (locale: Locale) => {
+  const names = new Intl.DisplayNames(locale, { type: 'region' });
+  return (Object.keys(DESTINATION_COUNTRIES) as DestinationCountryCode[]).map(countryCode => ({
+    name: names.of(countryCode) ?? countryCode, slug: DESTINATION_COUNTRIES[countryCode], countryCode,
+  }));
+};
 
 type SectionCopy = {
   popular: string;
@@ -183,13 +190,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     ],
     tool: '在线工具',
     calculator: '提前了解进口税费',
-    calculatorBody: '按车辆参数查看俄罗斯、哈萨克斯坦或乌兹别克斯坦的关税、增值税及其他费用参考。',
+    calculatorBody: '选择目的国，根据车辆参数查看关税、增值税及其他进口费用参考。',
     calculate: '计算费用',
-    countries: [
-      { name: '俄罗斯', slug: 'russia', countryCode: 'RU' },
-      { name: '哈萨克斯坦', slug: 'kazakhstan', countryCode: 'KZ' },
-      { name: '乌兹别克斯坦', slug: 'uzbekistan', countryCode: 'UZ' },
-    ],
+    countries: calculatorCountries('zh'),
     ready: '准备好寻找你的汽车了吗？',
     readyBody: '告诉我们你的预算与需求，一起了解中国车源和出口方案。',
     phone: '你的电话号码',
@@ -360,13 +363,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     tool: 'Online Tool',
     calculator: 'Calculate customs duties in advance',
     calculatorBody:
-      'Explore indicative duties, VAT and other import costs for Russia, Kazakhstan or Uzbekistan using your vehicle details.',
+      'Select a destination to estimate duties, VAT and other import costs using your vehicle details.',
     calculate: 'Calculate cost',
-    countries: [
-      { name: 'Russia', slug: 'russia', countryCode: 'RU' },
-      { name: 'Kazakhstan', slug: 'kazakhstan', countryCode: 'KZ' },
-      { name: 'Uzbekistan', slug: 'uzbekistan', countryCode: 'UZ' },
-    ],
+    countries: calculatorCountries('en'),
     ready: 'Ready to find your car?',
     readyBody: 'Tell us your budget and preferences to explore cars from China and export options.',
     phone: 'Your phone number',
@@ -537,13 +536,9 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     tool: 'Онлайн-инструмент',
     calculator: 'Рассчитайте таможенные платежи заранее',
     calculatorBody:
-      'Оцените пошлины, НДС и другие импортные расходы для России, Казахстана или Узбекистана по параметрам автомобиля.',
+      'Выберите страну назначения, чтобы оценить пошлины, НДС и другие импортные расходы по параметрам автомобиля.',
     calculate: 'Рассчитать стоимость',
-    countries: [
-      { name: 'Россия', slug: 'russia', countryCode: 'RU' },
-      { name: 'Казахстан', slug: 'kazakhstan', countryCode: 'KZ' },
-      { name: 'Узбекистан', slug: 'uzbekistan', countryCode: 'UZ' },
-    ],
+    countries: calculatorCountries('ru'),
     ready: 'Готовы найти свой автомобиль?',
     readyBody:
       'Расскажите о бюджете и пожеланиях — обсудим автомобили из Китая и варианты экспорта.',

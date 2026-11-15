@@ -4,7 +4,7 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
-import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
+import { hasPrivateVehicleSource, publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
@@ -34,12 +34,14 @@ import styles from './public-detail.module.css';
 
 export function PublicVehicleDetail({
   vehicle,
+  detailTitle,
   locale,
   destinations = [],
   budget,
 }: {
   locale: Locale;
   vehicle: PublicVehicle;
+  detailTitle?: ReturnType<typeof publicVehicleTitle>;
   destinations?: VehicleDestination[];
   budget?: ReactNode;
 }) {
@@ -51,7 +53,7 @@ export function PublicVehicleDetail({
   const sold = fresh && vehicle.availability === 'sold';
   const availability = fresh ? publicAvailabilityLabel(vehicle, locale) : '';
   const make = vehicle.facts.make?.name;
-  const { text: title, lang } = publicVehicleTitle(vehicle, locale);
+  const { text: title, lang } = detailTitle ?? publicVehicleTitle(vehicle, locale);
   const titleRemainder =
     make && title.toLowerCase().startsWith(`${make.toLowerCase()} `)
       ? title.slice(make.length + 1)
@@ -102,15 +104,16 @@ export function PublicVehicleDetail({
             </div>
             <PublicVehicleGallery vehicle={vehicle} title={title} locale={locale} />
             <div className={styles.tiles}>
+              <VehicleVinCard vin={vehicle.identifiers?.vin} locale={locale} className={styles.vinTile} />
               <div className={styles.tile}>
                 <p><span className={styles.tileIcon}><Icon name="document" size={16} /></span>{copy.inquiry}</p>
                 <bdi>{reference.code}</bdi>
-                {reference.source && <small className={styles.referenceSource}>{reference.source}</small>}
               </div>
-              <VehicleVinCard vin={vehicle.identifiers?.vin} locale={locale} />
               <div className={`${styles.tile} ${styles.mileageTile}`}>
                 <p><span className={styles.tileIcon}><Icon name="gauge" size={16} /></span>{copy.mileage}</p>
-                <strong>{mileage ?? t.unknown}{mileage !== undefined && <small>{t.km}</small>}</strong>
+                <strong>{mileage === undefined ? t.unknown : (
+                  <span className={styles.mileageValue}>{mileage}<small>{t.km}</small></span>
+                )}</strong>
               </div>
             </div>
 
@@ -143,9 +146,6 @@ export function PublicVehicleDetail({
                   {vehicle.vehicleClass?.status === 'ready' && <div data-public-vehicle-class>
                     <dt>{recordsCopy.vehicleClass}</dt><dd lang={vehicle.vehicleClass.contentLocale} dir="auto">{vehicle.vehicleClass.text}</dd>
                   </div>}
-                  {vehicle.exportStatus && <div data-public-export-status={vehicle.exportStatus}>
-                    <dt>{recordsCopy.exportStatus}</dt><dd>{recordsCopy.exportStatuses[vehicle.exportStatus]}</dd>
-                  </div>}
                 </dl>
               </details>
             </section>
@@ -153,7 +153,7 @@ export function PublicVehicleDetail({
             <VehicleHistory vehicle={vehicle} locale={locale} />
             <VehicleInspectionSummary vehicle={vehicle} locale={locale} />
             <PublicVehiclePriceHistory vehicle={vehicle} locale={locale} />
-            {vehicle.content.description && (
+            {vehicle.content.description && !hasPrivateVehicleSource(vehicle.content.description.text) && (
               <section className={styles.card}>
                 <h2 className={styles.cardHeading}>
                   <span aria-hidden="true" />

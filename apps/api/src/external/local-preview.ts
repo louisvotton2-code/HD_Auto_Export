@@ -7,11 +7,7 @@ import {jsonHash} from './normalize.js';
 import {validVin} from './sources/public-evidence.js';
 export const LocalPreviewManifest=z.strictObject({version:z.literal(1),batchKey:z.string().regex(/^local-real-[a-z0-9-]{1,60}$/),
  identities:z.array(z.strictObject({source:z.enum(['che168','dongchedi']),externalId:z.string().regex(/^\d{1,100}$/)})).min(1).max(200)});
-export function assertLocalPreviewTarget(env:NodeJS.ProcessEnv){
- const u=new URL(env.DATABASE_URL??'');
- if(env.NODE_ENV!=='development'||env.HD_DEPLOYMENT_ENV!=='local'||!['postgres:','postgresql:'].includes(u.protocol)||u.hostname!=='127.0.0.1'||!/^\/hd_local_preview(?:_test_[a-f0-9]+)?$/.test(u.pathname)||u.hash||u.searchParams.getAll('host').length>1||[...u.searchParams.keys()].some(k=>k!=='host')||u.searchParams.has('host')&&!u.searchParams.get('host')!.startsWith('/')||env.TRANSLATION_PROVIDER&&env.TRANSLATION_PROVIDER!=='disabled')throw new Error('Local preview requires a dedicated loopback hd_local_preview database, development/local and disabled translation');
- return u.toString();
-}
+export {assertLocalPreviewTarget} from './local-preview-target.js';
 /** Local-only fixed cohort import. Never starts a worker, downloads a CSV, translates, or removes a database. */
 export async function importLocalPreview(db:Database,manifestInput:unknown,documents:Iterable<SourceDocument>|AsyncIterable<SourceDocument>){
  const manifest=LocalPreviewManifest.parse(manifestInput),key=(s:string,id:string)=>`${s}:${id}`;

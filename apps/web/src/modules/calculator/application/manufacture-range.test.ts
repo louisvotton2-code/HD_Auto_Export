@@ -3,7 +3,7 @@ import { Amount } from '../core/decimal';
 import { calculateImportEstimate } from '../core/calculate';
 import { createDefaultInput } from './defaults';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
-import { calculateManufactureRange, isManufactureMonthRange } from './manufacture-range';
+import { calculateManufactureRange, calculateRecentJanuaryEstimates, isManufactureMonthRange } from './manufacture-range';
 
 const input = {
   ...createDefaultInput('RU', '2026-11-14', createReferenceSnapshot()),
@@ -28,6 +28,17 @@ describe('complete manufacture month range quotes', () => {
       expect({ ...scenario.input, manufactureDate: '' }).toEqual(input);
     }
     expect(input).toEqual(before);
+  });
+
+  it('uses each of six January scenarios rather than every month or only endpoints', () => {
+    const quote = calculateRecentJanuaryEstimates(input, 2026);
+    const totals = [2021, 2022, 2023, 2024, 2025, 2026]
+      .map(year => Number(calculateImportEstimate({ ...input, manufactureDate: `${year}-01` }).total));
+    expect(quote).toMatchObject({ evaluatedMonths: 6, incompleteMonths: 0, range: { from: '2021-01', to: '2026-01' } });
+    expect(calculateRecentJanuaryEstimates(input, 2027)).toEqual(quote);
+    expect(Number(quote.minimum?.result.total)).toBe(Math.min(...totals));
+    expect(Number(quote.maximum?.result.total)).toBe(Math.max(...totals));
+    expect(calculateRecentJanuaryEstimates({ ...input, powerHp: '' }, 2026).minimum).toBeNull();
   });
 
   it.each([

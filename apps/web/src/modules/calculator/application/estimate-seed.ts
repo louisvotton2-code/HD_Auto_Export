@@ -3,8 +3,8 @@ import { CALCULATOR_POWERTRAINS } from './draft';
 import type { VehicleEstimateDraft } from './vehicle-estimate';
 import { EXCHANGE_CURRENCIES, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { parseCustomsDate, parseManufactureMonth } from '../core/dates';
-import { readManufactureEstimate, type ManufactureEstimate } from './manufacture-estimate';
-import { isManufactureMonthRange, type ManufactureMonthRange } from './manufacture-range';
+import { readManufactureEstimate } from './manufacture-estimate';
+import { isManufactureMonthRange } from './manufacture-range';
 
 const key = 'hd-estimate';
 const maxLength = 6000;
@@ -20,9 +20,6 @@ export type VehicleEstimateSeed = {
   sourceId: string;
   input: VehicleEstimateDraft;
   rates: ExchangeRateSnapshot;
-  /** @deprecated Old links are sanitized; new fragments carry an explicit month or a bounded range. */
-  manufactureEstimate?: ManufactureEstimate;
-  manufactureRange?: ManufactureMonthRange;
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -88,13 +85,15 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     || !parseCustomsDate(input.customsDate as string)) return null;
   if (hasEstimate && !readManufactureEstimate(value.manufactureEstimate, input.manufactureDate)) return null;
   if (hasRange && (hasEstimate || input.manufactureDate !== '' || !isManufactureMonthRange(value.manufactureRange))) return null;
-  if (!parseEstimateRates(value.rates)) return null;
-  // Old deep links carried a guessed January. Keep the known draft, but not that guessed date.
-  if (hasEstimate) {
-    const { manufactureEstimate: _legacy, ...next } = value;
-    return { ...next, input: { ...input, manufactureDate: '' } } as unknown as VehicleEstimateSeed;
-  }
-  return value as unknown as VehicleEstimateSeed;
+  const rates = parseEstimateRates(value.rates);
+  if (!rates) return null;
+  // Keep the facts and rates from old links, dropping obsolete date assumptions.
+  return {
+    version: 1,
+    sourceId: value.sourceId,
+    input: (hasEstimate ? { ...input, manufactureDate: '' } : input) as VehicleEstimateDraft,
+    rates,
+  };
 }
 
 export function createVehicleEstimateFragment(seed: VehicleEstimateSeed): string | null {

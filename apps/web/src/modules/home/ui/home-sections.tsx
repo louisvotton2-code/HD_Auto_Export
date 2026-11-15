@@ -367,18 +367,21 @@ export function HomeSections({
               <p className={styles.toolLabel}>{t.tool}</p>
               <h2 id="home-calculator-title">{t.calculator}</h2>
               <p>{t.calculatorBody}</p>
-              <div className={styles.countries}>
-                {t.countries.map((country) => (
-                  <Link href={`/${locale}/calculator/${country.slug}/`} key={country.slug}>
-                    <CountryFlag countryCode={country.countryCode} /> {country.name}
-                  </Link>
-                ))}
-              </div>
             </div>
             <Link className={styles.calculateButton} href={`/${locale}/calculator/`}>
               <Icon name="calculator" size={16} />
               {t.calculate}
             </Link>
+            <ul className={styles.countries}>
+              {t.countries.map((country) => (
+                <li key={country.slug}>
+                  <Link href={`/${locale}/calculator/${country.slug}/`}>
+                    <CountryFlag countryCode={country.countryCode} />
+                    <span>{country.name}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       </section>

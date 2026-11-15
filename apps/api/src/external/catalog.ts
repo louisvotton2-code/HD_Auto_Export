@@ -6,6 +6,8 @@ import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
 import type { Database } from '../db/index.js';
 import { displayText, publicText, type ExternalProjection } from './normalize.js';
+import { externalInquiryCode, externalInquiryNumber } from './inquiry-code.js';
+import { publicExternalDisplay, publicExternalSource } from './public-source.js';
 import type { ReportSourceRow } from './report-evidence.js';
 import { projectSourceReport } from './reports.js';
 import { applyInspectionEnrichment } from './inspection-enrichment.js';
@@ -16,12 +18,11 @@ export type { CatalogAnchor } from './cursor.js';
 export const publicListingId = (id: string) => `ext-${id}`;
 export const listingUuid = (id: string) => id.slice(4);
 export const publicMediaId = (id: string) => `ximg-${id}`;
-const stockCode = (id: string) => `EXT-${id.toUpperCase()}`;
 type Queryable = Pick<Database['pool'] | PoolClient, 'query'>;
 type CatalogRow = {
   configuration_total?:number; overridden_names?:string[];
   extras?: Pick<PublicVehicleCard, 'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'> & {powerHp?:number|null;names?:Partial<Pick<VehicleDisplay,'make'|'model'|'trim'>>};
-  listing_id: string; platform_id: string; platform_name: string; listing_url: string;
+  listing_id: string; inquiry_number: string; platform_id?: string;
   facts: ExternalProjection['facts']; price_cny: string | null; issues: ExternalIssue[];
   localized: ExternalProjection['localized'][Locale]; details?: ExternalProjection['details'];
   fetched_at: Date; source_updated_at: Date | null; published_at: Date;
@@ -54,15 +55,15 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
     remote: { revision: photo.revision, refreshedAt: photo.refreshed_at.toISOString(), expiresAt: iso(photo.expires_at) },
   }));
   const { title, description } = row.localized;
-  const display = { ...catalogDisplay(row), mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
+  const display = { ...catalogDisplay(row, locale), mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
   const id = publicListingId(row.listing_id);
-  const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id,
+  const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id!,
     external_id: row.external_id!, source_revision: row.source_revision!, source_hash: row.source_hash!, source_data: row.source_data ?? null,
     upstream_state: row.upstream_state! };
   const enriched = row.details ? applyInspectionEnrichment(source, row.details, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : undefined;
   // Reports are paged only on the separate inspection endpoint, including legacy/enriched projections.
-  const detail = enriched ? { ...enriched, inspection:null } : undefined;
+  const detail = enriched ? { ...enriched, inspection: null, relatedListingUrls: [] } : undefined;
   const report = detail ? projectSourceReport(source, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : null;
   const parsedSummary=PublicInspectionSummarySchema.safeParse(row.inspection_summary);
@@ -74,8 +75,8 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   };
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   return PublicVehicleSchema.parse({
-    id, stockCode: stockCode(row.listing_id), detailPath: `/${locale}/cars/${id}/`,
-    source: { kind: 'external', platform: { id: row.platform_id, name: row.platform_name }, listingUrl: row.listing_url },
+    id, stockCode: externalInquiryCode(row.inquiry_number), detailPath: `/${locale}/cars/${id}/`,
+    source: publicExternalSource(),
     facts: { ...localizedFacts(row.facts, display), ...(row.extras?.powerHp !== undefined ? {powerHp:row.extras.powerHp} : {}) }, display,
     ...publicExtras(row),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
@@ -91,8 +92,8 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   });
 }
 
-function catalogDisplay(row:CatalogRow):VehicleDisplay {
-  const display={...row.localized.display};
+function catalogDisplay(row: CatalogRow, locale: Locale): VehicleDisplay {
+  const display = publicExternalDisplay(row.localized.display, locale);
   for(const key of ['make','model','trim'] as const) {
     const extra=row.extras?.names?.[key];
     // Current employee edits and disputed/missing identities retain precedence over source names.
@@ -100,12 +101,12 @@ function catalogDisplay(row:CatalogRow):VehicleDisplay {
   }
   return display;
 }
-// The extras table is a small public whitelist, never the provider response or report payload.
+// Stored evidence still carries the supplier reference for internal use.
 function publicExtras(row: CatalogRow) {
   const manufacture=row.overridden_names?.includes('manufacturedAt')
     ? {date:row.facts.manufacturedAt,range:null,source:'staff',basis:null}
     : row.extras?.manufacture;
-  return { ...(row.extras?.identifiers ? { identifiers: row.extras.identifiers } : {}),
+  return { identifiers: { sourceId: null, source: null, inquiryCode: externalInquiryCode(row.inquiry_number), vin: row.extras?.identifiers?.vin ?? null },
     ...(manufacture ? { manufacture } : {}),
     ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass } : {}),
     exportStatus: row.extras?.exportStatus ?? 'unknown' };
@@ -114,11 +115,11 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
   const images: PublicMedia[] = photos.map(photo => ({ id:publicMediaId(photo.id),url:photo.url,alt:photo.alt?.text??'',altText:displayText(locale,photo.alt),
     width:photo.width,height:photo.height,sortOrder:photo.position,isCover:true,
     remote:{revision:photo.revision,refreshedAt:photo.refreshed_at.toISOString(),expiresAt:iso(photo.expires_at)} }));
-  const display={...catalogDisplay(row),mediaAlt:images.map(photo=>({mediaId:photo.id,value:photo.altText!}))};
+  const display={...catalogDisplay(row, locale),mediaAlt:images.map(photo=>({mediaId:photo.id,value:photo.altText!}))};
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   const id=publicListingId(row.listing_id);
-  return PublicVehicleCardSchema.parse({ id,stockCode:stockCode(row.listing_id),detailPath:`/${locale}/cars/${id}/`,
-    source:{kind:'external',platform:{id:row.platform_id,name:row.platform_name},listingUrl:row.listing_url},
+  return PublicVehicleCardSchema.parse({ id,stockCode:externalInquiryCode(row.inquiry_number),detailPath:`/${locale}/cars/${id}/`,
+    source:publicExternalSource(),
     facts:{...localizedFacts(row.facts,display),...(row.extras?.powerHp!==undefined?{powerHp:row.extras.powerHp}:{})},display,...publicExtras(row),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),content:{title:row.localized.title},images,
     availability:'unknown',availabilityCheckedAt:null,sourceUpdatedAt:iso(row.source_updated_at),fetchedAt:row.fetched_at.toISOString(),publishedAt:row.published_at.toISOString() });
@@ -148,7 +149,10 @@ function matches(query: PublicFilterQuery,quote:FxQuote|null=null) {
     else {if(query.priceMin!==undefined)where.push(`f.price_cny>=${param(query.priceMin)}::numeric`);if(query.priceMax!==undefined)where.push(`f.price_cny<=${param(query.priceMax)}::numeric`);}
   }
   if (query.exportStatus && query.exportStatus !== 'all') where.push(`coalesce(x.export_status,'unknown')=${param(query.exportStatus)}`);
-  if (query.q) {
+  const inquiryNumber = query.q && externalInquiryNumber(query.q);
+  if (inquiryNumber) {
+    where.push(`f.listing_id=(SELECT id FROM external_listings WHERE inquiry_number=${param(inquiryNumber)}::bigint)`);
+  } else if (query.q) {
     const pattern = param(literalPattern(query.q));
     // The combined GIN candidate may cross field separators; the second predicate cannot.
     where.push(`s.search_document LIKE lower(${pattern}) ESCAPE E'\\\\'`);
@@ -181,11 +185,11 @@ export async function aggregateCatalogFacets(tx: Queryable, selection: string, v
   ) SELECT * FROM groups UNION ALL SELECT 'total',NULL,NULL,NULL,NULL,count(*)::int FROM matched`, values);
   return result.rows;
 }
-const columns = `c.listing_id,c.published_at,c.platform_name,c.listing_url,c.facts,c.price_cny,c.issues,
-  c.localized->$1::text AS localized,l.platform_id,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
-const cardColumns = `c.listing_id,c.published_at,c.platform_name,c.listing_url,c.facts,c.price_cny,
+const columns = `c.listing_id,c.published_at,c.facts,c.price_cny,c.issues,
+  c.localized->$1::text AS localized,l.inquiry_number::text AS inquiry_number,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
+const cardColumns = `c.listing_id,c.published_at,c.facts,c.price_cny,
   jsonb_build_object('title',c.localized->$1::text->'title','display',c.localized->$1::text->'display') AS localized,
-  l.platform_id,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
+  l.inquiry_number::text AS inquiry_number,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
 const extrasJoin = ' LEFT JOIN external_vehicle_extras x ON x.listing_id=c.listing_id AND x.locale=$1::text LEFT JOIN external_listing_overrides o ON o.listing_id=c.listing_id';
 const from = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text' + extrasJoin;
 // Catalogue rows only exist for visible listings. This second predicate is also useful when repairing projections.
@@ -218,7 +222,7 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
 }
 
 export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null) {
-  const result = await tx.query<CatalogRow>(`SELECT ${columns},jsonb_set(c.details,'{inspection}','null'::jsonb) AS details,l.provider,l.external_id,l.source_revision::text,l.source_hash,
+  const result = await tx.query<CatalogRow>(`SELECT ${columns},jsonb_set(c.details,'{inspection}','null'::jsonb) AS details,l.provider,l.platform_id,l.external_id,l.source_revision::text,l.source_hash,
     CASE WHEN l.source_data IS NULL THEN NULL ELSE jsonb_build_object('platformId',l.source_data->'platformId','externalId',l.source_data->'externalId','disputes',coalesce(l.source_data->'disputes','[]'::jsonb),'inspection',jsonb_build_object('hasReport',l.source_data->'inspection'->'hasReport','reportUrl',l.source_data->'inspection'->'reportUrl')) END AS source_data,l.upstream_state,
     i.binding AS inspection_binding,jsonb_set(i.content,'{inspection}','null'::jsonb) AS inspection_content,ev.status AS inspection_status,ev.overview->'summary' AS inspection_summary
     ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
@@ -229,7 +233,7 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
 const filterFrom = (query: PublicFilterQuery) => 'FROM external_catalog_filter f' +
-  (query.q ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
+  (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND (f.locale_mask & CASE $1::text WHEN 'zh' THEN 1 WHEN 'en' THEN 2 WHEN 'ru' THEN 4 ELSE 0 END)<>0`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';

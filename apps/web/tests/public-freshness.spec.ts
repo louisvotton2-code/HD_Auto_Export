@@ -268,7 +268,7 @@ test.describe('explicit public queries, stable activation and media regression',
       const url = new URL((await link.getAttribute('href'))!);
       expect(['https://t.me/HD_Auto_CN', 'https://wa.me/8618215932610']).toContain(url.origin + url.pathname);
       const draft = url.searchParams.get('text');
-      expect(draft).toContain(vehicle.stockCode);
+      expect(draft).toContain(vehicle.identifiers.inquiryCode);
       expect(draft).toContain('/en/cars/fixture_external/');
       expect(draft).not.toMatch(/third.party listing|external listing|stock not verified|display example|not actual inventory/i);
     }

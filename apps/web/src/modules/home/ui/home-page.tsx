@@ -1,12 +1,12 @@
 'use client';
 
-import NextLink from 'next/link';
 import { BrandMarquee } from './brand-marquee';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
 import {
   publicAvailabilityLabel,
+  PublicCatalogLink,
   publicVehicleCover,
   publicVehicleMessages,
   usePublicFreshness,
@@ -126,9 +126,9 @@ function VehicleRail({
               >
                 <div className={styles.cardLight} aria-hidden="true" />
                 <div className={styles.vehicleImage}>
-                  <NextLink href={v.detailPath} prefetch={false} tabIndex={-1} aria-hidden="true">
+                  <PublicCatalogLink locale={locale} href={v.detailPath} tabIndex={-1} aria-hidden="true">
                     <VehiclePhoto image={image} locale={locale} alt={image?.alt || name} />
-                  </NextLink>
+                  </PublicCatalogLink>
                   <FavoriteVehicleButton
                     className={styles.save}
                     vehicleId={v.id}
@@ -145,7 +145,7 @@ function VehicleRail({
                   <h3 lang={lang} title={name}>{name}</h3>
                   <p className={styles.make}>{v.facts.make?.name ?? vehicleCopy.unknown}</p>
                   <p className={styles.stockCode}>
-                    {vehicleCopy.stockCodeLabel}: {publicVehicleReference(v).code}{publicVehicleReference(v).source ? ` · ${publicVehicleReference(v).source}` : ''}
+                    {vehicleCopy.stockCodeLabel}: {publicVehicleReference(v).code}
                   </p>
                   {trusted && v.availability !== 'unknown' && (
                     <p className={styles.availability} data-availability={v.availability}>
@@ -188,10 +188,10 @@ function VehicleRail({
                     >
                       <SocialIcon platform="whatsapp" size={20} />
                     </a>
-                    <NextLink className={styles.details} href={v.detailPath} prefetch={false}>
+                    <PublicCatalogLink locale={locale} className={styles.details} href={v.detailPath}>
                       {t.details}
                       <Icon name="arrow" size={14} />
-                    </NextLink>
+                    </PublicCatalogLink>
                   </div>
                 </div>
               </article>
@@ -266,7 +266,7 @@ export function HomePage({
           <h1>{t.title}</h1>
           <p>{t.subtitle}</p>
           <Link className={styles.catalogButton} href="/cars/">
-            <span>{t.catalog}</span>
+            <span className={styles.catalogButtonLabel}>{t.catalog}</span>
           </Link>
           <div className={styles.heroPhone}>
             <a href={siteConfig.contacts.phone.href}>
@@ -294,23 +294,23 @@ export function HomePage({
         </button>
       </section>
       <section className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
-        <Link href="/cars/" className={styles.shortcut}>
+        <Link href="/cars/" className={`${styles.shortcut} ${styles.catalogShortcut}`}>
           <Icon name="car" size={30} />
           <strong>{t.shortcuts[0]}</strong>
-          <span>{t.shortcutNotes[0]}</span>
-          <Icon name="arrow" size={16} />
+          <span className={styles.shortcutNote}>{t.shortcutNotes[0]}</span>
+          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
         </Link>
         <Link href="/parts/" className={styles.shortcut}>
           <Icon name="box" size={30} />
           <strong>{t.shortcuts[1]}</strong>
-          <span>{t.shortcutNotes[1]}</span>
-          <Icon name="arrow" size={16} />
+          <span className={styles.shortcutNote}>{t.shortcutNotes[1]}</span>
+          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
         </Link>
         <Link href="/calculator/" className={styles.shortcut}>
           <Icon name="calculator" size={30} />
           <strong>{t.shortcuts[2]}</strong>
-          <span>{t.shortcutNotes[2]}</span>
-          <Icon name="arrow" size={16} />
+          <span className={styles.shortcutNote}>{t.shortcutNotes[2]}</span>
+          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
         </Link>
       </section>
       {visibleSections.map((section) => (

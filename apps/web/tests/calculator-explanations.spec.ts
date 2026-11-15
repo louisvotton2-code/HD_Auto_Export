@@ -7,6 +7,7 @@ async function openCalculator(page: Page, country: string, locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}`);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await fillNumericDate(page, 'customsDate', '2026-10-22');
+  if (await page.locator('#manufactureDate').count()) await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toBeVisible();
   // Explanations are intentionally collapsed in the initial quote. These checks
   // exercise their contents; the default and independent controls live in fee-details.spec.ts.

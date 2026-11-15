@@ -4,6 +4,8 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { formatDisplayAmount } from '@/shared/lib/display-amount';
+import { CountryFlag } from '@/shared/ui/country-flag';
 import { Icon } from '@/shared/ui/icon';
 import { useDestinationCountry } from '@/shared/ui/use-destination-country';
 import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
@@ -14,8 +16,7 @@ import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
-import { calculateManufactureRange, isManufactureMonthRange } from '../application/manufacture-range';
-import { vehicleManufacturePrefill } from '../application/manufacture-estimate';
+import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
 import { manufactureRangeCopy } from '../application/manufacture-range-copy';
 import {
   createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput,
@@ -25,6 +26,8 @@ import { vehicleEstimateCopy } from '../application/vehicle-estimate-copy';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { FeeLine } from './fee-line';
 import { ManufactureRangeResult } from './manufacture-range-result';
+import { fieldDisplayPrecision } from './field-display-precision';
+import { DecimalDisplayInput } from './decimal-display-input';
 import { NumericDateInput } from './numeric-date-input';
 import styles from './vehicle-import-estimate.module.css';
 
@@ -58,11 +61,9 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const preference = useDestinationCountry(undefined, vehicle.id);
   const prefix = useId();
   const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), initialDate, initialRates]);
-  const manufactureRange = useMemo(() => vehicleManufacturePrefill(vehicle, initialDate).range, [identity]);
   const [state, setState] = useState(() => ({
     identity,
     input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates),
-    manufactureEdited: false,
   }));
   const [ready, setReady] = useState(false);
   const [manualRates, setManualRates] = useState(false);
@@ -72,23 +73,16 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const input = current ? state.input : createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates);
   const country = getCountryByCode(input.country)!;
   const active = ready && preference.ready && !disabled && current && input.country === preference.country;
-  const sourceRange = current && !state.manufactureEdited && input.manufactureDate === ''
-    && isManufactureMonthRange(manufactureRange) ? manufactureRange : undefined;
-  const activeRange = country.needsManufactureDate ? sourceRange : undefined;
   const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
-  const rangeResult = useMemo(() => activeRange ? calculateManufactureRange(normalized, activeRange) : null, [normalized, activeRange]);
+  const referenceYear = Number(initialDate.slice(0, 4));
+  const dateIsBlank = country.needsManufactureDate && current && normalized.manufactureDate === '';
+  const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
+    [dateIsBlank, normalized, referenceYear]);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
-  const formatter = useMemo(() => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : locale, {
-    maximumFractionDigits: 2,
-  }), [locale]);
-  const separator = formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
-  const format = (value: string) => {
-    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(value);
-    return match ? `${formatter.format(BigInt(match[1]))}${match[2] ? separator + match[2] : ''}` : '—';
-  };
+  const format = (value: string) => formatDisplayAmount(value, locale, 2);
   const usd = (value: string) => {
     const converted = convertImportAmountToUsd(value, normalized, initialRates);
-    return converted === null ? '— USD' : `≈ ${format(converted)} USD`;
+    return converted === null ? '— USD' : `≈ ${formatDisplayAmount(converted, locale, 2)} USD`;
   };
 
   useEffect(() => {
@@ -97,7 +91,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ? previous.input.country === preference.country ? previous : {
         ...previous, input: { ...previous.input, country: preference.country, importerType: 'individual', ...deriveRates(initialRates, preference.country, previous.input.currency) },
       }
-      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates), manufactureEdited: false });
+      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates) });
     setExpanded(new Set());
     setManualRates(false);
     setReady(true);
@@ -108,7 +102,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
     setState((previous) => ({
       ...previous,
-      manufactureEdited: previous.manufactureEdited || key === 'manufactureDate',
       input: {
         ...previous.input, [key]: value,
         ...(key === 'transactionRate' && previous.input.country === 'UZ' && previous.input.currency === 'USD'
@@ -141,10 +134,10 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={Number(initialDate.slice(0, 4))} label={label} locale={locale}
+      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={referenceYear} limitToCurrentYear={key === 'manufactureDate'} label={label} locale={locale}
         onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
         <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
-        <input id={id} name={key} value={input[key] ?? ''} type="text"
+        <DecimalDisplayInput precision={fieldDisplayPrecision[key]} id={id} name={key} value={input[key] ?? ''} type="text"
         inputMode={type ? undefined : 'decimal'} autoComplete="off" spellCheck={false}
         aria-invalid={Boolean(error)} aria-describedby={describedBy || undefined}
         onChange={(event) => update(key, event.target.value)} />
@@ -165,7 +158,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const emptyOption = <option value="">{vehicleEstimateMissingLabel(locale)}</option>;
   const seed = active ? createVehicleEstimateFragment({
     version: 1, sourceId: vehicle.id, input, rates: initialRates,
-    ...(sourceRange ? { manufactureRange: sourceRange } : {}),
   }) : null;
   const toolHref = `/${locale}/calculator/${country.slug}/${seed ?? ''}`;
   const feeId = (line: CalculationLine, extra = false) => `${prefix}-${country.code}-${extra ? 'extra-' : ''}${line.id}`;
@@ -204,11 +196,30 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     {country.personalReference && <p className={styles.note}>{t('personal')}</p>}
     <fieldset className={styles.fields} disabled={!active}>
       <div className={styles.field}>
-        <label htmlFor={`${prefix}-country`}>{t('destination')}</label>
-        <select id={`${prefix}-country`} name="country" value={country.code}
-          onChange={(event) => changeCountry(event.target.value as CountryCode)}>
-          {countries.map((item) => <option key={item.code} value={item.code}>{tc(item.code)}</option>)}
-        </select>
+        <span id={`${prefix}-country-label`} className={styles.countryLabel}>{t('destination')}</span>
+        <details className={styles.countryPicker} onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+        }} onKeyDown={event => {
+          if (event.key !== 'Escape' || !event.currentTarget.open) return;
+          event.currentTarget.open = false;
+          event.currentTarget.querySelector('summary')?.focus();
+          event.preventDefault();
+        }}>
+          <summary data-testid="vehicle-destination-picker" id={`${prefix}-country`} aria-labelledby={`${prefix}-country-label ${prefix}-country-value`}
+            tabIndex={active ? undefined : -1} aria-disabled={!active} onClick={event => { if (!active) event.preventDefault(); }}>
+            <CountryFlag countryCode={country.code} />
+            <span id={`${prefix}-country-value`}>{tc(country.code)}</span><Icon name="chevron" size={15} />
+          </summary>
+          <ul>{countries.map(item => <li key={item.code}><button type="button" data-country-option={item.code} aria-pressed={item.code === country.code}
+            onClick={event => {
+              const picker = event.currentTarget.closest('details');
+              if (picker) {
+                picker.open = false;
+                picker.querySelector('summary')?.focus();
+              }
+              changeCountry(item.code);
+            }}><CountryFlag countryCode={item.code} />{tc(item.code)}</button></li>)}</ul>
+        </details>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>
         {field('price', t('price'))}

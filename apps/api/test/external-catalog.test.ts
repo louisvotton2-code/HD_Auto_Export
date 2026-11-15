@@ -479,7 +479,8 @@ test('normal staff can search and page all external listing states without expos
   const beyond = await adminListings({ q: 'ops-list-', page: '4', pageSize: '2' });
   assert.equal(beyond.total, 5);
   assert.deepEqual(beyond.items, []);
-  for (const q of [ids[0]!, candidates[0]!.externalId, candidates[0]!.listingUrl, 'supplier title 9101', 'Vendor Model 9101']) {
+  for (const q of [ids[0]!, candidates[0]!.externalId, candidates[0]!.listingUrl, 'supplier title 9101', 'Vendor Model 9101',
+    `${candidates[0]!.platformId}-${candidates[0]!.externalId}`.toUpperCase()]) {
     const found = await adminListings({ q, locale: 'en' });
     assert.equal(found.total, 1, q);
     assert.equal(found.items[0]?.id, ids[0], q);

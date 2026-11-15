@@ -18,3 +18,13 @@ export async function newName(page: Page, kind: '品牌' | '车型', name: strin
   await modal.getByRole('button', { name: `添加${kind}`, exact: true }).click();
   await expect(modal).not.toBeVisible();
 }
+
+export async function fillRequiredVehicleBasics(page: Page, title = '合成测试车辆') {
+  await select(page, '品牌', '丰田 / Toyota');
+  await select(page, '车型', '卡罗拉 / Corolla');
+  await page.getByLabel('标题原文', { exact: true }).fill(title);
+  await page.getByLabel('配置名称', { exact: true }).fill('合成配置款型');
+  await page.getByRole('textbox', { name: '年款', exact: true }).click();
+  await page.locator('.ant-picker-dropdown:visible td[title="2024"]').click();
+  await page.getByLabel('里程（公里）', { exact: true }).fill('0');
+}

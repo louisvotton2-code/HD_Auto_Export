@@ -17,6 +17,7 @@ import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
 import { VehicleEvidence } from './vehicles/evidence.js';
 import {markFullSyncAccess} from './external/full-sync/engine.js';
+import {listingUuid} from './external/catalog.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { MediaService } from './media/service.js';
@@ -213,14 +214,15 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get('/health/serving',{schema:{hide:true}},async()=>serving.status());
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint FROM home_config h
+      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint,el.inquiry_number FROM home_config h
         JOIN public_catalog_state cs ON cs.id=1 JOIN translation_budget_state bs ON bs.id=1
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
         LEFT JOIN publication_preview_confirmations pc ON false
         LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
         LEFT JOIN backup_gc_leases bg ON false LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
-        LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false WHERE h.id=1`);
+        LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false
+        LEFT JOIN external_listings el ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.externalCatalog) {
         const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
@@ -269,9 +271,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([pub.PublicVehicleResponseSchema,pub.PublicVehicleInlineResponseSchema]),...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
       const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection);
-      const identity=vehicle.identifiers;
-      if(p.id.startsWith('ext-')&&identity?.sourceId&&(identity.source==='che168'||identity.source==='dongchedi')) {
-        try{await serving.optionalEffect(()=>markFullSyncAccess(db,identity.source as 'che168'|'dongchedi',identity.sourceId!));}catch{request.log.debug('Full-sync access hint unavailable');}
+      if(p.id.startsWith('ext-')) {
+        try{await serving.optionalEffect(()=>markFullSyncAccess(db,listingUuid(p.id)));}catch{request.log.debug('Full-sync access hint unavailable');}
       }
       return vehicle;
     },request);});

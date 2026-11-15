@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
-import { select, tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, select, tab } from './ui-helpers';
 
 test('vehicle list distinguishes an incomplete asking quote from an explicit on-request price', async ({ page }) => {
   const missingMoney = vehicle(); missingMoney.stockCode = 'ASKING-NO-MONEY';
@@ -28,9 +28,7 @@ test('vehicle list distinguishes an incomplete asking quote from an explicit on-
 test('manual entry defaults and model suggestions are saved as draft facts only', async ({ page }) => {
   const api = await installApi(page);
   await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
-  await select(page, '品牌', '丰田 / Toyota');
-  await select(page, '车型', '卡罗拉 / Corolla');
+  await fillRequiredVehicleBasics(page);
   await expect(page.getByLabel('所在地城市', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('公开所在地描述', { exact: true })).toHaveCount(0);
   await tab(page, '价格与内部信息');

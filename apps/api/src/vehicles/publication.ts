@@ -63,7 +63,6 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
       missing('draft.internal.purchaseCost', 'A positive purchase cost and its currency are required.');
   }
   if (draft.source.kind === 'manual') {
-    if (!draft.facts.location) missing('draft.facts.location', 'Location country is required.');
     if (row.availability === 'unknown' || !row.availability_checked_at) missing('availability', 'Verify availability before publishing.');
   } else if (row.availability !== 'unknown' || row.availability_checked_at !== null) {
     missing('availability', 'External copies and examples must retain unknown availability.');

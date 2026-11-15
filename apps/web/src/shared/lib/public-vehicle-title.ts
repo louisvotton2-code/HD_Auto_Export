@@ -1,22 +1,35 @@
+import type { PublicVehicle } from '@hd/contracts/public';
 import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
+import { hasPrivateVehicleSource } from './public-vehicle-reference';
 import type { Locale } from '@/i18n/routing';
+
+export function publicDetailTitleRevision(vehicle: Pick<PublicVehicle, 'id' | 'publishedAt' | 'sourceUpdatedAt' | 'fetchedAt'>) {
+  return JSON.stringify([vehicle.id, vehicle.publishedAt, vehicle.sourceUpdatedAt, vehicle.fetchedAt]);
+}
+
+export function publicEnglishDetailTitle(vehicle: PublicVehicleSummary) {
+  const title = publicVehicleTitle(vehicle, 'en');
+  return title.lang?.toLowerCase().split('-')[0] === 'en' ? title : undefined;
+}
 
 const hasChineseText = /\p{Script=Han}/u;
 const genericTitle = { zh: '车辆信息', en: 'Vehicle details', ru: 'Информация об автомобиле' };
 
-/** Imported supplied titles retain their actual source language; catalog placeholders use safe facts. */
+/** Prefer a matching title, otherwise build it from the localized catalog facts. */
 export function publicVehicleTitle(vehicle: PublicVehicleSummary, locale: Locale) {
   const original = vehicle.content.title;
-  const missingTitle = vehicle.source.kind === 'external' && original.kind === 'catalog';
-  const missingChinese = vehicle.source.kind !== 'external' && locale === 'zh' && !/^zh(?:-|$)/i.test(original.contentLocale);
-  if (!missingTitle && !missingChinese) {
+  const matchLocale = (lang: string | null | undefined) => lang?.toLowerCase().split('-')[0] === locale;
+  const safeOriginal = original.kind !== 'catalog' && original.text !== '—' && !hasPrivateVehicleSource(original.text);
+  if (safeOriginal && matchLocale(original.contentLocale)) {
     return { text: original.text, lang: original.contentLocale };
   }
   const { modelYear } = vehicle.facts;
   const factName = (field: 'make' | 'model' | 'trim') => {
     // The staff-published projection inserts a label for missing translations.
-    if (vehicle.source.kind !== 'external' && vehicle.display?.[field].status === 'missing') return '';
-    return vehicle.facts[field]?.name.trim() ?? '';
+    const name = vehicle.facts[field]?.name.trim() ?? '';
+    const display = vehicle.display?.[field];
+    if (display?.status === 'missing' || hasPrivateVehicleSource(name) || (locale !== 'zh' && hasChineseText.test(name))) return '';
+    return name;
   };
   const brand = factName('make');
   const name = factName('model');
@@ -27,12 +40,13 @@ export function publicVehicleTitle(vehicle: PublicVehicleSummary, locale: Locale
   );
   const identity = modelIncludesBrand ? name : [brand, name].filter(Boolean).join(' ');
   const variant = factName('trim');
-  const localizedTrim = locale === 'zh' && variant && hasChineseText.test(variant) && variant !== identity && variant !== name
-    ? variant
-    : '';
+  const trimLocale = vehicle.display?.trim.contentLocale;
+  const trimInLocale = trimLocale ? matchLocale(trimLocale) : locale === 'zh' && hasChineseText.test(variant);
+  const localizedTrim = trimInLocale && variant !== identity && variant !== name ? variant : '';
   const year = modelYear !== null && !localizedTrim.includes(String(modelYear))
     ? `${modelYear}${locale === 'zh' ? '款' : ''}`
     : '';
+  if (!identity && !localizedTrim && safeOriginal) return { text: original.text, lang: original.contentLocale };
   const text = [identity || genericTitle[locale], year, localizedTrim].filter(Boolean).join(' ');
   return { text, lang: locale };
 }

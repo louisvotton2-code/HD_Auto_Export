@@ -410,7 +410,9 @@ test('uploads are bounded, bound to a vehicle and cannot request a remote fetch'
   for (const extra of [{ sizeBytes: 0 }, { sizeBytes: 10 * 1024 * 1024 + 1 }, { contentType: 'image/svg+xml' }, { filename: '../photo.jpg' }, { filename: 'a\\photo.jpg' }, { url: 'https://private.test/' }]) assert.equal(admin.MediaUploadRequestSchema.safeParse({ ...input, ...extra }).success, false);
   assert.equal(admin.MediaUploadRequestSchema.safeParse({ contentType: 'image/jpeg', sizeBytes: 1000 }).success, false);
   const { rights, ...noDeclaration } = input;
-  assert.equal(admin.MediaUploadRequestSchema.safeParse(noDeclaration).success, false);
+  assert.deepEqual(admin.MediaUploadRequestSchema.parse(noDeclaration), noDeclaration);
+  assert.equal(admin.MediaUploadRequestSchema.safeParse({ ...input, rights: null }).success, false);
+  assert.equal(admin.MediaUploadRequestSchema.safeParse({ ...input, rights: { ...rights, declaredBy: 'fixture_staff' } }).success, false);
   assert.equal(admin.MediaUploadRequestSchema.safeParse({ ...input, rights: { basis: 'permission', note: ' \n ' } }).success, false);
   assert.equal(admin.MediaUploadRequestSchema.safeParse({ ...input, rights: { basis: 'unknown', note: 'Not checked' } }).success, false);
 });

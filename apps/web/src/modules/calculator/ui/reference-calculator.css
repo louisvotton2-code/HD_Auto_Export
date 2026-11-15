@@ -223,6 +223,11 @@
   line-height: 1.5;
 }
 
+.calculator-reference.calculator-simple .manufacture-assumption strong {
+  color: #ff8d8d;
+  font-weight: 700;
+}
+
 .calculator-reference.calculator-simple .powertrain-field,
 .calculator-reference.calculator-simple .condition-field {
   margin-top: 16px;

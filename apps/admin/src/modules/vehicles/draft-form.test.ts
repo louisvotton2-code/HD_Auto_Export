@@ -97,6 +97,24 @@ describe('草稿表单与统一契约', () => {
     expect(formToDraft(result, draftToForm(result))).toEqual(result);
     expect(() => formToDraft(base, { ...draftToForm(base), priceKind: 'reference', amount: '' })).toThrow();
   });
+  it('uses CNY for first amounts on old empty money records and retains amounts already priced in another currency', () => {
+    const base = emptyDraft();
+    base.price = { kind: 'asking', money: { amount: null, currency: 'USD' }, includes: [] };
+    base.internal.purchaseCost = { amount: null, currency: 'EUR' };
+    const form = draftToForm(base);
+    const untouched = formToDraft(base, { ...form, notes: '只改备注' });
+    expect(untouched.price.money).toEqual({ amount: null, currency: 'USD' });
+    expect(untouched.internal.purchaseCost).toEqual({ amount: null, currency: 'EUR' });
+    const firstAmounts = formToDraft(base, { ...form, amount: '60000', purchaseAmount: '45000' });
+    expect(firstAmounts.price.money).toEqual({ amount: '60000', currency: 'CNY' });
+    expect(firstAmounts.internal.purchaseCost).toEqual({ amount: '45000', currency: 'CNY' });
+
+    base.price = { kind: 'asking', money: { amount: '60000', currency: 'USD' }, includes: [] };
+    base.internal.purchaseCost.amount = '45000';
+    const priced = formToDraft(base, { ...draftToForm(base), amount: '62000', purchaseAmount: '47000' });
+    expect(priced.price.money).toEqual({ amount: '62000', currency: 'USD' });
+    expect(priced.internal.purchaseCost).toEqual({ amount: '47000', currency: 'EUR' });
+  });
   it('清空已有金额不改成待询价或零，采购币种可单独保留', () => {
     const base = makeVehicleDraftFixture();
     const result = formToDraft(base, { ...draftToForm(base), priceKind: 'asking', amount: '', purchaseAmount: '', purchaseCurrency: 'CNY' });

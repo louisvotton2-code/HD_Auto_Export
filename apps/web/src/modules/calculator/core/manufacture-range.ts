@@ -1,5 +1,5 @@
 import { calculateImportEstimate } from './calculate';
-import { parseManufactureMonth } from './dates';
+import { parseCustomsDate, parseManufactureMonth } from './dates';
 import { Amount } from './decimal';
 import type { CalculationInput, CalculationResult } from './types';
 
@@ -50,13 +50,28 @@ export function calculateManufactureRange(
   const last = parseManufactureMonth(range.to)!;
   const start = first.year * 12 + first.month - 1;
   const end = last.year * 12 + last.month - 1;
+  const dates = Array.from({ length: end - start + 1 }, (_, index) => {
+    const month = start + index;
+    return `${String(Math.floor(month / 12)).padStart(4, '0')}-${String(month % 12 + 1).padStart(2, '0')}`;
+  });
+  return evaluateManufactureDates(input, range, dates);
+}
+
+/** Reference-only scenarios when the vehicle has no evidence of a manufacture month. */
+export function calculateRecentJanuaryEstimates(input: CalculationInput, year: number): ManufactureRangeCalculation {
+  const clearanceYear = parseCustomsDate(input.customsDate)?.year;
+  const latestYear = Math.min(year, clearanceYear ?? year);
+  const dates = Array.from({ length: 6 }, (_, index) => `${latestYear - 5 + index}-01`);
+  return evaluateManufactureDates(input, { from: dates[0], to: dates[5] }, dates);
+}
+
+function evaluateManufactureDates(input: CalculationInput, range: ManufactureMonthRange, dates: string[]): ManufactureRangeCalculation {
   let minimum: ManufactureQuoteScenario | null = null;
   let maximum: ManufactureQuoteScenario | null = null;
   let failure: CalculationResult | null = null;
   let incompleteMonths = 0;
   const severity = { reference: 0, needs_review: 1, incomplete: 2, invalid: 3 };
-  for (let month = start; month <= end; month++) {
-    const manufactureDate = `${String(Math.floor(month / 12)).padStart(4, '0')}-${String(month % 12 + 1).padStart(2, '0')}`;
+  for (const manufactureDate of dates) {
     const scenarioInput = { ...input, manufactureDate };
     const result = calculateImportEstimate(scenarioInput);
     if (result.status !== 'reference' || result.total === null) {
@@ -70,8 +85,8 @@ export function calculateManufactureRange(
   }
   if (failure) {
     // Some months cannot be priced: valid months do not become a purported complete range.
-    return { range, evaluatedMonths: end - start + 1, incompleteMonths, minimum: null, maximum: null,
+    return { range, evaluatedMonths: dates.length, incompleteMonths, minimum: null, maximum: null,
       result: { ...failure, total: null, lines: [], additionalCosts: [] } };
   }
-  return { range, evaluatedMonths: end - start + 1, incompleteMonths: 0, minimum, maximum, result: minimum!.result };
+  return { range, evaluatedMonths: dates.length, incompleteMonths: 0, minimum, maximum, result: minimum!.result };
 }

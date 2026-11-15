@@ -4,34 +4,26 @@ import type { Locale } from '@/i18n/routing';
 import { withImageAltText } from './vehicle-image-text';
 import { publicVehicleMessages } from './public-messages';
 import { publicMediaUrl } from '@/shared/lib/public-media';
-import { publicUsdQuote, roundedUsd } from '@/shared/lib/public-vehicle-price';
+import { formatDisplayAmount } from '@/shared/lib/display-amount';
+import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { catalogFilterKeys } from './public-query';
 import { catalogFilterCopy } from './catalog-filter-copy';
 
-/** Keep amounts exact, including values too large for precise Number formatting. */
-export function formatPublicAmount(amount: string, locale: Locale): string {
-  const [whole, fraction = ''] = amount.split('.');
-  const formatter = new Intl.NumberFormat(locale);
-  const decimal =
-    formatter.formatToParts(1.1).find((part) => part.type === 'decimal')?.value ?? '.';
-  const significantFraction = fraction.replace(/0+$/, '');
-  return `${formatter.format(BigInt(whole!))}${significantFraction ? `${decimal}${significantFraction}` : ''}`;
-}
-export function formatVehicleMoney(money: Money, locale: Locale): string {
-  if (money.currency === 'USD') return `${new Intl.NumberFormat(locale).format(roundedUsd(money.amount))} USD`;
-  const amount = formatPublicAmount(money.amount, locale);
+export { formatDisplayAmount as formatPublicAmount };
+export function formatVehicleMoney(money: Money, locale: Locale, maximumDecimals = 2): string {
+  const amount = formatDisplayAmount(money.amount, locale, 0, maximumDecimals);
   return money.currency === 'CNY' ? `¥ ${amount}` : `${amount} ${money.currency}`;
 }
 
 export function formatPublicVehiclePrice(vehicle: PublicVehicleSummary, locale: Locale): string {
   const { money } = vehicle.price;
-  return money ? formatVehicleMoney(money, locale) : publicVehicleMessages(locale).priceLabels.on_request;
+  return money ? formatVehicleMoney(money, locale, 0) : publicVehicleMessages(locale).priceLabels.on_request;
 }
 
 export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicleSummary, locale: Locale) {
   const quote = publicUsdQuote(vehicle);
   if (!quote?.conversion) return null;
-  return `≈ ${new Intl.NumberFormat(locale).format(roundedUsd(quote.money.amount))} USD`;
+  return `≈ ${formatDisplayAmount(quote.money.amount, locale, 0, 0)} USD`;
 }
 
 export function publicAvailabilityLabel(vehicle: PublicVehicleSummary, locale: Locale): string {

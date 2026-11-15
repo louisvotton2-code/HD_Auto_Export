@@ -1,8 +1,10 @@
 'use client';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { usePublicDetailTitle } from '../application/use-public-detail-title';
 import { VehicleSegmentContext } from '../application/use-public-vehicle-segment';
 import { type PublicVehicleInline } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import type { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { liveVehicleCopy } from '../live-copy';
 import { publicVehicleMessages } from '../public-messages';
@@ -16,6 +18,7 @@ import type { VehicleDestination } from './vehicle-gallery';
 export function PublicDetailResource({
   locale,
   vehicle,
+  detailTitle,
   id,
   destinations,
   initialRetryAfter = 0,
@@ -23,6 +26,7 @@ export function PublicDetailResource({
 }: {
   locale: Locale;
   vehicle: PublicVehicleInline | null;
+  detailTitle?: ReturnType<typeof publicVehicleTitle>;
   id: string;
   destinations: VehicleDestination[];
   initialRetryAfter?: number;
@@ -39,6 +43,8 @@ export function PublicDetailResource({
     initialRetryAfter,
     cooldown,
   });
+  const title = usePublicDetailTitle(locale, vehicle, detailTitle, resource.data?.data,
+    resource.phase === 'fresh' && resource.retryAfter === 0);
   const segmentContext = useMemo(() => ({ cooldown, onMissing: resource.markMissing }), [resource.markMissing]);
   useEffect(() => {
     if (!resource.missing) return;
@@ -78,6 +84,7 @@ export function PublicDetailResource({
         <PublicVehicleDetail
           locale={locale}
           vehicle={resource.data.data}
+          detailTitle={title}
           destinations={destinations}
           budget={renderBudget?.(resource.data.data, resource.phase === 'fresh')}
         />

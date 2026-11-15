@@ -16,12 +16,12 @@ describe('same-response inspection summary', () => {
       const copy = inspectionSummaryCopy[locale];
       expect(html).toContain(`data-inspection-status="${status}"`);
       for (const text of [copy.unavailable, copy.application, copy.mismatch, copy.match, copy.merchant]) expect(html).toContain(text);
-      expect(html).toMatch(new RegExp(`<strong[^>]*>${copy.refund}</strong>`));
+      expect(html).toMatch(new RegExp(`<strong[^>]*>${copy.merchant}</strong>`));
       expect(html).toMatch(new RegExp(`<strong[^>]*>${copy.customer}</strong>`));
       expect(html).not.toContain('data-public-inspection-link');
       expect(html).not.toContain('/inspection/');
-      expect(html).toContain('https://t.me/');
-      expect(html).toContain('https://wa.me/');
+      expect(html).not.toContain('https://t.me/');
+      expect(html).not.toContain('https://wa.me/');
     }
   });
   it('keeps a known zero distinct from unknown counts without a report navigation action', () => {

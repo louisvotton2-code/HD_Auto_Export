@@ -20,7 +20,7 @@ import './vehicle-entry-cases';
 import './external-source-cases';
 import { expect, test } from '@playwright/test';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
-import { notes, select, tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, notes, select, tab } from './ui-helpers';
 import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 
 test('initial authentication, native auth error and explicit sign out', async ({ page }) => {
@@ -101,8 +101,7 @@ test('an ambiguous create retry uses the original body and idempotency key', asy
     return reply(route, envelope(api.items[0]), 201);
   });
   await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' }).click();
-  await page.getByLabel('标题原文', { exact: true }).fill('断网重试测试草稿');
+  await fillRequiredVehicleBasics(page, '断网重试测试草稿');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect(page.getByText('创建结果尚未确认', { exact: true })).toBeVisible();
   await expect(page.getByLabel('标题原文', { exact: true })).toBeDisabled();

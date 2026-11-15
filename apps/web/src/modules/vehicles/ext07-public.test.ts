@@ -43,13 +43,13 @@ describe('EXT07 public projections and records', () => {
     full.facts.powerHp = null;
     expect(publicVehicleFacts(full, 'ru').find(row => row.label === t.powerLabel)).toBeUndefined();
   });
-  it('uses the supplier inquiry reference and source without changing detail URLs', () => {
+  it('keeps the original detail URL while hiding legacy supplier identifiers from inquiries', () => {
     const full = vehicle();
     full.identifiers = { inquiryCode: 'dcd-357217151', sourceId: '357217151', source: 'dongchedi', vin: 'LHGCM82633A004352' };
     expect(PublicVehicleSchema.parse(full).identifiers?.vin).toBe('LHGCM82633A004352');
     const draft = buildPublicVehicleContactLinks(full, 'ru');
-    expect(draft.message).toContain('dcd-357217151');
-    expect(draft.message).toContain('dongchedi');
+    expect(draft.message).not.toContain('dcd-357217151');
+    expect(draft.message).not.toContain('dongchedi');
     expect(draft.message).toContain(full.detailPath);
     expect(draft.message).not.toContain(`ID: ${full.id}`);
   });

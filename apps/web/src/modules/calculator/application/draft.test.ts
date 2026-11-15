@@ -1,27 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { getCountryByCode } from '../config/countries';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
-import { createDefaultInput } from './defaults';
-import { restoreCalculatorDraft } from './draft';
+import { createCalculatorFormInput, restoreCalculatorDraft } from './draft';
 
 const date = '2026-10-23';
 const rates = createReferenceSnapshot();
 const ru = getCountryByCode('RU')!;
 const kg = getCountryByCode('KG')!;
-const defaults = createDefaultInput('RU', date, rates);
+const defaults = createCalculatorFormInput(ru, date, rates);
 const current = (input: unknown, manualRates: unknown = false) => ({
   current: JSON.stringify({ input, manualRates }),
 });
 
 describe('pure calculator draft restoration', () => {
-  it('retains the exact source range only in its own country draft and never restores guessed January', () => {
+  it('ignores older source ranges and guessed January dates while restoring vehicle facts', () => {
     const input = { ...defaults, manufactureDate: '' };
     const manufactureRange = { from: '2020-11', to: '2026-11' };
     const raw = { current: JSON.stringify({ input, manualRates: false, manufactureRange }) };
-    expect(restoreCalculatorDraft(raw, ru, date, rates)).toMatchObject({ input, manufactureRange });
-    expect(restoreCalculatorDraft(raw, kg, date, rates)).not.toHaveProperty('manufactureRange');
+    expect(restoreCalculatorDraft(raw, ru, date, rates)).toEqual({ input, manualRates: false });
     const old = { current: JSON.stringify({ input: { ...defaults, manufactureDate: '2024-01' }, manufactureEstimate: 'model_year' }) };
     expect(restoreCalculatorDraft(old, ru, date, rates).input.manufactureDate).toBe('');
+  });
+  it('keeps a fresh date blank and restores a previously selected exact month', () => {
+    expect(restoreCalculatorDraft({ current: null }, ru, date, rates).input.manufactureDate).toBe('');
+    const raw = current({ ...defaults, manufactureDate: '2021-01' });
+    expect(restoreCalculatorDraft(raw, ru, date, rates).input.manufactureDate).toBe('2021-01');
   });
   it('preserves explicit missing vehicle enums only in the current UI format', () => {
     const unknown = { ...defaults, powertrain: '', condition: '', steering: '' };
@@ -146,7 +149,7 @@ describe('pure calculator draft restoration', () => {
     );
     expect(restored.manualRates).toBe(false);
     expect(restored.input).toMatchObject({
-      ...createDefaultInput('KG', date, rates),
+      ...createCalculatorFormInput(kg, date, rates),
       price: '245000',
       importerType: 'individual',
     });

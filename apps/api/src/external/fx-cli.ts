@@ -4,13 +4,29 @@ import { assertFxRefreshAuthorization, readFxHealth, refreshFxQuote, seedSynthet
 
 async function run() {
   const [action, fixture, ...rest] = process.argv.slice(2);
-  if (rest.length || !['--health', '--refresh', '--seed', '--formal-health', '--formal-refresh'].includes(action ?? '') ||
+  if (rest.length || !['--health', '--refresh', '--seed', '--formal-health', '--formal-refresh', '--local-preview-refresh'].includes(action ?? '') ||
       (action === '--seed' ? !['a', 'b', 'expired'].includes(fixture ?? '') : fixture !== undefined)) throw new Error('Invalid FX command.');
   const env = readDatabaseEnvironment();
   const databaseUrl = env.DATABASE_URL ?? '';
   let url: URL;
   try { url = new URL(databaseUrl); } catch { throw new Error('Invalid FX configuration.'); }
   const mode = env.EXTERNAL_CATALOG_MODE;
+  if (action === '--local-preview-refresh') {
+    const auth = {
+      networkEnabled: env.EXTERNAL_FX_NETWORK === 'enabled', mode: mode ?? 'disabled', nodeEnv: env.NODE_ENV ?? '', databaseUrl,
+      formalDatabase: env.EXTERNAL_FX_FORMAL_DATABASE,
+      localPreview: { deploymentEnv: env.HD_DEPLOYMENT_ENV, translationProvider: env.TRANSLATION_PROVIDER },
+    };
+    assertFxRefreshAuthorization(auth);
+    const db = createDatabase(databaseUrl, 1);
+    try {
+      const result = await refreshFxQuote(db, auth);
+      console.log(JSON.stringify(result));
+      if ((result.attempted && result.health.lastOutcome === 'failed') ||
+          !['fresh', 'retained'].includes(result.health.status) || result.health.source !== 'exchange_rate_api') process.exitCode = 1;
+    } finally { await db.close(); }
+    return;
+  }
   if (action === '--formal-health' || action === '--formal-refresh') {
     const auth = { networkEnabled: env.EXTERNAL_FX_NETWORK === 'enabled', mode: mode ?? '', nodeEnv: env.NODE_ENV ?? '', databaseUrl,
       formalDatabase: env.EXTERNAL_FX_FORMAL_DATABASE ?? '', releaseId: env.HD_RELEASE_ID };

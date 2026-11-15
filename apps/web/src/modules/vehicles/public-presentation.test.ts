@@ -11,7 +11,7 @@ import {
 } from './public-presentation';
 
 describe('public vehicle presentation', () => {
-  it('keeps the exact original CNY amount and rounds only the converted USD', () => {
+  it('displays CNY and the API USD conversion as rounded whole currency units', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.price.money = { amount: '99999999999999.99', currency: 'CNY' };
     vehicle.displayPrice = {
@@ -19,8 +19,8 @@ describe('public vehicle presentation', () => {
       money: { amount: '23500.50', currency: 'USD' },
       conversion: { asOf: '2026-11-09T00:00:00Z', source: 'synthetic' },
     };
-    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 99,999,999,999,999.99');
-    expect(formatPublicVehiclePrice(vehicle, 'ru')).toContain(',99');
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 100,000,000,000,000');
+    expect(formatPublicVehiclePrice(vehicle, 'ru')).not.toContain(',');
     expect(formatPublicVehicleUsdApproximation(vehicle, 'zh')).toBe('≈ 23,501 USD');
     vehicle.displayPrice.money.amount = '23500.49';
     expect(formatPublicVehicleUsdApproximation(vehicle, 'zh')).toBe('≈ 23,500 USD');
@@ -32,11 +32,11 @@ describe('public vehicle presentation', () => {
     vehicle.displayPrice = {
       status: 'unavailable', money: null, conversion: null, reason: 'rate_unavailable',
     };
-    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 23,500.5');
+    expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('¥ 23,501');
     expect(formatPublicVehicleUsdApproximation(vehicle, 'en')).toBeNull();
   });
 
-  it('uses whole dollars for a native USD price at the money limit', () => {
+  it('rounds USD exactly at the money limit', () => {
     const vehicle = makePublicVehicleFixture();
     vehicle.price.money = { amount: '99999999999999.99', currency: 'USD' };
     expect(formatPublicVehiclePrice(vehicle, 'en')).toBe('100,000,000,000,000 USD');

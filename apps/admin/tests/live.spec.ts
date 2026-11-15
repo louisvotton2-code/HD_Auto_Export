@@ -1,15 +1,16 @@
 import { traceCase, traceCaseTitle, traceMode } from './trace-live-guard.mjs';
 import { expect, test, type Page } from '@playwright/test';
-import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle } from '@hd/contracts/admin';
+import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle, type VehicleDraftInput } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
 import { acknowledgePublicationPreview, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
-import { makeExternalImportFixture } from '@hd/contracts/fixtures';
+import { makeDemoVehicleDraftFixture, makeExternalImportFixture, makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { extendRateDeadline, rateCooldownMs, rateLimitSeconds } from './live-rate-window';
 import { assertDisabledLivePlan, assertLivePublicConfiguration, completeLiveTranslations, enterLiveConfiguration, expandLiveTranslationGroup, liveConfiguration, readLiveBundle, saveLiveBundle } from './ux11-live-helpers';
 
+const manualLiveConfiguration = { ...liveConfiguration, items: [...liveConfiguration.items, { name: '动力类型', value: '汽油' }] };
 const rateWindows = new WeakMap<Page, { deadline: number; observations: number }>();
 function observeRateWindow(page: Page, response: { url(): string; headers(): Record<string, string> }) {
   const url = new URL(response.url());
@@ -76,14 +77,32 @@ async function save(page: Page, id?: string) {
   await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
   return vehicle;
 }
-async function create(page: Page, kind: 'manual' | 'demo', title: string) {
+async function openLegacyFixture(page: Page, draft: VehicleDraftInput) {
+  const response = await page.request.post('/api/v1/admin/vehicles', {
+    data: { draft },
+    headers: { Origin: new URL(page.url()).origin, 'Idempotency-Key': `legacy-test-${crypto.randomUUID()}` },
+  });
+  expect(response.status()).toBe(201);
+  const vehicle = AdminVehicleResponseSchema.parse(await response.json()).data;
+  await page.goto(`/admin/vehicles/${vehicle.id}`);
+  return vehicle;
+}
+async function create(page: Page, kind: 'manual' | 'demo', title: string, modelName = '隔离测试车型', internalNote = 'PRIVATE_AD_UX_ONLY') {
+  if (kind === 'demo') {
+    const draft = makeDemoVehicleDraftFixture();
+    draft.facts.model = { id: `test-${crypto.randomUUID()}`, name: modelName };
+    draft.content.title = { sourceLanguage: 'zh', sourceText: title, sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
+    draft.internal.notes = internalNote;
+    return openLegacyFixture(page, draft);
+  }
   await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: kind === 'manual' ? '真实车源录入' : '展示样例，非实际库存' }).click();
-  await newName(page, '品牌', `${kind === 'manual' ? '真实' : '展示'}联调品牌${Date.now()}`);
-  await newName(page, '车型', '隔离测试车型');
+  await newName(page, '品牌', `真实联调品牌${Date.now()}`);
+  await newName(page, '车型', modelName);
   await page.getByLabel('标题原文', { exact: true }).fill(title);
-  if (kind === 'manual') await select(page, '所在地国家', '中国');
-  await (await notes(page)).fill('PRIVATE_AD_UX_ONLY');
+  await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
+  await chooseYear(page, '年款', 2024);
+  await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
+  await (await notes(page)).fill(internalNote);
   return save(page);
 }
 async function selectPetrolFromUnknown(page: Page) {
@@ -102,45 +121,22 @@ async function selectPetrolFromUnknown(page: Page) {
   await expect(input).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('.ant-select').filter({ has: input }).getByTitle('汽油', { exact: true })).toBeVisible();
 }
-async function selectCurrency(page: Page, label: '公开价格币种' | '采购成本币种', currency: 'USD' | 'CNY') {
-  const input = page.getByRole('combobox', { name: label, exact: true });
-  await input.click();
-  await expect(input).toHaveAttribute('aria-expanded', 'true');
-  await expect(input).toHaveAttribute('aria-controls', /\S+/);
-  const controls = await input.getAttribute('aria-controls');
-  const list = page.locator(`[id=${JSON.stringify(controls)}]`);
-  const popup = page.locator('.ant-select-dropdown:visible').filter({ has: list });
-  await expect(popup).toHaveCount(1);
-  // Currency labels also appear in the hidden accessibility list; click the rendered option only.
-  const option = popup.locator('.ant-select-item-option-content:visible').filter({ hasText: new RegExp(`^${currency}$`) });
-  await expect(option).toHaveCount(1);
-  await option.click();
-  await expect(input).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.locator('.ant-select').filter({ has: input }).getByTitle(currency, { exact: true })).toBeVisible();
-}
 async function contentAndImage(page: Page, vehicle: AdminVehicle) {
   if (vehicle.draft.source.kind === 'manual') {
-    await tab(page, '基础资料');
-    await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
-    await chooseYear(page, '年款', 2024);
-    await selectPetrolFromUnknown(page);
-    await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
     await tab(page, '价格与内部信息');
     await select(page, '公开价格口径', '公开报价');
     await page.getByLabel('公开价格金额', { exact: true }).fill('20000');
-    await selectCurrency(page, '公开价格币种', 'USD');
     await page.getByLabel('内部采购成本', { exact: true }).fill('15000');
-    await selectCurrency(page, '采购成本币种', 'USD');
     await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
-    await enterLiveConfiguration(page);
+    await enterLiveConfiguration(page, manualLiveConfiguration);
     vehicle = await save(page, vehicle.id);
-    expect(vehicle.draft.configuration).toEqual(liveConfiguration);
+    expect(vehicle.draft.configuration).toEqual(manualLiveConfiguration);
     expect(vehicle.draft.facts.powertrain).toBe('petrol');
-    expect(vehicle.draft.price.money?.currency).toBe('USD');
-    expect(vehicle.draft.internal.purchaseCost?.currency).toBe('USD');
+    expect(vehicle.draft.price.money?.currency).toBe('CNY');
+    expect(vehicle.draft.internal.purchaseCost?.currency).toBe('CNY');
   }
   await tab(page, '图片管理');
-  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('隔离浏览器测试生成图片，不是真实库存。');
+  if (vehicle.draft.source.kind !== 'manual') await page.getByLabel('图片来源／授权说明', { exact: true }).fill('隔离浏览器测试生成图片，不是真实库存。');
   const png = Buffer.from(await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 48; const ctx = c.getContext('2d')!; ctx.fillStyle = '#315b50'; ctx.fillRect(0, 0, 64, 48); return c.toDataURL('image/png').split(',')[1]!; }), 'base64');
   await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('textbox', { name: '图片 1 说明', exact: true })).toBeVisible();
@@ -238,11 +234,9 @@ test('real localization sidecar preserves public language snapshots with disable
     const path = new URL(request.url()).pathname;
     if (request.method() === 'POST' && (path.endsWith('/translation-suggestions') || /\/translation-plans\/[^/]+\/generate$/.test(path))) translationExecutions++;
   });
-  await login(page); await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '展示样例，非实际库存' }).click();
-  await select(page, '品牌', '丰田 / Toyota'); await newName(page, '车型', model.zh);
-  await page.getByLabel('标题原文', { exact: true }).fill('多语字段隔离展示样例'); await (await notes(page)).fill(privateMarker);
-  const initial = await save(page); const ready = await contentAndImage(page, initial);
+  await login(page);
+  const initial = await create(page, 'demo', '多语字段隔离展示样例', model.zh, privateMarker);
+  const ready = await contentAndImage(page, initial);
   expect(ready.draft.internal.notes).toBe(privateMarker); expect(ready.draft.media).toHaveLength(1);
   async function evidence(name: string) {
     await mkdir('/private/tmp/hd-ad-i18n02-evidence', { recursive: true });
@@ -351,7 +345,7 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
   expect((await page.context().cookies()).some(c => c.httpOnly && c.path === '/api' && c.sameSite === 'Lax')).toBe(true);
   const initial = await create(page, 'manual', '隔离草稿车辆');
-  expect(initial.draft.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'USD' }, includes: [] });
+  expect(initial.draft.price).toEqual({ kind: 'asking', money: { amount: null, currency: 'CNY' }, includes: [] });
   expect(initial.draft.facts.manufacturedAt).toBeNull();
   expect(initial.draft.facts.registrationStatus).toBe('registered');
   expect(initial.draft.facts.firstRegistration).toBeNull();
@@ -385,7 +379,7 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   const ready = await contentAndImage(page, initial);
   const translated = await completeLiveTranslations(page, ready, path => readRespectingRateLimit(page, path));
   expect(translated.vehicle.draft.content.title.translations.ru).toMatchObject({ kind: 'human', reviewStatus: 'pending' });
-  expect(translated.vehicle.draft.configuration).toEqual(liveConfiguration);
+  expect(translated.vehicle.draft.configuration).toEqual(manualLiveConfiguration);
   await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toHaveText('请完善信息');
   await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
@@ -427,7 +421,7 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
     expect(raw).not.toContain('PRIVATE_AD_UX_ONLY');
     expect(raw).not.toContain('purchaseCost');
     const data = PublicVehicleResponseSchema.parse(JSON.parse(raw)).data;
-    assertLivePublicConfiguration(data.configuration, locale);
+    assertLivePublicConfiguration(data.configuration, locale, manualLiveConfiguration);
     expect(data.report).toEqual({ hasReport: false });
     expect(data.content.title.reviewed).toBe(false);
     expect(data.content.title.kind).toBe(locale === 'zh' ? 'original' : 'human');
@@ -568,27 +562,20 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
 test('external eight-image real API lifecycle preserves source honesty, removes public media and restores only a draft', async ({ page }) => {
   test.setTimeout(240_000);
   await login(page);
-  await page.goto('/admin/vehicles/new');
-  await page.locator('.ant-radio-button-wrapper').filter({ hasText: '外部挂牌资料' }).click();
-  await newName(page, '品牌', `外部隔离品牌${Date.now()}`);
-  await newName(page, '车型', '八图生命周期测试车型');
   const externalId = `synthetic-lifecycle-${Date.now()}`;
   const listingUrl = `https://example.invalid/listings/${externalId}`;
   const collectedAt = '2026-11-08T08:00:00.000Z';
-  await page.getByLabel('来源平台标识', { exact: true }).fill('synthetic-lifecycle-market');
-  await page.getByLabel('来源平台名称', { exact: true }).fill('合成挂牌平台（隔离测试）');
-  await page.getByLabel('原始挂牌链接', { exact: true }).fill(listingUrl);
-  await page.getByLabel('原始挂牌编号', { exact: true }).fill(externalId);
-  await chooseUtcDateTime(page, '资料采集时间（UTC）', { date: '2026-11-08', hour: 8, minute: 0 });
-  await page.getByLabel('标题原文', { exact: true }).fill('合成外部挂牌八图生命周期，不是真实库存');
-  await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
-  await select(page, '所在地国家', '中国');
-  await tab(page, '价格与内部信息');
-  await select(page, '公开价格口径', '来源参考价格');
-  await page.getByLabel('公开价格金额', { exact: true }).fill('123456.78');
-  await selectCurrency(page, '公开价格币种', 'CNY');
-  await (await notes(page)).fill('PRIVATE_EXTERNAL_LIFECYCLE_ONLY');
-  const initial = await save(page);
+  const draft = makeExternalVehicleDraftFixture();
+  draft.source = { kind: 'external', platform: { id: 'synthetic-lifecycle-market', name: '合成挂牌平台（隔离测试）' }, externalId, listingUrl, collectedAt, sourceUpdatedAt: null };
+  draft.facts.make = { id: 'test-external-make', name: '外部隔离品牌' };
+  draft.facts.model = { id: 'test-external-model', name: '八图生命周期测试车型' };
+  Object.assign(draft.facts, { trim: null, modelYear: null, powertrain: 'unknown', mileageKm: 12345, location: { country: 'CN', city: null, displayName: null } });
+  draft.price = { kind: 'reference', money: { amount: '123456.78', currency: 'CNY' }, includes: [] };
+  draft.configuration = null;
+  draft.internal = { purchaseCost: null, notes: 'PRIVATE_EXTERNAL_LIFECYCLE_ONLY', supplierContact: null, vin: null };
+  draft.content.title = { sourceText: '合成外部挂牌八图生命周期，不是真实库存', sourceLanguage: 'zh', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
+  draft.content.description = { sourceText: null, sourceLanguage: 'zh', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
+  const initial = await openLegacyFixture(page, draft);
   expect(initial.draft.source).toMatchObject({ kind: 'external', listingUrl, externalId, collectedAt });
   expect(initial.draft.price.money?.currency).toBe('CNY');
   expect(initial.draft.facts.mileageKm).toBe(12345);
@@ -619,7 +606,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await expect(page.locator('.ant-message-success').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
   await expect(page.locator('.ant-alert').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
   expect(uploads).toHaveLength(8);
-  expect(uploads.map(upload => upload.rights.source?.imageUrl)).toEqual(imageUrls);
+  expect(uploads.map(upload => upload.rights?.source?.imageUrl)).toEqual(imageUrls);
   for (const upload of uploads) expect(upload.rights).toMatchObject({ basis: 'unverified', source: { listingUrl, collectedAt } });
   for (let i = 1; i <= 8; i++) await page.getByRole('textbox', { name: `图片 ${i} 说明`, exact: true }).fill(`合成图 ${i}`);
   await page.locator('ol > li').filter({ has: page.getByRole('textbox', { name: '图片 8 说明', exact: true }) }).getByRole('button', { name: /设为封面$/ }).click();
@@ -656,7 +643,6 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await selectPetrolFromUnknown(page);
   await tab(page, '价格与内部信息');
   await page.getByLabel('内部采购成本', { exact: true }).fill('100000');
-  await selectCurrency(page, '采购成本币种', 'CNY');
   const condition = '仅用于隔离测试的外部挂牌车况，不代表真实车辆或库存。';
   await page.getByLabel('车况描述', { exact: true }).fill(condition);
   await enterLiveConfiguration(page);
@@ -678,12 +664,17 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   const publishedBeforeDeletion = AdminVehicleResponseSchema.parse(await publishedResponse.json()).data;
   expect(publishedBeforeDeletion.id).toBe(initial.id);
   expect(publishedBeforeDeletion.publicationState).toBe('published');
+  const staffRead = await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`);
+  expect(staffRead.status()).toBe(200);
+  expect(AdminVehicleResponseSchema.parse(await staffRead.json()).data.draft.source)
+    .toMatchObject({ kind: 'external', listingUrl, externalId, collectedAt });
   for (const locale of ['zh', 'en', 'ru'] as const) {
     const response = await readRespectingRateLimit(page, `/api/v1/vehicles/${initial.id}?locale=${locale}`);
     expect(response.status()).toBe(200);
     const raw = await response.text(); const current = PublicVehicleResponseSchema.parse(JSON.parse(raw)).data;
     expect(raw).not.toContain('PRIVATE_EXTERNAL_LIFECYCLE_ONLY'); expect(raw).not.toContain('externalId'); expect(raw).not.toContain('rights');
-    expect(current).toMatchObject({ source: { kind: 'external', listingUrl }, availability: 'unknown', availabilityCheckedAt: null, price: { kind: 'reference', money: { amount: '123456.78', currency: 'CNY' } }, content: { title: { reviewed: false } } });
+    expect(raw).not.toContain(listingUrl);
+    expect(current).toMatchObject({ source: { kind: 'external', listingUrl: null }, availability: 'unknown', availabilityCheckedAt: null, price: { kind: 'reference', money: { amount: '123456.78', currency: 'CNY' } }, content: { title: { reviewed: false } } });
     assertLivePublicConfiguration(current.configuration, locale);
     expect(current.report).toEqual({ hasReport: false });
     expect(current.images).toHaveLength(8);
@@ -912,7 +903,6 @@ test('real publication preview rejects private image failures until a new load s
   const initial = await create(page, 'manual', '私图失败发布预览隔离样例');
   const firstImage = await contentAndImage(page, initial);
   await tab(page, '图片管理');
-  await page.getByLabel('图片来源／授权说明', { exact: true }).fill('第二张本地生成合成图片，仅供隔离预览故障验收。');
   const png = Buffer.from(await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
     const context = canvas.getContext('2d')!;

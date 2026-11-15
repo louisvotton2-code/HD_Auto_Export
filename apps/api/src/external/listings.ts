@@ -3,11 +3,13 @@ import type { AdminActivitySummary } from '@hd/contracts/admin';
 import type { ExternalListingListQuery, ExternalListingSummary, ExternalOverrides, ExternalUpsertCandidate } from '@hd/contracts/admin';
 import type { Database } from '../db/index.js';
 import { literalPattern, publicListingId } from './catalog.js';
+import { externalInquiryCode, externalInquiryNumber, legacyInquiryBounds } from './inquiry-code.js';
 import { eligibleTextOverride, sourceCopy, sourceHashes, type TextSourceIdentities } from './normalize.js';
 
 type ListingRow = {
   activity: AdminActivitySummary;
   id: string;
+  inquiry_number: string;
   version: number;
   provider: string;
   platform_id: string;
@@ -71,20 +73,26 @@ function searchWhere(query: ExternalListingListQuery, values: unknown[]): string
   if (query.yearMax !== undefined) conditions.push(`(${facts}->>'modelYear')::int<=${param(query.yearMax)}`);
   if (query.mileageMax !== undefined) conditions.push(`(${facts}->>'mileageKm')::int<=${param(query.mileageMax)}`);
   if (query.q) {
-    const short=/^(che168|dongchedi)-([0-9]+)$/.exec(query.q);
+    const number = externalInquiryNumber(query.q);
+    const legacy = legacyInquiryBounds(query.q);
+    const short = /^(che168|dongchedi)-([0-9]+)$/i.exec(query.q);
     const id = searchListingId(query.q);
-    if(short)conditions.push('l.platform_id='+param(short[1])+' AND l.external_id='+param(short[2]));
+    if (number) conditions.push('l.inquiry_number=' + param(number) + '::bigint');
+    else if (legacy) conditions.push(`l.id BETWEEN ${param(legacy.lower)}::uuid AND ${param(legacy.upper)}::uuid AND right(l.id::text,4)=${param(legacy.suffix)}`);
+    else if (short) conditions.push('l.platform_id=' + param(short[1]!.toLowerCase()) + ' AND l.external_id=' + param(short[2]));
     else if (id) conditions.push('l.id=' + param(id) + '::uuid');
     else {
       const pattern = param(literalPattern(query.q));
+      const exact = param(query.q);
       // A line break can otherwise create an accidental cross-field match in
       // the trigram document. Check it against each field independently.
-      const literal = query.q.includes('\n') ? param(query.q) : null;
+      const literal = query.q.includes('\n') ? exact : null;
       const contains = (terms: string) => "external_listing_admin_search_document(" + terms + ") LIKE lower(" + pattern + ") ESCAPE E'\\\\'" +
         (literal ? ' AND EXISTS(SELECT 1 FROM unnest(' + terms + ') AS term(value) WHERE strpos(lower(term.value),lower(' + literal + '))>0)' : '');
       conditions.push("l.id IN ("
         + "SELECT s.id FROM external_listings s WHERE " + contains('external_listing_admin_source_terms(s.id,s.external_id,s.source_data)')
-        + " UNION SELECT a.listing_id FROM external_listing_overrides a WHERE " + contains('external_listing_admin_override_terms(a.data)') + ")");
+        + " UNION SELECT a.listing_id FROM external_listing_overrides a WHERE " + contains('external_listing_admin_override_terms(a.data)')
+        + " UNION SELECT e.id FROM external_listings e WHERE lower(e.platform_id || '-' || e.external_id)=lower(" + exact + "))");
     }
   }
   return conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -100,12 +108,12 @@ export async function listExternalListings(db: Database, query: ExternalListingL
     const total = count.rows[0]!.total;
     const offset = (page - 1) * pageSize;
     if (offset >= total) return { page, pageSize, total, items: [] };
-    const result = await tx.query<ListingRow>(`SELECT ${externalActivitySql()} AS activity,l.id,l.version,l.provider,l.platform_id,l.external_id,l.source_data,o.data AS overrides,o.text_source_identities,`
+    const result = await tx.query<ListingRow>(`SELECT ${externalActivitySql()} AS activity,l.id,l.inquiry_number::text,l.version,l.provider,l.platform_id,l.external_id,l.source_data,o.data AS overrides,o.text_source_identities,`
       + facts + " AS catalog_facts," + state + " AS state,l.fetched_at,l.source_updated_at,l.published_at," + hasOverrides + " AS has_overrides "
       + from + " " + where + " ORDER BY l.fetched_at DESC,l.id LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2),
       [...values, pageSize, offset]);
     const items = result.rows.map((row): ExternalListingSummary => ({
-      activity:row.activity,id: publicListingId(row.id),inquiryCode:`${row.platform_id}-${row.external_id}`,
+      activity:row.activity,id: publicListingId(row.id),inquiryCode:externalInquiryCode(row.inquiry_number),
       version: row.version,
       provider: row.provider,
       platformId: row.platform_id,

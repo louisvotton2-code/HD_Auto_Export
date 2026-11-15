@@ -72,6 +72,13 @@ BE-UX11 追加迁移 0015（员工确认的翻译计划／分段结果）与 001
 
 本地开发允许独立端口，BE 可保持 API 开发服务运行并向 FE／AD 告知实际地址，最终交付清单列明端口和用途；不再强制通过 3363。API 只监听回环地址或受控私网，数据库／缓存不公开暴露；隔离自动化测试仍使用自己的随机库和临时资源，结束后释放，不改动用户预览数据。
 
+### PM-UX13 本地接口增量
+
+- 导入的外部车源由 0027 迁移补齐唯一 `HX<数字>`，后续由 PostgreSQL 分配，序号允许跳号。既有 `ext-<UUID>` 和详情地址沿用。后台外部车源查询支持 HX、既有短号及详情地址，原始平台、挂牌链接和来源编号仍在后台。0027 会重写外部车源表，统一联调切换时先核对目标库并安排迁移窗口，再重载 API。
+- 外部公开响应继续提供 `source.kind=external`，平台字段为通用名称，`source.listingUrl` 为 `null`。导入车源通过 `identifiers.inquiryCode` 提供 HX。价格读取 `price.money` 的原始币种与金额，选择 USD 展示时读取 `displayPrice`；缺少有效汇率时返回价格转换不可用。受保护预览仍使用其原有独立契约。
+- 新手录要求品牌、车型、中文源标题、配置名称、年款、动力和里程，允许 0 公里。缺省所在地为 CN、城市为空。未选择的公开报价与采购成本币种默认 CNY，金额仍为空。员工确认的配置行及已有结构化事实通过一次草稿保存提交。历史草稿原有国家照常保留，所在地未知的草稿可按原有预览、图片、库存和三语条件发布，公开值保持 null。
+- `POST /api/v1/admin/media/uploads` 为手录车源接受省略 `rights` 的新上传请求，许可建立时同事务记录员工、数据库时间与图片 ID。显式声明、历史图片和外部图片的要求沿用现行规则。手动翻译继续走已保存的计划、费用确认及小时预算，集成切换可先保持翻译关闭。
+
 ### 外部目录隔离验证
 
 0004 增加外部批次、挂牌、媒体、覆盖和试译账本。`EXTERNAL_CATALOG_MODE=synthetic` 仅接受 `HOST=127.0.0.1`、无连接选项的本机 `127.0.0.1/hd_ext_*` 测试库、非生产环境及 `TRANSLATION_PROVIDER=disabled`。默认关闭。先显式迁移新库，再使用独立端口与媒体根启动。导入需要管理员会话，可用 `@hd/contracts/fixtures.makeExternalImportFixture(200)` 作为 `/api/v1/admin/external/batches` 请求体。回归 `pnpm --filter @hd/api test:integration` 会创建并清理自己的随机库。接口、角色和后续依赖见[车辆接口第15节](../../docs/开发/车辆接口.md#15-be-ext-01-外部挂牌与试译干跑)。
@@ -120,6 +127,18 @@ pnpm --filter @hd/api external:sync --once
 - `external:trial-fake --seed` 生成固定100条的模拟计划；`--grant <trialId> <characters>` 只写隔离模拟额度；`--run <trialId> [limit]` 使用模拟文本。`--interrupt-after-dispatch` 可用于单独验证中断留账，修复后重跑。脚本输出 `realCalls:0`，不会写公开译文。
 
 真实参考汇率的 `external:fx --refresh` 仅在新建回环预览库 `hd_ext_fx_preview_*`、`NODE_ENV=test`、`EXTERNAL_CATALOG_MODE=synthetic` 和 `EXTERNAL_FX_NETWORK=enabled` 下显式执行。可由隔离调度器每小时尝试，数据库限制滚动24小时最多一次外呼。失败保留原快照且不会延长有效期。页面请求和容量环境均无外呼。`--health` 返回快照及最近尝试状态，`retained` 表示已超过24小时且仍在七天有效期内；不输出汇率。健康命令读到缺失或过期仍正常退出，告警应判断状态。刷新在24小时冷却时正常退出且报告未发起；本次实际刷新失败返回非零退出码。接口与署名见[车辆接口第16节](../../docs/开发/车辆接口.md#16-be-ext-02-目录容量与美元展示)。
+
+### 本地样本库一次性汇率刷新
+
+在联调执行器中沿用样本 API 的私有 `DATABASE_URL` 或 `DATABASE_URL_FILE`，二选一。从仓库根执行：
+
+```sh
+NODE_ENV=development HD_DEPLOYMENT_ENV=local EXTERNAL_CATALOG_MODE=disabled \
+  TRANSLATION_PROVIDER=disabled EXTERNAL_FX_NETWORK=enabled \
+  pnpm --filter @hd/api external:fx --local-preview-refresh
+```
+
+目标必须是回环的 `hd_local_preview`，允许通过单个绝对路径的 `?host=` 连接 Unix socket。命令核对连接返回的数据库名后，复用 ExchangeRate-API 及数据库 24 小时额度。缺少 CNY 的响应记为失败。成功的快照由现有公开版本触发器使缓存失效，API 无需重启。若 `attempted=false`，查看 `health.nextAttemptAt` 和现有状态。缺少可用真实快照或本次外呼失败时退出 1，已有快照的有效期保持原值。命令无需设置发布身份。
 
 ## REL03 正式读取、SSR回源与额度
 

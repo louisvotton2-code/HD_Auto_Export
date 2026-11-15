@@ -2,38 +2,88 @@
 import { expect, test, type Page } from '@playwright/test';
 import { parseVehicleConfigurationJson, vehicleConfigurationExample, VEHICLE_CONFIGURATION_LIMITS } from '@hd/contracts/admin';
 import { installApi, vehicle } from './api-fixture';
-import { notes, select, tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, notes, tab } from './ui-helpers';
 
+const parse = (page: Page) => page.getByRole('button', { name: '解析并核对配置' });
+const confirmConfiguration = (page: Page) => page.getByRole('button', { name: '人工核对无误' });
 const save = (page: Page) => page.getByRole('button', { name: /保存草稿$/ });
 const configuration = (page: Page) => page.getByLabel('配置内容（JSON）', { exact: true });
 const selected = (page: Page, name: string) => page.locator('.ant-form-item').filter({ has: page.getByRole('combobox', { name, exact: true }) }).locator('.ant-select-content-has-value');
-const manual = (page: Page) => page.locator('.ant-radio-button-wrapper').filter({ hasText: '真实车源录入' });
-
-test('configuration new entry leaves source unselected and facts blank while manual defaults are explicit and limited', async ({ page }) => {
-  const api = await installApi(page); await page.goto('/admin/vehicles/new');
-  await expect(page.locator('.ant-radio-button-checked')).toHaveCount(0);
-  await expect(selected(page, '登记状态')).toHaveText('已登记');
-  await expect(selected(page, '动力类型')).toHaveText('未知');
-  await expect(selected(page, '变速箱')).toHaveText('未填写'); await expect(selected(page, '车身形式')).toHaveText('未填写');
-  for (const label of ['标题原文', '配置名称', '年款', '里程（公里）']) await expect(page.getByLabel(label, { exact: true })).toHaveValue('');
-  await expect(selected(page, '所在地国家')).toHaveCount(0);
-  await manual(page).click(); await expect(selected(page, '所在地国家')).toContainText('中国');
-  await tab(page, '价格与内部信息'); await expect(selected(page, '公开价格口径')).toHaveText('公开报价');
-  await expect(selected(page, '公开价格币种')).toContainText('USD'); await expect(selected(page, '采购成本币种')).toContainText('USD');
-  await expect(page.getByLabel('公开价格金额', { exact: true })).toHaveValue(''); await expect(page.getByLabel('内部采购成本', { exact: true })).toHaveValue('');
-  await tab(page, '车辆配置'); await expect(configuration(page)).toHaveValue(''); await save(page).click();
+test('configuration requires new draft basics before moving on and saves in CNY', async ({ page }) => {
+  const api = await installApi(page);
+  await page.goto('/admin/vehicles/new');
+  await expect(page.getByLabel('车源类型', { exact: true })).toHaveCount(0);
+  await expect(save(page)).toBeDisabled();
+  await page.getByRole('tab', { name: /车辆配置/ }).click();
+  await expect(page.getByRole('tab', { name: /基础资料/ })).toHaveAttribute('aria-selected', 'true');
+  await fillRequiredVehicleBasics(page);
+  await expect(page.getByLabel('所在地国家', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: '动力类型', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '下一步：车辆配置' }).click();
+  await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
+  await expect(configuration(page)).toHaveValue('');
   await expect.poll(() => api.creates.length).toBe(1);
-  const draft = JSON.parse(api.creates[0]!.body!).draft;
-  expect(draft).toMatchObject({ source: { kind: 'manual' }, configuration: null,
-    facts: { registrationStatus: 'registered', powertrain: 'unknown', body: null, transmission: null, modelYear: null, mileageKm: null, trim: null, location: { country: 'CN', city: null } },
-    price: { kind: 'asking', money: { amount: null, currency: 'USD' } }, internal: { purchaseCost: null } });
-  expect(draft.content.title.sourceText).toBeNull(); expect(api.items[0]!.availability).toBe('unknown');
+  expect(JSON.parse(api.creates[0]!.body!).draft).toMatchObject({
+    source: { kind: 'manual' }, configuration: null,
+    facts: { registrationStatus: 'registered', powertrain: 'unknown', mileageKm: 0, location: { country: 'CN', city: null } },
+    price: { kind: 'asking', money: { amount: null, currency: 'CNY' } },
+    internal: { purchaseCost: { amount: null, currency: 'CNY' } },
+  });
+  expect(api.items[0]!.availability).toBe('unknown');
+  const configurationNext = page.getByRole('button', { name: '下一步：价格与内部信息' });
+  const warning = page.locator('.ant-message-warning');
+  await configurationNext.click();
+  await expect(warning.filter({ hasText: '请先填写配置 JSON 并完成人工核对。' })).toBeVisible();
+  await configuration(page).fill(JSON.stringify({ version: 1, items: [{ name: '动力类型', value: '纯电' }] }));
+  await configurationNext.click();
+  await expect(warning.filter({ hasText: '请先点击「解析并核对配置」，再完成人工核对。' })).toBeVisible();
+  await expect(page.getByText('核对已解析的 1 项配置', { exact: true })).toHaveCount(0);
+  await parse(page).click();
+  await expect(page.getByText('核对已解析的 1 项配置', { exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '纯电', exact: true })).toBeVisible();
+  await expect(page.getByText('可用于筛选及费用参考的标准参数', { exact: true })).toBeVisible();
+  await configurationNext.click();
+  await expect(warning.filter({ hasText: '请点击「人工核对无误」后再继续。' })).toBeVisible();
+  const commercialTab = page.getByRole('tab', { name: /价格与内部信息/ });
+  await commercialTab.click();
+  await expect(commercialTab).toHaveAttribute('aria-selected', 'false');
+  expect(api.saves).toHaveLength(0);
+  await confirmConfiguration(page).click();
+  await configurationNext.click();
+  await expect.poll(() => api.saves.length).toBe(1);
+  expect(api.items[0]!.draft.facts.powertrain).toBe('bev');
+  const publicPrice = page.getByRole('textbox', { name: '公开价格金额' });
+  const cost = page.getByRole('textbox', { name: '内部采购成本' });
+  const next = page.getByRole('button', { name: '下一步：图片管理' });
+  await publicPrice.pressSequentially('80000.12');
+  await cost.fill('68000.34');
+  await expect(publicPrice).toHaveValue('80000.12');
+  await expect(publicPrice).toHaveAttribute('aria-invalid', 'true');
+  await expect(cost).toHaveAttribute('aria-invalid', 'true');
+  await expect(save(page)).toBeDisabled();
+  await expect(next).toBeDisabled();
+  await page.locator('form').filter({ has: publicPrice }).evaluate(form => (form as HTMLFormElement).requestSubmit());
+  await expect(page.getByRole('alert').filter({ hasText: '草稿尚未保存' })).toBeVisible();
+  expect(api.saves).toHaveLength(1);
+  await publicPrice.fill('80000');
+  await expect(next).toBeDisabled();
+  await cost.fill('68000');
+  await next.click();
+  await expect.poll(() => api.saves.length).toBe(2);
+  expect(api.items[0]!.draft.price.money).toEqual({ amount: '80000', currency: 'CNY' });
+  expect(api.items[0]!.draft.internal.purchaseCost).toEqual({ amount: '68000', currency: 'CNY' });
 });
 
-test('configuration a deliberate unknown registration selection survives later manual selection', async ({ page }) => {
-  const api = await installApi(page); await page.goto('/admin/vehicles/new');
-  await select(page, '登记状态', '未知'); await manual(page).click(); await expect(selected(page, '登记状态')).toHaveText('未知');
-  await save(page).click(); await expect.poll(() => api.creates.length).toBe(1);
+test('configuration preserves deliberate unknown registration on a manual draft', async ({ page }) => {
+  const api = await installApi(page);
+  await page.goto('/admin/vehicles/new');
+  await fillRequiredVehicleBasics(page);
+  const registration = page.getByRole('combobox', { name: '登记状态', exact: true });
+  await registration.click();
+  await registration.press('ArrowDown');
+  await registration.press('Enter');
+  await save(page).click();
+  await expect.poll(() => api.creates.length).toBe(1);
   expect(JSON.parse(api.creates[0]!.body!).draft.facts.registrationStatus).toBe('unknown');
 });
 
@@ -43,28 +93,40 @@ test('configuration existing unknowns nulls and nondefault currencies are preser
   item.draft.configuration = { version: 1, items: [{ name: '原始编号', value: '001' }] };
   const before = structuredClone(item.draft); const api = await installApi(page, { items: [item] }); await page.goto(`/admin/vehicles/${item.id}`);
   await expect(selected(page, '登记状态')).toHaveText('未知'); await expect(selected(page, '所在地国家')).toHaveCount(0);
-  await (await notes(page)).fill('只补充内部跟进记录'); await expect(selected(page, '采购成本币种')).toContainText('EUR');
+  await (await notes(page)).fill('只补充内部跟进记录');
+  await expect(page.getByRole('textbox', { name: '内部采购成本' })).toHaveValue('456.78');
+  await expect(page.getByText('单位 EUR，填写整数。')).toBeVisible();
   await save(page).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(item.draft).toEqual({ ...before, internal: { ...before.internal, notes: '只补充内部跟进记录' } });
 });
 
-test('configuration demo conversion requires consent and clears real-car facts without discarding known model configuration', async ({ page }) => {
-  const api = await installApi(page); await page.goto('/admin/vehicles/new'); await manual(page).click();
-  await page.getByLabel('里程（公里）', { exact: true }).fill('123'); await page.getByLabel('配置名称', { exact: true }).fill('有资料依据的型号');
-  await tab(page, '车辆配置'); await configuration(page).fill(JSON.stringify(vehicleConfigurationExample));
-  await tab(page, '价格与内部信息'); await page.getByLabel('公开价格金额', { exact: true }).fill('12345'); await page.getByLabel('VIN', { exact: true }).fill('SYNTHETICVIN123456');
-  await tab(page, '基础资料'); const demo = page.locator('.ant-radio-button-wrapper').filter({ hasText: '展示样例，非实际库存' });
-  await demo.click(); await page.getByRole('dialog').getByRole('button', { name: /取\s*消$/ }).click();
-  await expect(selected(page, '登记状态')).toHaveText('已登记'); await expect(page.getByLabel('里程（公里）', { exact: true })).toHaveValue('123');
-  await demo.click(); await page.getByRole('dialog').getByRole('button', { name: '切换并清空实车信息', exact: true }).click();
-  await expect(selected(page, '登记状态')).toHaveText('未知'); await expect(page.getByRole('combobox', { name: '登记状态', exact: true })).toBeDisabled();
-  await expect(page.getByLabel('里程（公里）', { exact: true })).toHaveValue(''); await expect(selected(page, '所在地国家')).toHaveCount(0);
-  await save(page).click(); await expect.poll(() => api.creates.length).toBe(1); const draft = JSON.parse(api.creates[0]!.body!).draft;
-  expect(draft.configuration).toBe(JSON.stringify(vehicleConfigurationExample)); expect(api.items[0]!.draft.configuration).toEqual(vehicleConfigurationExample);
-  expect(draft).toMatchObject({ source: { kind: 'demo' },
-    facts: { registrationStatus: 'unknown', mileageKm: null, manufacturedAt: null, firstRegistration: null, location: null, trim: { name: '有资料依据的型号' } },
-    price: { kind: 'on_request', money: null }, internal: { vin: null } });
-  expect(api.items[0]).toMatchObject({ availability: 'unknown', availabilityCheckedAt: null });
+test('configuration saves only confirmed structured facts alongside the configuration', async ({ page }) => {
+  const api = await installApi(page);
+  await page.goto('/admin/vehicles/new');
+  await fillRequiredVehicleBasics(page);
+  await tab(page, '车辆配置');
+  const items = [
+    { name: '排量(cc)', value: '1989' },
+    { name: '原始马力(hp)', value: '140' },
+    { name: '变速箱', value: '双离合' },
+    { name: '驱动形式', value: '未知' },
+  ];
+  await configuration(page).fill(JSON.stringify({ version: 1, items }));
+  await expect(save(page)).toBeDisabled();
+  await parse(page).click();
+  await confirmConfiguration(page).click();
+  await expect(save(page)).toBeEnabled();
+  items[0]!.value = '1990';
+  await configuration(page).fill(JSON.stringify({ version: 1, items }));
+  await expect(save(page)).toBeDisabled();
+  await expect(confirmConfiguration(page)).toHaveCount(0);
+  await parse(page).click();
+  await confirmConfiguration(page).click();
+  await save(page).click();
+  await expect.poll(() => api.creates.length).toBe(1);
+  expect(JSON.parse(api.creates[0]!.body!).draft.facts).toMatchObject({
+    engineCc: 1990, powerHp: 140, transmission: 'dct', body: null, powerKw: null,
+  });
 });
 
 const invalidConfigurations = [
@@ -77,7 +139,7 @@ const invalidConfigurations = [
 ] as const;
 
 test('configuration invalid nonempty JSON cannot create or save via button or form submission and never truncates input', async ({ page }) => {
-  const api = await installApi(page); await page.goto('/admin/vehicles/new'); await manual(page).click(); await tab(page, '车辆配置');
+  const api = await installApi(page); await page.goto('/admin/vehicles/new'); await fillRequiredVehicleBasics(page); await tab(page, '车辆配置');
   for (const [label, raw] of invalidConfigurations) {
     expect(() => parseVehicleConfigurationJson(raw), label).toThrow(); await configuration(page).fill(raw);
     await expect(configuration(page)).toHaveValue(raw); await expect(configuration(page)).toHaveAttribute('aria-invalid', 'true'); await expect(save(page)).toBeDisabled();
@@ -87,6 +149,10 @@ test('configuration invalid nonempty JSON cannot create or save via button or fo
   }
   const raw = JSON.stringify({ version: 1, items: [{ name: '编号', value: '001' }, { name: '挡位数', value: '0' }] }, null, 3);
   const expected = parseVehicleConfigurationJson(raw); await configuration(page).fill(raw); await expect(configuration(page)).toHaveAttribute('aria-invalid', 'false');
+  await parse(page).click();
+  await expect(page.getByText('本次没有识别到要更新的标准参数。已保存的参数会保留。')).toBeVisible();
+  await expect(save(page)).toBeDisabled();
+  await confirmConfiguration(page).click();
   await save(page).click(); await expect.poll(() => api.creates.length).toBe(1); expect(JSON.parse(api.creates[0]!.body!).draft.configuration).toBe(raw);
   expect(api.items[0]!.draft.configuration).toEqual(expected); await page.reload(); await tab(page, '车辆配置');
   expect(parseVehicleConfigurationJson(await configuration(page).inputValue())).toEqual(expected);
@@ -96,21 +162,46 @@ test('configuration invalid nonempty JSON cannot create or save via button or fo
 
 test('configuration malformed edits send no PATCH and valid raw JSON remains lossless after reload', async ({ page }) => {
   const item = vehicle(); item.draft.configuration = structuredClone(vehicleConfigurationExample);
+  item.draft.configuration.items.push({ name: '动力类型', value: '汽油' });
+  item.draft.facts.powertrain = 'hev';
   const api = await installApi(page, { items: [item] }); await page.goto(`/admin/vehicles/${item.id}`); await tab(page, '车辆配置');
   await configuration(page).fill('{"version":1,"items":[{"name":"排量","value":1989}]}'); await expect(save(page)).toBeDisabled();
   await page.locator('form').filter({ has: configuration(page) }).evaluate(form => (form as HTMLFormElement).requestSubmit()); expect(api.saves).toEqual([]);
-  const raw = '{ "items": [{ "value": "001.0", "name": "原样参数" }], "version": 1 }'; await configuration(page).fill(raw); await save(page).click();
+  const raw = '{ "items": [{ "value": "001.0", "name": "原样参数" }, { "name": "动力类型", "value": "汽油" }], "version": 1 }'; await configuration(page).fill(raw); await parse(page).click(); await confirmConfiguration(page).click(); await save(page).click();
   await expect.poll(() => api.saves.length).toBe(1); expect(api.saves[0]!.draft.configuration).toBe(raw); expect(item.draft.configuration).toEqual(parseVehicleConfigurationJson(raw));
+  expect(item.draft.facts.powertrain).toBe('hev');
   await page.reload(); await tab(page, '车辆配置'); expect(parseVehicleConfigurationJson(await configuration(page).inputValue())).toEqual(parseVehicleConfigurationJson(raw));
   await page.setViewportSize({ width: 320, height: 844 }); await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath('configuration-json-320.png'), fullPage: true, animations: 'disabled' });
 });
 
-test('configuration prompt uses official limits and explicit unknown-data instructions without touching the system clipboard', async ({ page }) => {
+test('configuration prompt includes online verification rules and the first-step data in both copy and preview', async ({ page }) => {
   await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copiedConfigurationPrompt: string }).copiedConfigurationPrompt = text; } } }); });
-  await installApi(page); await page.goto('/admin/vehicles/new'); await tab(page, '车辆配置');
+  await installApi(page); await page.goto('/admin/vehicles/new'); await fillRequiredVehicleBasics(page, '仅用于测试的中文标题'); await tab(page, '车辆配置');
   await page.getByRole('button', { name: /复制 AI 配置提示词$/ }).click();
   const prompt = await page.evaluate(() => (window as unknown as { copiedConfigurationPrompt: string }).copiedConfigurationPrompt);
-  expect(prompt).toContain(String(VEHICLE_CONFIGURATION_LIMITS.items)); expect(prompt).toContain(String(VEHICLE_CONFIGURATION_LIMITS.totalUtf16));
-  expect(prompt).toContain('不推测'); expect(prompt).toContain('不编造参数'); expect(prompt).toContain(JSON.stringify(vehicleConfigurationExample, null, 2));
+  await page.getByText('查看完整 AI 提示词', { exact: true }).click();
+  await expect(page.getByLabel('AI 配置提示词', { exact: true })).toHaveValue(prompt);
+  expect(prompt).toContain('先联网查找');
+  expect(prompt).toContain('不少于 50 项');
+  expect(prompt).toContain('确定的配置事实需要同款官方资料支持');
+  expect(prompt).toContain('无法联网时，只处理用户明确提供的技术参数和装备');
+  expect(prompt).toContain('名称及文字说明用中文');
+  await expect(page.getByText(/若 AI 说明未找到可靠资料，配置先留空/)).toBeVisible();
+  expect(prompt).toContain('车型已确定且查到可靠配置时，只返回一个标准 JSON 对象。');
+  expect(prompt).not.toContain('{"version":1,"items":[]}');
+  const { items, nameUtf16, valueUtf16, totalUtf16, jsonBytes } = VEHICLE_CONFIGURATION_LIMITS;
+  for (const limit of [items, nameUtf16, valueUtf16, totalUtf16, jsonBytes]) expect(prompt).toContain(String(limit));
+  const marker = '\n以下是待检索车辆的基础资料：\n';
+  const closingRules = [
+    '若没有任何可靠技术参数或装备配置，直接告诉我为什么没有搜索到',
+    '如果配置或参数有疑问，检索到多个候选车型或款型，先列出候选及关键差异，向我确认具体版本。确认前暂停输出配置 JSON。',
+  ].join('\n');
+  expect(prompt).toContain(closingRules + '\n' + marker);
+  const input = prompt.split(marker)[1]!;
+  const expected = {
+    品牌: '丰田', 车型: '卡罗拉', 中文标题: '仅用于测试的中文标题', 配置款型: '合成配置款型',
+    年款: '2024', '里程（公里）': '0', 登记状态: '已登记',
+  };
+  expect(input).toBe(JSON.stringify(expected));
 });

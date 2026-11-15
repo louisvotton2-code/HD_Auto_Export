@@ -132,6 +132,38 @@ test('an unfinished route shows inline feedback without blocking the current cal
   }
 });
 
+test('the home catalog button keeps its label and size while the top progress bar shows', async ({ page }) => {
+  let release = () => {};
+  const heldResponse = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(
+    (url) => url.pathname === '/zh/cars/' && url.searchParams.has('_rsc'),
+    async (route) => {
+      await heldResponse;
+      await route.continue();
+    },
+  );
+  try {
+    await page.goto('/zh/');
+    const link = page.locator('[data-home-section="hero"] a[href="/zh/cars/"]');
+    const before = await link.boundingBox();
+    await link.click();
+    const hint = link.locator('.navigation-hint');
+    await expect(hint).toHaveAttribute('data-pending', 'true');
+    await expect(hint).toHaveCSS('display', 'none');
+    await expect(link.getByRole('status')).toHaveCSS('position', 'absolute');
+    await expect(link.getByRole('status')).toHaveText('正在打开页面…');
+    await expect(page.locator('.site-navigation-progress')).not.toHaveCSS('opacity', '0');
+    const pending = await link.boundingBox();
+    expect(Math.abs(pending!.width - before!.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(pending!.height - before!.height)).toBeLessThanOrEqual(1);
+    release();
+    await expect(page).toHaveURL(/\/zh\/cars\/$/);
+    await expect(page.locator('.navigation-hint[data-pending="true"]')).toHaveCount(0);
+  } finally {
+    release();
+  }
+});
+
 test('rapidly reversing a fee disclosure keeps the latest state and both currency amounts', async ({
   page,
 }) => {

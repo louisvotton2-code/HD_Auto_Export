@@ -40,21 +40,21 @@ describe('explicit vehicle calculator fragment handoff', () => {
   it('removes an old guessed January date while retaining other known draft facts', () => {
     const value = seed();
     expect(parseVehicleEstimateSeed(value)).toEqual(value);
-    value.manufactureEstimate = 'model_year';
-    expect(parseVehicleEstimateSeed(value)).toBeNull();
+    const legacy = { ...value, manufactureEstimate: 'model_year' };
+    expect(parseVehicleEstimateSeed(legacy)).toBeNull();
     value.input.manufactureDate = '2024-01';
-    const fragment = createVehicleEstimateFragment(value)!;
-    const { manufactureEstimate: _old, ...expected } = value;
-    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual({ ...expected, input: { ...value.input, manufactureDate: '' } });
+    const fragment = `#hd-estimate=${encodeURIComponent(JSON.stringify(legacy))}`;
+    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual({ ...value, input: { ...value.input, manufactureDate: '' } });
   });
 
-  it('retains a bounded source range, with unchanged clearance date and FX, through the full calculator link', () => {
+  it('consumes a legacy link with its vehicle facts and FX, dropping the obsolete source range', () => {
     const value = seed();
     value.input.manufactureDate = '';
-    value.manufactureRange = { from: '2020-11', to: '2026-11' };
-    expect(readVehicleEstimateFragment(createVehicleEstimateFragment(value)!, 'RU')?.seed).toEqual(value);
-    expect(parseVehicleEstimateSeed({ ...value, manufactureRange: { from: '2024-12', to: '2024-01' } })).toBeNull();
-    expect(parseVehicleEstimateSeed({ ...value, input: { ...value.input, manufactureDate: '2024-01' } })).toBeNull();
+    const legacy = { ...value, manufactureRange: { from: '2019-04', to: '2021-01' } };
+    const fragment = `#hd-estimate=${encodeURIComponent(JSON.stringify(legacy))}`;
+    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual(value);
+    expect(parseVehicleEstimateSeed({ ...legacy, manufactureRange: { from: '2024-12', to: '2024-01' } })).toBeNull();
+    expect(parseVehicleEstimateSeed({ ...legacy, input: { ...legacy.input, manufactureDate: '2024-01' } })).toBeNull();
   });
 
   it.each([

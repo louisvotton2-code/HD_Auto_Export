@@ -1,9 +1,14 @@
 .range{display:grid;gap:12px;min-width:0;color:#c5e8d1;background:#172c22;border:1px solid #4b8865;border-radius:12px;padding:14px;margin:14px 0;font-size:12px;line-height:1.6}
 .note{margin:0;font-size:11px;overflow-wrap:anywhere}
+.assumption{color:#ff8d8d;font-weight:700}
 .total{display:grid;gap:4px;padding:14px;border:1px solid #619d7873;border-radius:10px;background:#224334}
 .total strong{color:#c9ffda;font-size:22px;overflow-wrap:anywhere}
 .scenario{min-width:0;border:1px solid #619d7855;border-radius:8px;padding:10px}
-.scenario>summary{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:7px;cursor:pointer;color:#d8f1e0;overflow-wrap:anywhere}
+.scenario>summary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:center;gap:8px;cursor:pointer;color:#d8f1e0;overflow-wrap:anywhere}
+.scenarioLabel,.scenarioAmounts{display:grid;gap:2px}
+.scenarioAmounts{text-align:end}
+.scenarioAmounts strong{color:#c9ffda}
+.scenario[open]>summary>svg{transform:rotate(180deg)}
 .scenario>summary:focus-visible{outline:2px solid #b67749;outline-offset:4px}
 .scenario small{font-size:11px}
 .expandAll{margin:8px 0;background:none;border:0;padding:4px 0;color:#a8ddb9;font:inherit;cursor:pointer}
