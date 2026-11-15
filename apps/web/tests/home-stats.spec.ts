@@ -25,13 +25,16 @@ for (const locale of ['zh', 'en', 'ru']) {
     expect(response.status()).toBe(200);
     const list = await response.json();
     const catalog = page.getByTestId('hero-stat-catalog');
-    await expect(catalog.locator('[data-counter-value]')).toHaveAttribute(
-      'data-counter-value',
-      String(list.meta.total),
-    );
+    const catalogTotal = catalog.locator('strong');
+    await expect(catalogTotal).toBeVisible();
+    await expect(catalogTotal).toHaveText(new Intl.NumberFormat(locale).format(list.meta.total), {
+      useInnerText: true,
+    });
     const cards = await page.locator('[data-home-section^="vehicles-"] article').count();
     expect(list.meta.total).toBeGreaterThan(cards);
-    await expect(page.getByTestId('hero-stat-clients')).toContainText('660+');
+    const clients = page.getByTestId('hero-stat-clients').locator('strong');
+    await expect(clients).toBeVisible();
+    await expect(clients).toHaveText('660+', { useInnerText: true });
     await expect(page.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText(
       '23',
     );
