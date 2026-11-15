@@ -1,0 +1,13 @@
+.staticValue {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce), (scripting: none) {
+  .animatedValue {
+    display: none;
+  }
+
+  .staticValue {
+    display: inline;
+  }
+}

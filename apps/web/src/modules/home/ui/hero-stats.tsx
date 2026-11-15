@@ -41,6 +41,7 @@ export function HeroStats({
               suffix={metric.suffix}
               locale={locale}
               animated={metric.animated}
+              startAtZero
               className={styles.value}
               suffixClassName={styles.suffix}
             />

@@ -51,8 +51,8 @@ export function ManufactureRangeResult({ calculation, locale, rates }: {
     return <details key={bound} className={styles.scenario} data-range-scenario={bound}>
       <summary>
         <span className={styles.scenarioLabel}>
-          {copy[bound]}
-          <small>{copy.month}: <time dateTime={scenario.manufactureDate}>{scenario.manufactureDate}</time></small>
+          <span className={styles.scenarioTitle}>{copy[bound]}</span>
+          <small className={styles.scenarioMonth}>{copy.month}: <time dateTime={scenario.manufactureDate}>{scenario.manufactureDate}</time></small>
         </span>
         <span className={styles.scenarioAmounts}>
           <strong>{format(result.total!)} {result.currency}</strong>

@@ -39,7 +39,7 @@ for (const locale of ['zh', 'en', 'ru']) {
   });
 }
 
-test('refresh animates the first two counters while reduced motion and SSR retain readable values', async ({
+test('home counters grow from the first rendered zero while static fallbacks show the final values', async ({
   page,
   browser,
 }) => {
@@ -95,35 +95,32 @@ test('refresh animates the first two counters while reduced motion and SSR retai
       'data-counter-value',
       '660',
     );
+    const observations = await page.evaluate(() => [
+      Reflect.get(window, '__counterObservations') as number[],
+      Reflect.get(window, '__catalogCounterObservations') as number[],
+    ]);
+    for (const values of observations) {
+      expect(values[0]).toBe(0);
+      expect(values.every((value, index) => index === 0 || value >= values[index - 1])).toBe(true);
+    }
     await expect(
       page.getByTestId('hero-stat-years').locator('[data-counter-value]'),
     ).toHaveAttribute('data-counter-value', '23');
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.reload();
-  await expect(page.getByTestId('hero-stat-clients').locator('[data-counter-value]')).toHaveText(
-    '660',
-  );
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector(
-      '[data-testid="hero-ripple-canvas"]',
-    ) as HTMLCanvasElement | null;
-    return !!canvas && canvas.width !== 300;
-  });
-  expect(
-    await page.evaluate(
-      () =>
-        (Reflect.get(window, '__counterObservations') as number[]).length > 0 &&
-        (Reflect.get(window, '__counterObservations') as number[]).every((value) => value === 660),
-    ),
-  ).toBe(true);
+  const reducedClients = page.getByTestId('hero-stat-clients');
+  await expect(reducedClients.locator('strong')).toHaveText('660+', { useInnerText: true });
+  await expect(reducedClients.locator('[data-counter-value]')).toBeHidden();
   const noScript = await browser.newContext({
     javaScriptEnabled: false,
     baseURL: new URL(page.url()).origin,
   });
   const plain = await noScript.newPage();
   await plain.goto('/zh/');
-  await expect(plain.getByTestId('hero-stat-clients')).toContainText('660+');
+  const plainClients = plain.getByTestId('hero-stat-clients');
+  await expect(plainClients.locator('strong')).toHaveText('660+', { useInnerText: true });
+  await expect(plainClients.locator('[data-counter-value]')).toBeHidden();
   await expect(plain.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText('23');
   await noScript.close();
 });
