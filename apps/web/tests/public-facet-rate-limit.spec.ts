@@ -38,10 +38,11 @@ async function expectExistingCars(page: Page, home: boolean, catalogTotalKnown =
   await expect(page.getByTestId('public-catalog-error')).toHaveCount(0);
   await expect(page.getByTestId('public-vehicle-missing')).toHaveCount(0);
   // Home cards can remain valid while the full-catalog dictionary total is unknown.
-  if (home)
-    await expect(
-      page.getByTestId('hero-stat-catalog').locator('[data-counter-value]'),
-    ).toHaveAttribute('data-counter-value', catalogTotalKnown ? '26' : 'unknown');
+  if (home) {
+    const total = page.getByTestId('hero-stat-catalog').locator('strong');
+    await expect(total).toBeVisible();
+    await expect(total).toHaveText(catalogTotalKnown ? '26' : '—', { useInnerText: true });
+  }
 }
 
 test.describe('facets-only Retry-After shares the page cooldown', () => {

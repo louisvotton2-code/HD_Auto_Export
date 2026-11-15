@@ -4,10 +4,10 @@ import { createHash } from 'node:crypto';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict } from '../errors.js';
 import { VehicleTranslator, type TranslationProvider } from './translation.js';
-import { TranslationPlanService, validateTranslationTokens, translationPlanFingerprint,
+import { TranslationPlanService, translationPlanFingerprint,
   type TranslationPlanPersistence, type StoredTranslationPlan, type TranslationPlanSegment, type TranslationPlanInput } from './translation-plans.js';
 import type { TranslationPlan, TranslationPlanResult, GenerateTranslationPlanRequest } from '@hd/contracts/admin';
-import { TranslationPlanStatusSchema } from '@hd/contracts/admin';
+import { vehicleConfigurationItemId, CreateTranslationPlanRequestSchema, TranslationPlanResultSchema, TranslationPlanSchema, TranslationPlanStatusSchema } from '@hd/contracts/admin';
 
 const actor = { id: 'synthetic-staff', requestId: 'plan-unit' };
 const vehicleId = '550e8400-e29b-41d4-a716-446655440000';
@@ -35,6 +35,12 @@ class MemoryPlans implements TranslationPlanPersistence {
     if (!found || found.actorId !== actorId || found.plan.vehicleId.toLowerCase() !== id.toLowerCase()) return null;
     return structuredClone({ ...found, expired: Date.parse(found.plan.expiresAt) <= this.clock,
       leaseExpired: found.startedAt !== null && Date.parse(found.startedAt) + 150000 <= this.clock });
+  }
+  async *recoverableReceipts(id: string, actorId: string) {
+    const records = [...this.plans.values()].filter(record => record.plan.vehicleId === id && record.actorId === actorId &&
+      record.state === 'finished' && record.result !== null);
+    records.sort((a, b) => b.finishedAt!.localeCompare(a.finishedAt!));
+    for (const { plan, input, result } of records) yield structuredClone({ plan, input, result: result! });
   }
   async claim(record: StoredTranslationPlan, key: string, requestHash: string, runToken: string) {
     const found = this.plans.get(record.plan.id)!;
@@ -190,21 +196,80 @@ test('a crash after the final persisted successful segment can be recovered by a
   assert.deepEqual(TranslationPlanStatusSchema.parse(status), status);
 });
 
-test('numeric/model/unit mutation is invalid_result rather than a machine suggestion', async () => {
-  const ctx = setup({ engineVersion: 'fixture:unsafe', async translate() { return 'Vehicle 121 kW'; } });
-  const plan = await ctx.service.create(vehicleId, { version: 3 }, actor), result = await ctx.service.generate(vehicleId, plan.id, confirmation(plan), actor, 'key');
-  assert.equal(result.status, 'partial'); assert.ok(result.failures.every(failure => failure.code === 'invalid_result'));
-  assert.equal(result.fields[0]!.translations.en, null);
-  for (const [source, translated] of [['功率120kW', 'Power 120 kW'], ['型号 BMW 520Li', 'Model BMW 520Li']]) assert.equal(validateTranslationTokens(source!, translated!), true);
-  for (const [source, translated] of [['功率120kW', 'Power 121 kW'], ['功率120kW', 'Power 120 hp'], ['型号520Li', 'Model 520Le'], ['日期2024-10-02', 'Date 2024-10-03'], ['车型', 'Model 2024'], ['电量30%', 'Charge 30']]) assert.equal(validateTranslationTokens(source!, translated!), false);
+test('nonblank machine suggestions may differ in facts or repeat the original language', async () => {
+  const source = '车型 BMW 520Li：120 kW';
+  const en = 'BMW 520Le: 121 hp';
+  const ctx = setup({ engineVersion: 'fixture:nonblank', async translate(_text, target) { return target === 'en' ? en : source; } });
+  ctx.current.fields[0]!.sourceText = source;
+  const plan = await ctx.service.create(vehicleId, { version: 3 }, actor);
+  const result = await ctx.service.generate(vehicleId, plan.id, confirmation(plan), actor, 'nonblank');
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.fields[0]?.translations.en?.text, en);
+  assert.equal(result.fields[0]?.translations.ru?.text, source);
+  assert.equal(result.fields[0]?.translations.ru?.kind, 'machine');
+  assert.equal(result.fields[0]?.translations.ru?.engineVersion, 'fixture:nonblank');
 });
 
-test('invalid token or field-length output is not a success cache hit on a newly confirmed plan', async () => {
-  for (const reason of ['tokens', 'length'] as const) {
+test('recovery keeps the original receipt and only adopts still-empty source-matching paid slots', async () => {
+  const ctx = setup();
+  ctx.current.scope = 'missing';
+  const title = ctx.current.fields[0]!;
+  title.targets = ['en', 'ru'];
+  const description = { ...title, ref: 'content.description' as const, sourceText: '中文车辆介绍',
+    sourceHash: 'b'.repeat(64), targetHumanEditVersions: { zh: 1, en: null, ru: null } };
+  ctx.current.fields.push(description);
+  const plan = await ctx.service.create(vehicleId, { version: 3, scope: 'missing' }, actor);
+  const paid = await ctx.service.generate(vehicleId, plan.id, confirmation(plan), actor, 'original-receipt');
+  assert.deepEqual(await ctx.service.recoverable(vehicleId, actor), { plan, result: paid });
+
+  ctx.current.vehicleVersion = 4;
+  ctx.current.localizationRevision = 3;
+  title.targets = ['ru'];
+  title.targetHumanEditVersions.en = 3;
+  description.sourceText = '另一段中文车辆介绍';
+  description.sourceHash = 'c'.repeat(64);
+  description.sourceVersion++;
+  const writes = ctx.store.writes, calls = ctx.calls.length;
+  assert.deepEqual(await ctx.service.recoverable(vehicleId, actor), { plan, result: paid,
+    adoptionBase: { vehicleVersion: 4, localizationRevision: 3 },
+    blockedTargets: [
+      { ref: 'content.title', targetLocale: 'en' },
+      { ref: 'content.description', targetLocale: 'en' },
+      { ref: 'content.description', targetLocale: 'ru' },
+    ] });
+  assert.equal(await ctx.service.recoverable(vehicleId, { ...actor, id: 'other-agent' }), null);
+  assert.equal(ctx.store.writes, writes);
+  assert.equal(ctx.calls.length, calls);
+
+  title.targetHumanEditVersions.ru = 1;
+  assert.equal(await ctx.service.recoverable(vehicleId, actor), null);
+});
+
+test('recovery checks the archived quoted targets and can fall back after a newer receipt is used', async () => {
+  const ctx = setup();
+  ctx.current.scope = 'missing';
+  ctx.current.fields[0]!.targets = ['ru'];
+  const older = await ctx.service.create(vehicleId, { version: 3, scope: 'missing' }, actor);
+  const paid = await ctx.service.generate(vehicleId, older.id, confirmation(older), actor, 'older-receipt');
+  ctx.store.clock++;
+  ctx.current.fields[0]!.targets = ['en'];
+  const newer = await ctx.service.create(vehicleId, { version: 3, scope: 'missing' }, actor);
+  await ctx.service.generate(vehicleId, newer.id, confirmation(newer), actor, 'newer-receipt');
+  ctx.current.fields[0]!.targets = ['ru'];
+  assert.deepEqual(await ctx.service.recoverable(vehicleId, actor), { plan: older, result: paid });
+
+  const storedOlder = ctx.store.plans.get(older.id)!;
+  storedOlder.input.fields[0]!.targets = ['en', 'ru'];
+  assert.equal(await ctx.service.recoverable(vehicleId, actor), null);
+});
+
+test('blank or oversized output is not a success cache hit on a newly confirmed plan', async () => {
+  for (const reason of ['blank', 'length'] as const) {
     let fixed = false; const calls: string[] = [];
     const ctx = setup({ engineVersion: `fixture:invalid-${reason}`, async translate(text, target) {
       calls.push(target);
-      if (target === 'en' && !fixed) return reason === 'tokens' ? 'Vehicle 121 kW' : 'a'.repeat(121);
+      if (target === 'en' && !fixed) return reason === 'blank' ? '  ' : 'a'.repeat(121);
       return text.replace('中文车辆', 'Vehicle');
     } });
     if (reason === 'length') { ctx.current.fields[0]!.ref = 'model'; ctx.current.fields[0]!.sourceText = '中文车辆'; }
@@ -271,6 +336,50 @@ test('full fingerprint includes edit versions, field identity and provider confi
   assert.notEqual(translationPlanFingerprint(changed, metadata), original);
 });
 
+test('old plan fingerprints stay byte-compatible while scoped plans bind the exact target set', () => {
+  const source = input();
+  const metadata = { provider: 'libretranslate' as const, engineVersion: 'fixture:1', hourlyCharacterLimit: 50000 };
+  const field = source.fields[0]!;
+  const oldPayload = [source.vehicleId, source.vehicleVersion, source.localizationRevision, metadata.provider, metadata.engineVersion,
+    [[field.ref, field.sourceText, field.sourceVersion, field.sourceHash, 1, 2, null]]];
+  assert.equal(translationPlanFingerprint(source, metadata), createHash('sha256').update(JSON.stringify(oldPayload)).digest('hex'));
+  const scoped: TranslationPlanInput = { ...source, scope: 'missing', fields: [{ ...field, targets: ['ru'] }] };
+  assert.notEqual(translationPlanFingerprint(scoped, metadata), translationPlanFingerprint(source, metadata));
+  scoped.fields[0]!.targets = ['en'];
+  assert.notEqual(translationPlanFingerprint(scoped, metadata),
+    translationPlanFingerprint({ ...scoped, fields: [{ ...scoped.fields[0]!, targets: ['ru'] }] }, metadata));
+});
+
+test('scoped contracts reject unplanned suggestions and failure entries; empty plans work without an engine', async () => {
+  assert.equal(CreateTranslationPlanRequestSchema.safeParse({version:3,scope:'missing',targets:['en']}).success,false);
+  const { service, current } = setup();
+  current.scope = 'missing';
+  current.fields[0]!.targets = ['ru'];
+  const scoped = await service.create(vehicleId, { version: 3, scope: 'missing' }, actor);
+  assert.equal(TranslationPlanSchema.safeParse({ ...scoped, fields: [{ ...scoped.fields[0]!, targets: ['ru','ru'] }] }).success,false);
+  assert.equal(TranslationPlanSchema.safeParse({ ...scoped, fields: [{ ...scoped.fields[0]!, targets: ['zh'] }] }).success,false);
+  const result = await service.generate(vehicleId, scoped.id, confirmation(scoped), actor, 'scoped-key');
+  const field=result.fields[0]!, suggestion=field.translations.ru!;
+  assert.ok(suggestion);
+  assert.equal(TranslationPlanResultSchema.safeParse({ ...result,
+    fields: [{ ...field, translations: { ...field.translations, en:{...suggestion,humanEditVersion:field.targetHumanEditVersions.en} } }] }).success, false);
+  assert.equal(TranslationPlanResultSchema.safeParse({ ...result, status: 'partial', failures: [
+    { ref: field.ref, targetLocale: 'en', code: 'not_attempted' } ] }).success, false);
+
+  const { current: emptyInput, store, makeService, calls } = setup();
+  emptyInput.scope = 'missing';
+  emptyInput.fields = [];
+  const disabled = makeService(new VehicleTranslator(null));
+  const empty = await disabled.create(vehicleId, {version:3,scope:'missing'}, actor);
+  assert.deepEqual(empty.fields, []);
+  const receipt = await disabled.generate(vehicleId, empty.id, confirmation(empty), actor, 'empty-key');
+  assert.deepEqual([receipt.status,receipt.fields,receipt.failures], ['completed',[],[]]);
+  assert.deepEqual((await disabled.status(vehicleId, empty.id, actor)).result, receipt);
+  assert.deepEqual(await disabled.generate(vehicleId, empty.id, confirmation(empty), actor, 'empty-key'), receipt);
+  assert.equal((await store.segments(empty.id)).length, 0);
+  assert.equal(calls.length, 0);
+});
+
 test('aggregate deadline is 120 seconds and late provider results never replace an uncertain receipt', async context => {
   const deadline = new AbortController(); let release!: (text: string) => void, started!: () => void;
   const entered = new Promise<void>(resolve => { started = resolve; });
@@ -305,4 +414,35 @@ test('timed-out sessions cannot exceed two provider calls when an adapter ignore
   assert.equal(calls, 2);
   for (const release of releases) release('Late result');
   await new Promise(resolve => setImmediate(resolve));
+});
+
+
+test('mixed plans only budget supplier slots, require cost acceptance and report safe failure reasons', async () => {
+  const calls: string[] = [];
+  const ctx = setup({ engineVersion: 'fixture:catalog-mixed', async translate(_text, target) {
+    calls.push(target);
+    if (target === 'en') return '  ';
+    throw new ApiError(503, 'TRANSLATION_UPSTREAM_FAILED', 'private-provider-detail');
+  } });
+  ctx.current.scope = 'missing';
+  const sourceText = '整车OTA升级';
+  const ref = `configuration.${vehicleConfigurationItemId(sourceText)}.name`;
+  ctx.current.fields.push({ ...ctx.current.fields[0]!, ref, sourceText, targets: ['ru'] });
+  const plan = await ctx.service.create(vehicleId, { version: 3, scope: 'missing', useCatalog: true }, actor);
+  assert.deepEqual(plan.fields[1]?.catalogTargets, ['ru']);
+  assert.equal(plan.estimate.maximumRequests, 2);
+  assert.equal(plan.estimate.maximumCharacters, ctx.current.fields[0]!.sourceText.length * 2);
+  assert.equal(plan.estimate.cost.status, 'unknown');
+  const body = confirmation(plan);
+  await assert.rejects(ctx.service.generate(vehicleId, plan.id, { ...body, acceptUnknownCost: false }, actor, 'key'), errorCode('TRANSLATION_CONFIRMATION_REQUIRED'));
+  assert.deepEqual(calls, []);
+  const result = await ctx.service.generate(vehicleId, plan.id, body, actor, 'key');
+  assert.deepEqual(calls, ['en', 'ru']);
+  assert.deepEqual(result.failures, [
+    { ref: 'content.title', targetLocale: 'en', code: 'invalid_result', reason: 'output_constraint' },
+    { ref: 'content.title', targetLocale: 'ru', code: 'upstream_failed', reason: 'provider_unusable' },
+  ]);
+  assert.equal(result.fields[1]?.translations.ru?.engineVersion, 'config-catalog:v1');
+  assert.doesNotMatch(JSON.stringify(result), /private-provider-detail/);
+  assert.deepEqual((await ctx.service.status(vehicleId, plan.id, actor)).result, result);
 });

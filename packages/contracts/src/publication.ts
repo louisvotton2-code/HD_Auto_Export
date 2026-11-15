@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ConfigurationDisplaySchema } from './configuration-display.js';
-import {
+import { MAX_PUBLICATION_ISSUES,
   AvailabilitySchema, IdSchema, LanguageTagSchema, LocaleSchema, MoneySchema,
   TimestampSchema, VehicleFactsSchema, VersionSchema, responseSchema,
 } from './common.js';
@@ -78,7 +78,7 @@ export const PublishReadinessSchema = z.strictObject({
   schemaVersion: z.literal(1), vehicleId: IdSchema, vehicleVersion: VersionSchema,
   publicContentRevision: VersionSchema, fingerprint: PublicationFingerprintSchema, locale: LocaleSchema,
   requiredFieldsReady: z.boolean(), localizationReady: z.boolean(), previewConfirmed: z.boolean(), canPublish: z.boolean(),
-  issues: z.array(PublicationIssueSchema).max(500),
+  issues: z.array(PublicationIssueSchema).max(MAX_PUBLICATION_ISSUES),
   confirmation: z.strictObject({ locale: LocaleSchema, confirmedAt: TimestampSchema, expiresAt: TimestampSchema }).nullable(),
 }).superRefine((value, ctx) => {
   if (value.canPublish !== (value.requiredFieldsReady && value.localizationReady && value.previewConfirmed) ||

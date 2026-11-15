@@ -17,6 +17,7 @@ ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
 MODEL = 'hd-ext09-daily-two-v1'
+BOUNDED_PROBE_ROWS = 25_000
 # Exact host controls used by the release/backup configuration. Do not admit
 # arbitrary /etc or /usr trees merely because the private config names them.
 SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
@@ -37,6 +38,9 @@ def config():
     c = private_json(CONFIG)
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', c['database']):
         raise ValueError('Invalid database')
+    target = c.get('admissionTargetRows')
+    if target is not None and (type(target) is not int or not 1 <= target <= 100_000):
+        raise ValueError('Invalid bounded admission target')
     if subprocess.check_output(['findmnt','--mountpoint',str(ROOT/'data'),'-no','UUID'],text=True).strip() != c['filesystemUuid']:
         raise ValueError('Unexpected filesystem')
     return c
@@ -118,20 +122,63 @@ def daily_bytes():
     return total
 
 
+def bounded_evidence(c, e):
+    if not e or e.get('sampleEvidenceSufficient') is not True:
+        return False
+    cap = c.get('admissionTargetRows')
+    if cap is None:
+        return True
+    target = e.get('targetRows')
+    # Never truncate old full-CSV evidence on the OPS side. The hash must bind
+    # the same effective target the worker enforces; mismatches must wait.
+    return type(target) is int and 0 < target <= cap
+
+
+def physical_backup_basis(e, database, raw):
+    """Reserve as if current database components offered no dump compression."""
+    business = max(e['businessBytes'], database - e['sqlStagingBytes'])
+    return dict(processedRows=e['distinctProcessed'], businessDumpBytes=business, rawDumpBytes=raw)
+
+
 def measure():
-    c=config(); e=evidence(c)
-    if not e or not e.get('sampleEvidenceSufficient'): return None
-    try: cached=private_json(STATE/'probe.json')
-    except (OSError,ValueError): cached={}
-    if cached.get('model') not in ('hd-ext07-peak-v1', MODEL) or cached.get('evidenceHash')!=e['evidenceHash'] or cached.get('snapshotId')!=e['snapshotId'] or time.time()-cached.get('measuredEpoch',0)>86400:
-        subprocess.run(['systemctl','start','--no-block','hd-auto-ext07-capacity-probe.service'],check=True,timeout=5)
+    c = config()
+    e = evidence(c)
+    if not bounded_evidence(c, e):
         return None
-    fs=os.statvfs(ROOT/'data'); total=fs.f_blocks*fs.f_frsize; used=(fs.f_blocks-fs.f_bfree)*fs.f_frsize
-    raw=sql(c,"SELECT coalesce(sum(pg_total_relation_size(c.oid)),0)::bigint FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname IN ('external_source_blobs','external_source_documents')")
-    result=project(e,cached,used=used,total=total,media=sum(allocated(p) for p in c['mediaRoots']),controls=sum(allocated(p) for p in c['controlRoots']),daily=daily_bytes(),raw=raw)
-    latest=evidence(c)
-    if latest.get('evidenceHash')!=e['evidenceHash']: return None
-    return {**e,**result}
+    large_bounded = c.get('admissionTargetRows') is not None and e['distinctProcessed'] >= BOUNDED_PROBE_ROWS
+    if not large_bounded:
+        try:
+            cached = private_json(STATE/'probe.json')
+        except (OSError, ValueError):
+            cached = {}
+        if (cached.get('model') not in ('hd-ext07-peak-v1', MODEL)
+                or cached.get('evidenceHash') != e['evidenceHash']
+                or cached.get('snapshotId') != e['snapshotId']
+                or time.time() - cached.get('measuredEpoch', 0) > 86400):
+            subprocess.run(['systemctl','start','--no-block','hd-auto-ext07-capacity-probe.service'],check=True,timeout=5)
+            return None
+    fs = os.statvfs(ROOT/'data')
+    total = fs.f_blocks * fs.f_frsize
+    used = (fs.f_blocks-fs.f_bfree) * fs.f_frsize
+    sizes = sql(c, """SELECT jsonb_build_object(
+        'database', pg_database_size(current_database()),
+        'raw', coalesce(sum(pg_total_relation_size(c.oid)),0))
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relkind='r'
+          AND c.relname IN ('external_source_blobs','external_source_documents')""")
+    if large_bounded:
+        # A live full dump grows beyond the probe's time/byte bounds. Use the
+        # measured allocated DB size (including indexes) as a conservative
+        # backup basis, still reserving raw history and fixed staging.
+        cached = physical_backup_basis(e, sizes['database'], sizes['raw'])
+    result = project(e, cached, used=used, total=total,
+                     media=sum(allocated(p) for p in c['mediaRoots']),
+                     controls=sum(allocated(p) for p in c['controlRoots']),
+                     daily=daily_bytes(), raw=sizes['raw'])
+    latest = evidence(c)
+    if not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash']:
+        return None
+    return {**e, **result}
 
 
 def dump_command(c, image, name, extra):
@@ -183,7 +230,8 @@ def probe():
     with (STATE/'probe.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         c=config(); e=evidence(c)
-        if not e or not e.get('sampleEvidenceSufficient'): return
+        if not bounded_evidence(c, e): return
+        if c.get('admissionTargetRows') is not None and e['distinctProcessed'] >= BOUNDED_PROBE_ROWS: return
         image=dump_target(c)
         business=compressed_dump(c,image,['--exclude-table=public.external_full_stage'])
         raw=compressed_dump(c,image,['--table=public.external_source_blobs','--table=public.external_source_documents'])

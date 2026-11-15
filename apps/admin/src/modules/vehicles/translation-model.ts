@@ -1,6 +1,11 @@
 import type { LocalizedText, Locale, TranslatableField } from '@hd/contracts/admin';
 
 export const translationLocales = ['zh', 'en', 'ru'] as const;
+
+export function needsManualChineseTranslation(field: TranslatableField): boolean {
+  return !!field.sourceText?.trim() && field.sourceLanguage.split('-')[0].toLowerCase() !== 'zh' &&
+    !field.translations.zh?.text.trim();
+}
 export const translationLocaleLabels = { zh: '中文', en: '英文', ru: '俄文' };
 export type TranslationReviewState = 'empty' | LocalizedText['reviewStatus'];
 
@@ -32,17 +37,20 @@ export function prepareTranslationField(field: TranslatableField, sourceText: st
 
 export function editTranslation(
   field: TranslatableField, locale: Locale, text: string, sourceText: string, sourceLanguage: string,
-  savedHumanEditVersion?: number,
+  saved?: TranslatableField,
 ): TranslatableField {
   const prior = field.translations[locale];
   if (text === (prior?.text ?? '')) return field;
   const source = translationSource(field, sourceText, sourceLanguage);
-  const translation: LocalizedText | null = !text.trim() ? null : {
+  const savedSlot = saved?.translations[locale];
+  const restored = saved && !source.changed && saved.sourceVersion === field.sourceVersion &&
+    saved.sourceText === source.text && saved.sourceLanguage === source.language && text === (savedSlot?.text ?? '');
+  const translation: LocalizedText | null = restored ? savedSlot ?? null : !text.trim() ? null : {
     text,
     kind: canBeOriginal(locale, text, source) ? 'original' : 'human',
     reviewStatus: source.changed ? 'stale' : 'pending',
     sourceVersion: field.sourceVersion,
-    humanEditVersion: prior?.humanEditVersion ?? savedHumanEditVersion ?? 0,
+    humanEditVersion: savedSlot?.humanEditVersion ?? prior?.humanEditVersion ?? 0,
     engineVersion: null,
   };
   return { ...field, translations: { ...field.translations, [locale]: translation } };

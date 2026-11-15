@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { InjectOptions } from 'fastify';
 import sharp from 'sharp';
 import { makeDemoVehicleDraftFixture, makeExternalVehicleDraftFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
-import { AdminVehicleResponseSchema, PublicationPreviewResponseSchema, PublishReadinessResponseSchema,
+import { ApiErrorSchema, AdminVehicleResponseSchema, PublicationPreviewResponseSchema, PublishReadinessResponseSchema,
   VehicleLocalizationSchema, VehicleTranslationBundleResponseSchema, type AdminVehicle, type PublicationPreview, type PublicationPreviewText, type VehicleDraftInput } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, type Locale } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
@@ -423,9 +423,10 @@ test('publication preview gates use current persisted data and an actor-specific
       vehicle.draft.configuration!.items[0]!.value = '升级版'; vehicle = await save(vehicle);
       assert.deepEqual(vehicle.draft.content, oldContent);
       const state = await readiness(vehicle.id);
-      assert.equal(state.previewConfirmed, false); assert.equal(state.localizationReady, false);
+      assert.equal(state.previewConfirmed, false); assert.equal(state.localizationReady, true);
       assert.ok(state.publicContentRevision > oldProof.publicContentRevision);
-      assert.ok(state.issues.some(issue => issue.path.startsWith('localization.configuration.') && issue.path.endsWith('.value.en')));
+      assert.ok(!state.issues.some(issue => issue.path.startsWith('localization.configuration.') && issue.path.endsWith('.value.en')));
+      assert.equal((await preview(vehicle.id, 'en')).vehicle.configuration!.items[0]!.value.text, oldConfigurations.get('en')!.items[0]!.value.text);
       assert.equal((await confirm(vehicle.id, oldProof)).statusCode, 409);
       await rejectedPublish(vehicle);
       for (const locale of ['zh', 'en', 'ru'] as const) assert.deepEqual((await publicDetail(vehicle.id, locale)).configuration, oldConfigurations.get(locale));
@@ -438,6 +439,117 @@ test('publication preview gates use current persisted data and an actor-specific
         assert.equal(detail.configuration!.items[0]!.value.text, view.locale === 'zh' ? '升级版' : `升级版 (${view.locale})`);
         assert.equal(detail.configuration!.items[1]!.value.text, '450 km'); assert.equal(detail.configuration!.items[2]!.value.text, '5');
       }
+    });
+
+    await t.test('configuration accepts nonblank translations and rejects only blank slots for completeness', async () => {
+      let vehicle = await ready();
+      vehicle.draft.configuration = { version: 1, items: [
+        { name: '家用交流充电功率(kW)', value: '持续输出120kW，峰值140kW' },
+      ] };
+      vehicle = await save(vehicle);
+      vehicle = await approveDisplay(vehicle.id);
+      const display = await localization(vehicle.id);
+      const name = display.data.fields.find(field => field.sourceText === '家用交流充电功率(kW)')!;
+      const value = display.data.fields.find(field => field.sourceText === '持续输出120kW，峰值140kW')!;
+      name.translations.en!.text = 'Home AC charging power (kW)';
+      name.translations.ru!.text = 'Мощность домашней зарядки переменным током (кВт)';
+      value.translations.en!.text = 'Continuous output 120 kW, peak 140 kW';
+      value.translations.ru!.text = 'Непрерывная мощность 120 кВт, пиковая 140 кВт';
+      vehicle = await saveLocalization(display);
+      assert.equal((await readiness(vehicle.id)).localizationReady, true);
+
+      const persisted = await localization(vehicle.id);
+      const edited = structuredClone(persisted.data);
+      const changed = edited.fields.find(field => field.ref === value.ref)!.translations.ru!;
+      changed.text = 'English text with different quantities 140 kW, 120 kW';
+      changed.reviewStatus = 'stale';
+      const update = (data: typeof edited, vehicleVersion: number, revision: number) =>
+        call({ method: 'PUT', url: endpoint(vehicle.id, '/localization'), headers: headers(), payload: {vehicleVersion,revision,data} });
+      const accepted = await update(edited, persisted.vehicleVersion, persisted.revision);
+      assert.equal(accepted.statusCode, 200, accepted.body);
+      const current = VehicleLocalizationSchema.parse(accepted.json().data);
+      assert.equal((await readiness(vehicle.id)).localizationReady, true);
+      const shown = (await preview(vehicle.id, 'ru')).vehicle.configuration!.items[0]!.value;
+      assert.equal(shown.text, changed.text);
+
+      const blank = structuredClone(current.data);
+      blank.fields.find(field => field.ref === value.ref)!.translations.ru!.text = ' \u00a0\u2003 ';
+      const cleared = await update(blank, current.vehicleVersion, current.revision);
+      assert.equal(cleared.statusCode, 200, cleared.body);
+      assert.equal(VehicleLocalizationSchema.parse(cleared.json().data).data.fields.find(field=>field.ref===value.ref)?.translations.ru, null);
+      const state = await readiness(vehicle.id);
+      assert.equal(state.localizationReady, false);
+      assert.ok(state.issues.some(issue => issue.path === 'localization.' + value.ref + '.ru'));
+
+    });
+
+    await t.test('nonblank historical machine and human text use the single existing preview confirmation', async () => {
+      let vehicle = await ready();
+      const initialPreview = await confirmed(vehicle);
+      vehicle.draft.configuration = { version: 1, items: [
+        { name: '驾驶座调节', value: '4向电动调节' },
+        { name: '双座椅细节', value: '前轴500 kg，后轴600 kg' },
+        { name: '直流快充电量范围', value: '20–80%' },
+      ] };
+      vehicle = await save(vehicle);
+      const input = await localization(vehicle.id);
+      for (const field of input.data.fields) for (const locale of ['en', 'ru'] as const) {
+        field.translations[locale] ??= { text: field.sourceText + ' (' + locale + ')', kind: 'human',
+          reviewStatus: 'pending', sourceVersion: field.sourceVersion, humanEditVersion: 0, engineVersion: null };
+      }
+      const adjustment = input.data.fields.find(field => field.sourceText === '4向电动调节')!;
+      const axle = input.data.fields.find(field => field.sourceText === '前轴500 kg，后轴600 kg')!;
+      const charging = input.data.fields.find(field => field.sourceText === '直流快充电量范围')!;
+      adjustment.translations.ru = { ...adjustment.translations.ru!, text: '4-ходовая электрическая регулировка',
+        kind: 'machine', reviewStatus: 'pending', engineVersion: 'fixture:legacy' };
+      axle.translations.en = { ...axle.translations.en!, text: 'Rear axle 600 kg; front axle 500 kg', kind: 'human', reviewStatus: 'pending' };
+      charging.translations.ru = { ...charging.translations.ru!, text: 'Диапазон заряда при быстрой зарядке постоянным током',
+        kind: 'machine', reviewStatus: 'pending', engineVersion: 'fixture:legacy' };
+      vehicle = await saveLocalization(input);
+
+      const current = await preview(vehicle.id, 'zh');
+      const pending = await readiness(vehicle.id, 'zh');
+      assert.notEqual(current.fingerprint, initialPreview.fingerprint);
+      assert.equal(pending.localizationReady, true);
+      assert.equal(pending.previewConfirmed, false);
+      assert.equal(Object.hasOwn(pending, 'translationWarnings'), false);
+      const oldProof = await confirm(vehicle.id, initialPreview);
+      assert.equal(oldProof.statusCode, 409, oldProof.body);
+      const acknowledged = await confirm(vehicle.id, current);
+      assert.equal(acknowledged.statusCode, 200, acknowledged.body);
+      assert.equal(PublishReadinessResponseSchema.parse(acknowledged.json()).data.canPublish, true);
+      const afterward = (await localization(vehicle.id)).data.fields.find(field => field.ref === adjustment.ref)!;
+      assert.equal(afterward.translations.ru?.kind, 'machine');
+      assert.equal(afterward.translations.ru?.reviewStatus, 'pending');
+      assert.equal((await get(vehicle.id)).publicationState, 'draft');
+    });
+
+    await t.test('large legal draft returns every issue from readiness, confirmation and rejected publication', async () => {
+      let vehicle = await ready();
+      const items = Array.from({ length: 200 }, (_, index) => ({ name: '配置测试' + index, value: '需要核对的描述' }));
+      vehicle.draft.configuration = { version: 1, items };
+      vehicle = await save(vehicle);
+      const lastField = (await localization(vehicle.id)).data.fields.find(field => field.sourceText === items.at(-1)!.name)!;
+      const lastPath = 'localization.' + lastField.ref + '.ru';
+      const state = await readiness(vehicle.id, 'zh');
+      assert.ok(state.issues.length > 800);
+      assert.ok(state.issues.findIndex(issue => issue.path === lastPath) > 500);
+      assert.equal(state.localizationReady, false);
+      assert.equal(state.canPublish, false);
+      const denied = await confirm(vehicle.id, await preview(vehicle.id));
+      assert.equal(denied.statusCode, 422, denied.body);
+      const confirmFields = ApiErrorSchema.parse(denied.json()).error.fields!;
+      assert.equal(confirmFields.length, state.issues.length - 1);
+      assert.ok(confirmFields.some(issue => issue.path === lastPath));
+      const rejected = await publish(vehicle);
+      assert.equal(rejected.statusCode, 422, rejected.body);
+      const publishFields = ApiErrorSchema.parse(rejected.json()).error.fields!;
+      assert.equal(publishFields.length, state.issues.length);
+      assert.ok(publishFields.some(issue => issue.path === lastPath));
+      const after = await get(vehicle.id);
+      assert.equal(after.publicationState, 'draft');
+      assert.equal(after.publishedRevisionId, null);
+      assert.equal((await readiness(vehicle.id)).previewConfirmed, false);
     });
 
     await t.test('archiving revokes confirmation and historical publish replay cannot put a vehicle back online', async () => {
@@ -510,8 +622,8 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.ok((await rejectedPublish(vehicle)).json().error.fields.some((issue: { path: string }) => issue.path === 'publicationPreview'));
       const staleDisplay = await localization(vehicle.id);
       staleDisplay.data.fields.find(field => field.ref === 'model')!.translations.ru!.reviewStatus = 'stale'; vehicle = await saveLocalization(staleDisplay);
-      state = await readiness(vehicle.id); assert.equal(state.localizationReady, false);
-      assert.ok(state.issues.some(issue => issue.path === 'localization.model.ru'));
+      state = await readiness(vehicle.id); assert.equal(state.localizationReady, true);
+      assert.ok(!state.issues.some(issue => issue.path === 'localization.model.ru'));
       await rejectedPublish(vehicle); vehicle = await approveDisplay(vehicle.id); old = await confirmed(vehicle);
       const second = await upload(vehicle);
       vehicle.draft.media = [{ id: second.id, alt: 'New synthetic cover', sortOrder: 0, isCover: true }]; vehicle = await save(vehicle);
@@ -554,8 +666,8 @@ test('publication preview gates use current persisted data and an actor-specific
       assert.ok(!pending.issues.some(issue => issue.path === 'draft.content.description.translations.en'));
       await rejectedPublish(vehicle);
       vehicle.draft.content.description.translations.en!.reviewStatus = 'stale'; vehicle = await save(vehicle);
-      assert.equal((await readiness(vehicle.id)).localizationReady, false);
-      assert.ok((await rejectedPublish(vehicle)).json().error.fields.some((issue: { path: string }) => issue.path === 'draft.content.description.translations.en'));
+      assert.equal((await readiness(vehicle.id)).localizationReady, true);
+      assert.ok(!(await rejectedPublish(vehicle)).json().error.fields.some((issue: { path: string }) => issue.path === 'draft.content.description.translations.en'));
       vehicle.draft.content.description.sourceText = null;
       vehicle.draft.content.description.translations = { zh: null, en: null, ru: null }; vehicle = await save(vehicle);
       assert.ok((await readiness(vehicle.id)).issues.some(issue => issue.path === 'draft.content.description.sourceText'));

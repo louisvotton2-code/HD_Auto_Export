@@ -435,14 +435,22 @@ test('home configuration has two identifiable sections without duplicate selecti
   assert.equal(admin.AdminHomeSectionsSchema.safeParse({ ...input, sections: [{ ...section, vehicleIds: ['fixture_vehicle_1', 'fixture_vehicle_1'] }, input.sections[1]] }).success, false);
 });
 
-test('required visible names, localized content and section titles reject whitespace', () => {
+test('draft translations allow whitespace and required public fields reject it', () => {
+  const blank = ' \n ';
   const draft = makeVehicleDraftFixture();
+  const translation = { ...draft.content.title.translations.zh, text: blank };
+  draft.content.title.translations.zh = translation;
+  assert.deepEqual(admin.LocalizedTextSchema.parse(translation), translation);
+  assert.deepEqual(admin.SaveVehicleRequestSchema.parse({ version: 1, draft }).draft.content.title.translations.zh, translation);
+
   const vehicle = makePublicVehicleFixture();
-  assert.equal(common.NamedValueSchema.safeParse({ id: 'make', name: ' \n ' }).success, false);
-  assert.equal(publicContract.PublicTextSchema.safeParse({ ...vehicle.content.title, text: '\t ' }).success, false);
-  assert.equal(admin.LocalizedTextSchema.safeParse({ ...draft.content.title.translations.zh, text: ' \n ' }).success, false);
+  const publicTitle = { ...vehicle.content.title, text: blank };
+  assert.equal(common.NamedValueSchema.safeParse({ id: 'make', name: blank }).success, false);
+  assert.equal(publicContract.PublicTextSchema.safeParse(publicTitle).success, false);
+  assert.equal(publicContract.PublicVehicleSchema.safeParse({ ...vehicle, content: { ...vehicle.content, title: publicTitle } }).success, false);
+  assert.equal(publicContract.PublicHomeSectionSchema.safeParse({ id: 'section', title: blank, vehicles: [vehicle] }).success, false);
   for (const locale of ['zh', 'en', 'ru']) {
-    const title = { zh: '精选', en: 'Selected', ru: 'Подборка', [locale]: ' \n ' };
+    const title = { zh: '精选', en: 'Selected', ru: 'Подборка', [locale]: blank };
     assert.equal(admin.AdminHomeSectionSchema.safeParse({ id: 'section', title, vehicleIds: [] }).success, false);
   }
 });

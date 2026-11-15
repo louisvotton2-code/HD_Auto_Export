@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import type { PoolClient } from 'pg';
+import { vehicleConfigurationItemId } from '@hd/contracts/admin';
 import { PublicVehicleCardListSchema, PublicVehicleQuerySchema, PublicFilterQuerySchema } from '@hd/contracts/public';
 import { makeVehicleDraftFixture, makePublicVehicleFixture, makeExternalCandidateFixture } from '@hd/contracts/fixtures';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { InventoryService } from '../src/vehicles/service.js';
-import { emptyLocalization, projectDisplay } from '../src/vehicles/localization.js';
+import { emptyLocalization, projectDisplay, syncLocalization } from '../src/vehicles/localization.js';
 import { buildProjection, emptyOverrides } from '../src/external/normalize.js';
 import { PublicCatalogCache, readPublicCatalogRevision } from '../src/external/public-cache.js';
 
@@ -38,7 +39,11 @@ before(async()=>{
       await tx.query("INSERT INTO vehicles(id,availability,availability_checked_at) VALUES($1,'available',now())",[id]);
       await tx.query('INSERT INTO vehicle_drafts(vehicle_id,data) VALUES($1,$2)',[id,JSON.stringify(draft)]);
       await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,id,JSON.stringify(snapshot)]);
-      if(i%2===0)await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',[publication,JSON.stringify(emptyLocalization().data),'{}',JSON.stringify(Object.fromEntries((['zh','en','ru'] as const).map(locale=>[locale,projectDisplay(id,snapshot,locale)])))]);
+      if(i%2===0) {
+        const projections=Object.fromEntries((['zh','en','ru'] as const).map(locale=>[locale,projectDisplay(id,snapshot,locale)]));
+        await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',
+          [publication,JSON.stringify(emptyLocalization().data),'{}',JSON.stringify(i===0?{policyVersion:2,...projections}:projections)]);
+      }
       await tx.query("UPDATE vehicles SET publication_state='published',published_revision_id=$2,published_at=$3 WHERE id=$1",[id,publication,`2026-01-01T00:00:00.00000${i+1}Z`]);
     });
   }
@@ -106,7 +111,10 @@ test('every sort preserves the global staff group, deterministic ties and null t
 test('sort, projection and export filters bind cursors; missing numeric anchors are rejected',async()=>{
   const cursor=(await service.listPublic(query({sort:'price_asc',pageSize:2,pagination:'cursor'}),'first')).data.nextCursor!;
   for(const change of [{sort:'price_desc'},{projection:undefined},{exportStatus:'unknown'}])await assert.rejects(service.listPublic(query({sort:'price_asc',pageSize:2,cursor,...change}),'bad'),(error:any)=>error.status===400);
-  const broken=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));delete broken.after.sortValue;
+  const decoded=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
+  const priorPolicy=Buffer.from(JSON.stringify({...decoded,v:1})).toString('base64url');
+  await assert.rejects(service.listPublic(query({sort:'price_asc',pageSize:2,cursor:priorPolicy}),'prior-policy'),(error:any)=>error.status===409);
+  const broken=structuredClone(decoded);delete broken.after.sortValue;
   await assert.rejects(service.listPublic(query({sort:'price_asc',pageSize:2,cursor:Buffer.from(JSON.stringify(broken)).toString('base64url')}),'bad-anchor'),(error:any)=>error.status===400);
 });
 
@@ -171,4 +179,74 @@ test('export default includes all valid rows and extras updates invalidate list/
   await assert.rejects(service.listPublic(query({pageSize:2,cursor}),'stale'),(error:any)=>error.status===409);
   await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[external[0]]);
   assert.equal((await list()).meta.total,7);assert.equal((await eligible()).total,0);
+});
+
+
+test('retained text in immutable snapshots projects consistently and whitespace titles stay out of the locale',async()=>{
+  const base=makeVehicleDraftFixture();
+  base.facts.model={id:'retained-public-model',name:'源车型'};
+  base.configuration={version:1,items:[{name:'质保',value:'可延长'},{name:'电压',value:'85 kW'}]};
+  const publication=(title:string|null,published:boolean)=>db.transaction(async tx=>{
+    const id=randomUUID(),revision=randomUUID(),draft=structuredClone(base);
+    draft.content.title.sourceLanguage='und';
+    draft.content.title.sourceVersion=7;
+    draft.content.title.translations.en!.text=title??'draft only retained title';
+    draft.content.title.translations.en!.reviewStatus='stale';
+    draft.content.description.sourceVersion=7;
+    draft.content.description.translations.en!.text='Retained archived description';
+    draft.content.description.translations.en!.reviewStatus='stale';
+    const images=[{...makePublicVehicleFixture().images[0]!,id:randomUUID()}];
+    const snapshot={source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,configuration:draft.configuration,images};
+    const sidecar=syncLocalization(id,{...draft,media:images},emptyLocalization(),'und');
+    const record=(ref:string,text:string)=>{
+      const field=sidecar.data.fields.find(candidate=>candidate.ref===ref)!;
+      field.sourceVersion=7;
+      field.translations.en={text,kind:'human',reviewStatus:'stale',sourceVersion:1,humanEditVersion:0,engineVersion:null};
+    };
+    record('model','Retained archived model');
+    record('configuration.'+vehicleConfigurationItemId('质保')+'.name','Retained warranty');
+    record('configuration.'+vehicleConfigurationItemId('质保')+'.value','Retained extended warranty');
+    await tx.query("INSERT INTO vehicles(id,availability,availability_checked_at) VALUES($1,'available',now())",[id]);
+    const unpublished=structuredClone(draft);
+    unpublished.content.title.translations.en!.text='Draft copy must not appear';
+    await tx.query('INSERT INTO vehicle_drafts(vehicle_id,data) VALUES($1,$2)',[id,JSON.stringify(unpublished)]);
+    if(published) {
+      await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[revision,id,JSON.stringify(snapshot)]);
+      // Old stored projections omitted these sidecar values.
+      const old={en:projectDisplay(id,snapshot,'en')};
+      await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',
+        [revision,JSON.stringify(sidecar.data),JSON.stringify(sidecar.bindings),JSON.stringify(old)]);
+      await tx.query("UPDATE vehicles SET publication_state='published',published_revision_id=$2,published_at=now() WHERE id=$1",[id,revision]);
+    }
+    return id;
+  });
+  const retained=await publication('  Retained English title  ',true);
+  const blank=await publication(' \r\t\u00A0\u2005\u3000\uFEFF',true);
+  const draft=await publication(null,false);
+  const home=await service.getHome();
+  home.sections[0]!.vehicleIds=[retained,blank,draft];
+  await db.pool.query('UPDATE home_config SET sections=$1 WHERE id=1',[JSON.stringify(home.sections)]);
+  const target={model:'retained-public-model'};
+  const card=await service.listPublic(query({...target,q:'Retained archived model'}),'retained-card');
+  assert.equal(card.meta.total,1);assert.deepEqual(ids(card),[retained]);
+  assert.equal(card.data.items[0]!.content.title?.text,'  Retained English title  ');
+  assert.equal(card.data.items[0]!.display?.model.text,'Retained archived model');
+  assert.equal(card.data.items[0]!.display?.model.reviewed,false);
+  const full=await service.listPublic(query({...target,projection:undefined}),'retained-full');
+  assert.equal(full.meta.total,1);assert.deepEqual(ids(full),[retained]);
+  assert.equal((await service.listPublic(query({...target,locale:'zh'}),'retained-zh')).meta.total,2);
+  const facet=await service.filters(filters(target));
+  assert.equal(facet.total,1);
+  assert.deepEqual(facet.models.map(({name,count})=>({name,count})),[{name:'Retained archived model',count:1}]);
+  const detail=await service.getPublic(retained,'en','localized');
+  assert.equal(detail.content.title.text,'  Retained English title  ');
+  assert.equal(detail.content.description?.text,'Retained archived description');
+  assert.equal(detail.configuration?.items[0]?.name.text,'Retained warranty');
+  assert.equal(detail.configuration?.items[0]?.value.text,'Retained extended warranty');
+  assert.equal(detail.configuration?.items[1]?.value.text,'85 kW');
+  assert.ok(!JSON.stringify(detail).includes('Draft copy'));
+  for(const id of [blank,draft])await assert.rejects(service.getPublic(id,'en','localized'),(error:any)=>error.status===404);
+  const featured=(await service.publicHome('en','localized')).sections[0]!.vehicles;
+  assert.deepEqual(featured.map(vehicle=>vehicle.id),[retained]);
+  assert.equal(featured[0]?.facts.model?.name,'Retained archived model');
 });

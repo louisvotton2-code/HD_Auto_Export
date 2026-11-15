@@ -47,13 +47,19 @@ function actualText(value: unknown, hinted: Locale, limit: number): Tagged | nul
   return { text, contentLocale };
 }
 
-function chooseCopy(versions: Array<ReturnType<typeof actualText>>, primary?: ReturnType<typeof actualText>): Copy['title'] {
-  const known = versions.filter((text): text is NonNullable<typeof text> => !!text);
+function chooseCopy(versions: Array<Tagged | null>, requested: Array<{locale: Locale; text: Tagged | null}>, primary?: Tagged | null): Copy['title'] {
+  const known = [...versions, ...requested.map(item => item.text)].filter((text): text is Tagged => text !== null);
   const original = primary ?? known.find(text => text.contentLocale === 'zh') ?? known[0];
   if (!original) return null;
   const translations: NonNullable<Copy['title']>['translations'] = {};
   for (const item of known) if (item.contentLocale !== 'und' && item.contentLocale !== original.contentLocale && !translations[item.contentLocale]) {
     translations[item.contentLocale] = item;
+  }
+  // An explicitly captured slot takes precedence. Script inference remains
+  // content metadata and does not decide whether its text may be displayed.
+  for (const {locale,text} of requested) if (text) {
+    if (text.text === original.text && text.contentLocale === original.contentLocale) delete translations[locale];
+    else translations[locale] = text;
   }
   return { original, translations };
 }
@@ -74,15 +80,17 @@ function sourceCopy(row: JsonObject, captures: LanguageCapture): Copy {
     const sibling = captures[locale];
     return sibling && sameObservation(row, sibling) ? [{ locale, data: sibling }] : [];
   });
-  const title = chooseCopy([actualText(row.title, 'en', 500), ...matched.map(item => actualText(item.data.title, item.locale, 500))]);
+  const captured = (field: (record: JsonObject) => unknown, limit: number) =>
+    matched.map(({locale,data}) => ({ locale, text:actualText(field(data), locale, limit) }));
+  const title = chooseCopy([actualText(row.title, 'en', 500)], captured(record=>record.title,500));
   const model = object(row.model);
   const sameProperName = model.name === model.nameZh && typeof model.name === 'string' && !/\p{Script=Han}/u.test(model.name);
   const modelName = sameProperName ? actualText(model.name, 'zh', 120) : null;
   return {
     title,
-    model: chooseCopy([actualText(model.nameZh, 'zh', 120), actualText(model.name, 'en', 120),
-      ...matched.map(item => actualText(object(item.data.model).name, item.locale, 120))], modelName),
-    description: chooseCopy([actualText(row.description, 'en', 2000), ...matched.map(item => actualText(item.data.description, item.locale, 2000))]),
+    model: chooseCopy([actualText(model.nameZh, 'zh', 120), actualText(model.name, 'en', 120)],
+      captured(record=>object(record.model).name,120), modelName),
+    description: chooseCopy([actualText(row.description, 'en', 2000)], captured(record=>record.description,2000)),
   };
 }
 

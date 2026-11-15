@@ -1,25 +1,36 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  TranslationPlanSchema, TranslationPlanResultSchema, GenerateTranslationPlanRequestSchema,
-  getTranslationPlanTextLimit, translationRequestCount,
-  type TranslationPlan, type TranslationPlanResult, type GenerateTranslationPlanRequest,
+  TranslationPlanSchema, TranslationPlanResultSchema, GenerateTranslationPlanRequestSchema, RecoverableTranslationPlanResponseSchema,
+  getTranslationPlanTextLimit, translationRequestCount, TRANSLATION_PLAN_TARGETS,
+  type TranslationPlan, type TranslationPlanResult, type RecoverableTranslationPlan, type CreateTranslationPlanRequest, type GenerateTranslationPlanRequest,
 } from '@hd/contracts/admin';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import type { Actor } from './service.js';
+import { configurationCatalogText, CONFIGURATION_TRANSLATION_CATALOG_VERSION } from './configuration-translation-catalog.js';
 import { splitTranslationText, TranslationResultValidationError, type VehicleTranslator } from './translation.js';
 
-type Target = 'en' | 'ru';
+type Target = typeof TRANSLATION_PLAN_TARGETS[number];
 type Failure = TranslationPlanResult['failures'][number]['code'];
+type FailureReason = NonNullable<TranslationPlanResult['failures'][number]['reason']>;
+type PlanCatalog = {
+  version: typeof CONFIGURATION_TRANSLATION_CATALOG_VERSION;
+  fields: Record<string, Partial<Record<Target, string>>>;
+};
 export type TranslationPlanInputField = {
   ref: TranslationPlan['fields'][number]['ref']; sourceText: string; sourceVersion: number; sourceHash: string;
   targetHumanEditVersions: { zh: number | null; en: number | null; ru: number | null };
+  targets?: Target[];
 };
 export type TranslationPlanInput = {
   vehicleId: string; vehicleVersion: number; localizationRevision: number; fields: TranslationPlanInputField[];
+  scope?: CreateTranslationPlanRequest['scope'];
+  catalog?: PlanCatalog;
+  diagnostics?: true;
 };
-export type LoadTranslationPlanInput = (vehicleId: string, actor: Actor) => Promise<TranslationPlanInput>;
+export type LoadTranslationPlanInput = (vehicleId: string, actor: Actor, scope?: CreateTranslationPlanRequest['scope']) => Promise<TranslationPlanInput>;
 type Metadata = ReturnType<VehicleTranslator['metadata']>;
+type RecoverableReceipt = Pick<RecoverableTranslationPlan, 'plan' | 'result'> & { input: TranslationPlanInput };
 export type StoredTranslationPlan = {
   plan: TranslationPlan; input: TranslationPlanInput; actorId: string;
   state: 'ready' | 'running' | 'interrupted' | 'finished'; key: string | null; requestHash: string | null;
@@ -37,6 +48,7 @@ export interface TranslationPlanPersistence {
   now(): Promise<Date>;
   insert(plan: TranslationPlan, input: TranslationPlanInput, actorId: string): Promise<void>;
   get(vehicleId: string, planId: string, actorId: string): Promise<StoredTranslationPlan | null>;
+  recoverableReceipts(vehicleId: string, actorId: string): AsyncIterable<RecoverableReceipt>;
   claim(record: StoredTranslationPlan, key: string, requestHash: string, runToken: string): Promise<void>;
   interrupt(record: StoredTranslationPlan): Promise<void>;
   segments(planId: string): Promise<TranslationPlanSegment[]>;
@@ -51,28 +63,31 @@ const busy = () => new ApiError(503, 'TRANSLATION_BUSY', 'This translation plan 
 const keyConflict = () => new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'This plan or key was already used for different generation input.');
 
 /** Includes source identity and employee edits, not just visible source strings. */
-export function translationPlanFingerprint(input: TranslationPlanInput, metadata: Metadata): string {
+export function translationPlanFingerprint(input: TranslationPlanInput, metadata: Metadata, catalog = input.catalog): string {
   return digest([input.vehicleId.toLowerCase(), input.vehicleVersion, input.localizationRevision, metadata.provider, metadata.engineVersion,
     [...input.fields].sort((a, b) => a.ref.localeCompare(b.ref)).map(field => [field.ref, field.sourceText, field.sourceVersion, field.sourceHash,
-      field.targetHumanEditVersions.zh, field.targetHumanEditVersions.en, field.targetHumanEditVersions.ru])]);
+      field.targetHumanEditVersions.zh, field.targetHumanEditVersions.en, field.targetHumanEditVersions.ru,
+      ...(input.scope === 'missing' ? [field.targets] : [])]), ...(input.scope === 'missing' ? [input.scope] : []), ...(catalog ? [[catalog.version, Object.entries(catalog.fields).sort(([a], [b]) => a.localeCompare(b))
+      .map(([ref, terms]) => [ref, terms.en ?? null, terms.ru ?? null])]] : [])]);
 }
 
-const units = new Set(['cc', 'cm3', 'kW', 'kWh', 'hp', 'Nm', 'km', 'kg', 'mm', 'cm', 'L', 'l', 'V', 'Ah', 'mAh', 'Hz', 'GHz', 'MPa', 'psi', 'USD', 'CNY', 'RUB', 'EUR']);
-function protectedTokens(text: string): string[] {
-  const tokens = [...text.matchAll(/\d+(?:[.,:/-]\d+)*/gu)].map(match => `number:${match[0]}`);
-  for (const [symbol] of text.matchAll(/[%$€₽¥℃℉°]/gu)) tokens.push(`unit:${symbol}`);
-  for (const [word] of text.matchAll(/[A-Za-z0-9]+(?:[._/-][A-Za-z0-9]+)*/gu)) {
-    const attachedUnit = /^\d+(?:\.\d+)?([A-Za-z]+)$/.exec(word)?.[1];
-    if (attachedUnit && units.has(attachedUnit)) tokens.push(`unit:${attachedUnit}`);
-    else if (units.has(word)) tokens.push(`unit:${word}`);
-    else if ((/\d/.test(word) && /[A-Za-z]/.test(word)) || /^[A-Z]{2,}$/.test(word)) tokens.push(`model:${word}`);
-  }
-  // Units immediately following a number are tokenized independently above too.
-  return tokens.sort();
+function sameSource(a: TranslationPlanInputField, b: Pick<TranslationPlanInputField, 'ref' | 'sourceText' | 'sourceVersion' | 'sourceHash'>) {
+  return a.ref === b.ref && a.sourceText === b.sourceText && a.sourceVersion === b.sourceVersion && a.sourceHash === b.sourceHash;
 }
-/** Conservative token check only; successful machine output still requires employee review. */
-export function validateTranslationTokens(source: string, translated: string): boolean {
-  return JSON.stringify(protectedTokens(source)) === JSON.stringify(protectedTokens(translated));
+
+function sameTargets(a: readonly Target[] | undefined, b: readonly Target[] | undefined, fallback: readonly Target[] = TRANSLATION_PLAN_TARGETS) {
+  return TRANSLATION_PLAN_TARGETS.every(target => (a ?? fallback).includes(target) === (b ?? fallback).includes(target));
+}
+
+function usableOutput(text: string, ref: string) {
+  return text.trim().length > 0 && text.length <= getTranslationPlanTextLimit(ref);
+}
+
+function plannedField(field: TranslationPlanInputField, catalog?: PlanCatalog) {
+  const catalogTargets = TRANSLATION_PLAN_TARGETS.filter(target => catalog?.fields[field.ref]?.[target] !== undefined);
+  return { ref: field.ref, sourceText: field.sourceText, sourceVersion: field.sourceVersion, sourceHash: field.sourceHash,
+    mode: 'translate' as const, sourceCharacters: field.sourceText.length,
+    ...(field.targets ? { targets: field.targets } : {}), ...(catalogTargets.length ? { catalogTargets } : {}) };
 }
 
 export class PgTranslationPlanPersistence implements TranslationPlanPersistence {
@@ -89,6 +104,28 @@ export class PgTranslationPlanPersistence implements TranslationPlanPersistence 
       key: row.generation_key, requestHash: row.request_hash, runToken: row.run_token,
       startedAt: row.started_at?.toISOString() ?? null, finishedAt: row.finished_at?.toISOString() ?? null,
       expired: row.expired, leaseExpired: !!row.lease_expired, result: row.result ? TranslationPlanResultSchema.parse(row.result) : null } : null;
+  }
+  async *recoverableReceipts(vehicleId: string, actorId: string): AsyncIterable<RecoverableReceipt> {
+    let afterId: string | null = null;
+    const pageSize = 16;
+    type ReceiptRow = { id: string; plan: unknown; result: unknown; source_input: TranslationPlanInput };
+    for (;;) {
+      const { rows }: { rows: ReceiptRow[] } = await this.db.pool.query<ReceiptRow>(
+        `SELECT p.id,p.plan,p.result,p.source_input
+        FROM translation_plans p JOIN vehicles v ON v.id=p.vehicle_id
+        WHERE p.vehicle_id=$1 AND v.deleted_at IS NULL AND p.actor_id=$2 AND p.state='finished' AND p.result IS NOT NULL
+          AND ($3::uuid IS NULL OR (p.finished_at,p.id) <
+            (SELECT finished_at,id FROM translation_plans WHERE id=$3))
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(p.result->'fields') field
+            WHERE field->'translations'->>'en' IS NOT NULL OR field->'translations'->>'ru' IS NOT NULL)
+        ORDER BY p.finished_at DESC,p.id DESC LIMIT $4`, [vehicleId, actorId, afterId, pageSize]);
+      for (const row of rows) {
+        const pair = RecoverableTranslationPlanResponseSchema.shape.data.safeParse({ plan: row.plan, result: row.result });
+        if (pair.success && pair.data) yield { plan: pair.data.plan, result: pair.data.result, input: row.source_input };
+      }
+      if (rows.length < pageSize) return;
+      afterId = rows[rows.length - 1]!.id;
+    }
   }
   async claim(record: StoredTranslationPlan, key: string, requestHash: string, runToken: string) {
     await this.db.transaction(async tx => {
@@ -177,18 +214,32 @@ export class TranslationPlanService {
   constructor(db: Database, private translator: VehicleTranslator, private loadInput: LoadTranslationPlanInput,
     persistence?: TranslationPlanPersistence) { this.persistence = persistence ?? new PgTranslationPlanPersistence(db); }
 
-  async create(vehicleId: string, request: { version: number }, actor: Actor): Promise<TranslationPlan> {
-    const input = await this.loadInput(vehicleId, actor);
+  async create(vehicleId: string, request: CreateTranslationPlanRequest, actor: Actor): Promise<TranslationPlan> {
+    const input = await this.loadInput(vehicleId, actor, request.scope);
     if (input.vehicleId.toLowerCase() !== vehicleId.toLowerCase() || input.vehicleVersion !== request.version) throw conflict();
     const metadata = this.translator.metadata(), created = await this.persistence.now();
-    const fields = input.fields.map(field => ({ ref: field.ref, sourceText: field.sourceText, sourceVersion: field.sourceVersion,
-      sourceHash: field.sourceHash, mode: 'translate' as const, sourceCharacters: field.sourceText.length }));
+    if (request.scope === 'missing' && request.useCatalog) {
+      input.diagnostics = true;
+      const entries: PlanCatalog['fields'] = Object.create(null);
+      for (const field of input.fields) for (const target of field.targets ?? TRANSLATION_PLAN_TARGETS) {
+        const text = configurationCatalogText(field.ref, field.sourceText, target);
+        if (text !== undefined) (entries[field.ref] ??= {})[target] = text;
+      }
+      if (Object.keys(entries).length) input.catalog = { version: CONFIGURATION_TRANSLATION_CATALOG_VERSION, fields: entries };
+    }
+    const fields = input.fields.map(field => plannedField(field, input.catalog));
+    const supplierTargets = (field: typeof fields[number]) =>
+      (field.targets ?? TRANSLATION_PLAN_TARGETS).length - (field.catalogTargets?.length ?? 0);
+    const maximumCharacters = fields.reduce((sum, field) => sum + field.sourceCharacters * supplierTargets(field), 0);
+    const maximumRequests = fields.reduce((sum, field) => sum + translationRequestCount(field.sourceText) * supplierTargets(field), 0);
     const plan = TranslationPlanSchema.parse({ id: randomUUID(), vehicleId: input.vehicleId, vehicleVersion: input.vehicleVersion,
       localizationRevision: input.localizationRevision, sourceFingerprint: translationPlanFingerprint(input, metadata),
       sourceLanguage: 'zh', targetLocales: ['en', 'ru'], provider: metadata.provider, engineVersion: metadata.engineVersion, fields,
-      estimate: { characterBasis: 'utf16_upper_bound', maximumCharacters: fields.reduce((sum, field) => sum + field.sourceCharacters * 2, 0),
-        maximumRequests: fields.reduce((sum, field) => sum + translationRequestCount(field.sourceText) * 2, 0),
-        hourlyCharacterLimit: metadata.hourlyCharacterLimit, cost: { status: 'unknown', amount: null, currency: null, freeAllowanceCharacters: null } },
+      ...(input.catalog ? { catalogVersion: input.catalog.version } : {}),
+      estimate: { characterBasis: 'utf16_upper_bound', maximumCharacters, maximumRequests,
+        hourlyCharacterLimit: metadata.hourlyCharacterLimit, cost: input.catalog && maximumRequests === 0
+          ? { status: 'no_supplier_calls', amount: 0, currency: null, freeAllowanceCharacters: null }
+          : { status: 'unknown', amount: null, currency: null, freeAllowanceCharacters: null } },
       createdAt: created.toISOString(), expiresAt: new Date(created.getTime() + 600_000).toISOString(),
     });
     await this.persistence.insert(plan, input, actor.id);
@@ -198,6 +249,59 @@ export class TranslationPlanService {
     const record = await this.persistence.get(vehicleId, planId, actor.id);
     if (!record) throw notFound();
     return record;
+  }
+  async recoverable(vehicleId: string, actor: Actor): Promise<RecoverableTranslationPlan | null> {
+    // The current missing set controls adoption only. It cannot authenticate
+    // the scope or fingerprint of an already-paid, immutable receipt.
+    const current = await this.loadInput(vehicleId, actor, 'missing');
+    if (current.vehicleId.toLowerCase() !== vehicleId.toLowerCase() || !current.fields.length) return null;
+    const available = new Map(current.fields.map(field => [field.ref, field]));
+    for await (const { plan, result, input } of this.persistence.recoverableReceipts(vehicleId, actor.id)) {
+      const metadata = { provider: plan.provider, engineVersion: plan.engineVersion, hourlyCharacterLimit: plan.estimate.hourlyCharacterLimit };
+      if (!Array.isArray(input.fields) || input.fields.some(field => !field?.targetHumanEditVersions) ||
+          (input.catalog && !input.catalog.fields) ||
+          plan.vehicleId.toLowerCase() !== current.vehicleId.toLowerCase() || input.vehicleId !== plan.vehicleId ||
+          input.vehicleVersion !== plan.vehicleVersion || input.localizationRevision !== plan.localizationRevision ||
+          plan.vehicleVersion > current.vehicleVersion || plan.localizationRevision > current.localizationRevision ||
+          (input.scope !== undefined && input.scope !== 'missing') || input.catalog?.version !== plan.catalogVersion ||
+          input.fields.length !== plan.fields.length || result.fields.length !== plan.fields.length ||
+          translationPlanFingerprint(input, metadata) !== plan.sourceFingerprint) continue;
+
+      const archive = new Map(input.fields.map(field => [field.ref, field]));
+      const quoted = new Map(plan.fields.map(field => [field.ref, field]));
+      const belongsToArchive = result.fields.every(field => {
+        const source = archive.get(field.ref), estimate = quoted.get(field.ref);
+        return source && estimate && sameSource(source, field) && sameSource(source, estimate) &&
+          sameTargets(source.targets, estimate.targets) && sameTargets(estimate.targets, field.targets) &&
+          sameTargets(plannedField(source, input.catalog).catalogTargets, estimate.catalogTargets, []) &&
+          sameTargets(estimate.catalogTargets, field.catalogTargets, []) &&
+          (['zh', ...TRANSLATION_PLAN_TARGETS] as const).every(locale =>
+            source.targetHumanEditVersions[locale] === field.targetHumanEditVersions[locale]);
+      });
+      if (!belongsToArchive) continue;
+
+      let canAdopt = false;
+      const blockedTargets = result.fields.flatMap(field => TRANSLATION_PLAN_TARGETS.flatMap(targetLocale => {
+        const suggestion = field.translations[targetLocale];
+        if (!suggestion) return [];
+        const live = available.get(field.ref);
+        const hasCatalogText = field.catalogTargets?.includes(targetLocale);
+        const matchingProvenance = hasCatalogText
+          ? suggestion.engineVersion === input.catalog?.version && input.catalog?.fields[field.ref]?.[targetLocale] === suggestion.text
+          : suggestion.engineVersion === plan.engineVersion;
+        if (live && sameSource(live, field) && live.targets?.includes(targetLocale) &&
+            live.targetHumanEditVersions[targetLocale] === field.targetHumanEditVersions[targetLocale] &&
+            matchingProvenance && usableOutput(suggestion.text, field.ref)) {
+          canAdopt = true;
+          return [];
+        }
+        return [{ ref: field.ref, targetLocale }];
+      }));
+      if (canAdopt) return { plan, result, ...(blockedTargets.length ? { blockedTargets } : {}),
+        ...(current.vehicleVersion !== plan.vehicleVersion || current.localizationRevision !== plan.localizationRevision
+          ? { adoptionBase: { vehicleVersion: current.vehicleVersion, localizationRevision: current.localizationRevision } } : {}) };
+    }
+    return null;
   }
   async status(vehicleId: string, planId: string, actor: Actor) {
     const record = await this.get(vehicleId, planId, actor);
@@ -211,6 +315,8 @@ export class TranslationPlanService {
     if (!key || key.length > 200) throw new ApiError(422, 'INVALID_REQUEST', 'A bounded idempotency key is required.');
     const hash = digest(parsed), record = await this.get(vehicleId, planId, actor);
     planId = record.plan.id;
+    if (!parsed.acceptUnknownCost && record.plan.estimate.cost.status !== 'no_supplier_calls')
+      throw new ApiError(422, 'TRANSLATION_CONFIRMATION_REQUIRED', 'Supplier work requires accepting unknown cost.');
     if (record.key !== null && (record.key !== key || record.requestHash !== hash)) throw keyConflict();
     if (record.result) return record.result;
     const ongoing = this.running.get(planId);
@@ -224,29 +330,36 @@ export class TranslationPlanService {
       return this.persistence.finish(current, this.result(current, await this.persistence.segments(planId)));
     }
     if (record.expired || parsed.sourceFingerprint !== record.plan.sourceFingerprint || parsed.maximumCharacters !== record.plan.estimate.maximumCharacters) throw conflict();
-    const current = await this.loadInput(vehicleId, actor);
+    const current = await this.loadInput(vehicleId, actor, record.input.scope);
     const joined = this.running.get(planId);
     if (joined) { if (joined.hash !== hash || joined.key !== key) throw keyConflict(); return joined.promise; }
-    if (translationPlanFingerprint(current, this.translator.metadata()) !== record.plan.sourceFingerprint) throw conflict();
-    const job = this.translator.withPlanSession(async (translate, signal) => {
+    if (record.input.catalog?.version !== record.plan.catalogVersion ||
+        translationPlanFingerprint(current, this.translator.metadata(), record.input.catalog) !== record.plan.sourceFingerprint) throw conflict();
+    const run = async (execute?: (claimed: StoredTranslationPlan, reasons: Map<string, FailureReason>) => Promise<void>) => {
       const runToken = randomUUID();
       await this.persistence.claim(record, key, hash, runToken);
       const claimed = { ...record, state: 'running' as const, key, requestHash: hash, runToken };
-      await this.execute(claimed, translate, signal);
-      const result = await this.persistence.finish(claimed, this.result(claimed, await this.persistence.segments(planId)));
+      const reasons = new Map<string, FailureReason>();
+      if (execute) await execute(claimed, reasons);
+      const segments = execute ? await this.persistence.segments(planId) : [];
+      const result = await this.persistence.finish(claimed, this.result(claimed, segments, reasons));
       // Persist the paid work before a stale-source response; adoption remains an explicit version-checked operation.
-      if (translationPlanFingerprint(await this.loadInput(vehicleId, actor), this.translator.metadata()) !== record.plan.sourceFingerprint) throw conflict();
+      if (translationPlanFingerprint(await this.loadInput(vehicleId, actor, record.input.scope), this.translator.metadata(), record.input.catalog) !== record.plan.sourceFingerprint) throw conflict();
       return result;
-    });
+    };
+    // Empty plans still use normal confirmation and idempotency, without reserving provider capacity.
+    const job = record.plan.estimate.maximumRequests === 0 ? run() :
+      this.translator.withPlanSession((translate, signal) => run((claimed, reasons) => this.execute(claimed, translate, signal, reasons)));
     this.running.set(planId, { hash, key, promise: job });
     try { return await job; } finally { this.running.delete(planId); }
   }
-  private async execute(record: StoredTranslationPlan, translate: (text: string, target: Target, validate?: (text: string) => boolean) => Promise<string>, signal: AbortSignal) {
-    for (const field of record.input.fields) for (const target of ['en', 'ru'] as const) {
+  private async execute(record: StoredTranslationPlan, translate: (text: string, target: Target, validate?: (text: string) => boolean) => Promise<string>,
+    signal: AbortSignal, reasons: Map<string, FailureReason>) {
+    for (const field of record.input.fields) for (const target of field.targets ?? TRANSLATION_PLAN_TARGETS) {
+      if (record.input.catalog?.fields[field.ref]?.[target] !== undefined) continue;
       const chunks = splitTranslationText(field.sourceText);
       const translated: string[] = [];
-      const valid = (source: string, text: string) => !!text.trim() && text.length <= getTranslationPlanTextLimit(field.ref)
-        && !(text === source && /\p{Script=Han}/u.test(source)) && validateTranslationTokens(source, text);
+      const reasonKey = field.ref + ':' + target;
       for (const [index, source] of chunks.entries()) {
         if (signal.aborted) return;
         const metadata = this.translator.metadata();
@@ -257,23 +370,31 @@ export class TranslationPlanService {
         if (segment.state === 'succeeded') { translated.push(segment.text!); continue; }
         if (segment.state !== 'running') break;
         if (segment.cacheable === false) this.translator.invalidatePlanSegment(source, target);
+        let reason: FailureReason | undefined;
         try {
-          const text = await translate(source, target, text => valid(source, text));
-          if (!valid(source, text)) {
+          const text = await translate(source, target, text => {
+            reason = usableOutput(text, field.ref) ? undefined : 'output_constraint';
+            return reason === undefined;
+          });
+          if (reason) {
             segment.state = 'failed'; segment.failure = 'invalid_result';
           } else { segment.state = 'succeeded'; segment.text = text; }
         } catch (error) {
+          if (record.input.diagnostics && !signal.aborted && error instanceof ApiError && error.code === 'TRANSLATION_UPSTREAM_FAILED')
+            reasons.set(reasonKey, 'provider_unusable');
           segment.state = signal.aborted ? 'outcome_unknown' : 'failed';
           segment.failure = signal.aborted ? 'outcome_unknown' : error instanceof TranslationResultValidationError ? 'invalid_result'
             : error instanceof ApiError && error.code === 'TRANSLATION_QUOTA_EXCEEDED' ? 'budget_exceeded'
             : error instanceof ApiError && error.code === 'TRANSLATION_BUSY' ? 'not_attempted' : 'upstream_failed';
         }
+        if (record.input.diagnostics && segment.failure === 'invalid_result' && reason) reasons.set(reasonKey, reason);
         await this.persistence.finishSegment(record, segment);
         if (segment.failure === 'budget_exceeded' || segment.failure === 'not_attempted' || signal.aborted) return;
         if (segment.state !== 'succeeded') break;
         translated.push(segment.text!);
       }
-      if (translated.length === chunks.length && !valid(field.sourceText, translated.join(''))) {
+      if (translated.length === chunks.length && !usableOutput(translated.join(''), field.ref)) {
+        if (record.input.diagnostics) reasons.set(reasonKey, 'output_constraint');
         // Individually usable segments can still exceed the field bound after joining.
         // Preserve the attempt, but never reuse these outputs as successful cache entries.
         await this.persistence.invalidateTarget(record, field.ref, target);
@@ -281,24 +402,33 @@ export class TranslationPlanService {
       }
     }
   }
-  private result(record: StoredTranslationPlan, segments: TranslationPlanSegment[]): TranslationPlanResult {
+  private result(record: StoredTranslationPlan, segments: TranslationPlanSegment[], reasons?: Map<string, FailureReason>): TranslationPlanResult {
     const failures: TranslationPlanResult['failures'] = [];
     const fields = record.input.fields.map(field => {
       const translations: TranslationPlanResult['fields'][number]['translations'] = {
         zh: { text: field.sourceText, kind: 'original', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
           humanEditVersion: field.targetHumanEditVersions.zh ?? 0, engineVersion: null }, en: null, ru: null,
       };
-      for (const target of ['en', 'ru'] as const) {
+      for (const target of field.targets ?? TRANSLATION_PLAN_TARGETS) {
+        const localText = record.input.catalog?.fields[field.ref]?.[target];
+        if (localText !== undefined) {
+          if (!usableOutput(localText, field.ref))
+            failures.push({ ref: field.ref, targetLocale: target, code: 'invalid_result', reason: 'output_constraint' });
+          else translations[target] = { text: localText, kind: 'machine', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
+            humanEditVersion: field.targetHumanEditVersions[target] ?? 0, engineVersion: record.input.catalog!.version };
+          continue;
+        }
         const parts = splitTranslationText(field.sourceText).map((_, index) => segments.find(segment => segment.ref === field.ref && segment.target === target && segment.index === index));
         const failed = parts.find(segment => segment && segment.state !== 'succeeded');
         let code: Failure | null = failed ? failed.state === 'running' ? 'outcome_unknown' : failed.failure ?? 'outcome_unknown' : parts.some(part => !part) ? 'not_attempted' : null;
         const text = parts.map(part => part?.text ?? '').join('');
-        if (!code && (text.length > getTranslationPlanTextLimit(field.ref) || !text.trim() || (text === field.sourceText && /\p{Script=Han}/u.test(text)) || !validateTranslationTokens(field.sourceText, text))) code = 'invalid_result';
-        if (code) failures.push({ ref: field.ref, targetLocale: target, code });
+        if (!code && !usableOutput(text, field.ref)) code = 'invalid_result';
+        const reason = reasons?.get(field.ref + ':' + target);
+        if (code) failures.push({ ref: field.ref, targetLocale: target, code, ...(reason ? { reason } : {}) });
         else translations[target] = { text, kind: 'machine', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
           humanEditVersion: field.targetHumanEditVersions[target] ?? 0, engineVersion: record.plan.engineVersion };
       }
-      return { ...field, mode: 'translate' as const, sourceCharacters: field.sourceText.length, translations };
+      return { ...plannedField(field, record.input.catalog), targetHumanEditVersions: field.targetHumanEditVersions, translations };
     });
     return TranslationPlanResultSchema.parse({ planId: record.plan.id, vehicleId: record.plan.vehicleId, vehicleVersion: record.plan.vehicleVersion,
       localizationRevision: record.plan.localizationRevision, sourceFingerprint: record.plan.sourceFingerprint,

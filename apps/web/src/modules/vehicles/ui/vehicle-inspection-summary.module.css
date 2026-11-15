@@ -21,6 +21,9 @@
   border:1px solid #ffffff14;
   border-radius:10px
 }
+.totals div:only-child {
+  grid-column:1 / -1
+}
 .totals dt {
   font-size:12px
 }

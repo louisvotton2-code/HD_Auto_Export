@@ -4,7 +4,7 @@ import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
 import { captureFixtureEvidence } from './fixture-evidence';
-import { acknowledgePublicationPreview, chooseYear } from './publication-test-helpers';
+import { waitForPublicationPreview, chooseYear } from './publication-test-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 function publishedVehicle(): AdminVehicle {
@@ -38,26 +38,22 @@ test('publication saving a public field sets unpublished changes and allows an e
   await chooseYear(page, '年款', 2025);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(record.hasUnpublishedChanges).toBe(true);
-  await tab(page, '发布预览');
-  await expect(publishButton(page)).toHaveText('请完善信息'); await expect(publishButton(page)).toBeDisabled();
+  await waitForPublicationPreview(page);
+  await expect(publishButton(page)).toHaveText('确认并发布');
   expect(api.previewConfirmations).toEqual([]);
-  await acknowledgePublicationPreview(page);
-  expect(api.previewConfirmations).toHaveLength(1);
-  expect(api.previewConfirmations[0]!.input.version).toBe(record.version);
-  await expect(publishButton(page)).toHaveText(/发布已保存的修改/); await expect(publishButton(page)).toBeEnabled();
 });
 
 test('publication same-task double clicks create one confirmation and one request, then success is visible and publishing disables', async ({ page }) => {
-  const record = { ...publishedVehicle(), hasUnpublishedChanges: true }; await installApi(page, { items: [record] });
+  const record = { ...publishedVehicle(), hasUnpublishedChanges: true }; const api = await installApi(page, { items: [record] });
   let calls = 0; let release!: () => void; const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, async route => { calls++; await pause; Object.assign(record, { version: 2, hasUnpublishedChanges: false, publishedRevisionId: 'fixture_revision_2' }); return reply(route, envelope(record)); });
   await openPreview(page, record);
   await expect(publishButton(page)).toBeEnabled();
   await publishButton(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
-  await expect(page.getByRole('dialog', { name: '发布当前已保存的草稿？', exact: true })).toHaveCount(1); expect(calls).toBe(0);
-  if (process.env.ADMIN_CAPTURE_PUBLISH_CONFIRMATION === '1') await captureFixtureEvidence(page, 'publish-confirmation');
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
-  await expect.poll(() => calls).toBe(1); await expect(publishButton(page)).toBeDisabled();
+  await expect.poll(() => calls).toBe(1);
+  expect(api.previewConfirmations).toHaveLength(1);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(publishButton(page)).toBeDisabled();
   release();
   await expect(page.locator('.ant-message-success').filter({ hasText: '已确认当前公开版本' })).toBeVisible();
   await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本' })).toBeVisible();
@@ -70,7 +66,6 @@ test('publication a definitive validation failure has a toast and a persistent r
   const record = { ...publishedVehicle(), hasUnpublishedChanges: true }; await installApi(page, { items: [record] });
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => reply(route, error('PUBLISH_VALIDATION_FAILED'), 422));
   await openPreview(page, record); await publishButton(page).click();
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-message-error').filter({ hasText: '尚未满足发布条件' })).toBeVisible();
   await expect(page.locator('.ant-alert-error').filter({ hasText: '尚未满足发布条件' })).toBeVisible();
   await expect(publishButton(page)).toBeEnabled();
@@ -85,7 +80,6 @@ test('publication an unknown original request remains retryable even after the s
     return reply(route, envelope(record));
   });
   await openPreview(page, record); await publishButton(page).click();
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.getByRole('button', { name: /重试原发布请求$/ })).toBeEnabled();
   await page.getByRole('button', { name: /重试原发布请求$/ }).click();
   await expect(page.locator('.ant-message-success').filter({ hasText: '已确认当前公开版本' })).toBeVisible();
@@ -114,7 +108,6 @@ test('publication a replayed publish receipt cannot announce success after the c
     return reply(route, envelope(receipt));
   });
   await openPreview(page, record); await publishButton(page).click();
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await page.getByRole('button', { name: /重试原发布请求$/ }).click();
   await expect(page.getByText('车辆已移入回收站', { exact: true })).toBeVisible();
   await expect(page.locator('.ant-message-info').filter({ hasText: '回收站' })).toBeVisible();

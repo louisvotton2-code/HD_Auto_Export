@@ -2,9 +2,9 @@ import {createHash} from 'node:crypto';
 import {findBrand,LocalizationDataSchema,vehicleConfigurationItemId,type DisplayField,type LocalizationData,type VehicleDraftInput} from '@hd/contracts/admin';
 import {PublicPriceSchema,type DisplayText,type Locale,type PublicVehicle,type VehicleDisplay} from '@hd/contracts/public';
 import {conflict,ApiError} from '../errors.js';
-import {locales} from './content.js';
+import {hasTranslationText,isChineseSource,locales} from './content.js';
 import { configurationValueNeedsTranslation, projectConfiguration } from './configuration.js';
-import { validateTranslationTokens } from './translation-plans.js';
+import { configurationCatalogText, CONFIGURATION_TRANSLATION_CATALOG_VERSION, isConfigurationCatalogEngine } from './configuration-translation-catalog.js';
 
 type Source=Pick<VehicleDraftInput,'source'|'facts'|'price'|'configuration'> & {media?:VehicleDraftInput['media'];images?:PublicVehicle['images']};
 export type StoredLocalization={revision:number;data:LocalizationData;bindings:Record<string,string>;retiredFields:DisplayField[]};
@@ -26,12 +26,15 @@ export function syncLocalization(id:string,source:Source,previous:StoredLocaliza
     const hash=fieldHash(ref,binding,language,text);
     if(prior) {
       const field=structuredClone(prior);
-      if(prior.sourceHash!==hash){field.sourceVersion++;for(const value of Object.values(field.translations))if(value)value.reviewStatus='stale';}
+      const changed = prior.sourceHash !== hash;
+      if(changed){field.sourceVersion++;for(const value of Object.values(field.translations))if(value)value.reviewStatus='stale';}
       field.sourceText=text;field.sourceHash=hash;
-      if (field.sourceLanguage==='zh' && (!field.translations.zh || field.translations.zh.sourceVersion!==field.sourceVersion || field.translations.zh.text!==text))
+      const chinese = field.translations.zh;
+      const refreshOriginal = changed && chinese?.kind === 'original' && chinese.text === prior.sourceText;
+      if (isChineseSource(field.sourceLanguage) && (!hasTranslationText(chinese) || refreshOriginal))
         field.translations.zh={text,kind:'original',reviewStatus:'pending',sourceVersion:field.sourceVersion,humanEditVersion:(prior.translations.zh?.humanEditVersion??0)+1,engineVersion:null};
       fields.push(field);
-    } else fields.push({ref,sourceText:text,sourceLanguage:language,sourceVersion:1,sourceHash:hash,translations:{zh:language==='zh'?{text,kind:'original',reviewStatus:'pending',sourceVersion:1,humanEditVersion:0,engineVersion:null}:null,en:null,ru:null}});
+    } else fields.push({ref,sourceText:text,sourceLanguage:language,sourceVersion:1,sourceHash:hash,translations:{zh:isChineseSource(language)?{text,kind:'original',reviewStatus:'pending',sourceVersion:1,humanEditVersion:0,engineVersion:null}:null,en:null,ru:null}});
   };
   const facts=source.facts;
   if(!findBrand(facts.make))add('make',facts.make?.name,facts.make?.id);
@@ -74,20 +77,22 @@ export function applyLocalizationInput(id:string,source:Source,current:StoredLoc
     field.sourceVersion=prior.sourceVersion+(changedLanguage?1:0);
     field.sourceHash=fieldHash(item.ref,current.bindings[item.ref]!,item.sourceLanguage,item.sourceText);
     for(const locale of locales){
-      const value=field.translations[locale],old=prior.translations[locale];if(!value)continue;
-      if(value.humanEditVersion!==(old?.humanEditVersion??0))throw conflict();
-      if(value.sourceVersion!==prior.sourceVersion&&value.sourceVersion!==old?.sourceVersion)throw conflict();
-      if(value.kind==='machine'&&old&&(old.kind==='human'||old.reviewStatus==='approved')&&value.text!==old.text)throw conflict();
-      if(value.kind==='machine'&&!value.engineVersion)throw new ApiError(400,'INVALID_REQUEST','Machine translations require provenance.');
-      if (field.ref.startsWith('configuration.') && locale!=='zh' && !validateTranslationTokens(field.sourceText,value.text))
-        throw new ApiError(422,'TRANSLATION_FACT_MISMATCH','Configuration translations must preserve source fact tokens.',[{path:`localization.${field.ref}.${locale}`,code:'TRANSLATION_FACT_MISMATCH',message:'A configuration fact token changed.'}]);
+      const value=field.translations[locale],old=prior.translations[locale];
+      if(value && value.humanEditVersion!==(old?.humanEditVersion??0))throw conflict();
+      if (value?.kind==='machine' && hasTranslationText(old) &&
+          (old.kind==='human' || (old.reviewStatus==='approved' && value.text!==old.text))) throw conflict();
+      if (!hasTranslationText(value)) { field.translations[locale]=null; continue; }
+      if (value.kind==='machine'&&!value.engineVersion)throw new ApiError(400,'INVALID_REQUEST','Machine translations require provenance.');
+      const retainsCatalog = old && old.engineVersion === value.engineVersion && old.kind === value.kind && old.text === value.text;
+      if (!retainsCatalog && isConfigurationCatalogEngine(value.engineVersion) &&
+          (value.kind!=='machine'||locale==='zh'||value.engineVersion!==CONFIGURATION_TRANSLATION_CATALOG_VERSION||
+            configurationCatalogText(field.ref,field.sourceText,locale)!==value.text))
+        throw new ApiError(400,'INVALID_REQUEST','Catalog provenance requires an exact configuration catalog entry.');
       if(changedLanguage||value.sourceVersion!==field.sourceVersion)value.reviewStatus='stale';
-      if(value.kind==='original'&&(locale!==field.sourceLanguage.split('-')[0]||value.text!==field.sourceText)&&value.reviewStatus!=='stale')
-        throw new ApiError(400,'INVALID_REQUEST','Original display text must match its declared language and source.');
       const changed=!old||value.text!==old.text||value.kind!==old.kind||value.reviewStatus!==old.reviewStatus||value.sourceVersion!==old.sourceVersion;
       value.humanEditVersion=(old?.humanEditVersion??0)+(changed?1:0);
     }
-    if (changedLanguage && field.sourceLanguage==='zh') field.translations.zh={text:field.sourceText,kind:'original',reviewStatus:'pending',sourceVersion:field.sourceVersion,humanEditVersion:(prior.translations.zh?.humanEditVersion??0)+1,engineVersion:null};
+    if (changedLanguage && isChineseSource(field.sourceLanguage) && !hasTranslationText(field.translations.zh)) field.translations.zh={text:field.sourceText,kind:'original',reviewStatus:'pending',sourceVersion:field.sourceVersion,humanEditVersion:(prior.translations.zh?.humanEditVersion??0)+1,engineVersion:null};
     return field;
   });
   result.data.facts=structuredClone(parsed.facts);
@@ -98,26 +103,28 @@ export function applyLocalizationInput(id:string,source:Source,current:StoredLoc
 export const missingDisplay=(locale:Locale):DisplayText=>({text:null,requestedLocale:locale,contentLocale:null,status:'missing',provenance:null,reviewed:false});
 export function resolveDisplay(field:DisplayField|undefined,locale:Locale,manual:boolean):DisplayText{
   const value=field?.translations[locale];
-  if(!field||!value||value.sourceVersion!==field.sourceVersion||value.reviewStatus==='stale')return missingDisplay(locale);
+  if(!field||!hasTranslationText(value))return missingDisplay(locale);
   return {text:value.text,requestedLocale:locale,contentLocale:value.kind==='original'?field.sourceLanguage:locale,status:'ready',provenance:value.kind,reviewed:manual&&value.reviewStatus==='approved'};
 }
 export type DisplayProjection=Pick<PublicVehicle,'facts'|'price'|'images'|'source'|'display'|'configuration'>;
 export function projectDisplay(id:string,source:Source,locale:Locale,saved?:PublishedLocalization):DisplayProjection {
   const price=PublicPriceSchema.parse(source.price);
-  const state=syncLocalization(id,source,saved?{...saved,revision:1,retiredFields:[]}:undefined);
-  const manual=source.source.kind==='manual';const byRef=new Map(state.data.fields.map(field=>[field.ref,field]));
+  // The published sidecar is immutable. An old projection may have hidden text,
+  // but the counterpart in the archived sidecar remains authoritative.
+  const state=saved?.data??syncLocalization(id,source).data;
+  const manual=source.source.kind==='manual';const byRef=new Map(state.fields.map(field=>[field.ref,field]));
   const get=(ref:string)=>resolveDisplay(byRef.get(ref),locale,manual);
   const brand=findBrand(source.facts.make);
   const make:DisplayText=brand?{text:brand.labels[locale],requestedLocale:locale,contentLocale:locale,status:'ready',provenance:'catalog',reviewed:true}:get('make');
   const display:VehicleDisplay={make,model:get('model'),trim:get('trim'),generation:get('generation'),city:get('location.city'),location:get('location.displayName'),platform:get('source.platform'),
-    priceIncludes:state.data.fields.filter(field=>field.ref.startsWith('price.includes.')).map(field=>({id:field.ref.slice('price.includes.'.length),value:get(field.ref)})),
+    priceIncludes:state.fields.filter(field=>field.ref.startsWith('price.includes.')).map(field=>({id:field.ref.slice('price.includes.'.length),value:get(field.ref)})),
     mediaAlt:(source.media??source.images??[]).map(media=>({mediaId:media.id,value:get(`media.${media.id.toLowerCase()}.alt`)})),
   };
   const placeholder={zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[locale];
   const named=(value:{id:string;name:string}|null,label:DisplayText)=>value?{id:value.id,name:label.text??placeholder}:null;
   return {display, configuration: projectConfiguration(source.configuration,locale,get),
     facts:{...source.facts,make:named(source.facts.make,display.make),model:named(source.facts.model,display.model),trim:named(source.facts.trim,display.trim),
-      generation:named(state.data.facts.generation,display.generation),drivetrain:state.data.facts.drivetrain,
+      generation:named(state.facts.generation,display.generation),drivetrain:state.facts.drivetrain,
       location:source.facts.location?{country:source.facts.location.country,city:display.city.text,displayName:display.location.text}:null},
     price:{...price,includes:display.priceIncludes.flatMap(item=>item.value.text?[item.value.text]:[])},
     images:(source.images??[]).map(media=>({...media,alt:get(`media.${media.id.toLowerCase()}.alt`).text??''})),

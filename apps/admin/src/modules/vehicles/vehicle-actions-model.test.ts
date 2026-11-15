@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, publicationReadinessIssueLabel } from './vehicle-actions-model';
+import { adminVehicleFixture } from '@hd/contracts/fixtures';
+import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueDetail, publicationIssueLabel, publicationReadinessIssueLabel } from './vehicle-actions-model';
 
 describe('publication recovery', () => {
   it('captures the version and payload from the original publication intent', () => {
@@ -90,5 +91,15 @@ describe('后台发布缺项中文提示', () => {
     expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.internal.purchaseCost.amount', code: 'REQUIRED_FOR_PUBLICATION', message: 'PRIVATE_DIAGNOSTIC_VALUE' })).toBe('采购成本：请填写正数金额并核对币种');
     expect(publicationReadinessIssueLabel({ stage: 'localization', path: 'draft.content.title.translations.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'A reviewed translation is required.' })).toBe('英文标题：请完善当前原文的译文');
     expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.facts.trim', code: 'REQUIRED_FOR_PUBLICATION', message: 'Trim is required.' })).toBe('配置名称：请填写车型配置名称');
+    expect(publicationIssueDetail({ stage: 'localization', path: 'localization.trim.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'PRIVATE_DIAGNOSTIC_VALUE' }, adminVehicleFixture).reason).not.toContain('PRIVATE_DIAGNOSTIC_VALUE');
+    const issueBase = { stage: 'required_fields' as const, code: 'REQUIRED_FOR_PUBLICATION' };
+    const id = '10000000-0000-4000-8000-00000000000A';
+    const vehicle = { ...adminVehicleFixture, draft: { ...adminVehicleFixture.draft, media: [{ id, alt: '', sortOrder: 0, isCover: true }] } };
+    const processing = publicationIssueDetail({ ...issueBase, path: `draft.media.${id}`, message: 'Every referenced image must be processed, readable and owned by this vehicle.' }, vehicle);
+    const rights = publicationIssueDetail({ ...issueBase, path: `draft.media.${id.toLowerCase()}.rights`, message: 'Declared image ownership or permission is required.' }, vehicle);
+    expect(processing.label).toBe('图片 1 · 处理状态');
+    expect(processing.reason).toContain('可以读取');
+    expect(rights.label).toBe('图片 1 · 来源与授权');
+    expect(rights.reason).toContain('使用许可');
   });
 });

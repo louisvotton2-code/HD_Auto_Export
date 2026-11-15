@@ -5,7 +5,7 @@ import { adminVehicleFixture, makeVehicleLocalizationFixture, makePublicationPre
 import { VehicleLocalizationSchema, type AdminVehicle, type DisplayField, type StaffMe, type TranslatableField, type VehicleDraftInput, type VehicleLocalization } from '@hd/contracts/admin';
 
 import { PublicationPreviewFrameMessageSchema, ConfirmPublicationPreviewRequestSchema, LocaleSchema, PublicationPreviewSchema, PublicationPreviewResponseSchema, PublishReadinessSchema, PublishReadinessResponseSchema, type ConfirmPublicationPreviewRequest, type Locale, type PublicationPreview, type PublishReadiness } from '@hd/contracts/admin';
-import { CreateTranslationPlanRequestSchema, GenerateTranslationPlanRequestSchema, SaveVehicleTranslationBundleSchema, VehicleTranslationBundleResponseSchema, TranslationPlanResponseSchema, TranslationPlanResultResponseSchema, TranslationPlanStatusSchema, TranslationPlanStatusResponseSchema, parseVehicleDraftWrite, type SaveVehicleTranslationBundle, type TranslationPlan, type TranslationPlanStatus } from '@hd/contracts/admin';
+import { CreateTranslationPlanRequestSchema, GenerateTranslationPlanRequestSchema, RecoverableTranslationPlanResponseSchema, SaveVehicleTranslationBundleSchema, VehicleTranslationBundleResponseSchema, TranslationPlanResponseSchema, TranslationPlanResultResponseSchema, TranslationPlanStatusSchema, TranslationPlanStatusResponseSchema, parseVehicleDraftWrite, type CreateTranslationPlanRequest, type SaveVehicleTranslationBundle, type TranslationPlan, type TranslationPlanStatus } from '@hd/contracts/admin';
 import { syntheticHash, translationBundle, translationPlan, translationResult } from './translation-fixture';
 export { translationBundle, translationResult } from './translation-fixture';
 
@@ -64,7 +64,7 @@ export async function installApi(page: Page, options: {
     localizations: new Map((options.localizations ?? []).map(saved => [saved.vehicleId, saved])),
     bundleReads: [] as string[],
     bundleSaves: [] as Array<{ id: string; input: SaveVehicleTranslationBundle }>,
-    translationPlans: [] as Array<{ id: string; input: { version: number }; plan: TranslationPlan }>,
+    translationPlans: [] as Array<{ id: string; input: CreateTranslationPlanRequest; plan: TranslationPlan }>,
     translationGenerations: [] as Array<{ id: string; planId: string; key: string | undefined; body: string | null }>,
     translationStatusReads: [] as string[],
     translationStatuses: new Map<string, TranslationPlanStatus>(),
@@ -255,17 +255,20 @@ export async function installApi(page: Page, options: {
         return reply(route, VehicleTranslationBundleResponseSchema.parse(envelope(bundle())));
       }
       const planId = unifiedPath[3];
+      if (planId === 'recoverable' && request.method() === 'GET' && !unifiedPath[4])
+        return reply(route, RecoverableTranslationPlanResponseSchema.parse(envelope(null)));
       if (!planId && request.method() === 'POST') {
         const input = CreateTranslationPlanRequestSchema.parse(request.postDataJSON());
         if (input.version !== item.version) return reply(route, error('VERSION_CONFLICT'), 409);
         if (bundle().sourceLanguageConfirmationRequired.length) return reply(route, error('TRANSLATION_SOURCE_UNSUPPORTED'), 422);
-        const plan = translationPlan(bundle(), `70000000-0000-4000-8000-${String(state.translationPlans.length + 1).padStart(12, '0')}`);
+        const plan = translationPlan(bundle(), `70000000-0000-4000-8000-${String(state.translationPlans.length + 1).padStart(12, '0')}`, input.scope);
         state.translationPlans.push({ id: item.id, input, plan });
         state.translationStatuses.set(plan.id, TranslationPlanStatusSchema.parse({ planId: plan.id, vehicleId: item.id, state: 'ready', result: null, startedAt: null, finishedAt: null }));
         return reply(route, TranslationPlanResponseSchema.parse(envelope(plan)));
       }
-      const plan = state.translationPlans.find(value => value.plan.id === planId && value.id === item.id)?.plan;
-      if (!plan) return reply(route, error('NOT_FOUND'), 404);
+      const storedPlan = state.translationPlans.find(value => value.plan.id === planId && value.id === item.id);
+      if (!storedPlan) return reply(route, error('NOT_FOUND'), 404);
+      const { plan, input: { scope } } = storedPlan;
       if (request.method() === 'GET' && !unifiedPath[4]) {
         state.translationStatusReads.push(plan.id);
         return reply(route, TranslationPlanStatusResponseSchema.parse(envelope(state.translationStatuses.get(plan.id))));
@@ -278,7 +281,8 @@ export async function installApi(page: Page, options: {
       const receiptKey = `${item.id}:${plan.id}:${key}`; const receipt = generationReceipts.get(receiptKey);
       if (receipt) return receipt.body === body ? reply(route, TranslationPlanResultResponseSchema.parse(envelope(receipt.data))) : reply(route, error('IDEMPOTENCY_CONFLICT'), 409);
       if (Date.parse(plan.expiresAt) <= Date.now()) return reply(route, error('TRANSLATION_PLAN_EXPIRED'), 409);
-      if (plan.vehicleVersion !== item.version || plan.localizationRevision !== saved.revision || plan.sourceFingerprint !== translationPlan(bundle(), plan.id).sourceFingerprint) return reply(route, error('VERSION_CONFLICT'), 409);
+      if (plan.vehicleVersion !== item.version || plan.localizationRevision !== saved.revision || plan.sourceFingerprint !== translationPlan(bundle(), plan.id, scope).sourceFingerprint) return reply(route, error('VERSION_CONFLICT'), 409);
+      if (!plan.fields.length) return reply(route, error('INVALID_REQUEST'), 422);
       const result = translationResult(bundle(), plan); const now = new Date().toISOString();
       generationReceipts.set(receiptKey, { body, data: structuredClone(result) });
       state.translationStatuses.set(plan.id, TranslationPlanStatusSchema.parse({ planId: plan.id, vehicleId: item.id, state: 'completed', result, startedAt: now, finishedAt: now }));

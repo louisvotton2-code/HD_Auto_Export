@@ -1,4 +1,5 @@
 import type {PoolClient} from 'pg';
+import {admitFormalListing,formalWithdrawal,isFormalListingAdmitted} from '../formal-admission.js';
 import {applyFormalCandidate,reprojectFormalListing} from '../store.js';
 import {adaptSourceDocuments,loadSourceDocuments,persistSourceDocument,refreshSourceSegments} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
@@ -14,8 +15,11 @@ export function parseAlias(value:unknown):{source:Source;id:string}|null{
  if(typeof value!=='string')return null;const match=/^(che168|dongchedi)[:/](\d{1,100})$/.exec(value);return match?{source:match[1] as Source,id:match[2]!}:null;
 }
 /** Verified provider associations merge publication groups, never stable listing IDs or per-source manual overrides. */
-export async function bindAlias(tx:PoolClient,source:Source,id:string,target:{source:Source;id:string},at:string){
+export async function bindAlias(tx:PoolClient,source:Source,id:string,target:{source:Source;id:string},at:string,allowAdmission=true){
  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+ // An association cannot revive an unadmitted withdrawal or add an identity during sample repair.
+ if(!await isFormalListingAdmitted(tx,target.source,target.id)&&
+   (!allowAdmission||await formalWithdrawal(tx,target.source,target.id)||!await admitFormalListing(tx,target.source,target.id)))return;
  const left=await ensureMember(tx,source,id),right=await ensureMember(tx,target.source,target.id);
  await tx.query(`INSERT INTO external_full_aliases VALUES($1,$2,$3,$4,$5) ON CONFLICT(source,external_id) DO UPDATE SET target_source=excluded.target_source,target_id=excluded.target_id,observed_at=excluded.observed_at WHERE external_full_aliases.observed_at<=excluded.observed_at`,[source,id,target.source,target.id,at]);
  if(left.canonical_id===right.canonical_id)return;

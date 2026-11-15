@@ -3,11 +3,14 @@
 .assumption{color:#ff8d8d;font-weight:700}
 .total{display:grid;gap:4px;padding:14px;border:1px solid #619d7873;border-radius:10px;background:#224334}
 .total strong{color:#c9ffda;font-size:22px;overflow-wrap:anywhere}
-.scenario{min-width:0;border:1px solid #619d7855;border-radius:8px;padding:10px}
+.scenario{min-width:0;border:1px solid #619d786f;border-radius:8px;padding:10px;background:#20392d}
 .scenario>summary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:center;gap:8px;cursor:pointer;color:#d8f1e0;overflow-wrap:anywhere}
 .scenarioLabel,.scenarioAmounts{display:grid;gap:2px}
+.scenarioTitle{font-size:13px;font-weight:700}
+.scenarioMonth{color:#aac8b5}
+.scenarioMonth time{color:#d8f1e0;font-variant-numeric:tabular-nums;white-space:nowrap}
 .scenarioAmounts{text-align:end}
-.scenarioAmounts strong{color:#c9ffda}
+.scenarioAmounts strong{color:#c9ffda;font-size:14px;font-variant-numeric:tabular-nums}
 .scenario[open]>summary>svg{transform:rotate(180deg)}
 .scenario>summary:focus-visible{outline:2px solid #b67749;outline-offset:4px}
 .scenario small{font-size:11px}

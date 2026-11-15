@@ -36,3 +36,17 @@ test('known signed media supports both supplier key variants without expanding h
  const legacy=url.replace('rk3s','lk3s');assert.equal(publicLink(legacy,'media',chinaCarProfile),legacy);
  for(const invalid of [url+'&extra=secret',url+'&lk3s=abc',url.replace('p3-dcd-sign.byteimg.com','evil.invalid'),url+'&rk3s=duplicate'])assert.equal(publicLink(invalid,'media',chinaCarProfile),null);
 });
+
+
+test('safe supplier translations apply without inferred script or numeric checks', () => {
+  const source=makeExternalCandidateFixture(1);
+  const title=source.copy.title!;
+  title.original={text:'车型 85 kW',contentLocale:'zh'};
+  title.translations.en={text:'Выставка 100 кВт',contentLocale:'ru'};
+  title.translations.ru={text:'Contact: +44 7700 900123',contentLocale:'ru'};
+  const projection=buildProjection(source,emptyOverrides(),'Synthetic Market');
+  assert.equal(projection.localized.en.title.text,'Выставка 100 кВт');
+  assert.equal(projection.localized.en.title.contentLocale,'ru');
+  assert.equal(projection.localized.en.title.kind,'supplier');
+  assert.equal(projection.localized.ru.title.text,'车型 85 kW');
+});

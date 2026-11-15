@@ -88,8 +88,8 @@ async function upload(vehicle:AdminVehicle, provenance?:{listingUrl:string;image
   const complete=await call({method:'POST',url:`/api/v1/admin/media/${p.media.id}/complete`,headers:headers(),payload:{version:sent.json().data.version}});
   assert.equal(complete.statusCode,200,complete.body);return complete.json().data;
 }
-async function ready():Promise<AdminVehicle> {
-  let vehicle=await create();const media=await upload(vehicle);
+async function ready(value=draft()):Promise<AdminVehicle> {
+  let vehicle=await create(value);const media=await upload(vehicle);
   vehicle.draft.media=[{id:media.id,sortOrder:0,isCover:true,alt:'Isolated synthetic fixture'}];vehicle=await save(vehicle);
   const availability=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/availability`,headers:headers(),payload:{version:vehicle.version,availability:'available',checkedAt:new Date().toISOString()}});
   assert.equal(availability.statusCode,200,availability.body);return availability.json().data;
@@ -111,7 +111,7 @@ async function confirmReady(vehicle:AdminVehicle):Promise<AdminVehicle> {
   assert.equal(local.vehicleVersion,vehicle.version,'Successful publication must use the current vehicle version.');
   if(local.data.fields.some(field=>['zh','en','ru'].some(locale=>{
     const value=field.translations[locale as 'zh'|'en'|'ru'];
-    return !value||value.sourceVersion!==field.sourceVersion||value.reviewStatus==='stale';
+    return !value?.text.trim();
   }))){await reviewDisplay(vehicle.id);vehicle=await freshVehicle(vehicle.id);}
   const response=await call({method:'GET',url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=zh`,headers:headers()});
   assert.equal(response.statusCode,200,response.body);const preview=PublicationPreviewResponseSchema.parse(response.json()).data;
@@ -414,11 +414,28 @@ test('confirmed translation plans enforce auth, origin, versions and idempotency
   assert.deepEqual((await call(request)).json().data,suggested);
   const keyConflict=await call({...request,payload:{version:vehicle.version}});assert.equal(keyConflict.statusCode,409);assert.equal(keyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
   const planKeyConflict=await call({...generateRequest,payload:{...generateRequest.payload,maximumCharacters:prepared.estimate.maximumCharacters+1}});assert.equal(planKeyConflict.statusCode,409);assert.equal(planKeyConflict.json().error.code,'IDEMPOTENCY_CONFLICT');
-  // Existing und declarations require an explicit bundle confirmation, never automatic relabeling.
+  // A saved nonblank title with an und tag is eligible for an estimate without relabeling the draft.
+  const beforeRetagging=await plan(vehicle);
   await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,title,sourceLanguage}','\"und\"') WHERE vehicle_id=$1",[vehicle.id]);
-  const unsupported=await call({method:'POST',url:planUrl,headers:headers(),payload:{version:vehicle.version}});assert.equal(unsupported.statusCode,422);assert.equal(unsupported.json().error.code,'TRANSLATION_SOURCE_UNSUPPORTED');
-  const priorCalls=translationCalls;translationHook=async()=>{throw new Error('Provider must not run for historical replay');};
-  try {assert.deepEqual((await call(request)).json().data,suggested);assert.equal(translationCalls,priorCalls);}finally{translationHook=null;}
+  const reservations=async()=>(await runtime.db.pool.query('SELECT count(*)::int AS n FROM translation_budget_reservations')).rows[0].n;
+  const priorCalls=translationCalls,priorReservations=await reservations();
+  translationHook=async()=>{throw new Error('Provider must not run for an estimate or historical replay');};
+  try {
+    const estimate=await plan(vehicle);
+    assert.equal(estimate.vehicleVersion,vehicle.version);
+    const nextTitle=estimate.fields.find(field=>field.ref==='content.title');
+    const previousTitle=beforeRetagging.fields.find(field=>field.ref==='content.title');
+    assert.ok(nextTitle&&previousTitle);
+    assert.notEqual(nextTitle.sourceHash,previousTitle.sourceHash);
+    assert.deepEqual(nextTitle,{...previousTitle,sourceHash:nextTitle.sourceHash});
+    assert.deepEqual(estimate.estimate,beforeRetagging.estimate);
+    assert.equal((await runtime.inventory.getAdmin(vehicle.id)).draft.content.title.sourceLanguage,'und');
+    const stale=await call(generation(beforeRetagging));
+    assert.equal(stale.statusCode,409,stale.body);
+    assert.deepEqual((await call(request)).json().data,suggested);
+    assert.equal(translationCalls,priorCalls);
+    assert.equal(await reservations(),priorReservations);
+  } finally {translationHook=null;}
 });
 test('translation results racing with an edit are rejected and upstream failures never change the draft',async()=>{
   const input=draft();input.content.title.sourceText=`隔离旧建议${randomUUID()}`;input.content.description.sourceText=null;let vehicle=await create(input);
@@ -502,22 +519,28 @@ test('demo publish rejects corrupted inventory metadata and source switching in 
   const manual=await create();const demoInput=makeDemoVehicleDraftFixture();demoInput.media=[];
   const changed=await call({method:'PATCH',url:`/api/v1/admin/vehicles/${manual.id}`,headers:headers(),payload:{version:manual.version,draft:demoInput}});assert.equal(changed.statusCode,422);assert.equal(changed.json().error.code,'DEMO_RESTRICTION');
 });
-test('current pending demo and manual text can publish without human-review claims, while stale or missing text cannot',async()=>{
+test('pending and retained older demo and manual text can publish; a missing title locale cannot',async()=>{
   let demo=await readyDemo();
   for(const language of ['zh','en','ru'] as const) assert.equal(demo.draft.content.title.translations[language]!.reviewStatus,'pending');
   demo=await publish(demo);assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
-  demo.draft.content.title.translations.ru!.kind='original';demo=await save(demo);
-  rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}}),'draft.content.title.translations.ru.kind');
-  demo.draft.content.title.translations.ru!.kind='machine';demo=await save(demo);
+  const retained=demo.draft.content.title.translations.en!.text;
+  demo.draft.content.title.translations.ru!.kind='original';
   demo.draft.content.title.sourceText='Updated demonstration source';demo=await save(demo);
-  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});rejectedPublication(stale,'draft.content.title.translations.en');
-  for(const language of ['zh','en','ru'] as const) {const text=demo.draft.content.title.translations[language]!;text.sourceVersion=demo.draft.content.title.sourceVersion;text.reviewStatus='pending';}
-  demo.draft.content.title.translations.zh!.text=demo.draft.content.title.sourceText!;demo=await save(demo);demo=await publish(demo);
-  assert.equal((await runtime.inventory.getPublic(demo.id,'en')).content.title.reviewed,false);
+  assert.equal(demo.draft.content.title.translations.en!.reviewStatus,'stale');
+  assert.ok(demo.draft.content.title.translations.en!.sourceVersion<demo.draft.content.title.sourceVersion);
+  const needsPreview=await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}});
+  rejectedPublication(needsPreview,'publicationPreview');
+  assert.equal(needsPreview.json().error.fields.length,1,needsPreview.body);
+  demo=await publish(demo);
+  const retainedTitle=(await runtime.inventory.getPublic(demo.id,'en')).content.title;
+  assert.equal(retainedTitle.text,retained);
+  assert.equal(retainedTitle.reviewed,false);
+  assert.equal((await runtime.inventory.getPublic(demo.id,'ru')).content.title.kind,'original');
   demo.draft.content.title.translations.en=null;demo=await save(demo);
   rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${demo.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:demo.version}}),'draft.content.title.translations.en');
-  let manual=await ready();manual.draft.content.title.translations.en!.reviewStatus='pending';manual.draft.content.title.translations.en!.kind='machine';manual.draft.content.title.translations.en!.engineVersion='isolated-pending:1';manual=await save(manual);
-  manual=await publish(manual);assert.equal((await runtime.inventory.getPublic(manual.id,'en')).content.title.reviewed,false);
+  const manualDraft=draft();
+  Object.assign(manualDraft.content.title.translations.en!,{reviewStatus:'pending',kind:'machine',engineVersion:'isolated-pending:1'});
+  let manual=await publish(await ready(manualDraft));assert.equal((await runtime.inventory.getPublic(manual.id,'en')).content.title.reviewed,false);
   assert.equal((await runtime.inventory.getPublic(manual.id,'en')).content.title.kind,'machine');
   manual.draft.content.title.translations.en=null;manual=await save(manual);
   rejectedPublication(await call({method:'POST',url:`/api/v1/admin/vehicles/${manual.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:manual.version}}),'draft.content.title.translations.en');
@@ -666,7 +689,7 @@ test('media ownership, invalid binary, rights, UUID parameters and missing data 
   const invalid=await call({method:'PUT',url:permit.uploadUrl,headers:{...headers(),'if-match':'1','content-type':'image/png'},payload:Buffer.alloc(20)});assert.equal(invalid.statusCode,400,invalid.body);
   assert.equal((await runtime.media.get(permit.media.id)).status,'pending');
 });
-test('incomplete manual drafts stay private; demo unknown facts stay null and stale translations cannot publish',async()=>{
+test('incomplete manual drafts stay private, demo unknown facts stay null and edited drafts need a current preview',async()=>{
   let vehicle=await publish(await ready());const visible=await runtime.inventory.getPublic(vehicle.id,'ru');
   vehicle.draft.price={kind:'on_request',money:null,includes:[]};vehicle.draft.facts.manufacturedAt=null;vehicle.draft.facts.mileageKm=null;
   vehicle=await save(vehicle);
@@ -679,7 +702,10 @@ test('incomplete manual drafts stay private; demo unknown facts stay null and st
   vehicle.draft.price=draft().price;vehicle.draft.facts.mileageKm=0;
   vehicle.draft.content.title.sourceText='Changed source';vehicle=await save(vehicle);vehicle=await save(vehicle);
   const blocked=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});assert.equal(blocked.statusCode,422,blocked.body);
-  assert.ok(blocked.json().error.fields.some((field:{path:string})=>field.path==='draft.content.title.translations.en'));
+  const missing=blocked.json().error.fields.map((field:{path:string})=>field.path) as string[];
+  assert.ok(missing.includes('publicationPreview'));
+  assert.ok(missing.some(path=>path.startsWith('localization.price.includes.')));
+  assert.ok(missing.every(path=>path==='publicationPreview'||path.startsWith('localization.price.includes.')));
   assert.equal((await runtime.inventory.getPublic(vehicle.id,'ru')).content.title.text,visible.content.title.text);
 });
 test('expired upload cleanup advances past removed rows and protects ready/public images',async()=>{
@@ -714,7 +740,7 @@ test('media removed while a mutation waits for its vehicle lock returns 404 inst
     } finally {await blocker.query('ROLLBACK');blocker.release();if(response) await response;}
   }
 });
-test('legacy regional snapshots retain their language while new publication requires explicit Chinese-source confirmation',async()=>{
+test('legacy regional snapshots preserve their actual language through a new publication',async()=>{
   let vehicle=await ready();
   // This random-database row models an existing regional declaration; new workflows use a Chinese source.
   await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,title,sourceLanguage}','\"zh-CN\"') WHERE vehicle_id=$1",[vehicle.id]);
@@ -723,18 +749,12 @@ test('legacy regional snapshots retain their language while new publication requ
   vehicle.draft.internal.notes='Private edit preserves legacy source declaration';vehicle=await save(vehicle);
   assert.equal(vehicle.draft.content.title.sourceLanguage,'zh-CN');assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'zh'),legacy);
   const blocked=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
-  rejectedPublication(blocked,'draft.content.title.sourceLanguage');
-  let workspace=await bundle(vehicle.id);assert.ok(workspace.sourceLanguageConfirmationRequired.includes('content.title'));
-  workspace.vehicle.draft.content.title.sourceLanguage='zh';
-  const confirmed=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-bundle`,headers:headers(),
-    payload:{...bundlePayload(workspace),sourceLanguageConfirmations:['content.title']}});
-  assert.equal(confirmed.statusCode,200,confirmed.body);workspace=VehicleTranslationBundleResponseSchema.parse(confirmed.json()).data;
-  assert.equal(workspace.vehicle.draft.content.title.sourceLanguage,'zh');
-  for(const locale of ['zh','en','ru'] as const){const text=workspace.vehicle.draft.content.title.translations[locale]!;text.sourceVersion=workspace.vehicle.draft.content.title.sourceVersion;text.reviewStatus='approved';}
-  const reviewed=await call({method:'PUT',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-bundle`,headers:headers(),payload:bundlePayload(workspace)});
-  assert.equal(reviewed.statusCode,200,reviewed.body);vehicle=await publish(VehicleTranslationBundleResponseSchema.parse(reviewed.json()).data.vehicle);
+  rejectedPublication(blocked,'publicationPreview');
+  assert.ok(!blocked.json().error.fields.some((field:{path:string})=>field.path==='draft.content.title.sourceLanguage'));
+  const workspace=await bundle(vehicle.id);assert.deepEqual(workspace.sourceLanguageConfirmationRequired,[]);
+  vehicle=await publish(vehicle);
   const zh=await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}?locale=zh`});assert.equal(zh.statusCode,200,zh.body);
-  assert.deepEqual(zh.json().data.content.title,{text:vehicle.draft.content.title.sourceText,requestedLocale:'zh',contentLocale:'zh',kind:'original',reviewed:true});
+  assert.deepEqual(zh.json().data.content.title,legacy.content.title);
   assert.equal((await runtime.inventory.getPublic(vehicle.id,'ru')).content.title.contentLocale,'ru');
 });
 test('published snapshots reject mutation and an interrupted publication transaction rolls back',async()=>{
@@ -948,7 +968,9 @@ test('current pending staff external copy publishes after confirmation and expli
   const bulk=await call({method:'POST',url:'/api/v1/admin/vehicles/bulk',headers:{...headers(),'idempotency-key':randomUUID()},payload:{operation:'availability',availability:'available',checkedAt:new Date().toISOString(),items:[{id:vehicle.id,expectedVersion:vehicle.version}]}});assert.equal(bulk.json().data.results[0].error.code,'EXTERNAL_RESTRICTION');
   const before=await runtime.inventory.getPublic(vehicle.id,'en');vehicle.draft.content.title.sourceText='Source title updated after publication';vehicle=await save(vehicle);
   assert.deepEqual(await runtime.inventory.getPublic(vehicle.id,'en'),before);assert.equal(vehicle.draft.content.title.translations.en!.reviewStatus,'stale');
-  const stale=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});rejectedPublication(stale,'draft.content.title.translations.en');
+  const needsPreview=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:vehicle.version}});
+  rejectedPublication(needsPreview,'publicationPreview');
+  assert.deepEqual(needsPreview.json().error.fields.map((field:{path:string})=>field.path),['publicationPreview']);
   const archived=await runtime.inventory.archive(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()});assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}`})).statusCode,404);assert.equal((await call({method:'GET',url:`/api/v1/media/${photo.id}`})).statusCode,404);assert.equal(archived.availability,'unknown');
 });
 test('external identity, source type, price and per-image evidence cannot be bypassed',async()=>{

@@ -2,6 +2,7 @@ import {readFile,statfs} from 'node:fs/promises';
 import path from 'node:path';
 import {createReadStream} from 'node:fs';
 import {availableParallelism,loadavg} from 'node:os';
+import {formalAdmissionInstalled} from '../formal-admission.js';
 import {createDatabase} from '../../db/index.js';
 import {readDatabaseEnvironment,readLocalSecret} from '../../local-secrets.js';
 import {ManifestSchema,IngestionError} from './types.js';
@@ -41,6 +42,7 @@ async function main(){
   await receivePage(db,jobId!,page);return !page.terminal;
  };
  try{
+  if(command!=='status'&&!await formalAdmissionInstalled(db.pool))throw new IngestionError('INGESTION_ADMISSION_MIGRATION_REQUIRED');
   if(command==='prepare'||command==='recover'){
    const packageDir=flags.get('--package');
    let manifest;

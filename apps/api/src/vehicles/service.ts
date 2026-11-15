@@ -13,8 +13,9 @@ import {readFxQuote,type FxQuote} from '../external/fx.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
-import { locales, normalizeContent, sourceHash } from './content.js';
+import { hasTranslationText, locales, normalizeContent, sourceHash } from './content.js';
 import { VehicleTranslationBundleSchema, type VehicleTranslationBundle, type SaveVehicleTranslationBundle } from '@hd/contracts/admin';
+import { TRANSLATION_PLAN_TARGETS, type CreateTranslationPlanRequest } from '@hd/contracts/admin';
 import type { TranslationPlanInput, TranslationPlanInputField } from './translation-plans.js';
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
@@ -25,6 +26,8 @@ import { publicExternalDisplay, publicExternalSource } from '../external/public-
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
 
 export type Actor = { id: string; requestId: string };
+const staffProjectionPolicy=2;
+type PublicProjections=Partial<Record<Locale,DisplayProjection>> & {policyVersion?:number};
 type Snapshot = Pick<VehicleDraftInput, 'source'|'facts'|'content'|'configuration'> & { price: PublicVehicle['price']; images: PublicMedia[] };
 type Row = {
   id: string; stock_number: string; version: number; public_content_revision: number; publication_state: AdminVehicle['publicationState'];
@@ -33,7 +36,7 @@ type Row = {
   activity?:AdminActivitySummary;
   publication_data?: Snapshot;
   localization_revision?:number;localization_data?:LocalizationData;localization_bindings?:Record<string,string>;retired_fields?:StoredLocalization['retiredFields'];
-  published_localization?:LocalizationData;published_bindings?:Record<string,string>;projections?:Record<Locale,DisplayProjection>;
+  published_localization?:LocalizationData;published_bindings?:Record<string,string>;projections?:PublicProjections;
 };
 const iso = (date: Date|null) => date?.toISOString() ?? null;
 const adminSelect = `SELECT ${staffActivitySql()} AS activity,v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,l.data AS localization_data,l.bindings AS localization_bindings,l.retired_fields,pl.data AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id`;
@@ -47,15 +50,19 @@ export function toAdmin(row: Row): AdminVehicle {
     publicationState:row.publication_state, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
     deletedAt:iso(row.deleted_at), hasUnpublishedChanges:hasUnpublishedChanges(row.data,row.publication_data,row.localization_data,row.published_localization), draft:row.data, publishedRevisionId:row.published_revision_id, publishedAt:iso(row.published_at), createdAt:iso(row.created_at), updatedAt:iso(row.updated_at) });
 }
+function currentStaffProjection(row:Row,locale:Locale) {
+  return row.projections?.policyVersion===staffProjectionPolicy?row.projections[locale]:undefined;
+}
+const currentStaffProjectionSql = `pl.projections->>'policyVersion'='${staffProjectionPolicy}'`;
 function toPublic(row: Row, locale: Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null,includeConfiguration=false): PublicVehicle {
   const p = row.publication_data!;
   const text = (key: 'title'|'description') => {
     const field = p.content[key]; const item = field.translations[locale];
     const curated=p.source.kind==='manual';
-    if (!item || item.reviewStatus==='stale' || item.sourceVersion !== field.sourceVersion) return null;
+    if (!hasTranslationText(item)) return null;
     return {text:item.text, requestedLocale:locale, contentLocale:item.kind==='original'?field.sourceLanguage:locale, kind:item.kind,reviewed:curated&&item.reviewStatus==='approved'};
   };
-  const { configuration, source, display, ...projection } = row.projections?.[locale] ?? projectDisplay(row.id,p,locale,
+  const { configuration, source, display, ...projection } = currentStaffProjection(row,locale) ?? projectDisplay(row.id,p,locale,
     row.published_localization?{data:row.published_localization,bindings:row.published_bindings??{}}:undefined);
   return PublicVehicleSchema.parse({id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
     source:p.source.kind==='external' ? publicExternalSource() : view==='localized' ? source : {kind:p.source.kind},
@@ -72,7 +79,7 @@ function staffCardSelect(locale: Locale, params: unknown[]) {
   params.push(locale);const lang=`$${params.length}::text`;
   const image=`(SELECT image FROM jsonb_array_elements(p.data->'images') WITH ORDINALITY AS media(image,position)
     ORDER BY coalesce((image->>'isCover')::boolean,false) DESC,position LIMIT 1)`;
-  const projection=`pl.projections->${lang}`;
+  const projection=`(CASE WHEN ${currentStaffProjectionSql} THEN pl.projections->${lang} END)`;
   const cover=`coalesce((SELECT image FROM jsonb_array_elements(${projection}->'images') image WHERE image->>'id'=(${image})->>'id' LIMIT 1),${image})`;
   const display=`jsonb_set(${projection}->'display','{mediaAlt}',coalesce((SELECT jsonb_agg(value) FROM jsonb_array_elements(${projection}->'display'->'mediaAlt') WHERE value->>'mediaId'=(${image})->>'id'),'[]'::jsonb))`;
   return `SELECT v.id,v.stock_number,v.availability,v.availability_checked_at,v.published_at,
@@ -85,14 +92,14 @@ function staffCardSelect(locale: Locale, params: unknown[]) {
     CASE WHEN pl.publication_id IS NOT NULL AND ${projection} IS NULL THEN jsonb_build_object('facts',pl.data->'facts','fields',coalesce((SELECT jsonb_agg(jsonb_set(value,'{translations}',jsonb_build_object(${lang},value->'translations'->${lang})))
       FROM jsonb_array_elements(pl.data->'fields') WHERE value->>'ref' NOT LIKE 'configuration.%'
       AND (value->>'ref' NOT LIKE 'media.%' OR value->>'ref'='media.'||lower((${image})->>'id')||'.alt')),'[]'::jsonb)) END AS published_localization,
-    CASE WHEN ${projection} IS NOT NULL THEN jsonb_build_object(${lang},jsonb_build_object('facts',${projection}->'facts','price',${projection}->'price',
+    CASE WHEN ${projection} IS NOT NULL THEN jsonb_build_object('policyVersion',${staffProjectionPolicy},${lang},jsonb_build_object('facts',${projection}->'facts','price',${projection}->'price',
       'source',${projection}->'source','images',jsonb_build_array(${cover}),'display',${display})) END AS projections
     ${publicFrom}`;
 }
 function toCard(row:Row,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null):PublicVehicleCard {
   const p=row.publication_data!;
   const field=p.content.title,item=field.translations[locale]!;
-  const {configuration:_configuration,source,display,...projection}=row.projections?.[locale]??projectDisplay(row.id,p,locale,
+  const {configuration:_configuration,source,display,...projection}=currentStaffProjection(row,locale)??projectDisplay(row.id,p,locale,
     row.published_localization?{data:row.published_localization,bindings:{}}:undefined);
   const extras=p as Snapshot & Pick<PublicVehicleCard,'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'>;
   return PublicVehicleCardSchema.parse({id:row.id,stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`,
@@ -163,14 +170,9 @@ function localizationResponse(row:Row):VehicleLocalization {
   return VehicleLocalizationSchema.parse({vehicleId:row.id,vehicleVersion:row.version,revision:state.revision,data:state.data,retiredFieldCount:state.retiredFields.length});
 }
 function translationBundle(row:Row):VehicleTranslationBundle {
-  const localization=localizationResponse(row);
-  const required:string[]=[];
-  for(const name of ['title','description'] as const) {
-    const field=row.data.content[name];
-    if(field.sourceText!==null&&field.sourceLanguage!=='zh')required.push(`content.${name}`);
-  }
-  for(const field of localization.data.fields)if(field.sourceLanguage!=='zh')required.push(field.ref);
-  return VehicleTranslationBundleSchema.parse({vehicle:toAdmin(row),localization,sourceLanguageConfirmationRequired:required});
+  return VehicleTranslationBundleSchema.parse({
+    vehicle:toAdmin(row),localization:localizationResponse(row),sourceLanguageConfirmationRequired:[],
+  });
 }
 async function mediaOwnership(tx: PoolClient, id: string, draft: VehicleDraftInput) {
   if (!draft.media.length) return;
@@ -211,6 +213,15 @@ function vehicleOptions(factsRows:VehicleDraftInput['facts'][],selectedMake?:str
     powertrains:[...powers].map(([id,count])=>({id,count})).sort((a,b)=>a.id.localeCompare(b.id))};
 }
 const brandLabels={ids:Object.fromEntries(BRAND_CATALOG.map(brand=>[brand.catalogId,brand.labels])),aliases:Object.fromEntries(BRAND_CATALOG.flatMap(brand=>brand.aliases.map(alias=>[normalizeBrandAlias(alias),brand.labels])))};
+// PostgreSQL btrim defaults to ASCII space. Use the ECMAScript trim set so
+// SQL eligibility, fallbacks and DTO construction agree for every locale.
+const trimCharacters="U&'\\0009\\000A\\000B\\000C\\000D\\0020\\00A0\\1680\\2000\\2001\\2002\\2003\\2004\\2005\\2006\\2007\\2008\\2009\\200A\\2028\\2029\\202F\\205F\\3000\\FEFF'";
+const textPresent=(value:string)=>`nullif(btrim(${value},${trimCharacters}),'') IS NOT NULL`;
+function staffDisplayTextSql(ref:string,locale:string) {
+  const text=`field->'translations'->${locale}->>'text'`;
+  return `(CASE WHEN ${currentStaffProjectionSql} THEN pl.projections->${locale}->'display'->'${ref}'->>'text'
+    ELSE (SELECT ${text} FROM jsonb_array_elements(pl.data->'fields') AS field WHERE field->>'ref'='${ref}' AND ${textPresent(text)} LIMIT 1) END)`;
+}
 function publicSearch(query:Pick<PublicVehicleQuery,'q'|'locale'|'view'>,params:unknown[]):string|null {
   const keyword=query.q?.trim();if(!keyword) return null;
   params.push(query.locale);const localeParameter=`$${params.length}::text`;
@@ -219,17 +230,16 @@ function publicSearch(query:Pick<PublicVehicleQuery,'q'|'locale'|'view'>,params:
   if(query.view==='localized'){
     params.push(JSON.stringify(brandLabels));const dictionary=`$${params.length}::jsonb`;
     const labels=`coalesce(${dictionary}->'ids'->lower(p.data->'facts'->'make'->>'id'),${dictionary}->'aliases'->lower(btrim(regexp_replace(normalize(p.data->'facts'->'make'->>'name',NFKC),'[\\s﻿]+',' ','g'))))`;
-    make=`CASE WHEN pl.publication_id IS NOT NULL THEN pl.projections->${localeParameter}->'display'->'make'->>'text' ELSE ${labels}->>${localeParameter} END`;
-    model=`pl.projections->${localeParameter}->'display'->'model'->>'text'`;
+    make=`coalesce(${labels}->>${localeParameter},${staffDisplayTextSql('make',localeParameter)})`;
+    model=staffDisplayTextSql('model',localeParameter);
   }
   const fields=["'HD-' || lpad(v.stock_number::text,greatest(6,length(v.stock_number::text)),'0')",make,model,
     `p.data->'content'->'title'->'translations'->${localeParameter}->>'text'`];
   return `(${fields.map(field=>`strpos(lower(coalesce(${field},'')),lower(${searchParameter}))>0`).join(' OR ')})`;
 }
 function localeVisible(locale:Locale,params:unknown[]):string {
-  params.push(locale);const field="p.data->'content'->'title'";const text=`${field}->'translations'->$${params.length}::text`;
-  return `(${text} IS NOT NULL AND ${text}->>'text' IS NOT NULL AND ${text}->>'sourceVersion'=${field}->>'sourceVersion' AND
-    ${text}->>'reviewStatus'<>'stale')`;
+  params.push(locale);
+  return textPresent(`p.data->'content'->'title'->'translations'->$${params.length}::text->>'text'`);
 }
 function publicConditions(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null):string {
   const where=[catalogVisible,localeVisible(query.locale,params)];
@@ -260,7 +270,8 @@ function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQu
     params.push(JSON.stringify(brandLabels));const dictionary=`$${params.length}::jsonb`;
     params.push({zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[query.locale]);const placeholder=`$${params.length}::text`;
     const knownBrand=`coalesce(${dictionary}->'ids'->lower(${fact}->'make'->>'id'),${dictionary}->'aliases'->lower(btrim(regexp_replace(normalize(${fact}->'make'->>'name',NFKC),'[\\s﻿]+',' ','g'))))->>${language}`;
-    for(const field of ['make','model','trim','generation']) names[field]=`coalesce(pl.projections->${language}->'facts'->'${field}'->>'name',${field==='make'?`${knownBrand},`:''}${placeholder})`;
+    for(const field of ['make','model','trim','generation'])
+      names[field]=`coalesce(${field==='make'?`${knownBrand},`:''}${staffDisplayTextSql(field,language)},${placeholder})`;
   } else for(const field of ['make','model','trim','generation']) names[field]=`${fact}->'${field}'->>'name'`;
   const currency=query.priceView==='usd'?`CASE WHEN ${staffUsdCondition(params,quote)} THEN 'USD'::text END`:"p.data->'price'->'money'->>'currency'";
   return `SELECT ${facetLabelOrder('v.published_at','v.id')} AS label_order,${fact}->'make'->>'id' AS make_id,${fact}->'model'->>'id' AS model_id,
@@ -290,7 +301,7 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],localized:
 type CatalogVersion={epoch:string;revision:string};
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 const catalogReadTransaction='SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL jit=off';
-type Cursor={v:1;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string};
+type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string};
 const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
   const {page,cursor,pagination,...filters}=query;
   return createHash('sha256').update(canonical({...filters,q:filters.q||undefined,external})).digest('hex');
@@ -298,14 +309,19 @@ const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
 function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:string,sort?:PublicFilterQuery['sort']):Cursor {
   let item:Cursor;
   try {
-    item=JSON.parse(Buffer.from(value,'base64url').toString('utf8')) as Cursor;
-    if(!item||item.v!==1||!['staff','external'].includes(item.stream)||!Number.isSafeInteger(item.page)||item.page<2||item.page>1_000_001||
+    const decoded:Cursor|{v:1}=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+    if(decoded?.v===1)throw new ApiError(409,'VERSION_CONFLICT','The catalog changed. Restart from the first page.');
+    item=decoded;
+    if(!item||item.v!==2||!['staff','external'].includes(item.stream)||!Number.isSafeInteger(item.page)||item.page<2||item.page>1_000_001||
       !item.after||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(item.after.publishedAt)||!Number.isFinite(Date.parse(item.after.publishedAt))||item.after.publishedAt.startsWith('0000-')||
       new Date(Date.parse(item.after.publishedAt)).toISOString().slice(0,19)!==item.after.publishedAt.slice(0,19)||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.after.id)||item.query!==binding)
       throw new Error('invalid cursor');
     if(numericSort(sort) && item.after.sortValue!==null && (typeof item.after.sortValue!=='string'||!/^\d{1,14}(?:\.\d{1,2})?$/.test(item.after.sortValue)))throw new Error('invalid sort anchor');
-  } catch {throw new ApiError(400,'INVALID_REQUEST','The catalog cursor does not match this query.');}
+  } catch(error) {
+    if(error instanceof ApiError)throw error;
+    throw new ApiError(400,'INVALID_REQUEST','The catalog cursor does not match this query.');
+  }
   if(item.epoch!==version.epoch||item.revision!==version.revision)throw new ApiError(409,'VERSION_CONFLICT','The catalog changed. Restart from the first page.');
   if(fx!==undefined&&item.fx!==fx)throw new ApiError(409,'VERSION_CONFLICT','The exchange-rate quote changed or expired. Restart from the first page.');
   return item;
@@ -321,20 +337,23 @@ export class InventoryService {
       return bundle;
     });
   }
-  async translationPlanInput(id:string,actor:Actor):Promise<TranslationPlanInput> {
+  async translationPlanInput(id:string,actor:Actor,scope?:CreateTranslationPlanRequest['scope']):Promise<TranslationPlanInput> {
     const bundle=await this.getTranslationBundle(id,actor);
-    if(bundle.sourceLanguageConfirmationRequired.length)throw new ApiError(422,'TRANSLATION_SOURCE_UNSUPPORTED','Explicitly confirm the current Chinese sources before planning translations.',
-      bundle.sourceLanguageConfirmationRequired.map(ref=>({path:ref,code:'CHINESE_SOURCE_CONFIRMATION_REQUIRED',message:'Source language has not been confirmed as Chinese.'})));
     const fields:TranslationPlanInputField[]=[];
     const add=(ref:string,field:VehicleDraftInput['content']['title'],hash:string)=>{
       if(!field.sourceText?.trim())return;
+      const targets = scope === 'missing'
+        ? TRANSLATION_PLAN_TARGETS.filter(target => !hasTranslationText(field.translations[target]))
+        : undefined;
+      if (targets?.length === 0) return;
       fields.push({ref,sourceText:field.sourceText,sourceVersion:field.sourceVersion,sourceHash:hash,
+        ...(targets ? {targets} : {}),
         targetHumanEditVersions:{zh:field.translations.zh?.humanEditVersion??null,en:field.translations.en?.humanEditVersion??null,ru:field.translations.ru?.humanEditVersion??null}});
     };
     for(const name of ['title','description'] as const)add(`content.${name}`,bundle.vehicle.draft.content[name],sourceHash(bundle.vehicle.draft.content[name]));
     for(const field of bundle.localization.data.fields)add(field.ref,field,field.sourceHash);
-    if(!fields.some(field=>field.ref==='content.title'))throw new ApiError(422,'TRANSLATION_SOURCE_UNSUPPORTED','Save a Chinese source title before planning translations.');
-    return {vehicleId:bundle.vehicle.id,vehicleVersion:bundle.vehicle.version,localizationRevision:bundle.localization.revision,fields};
+    return {vehicleId:bundle.vehicle.id,vehicleVersion:bundle.vehicle.version,localizationRevision:bundle.localization.revision,
+      ...(scope ? {scope} : {}),fields};
   }
   async saveTranslationBundle(id:string,input:SaveVehicleTranslationBundle,actor:Actor) {
     return this.db.transaction(async tx=>{
@@ -344,19 +363,16 @@ export class InventoryService {
       if(current.revision!==input.localizationRevision)throw conflict();
       // Editable generation/drivetrain travel with this transaction. applyLocalizationInput
       // validates the old field bindings before deriving new/stale generation translations.
-      const required=new Set(translationBundle(row).sourceLanguageConfirmationRequired);
+      // The legacy declaration can still explicitly update metadata. It is never required.
+      const allowedConfirmations = new Set(['content.title','content.description',...current.data.fields.map(field=>field.ref)]);
       const confirmations=new Set(input.sourceLanguageConfirmations);
-      if([...confirmations].some(ref=>!required.has(ref)))throw conflict();
+      if([...confirmations].some(ref=>!allowedConfirmations.has(ref)))throw conflict();
       const content=structuredClone(input.content);
       for(const name of ['title','description'] as const) {
         const field=content[name],prior=row.data.content[name],confirmed=confirmations.has(`content.${name}`);
         if(field.sourceText!==prior.sourceText||field.sourceVersion!==prior.sourceVersion||
           (field.sourceLanguage!==prior.sourceLanguage&&!(confirmed&&field.sourceLanguage==='zh')))throw conflict();
         if(confirmed)field.sourceLanguage='zh';
-        for(const locale of locales) {
-          const value=field.translations[locale],old=prior.translations[locale];
-          if(value?.kind==='machine'&&(!value.engineVersion||(old&&(old.kind==='human'||old.reviewStatus==='approved')&&value.text!==old.text)))throw conflict();
-        }
       }
       const incoming=structuredClone(input.localization);
       for(const field of incoming.fields) {
@@ -523,8 +539,6 @@ export class InventoryService {
       if(row.data.source.kind==='external' && draft.source.kind==='external' &&
         (row.data.source.platform.id!==draft.source.platform.id || row.data.source.externalId!==draft.source.externalId))
         throw new ApiError(422,'EXTERNAL_RESTRICTION','Platform identity cannot be changed after creation; update the existing listing metadata.');
-      for(const name of ['title','description'] as const)
-        if(draft.content[name].sourceLanguage!==row.data.content[name].sourceLanguage)throw conflict();
       const normalized=normalizeContent(draft,row.data);
       const previousLocalization=syncLocalization(id,row.data,storedLocalization(row));
       if(sameValue(normalized,row.data))return toAdmin(row);
@@ -555,7 +569,7 @@ export class InventoryService {
       const publicationId=randomUUID();
       await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publicationId,id,JSON.stringify(snapshot)]);
       if(localization){
-        const projections=Object.fromEntries(locales.map(locale=>[locale,projectDisplay(id,snapshot,locale,localization)]));
+        const projections={policyVersion:staffProjectionPolicy,...Object.fromEntries(locales.map(locale=>[locale,projectDisplay(id,snapshot,locale,localization)]))};
         await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',[publicationId,JSON.stringify(localization.data),JSON.stringify(localization.bindings),JSON.stringify(projections)]);
       }
       for (const m of images) await tx.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publicationId,m.id]);
@@ -703,7 +717,7 @@ export class InventoryService {
       const page=cursor?.page??query.page,hasMore=cursorMode?items.length>query.pageSize:offset+items.length<total;
       items.splice(query.pageSize);anchors.splice(query.pageSize);
       const last=anchors.at(-1);
-      const nextCursor=hasMore&&last&&version?Buffer.from(JSON.stringify({v:1,...version,query:binding,...last,page:page+1,...(fx!==undefined?{fx}: {})} satisfies Cursor)).toString('base64url'):null;
+      const nextCursor=hasMore&&last&&version?Buffer.from(JSON.stringify({v:2,...version,query:binding,...last,page:page+1,...(fx!==undefined?{fx}: {})} satisfies Cursor)).toString('base64url'):null;
       return {data:{items,page,pageSize:query.pageSize,hasMore,...(cursorMode?{nextCursor}: {})},
         meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date(time).toISOString(),freshness:'fresh' as const}};
     });

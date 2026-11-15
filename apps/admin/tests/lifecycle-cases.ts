@@ -2,6 +2,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
+import { waitForPublicationPreview } from './publication-test-helpers';
 import { fillRequiredVehicleBasics, notes, select, tab } from './ui-helpers';
 
 const deletedTime = '2026-11-08T09:00:00Z';
@@ -264,19 +265,27 @@ test('external editing preserves immutable source identity, observed facts and h
 test('publishing clears the earlier draft-only save notice after accepting the current state', async ({ page }) => {
   const original = vehicle();
   const api = await installApi(page, { items: [original] });
+  let publications = 0;
   await page.route(`**/api/v1/admin/vehicles/${original.id}/publish`, route => {
-    Object.assign(api.items[0]!, { version: 3, publicationState: 'published', publishedAt: deletedTime, publishedRevisionId: 'fixture_published_revision' });
+    expect(api.previewConfirmations).toHaveLength(1);
+    publications++;
+    Object.assign(api.items[0]!, { version: 3, publicationState: 'published', publishedAt: deletedTime,
+      publishedRevisionId: 'fixture_published_revision', hasUnpublishedChanges: false });
     return reply(route, envelope(api.items[0]));
   });
   await page.goto(`/admin/vehicles/${original.id}`);
   await (await notes(page)).fill('先保存再明确发布，提示需要对应当前状态');
   await page.getByRole('button', { name: /保存草稿$/ }).click();
-  await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toBeVisible();
-  await tab(page, '发布预览');
+  const draftOnlyNotice = page.getByText('草稿已保存，尚未发布这些修改。', { exact: true });
+  await expect(draftOnlyNotice).toBeVisible();
+  await waitForPublicationPreview(page);
+  await expect(draftOnlyNotice).toBeVisible();
+  expect(api.previewConfirmations).toEqual([]);
+  expect(publications).toBe(0);
   await page.getByTestId('vehicle-publish').click();
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-alert-success').filter({ hasText: '已确认当前公开版本，请核对公开内容。' })).toBeVisible();
-  await expect(page.getByText('草稿已保存，尚未发布这些修改。', { exact: true })).toHaveCount(0);
+  expect(publications).toBe(1);
+  await expect(draftOnlyNotice).toHaveCount(0);
   await expect(page.getByText('已发布', { exact: true }).first()).toBeVisible();
 });
 

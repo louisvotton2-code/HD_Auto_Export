@@ -21,8 +21,11 @@ export function VehicleInspectionSummary({ vehicle, locale }: { vehicle: PublicV
     && item.value.status === 'ready' && item.value.text.trim()) ?? [];
   const defects = inline?.defects.filter(item => item.part?.status === 'ready' && item.part.text.trim()
     && item.value.status === 'ready' && item.value.text.trim()) ?? [];
-  const number = (value: number | null) => value === null ? copy.notProvided : value.toLocaleString(locale);
-  const available = status === 'available' && summary;
+  const available = summary?.status === 'available' ? summary : null;
+  const visibleCounts = ({ checked, faults }: { checked: number | null; faults: number | null }) => [
+    { label: copy.checked, value: checked }, { label: copy.faults, value: faults },
+  ].flatMap(({ label, value }) => value === null ? [] : [{ label, value: value.toLocaleString(locale) }]);
+  const totals = available ? visibleCounts(available) : [];
   const language = summary?.contentLocale;
   let languageName = copy.unknownLanguage;
   if (language) {
@@ -39,15 +42,16 @@ export function VehicleInspectionSummary({ vehicle, locale }: { vehicle: PublicV
       {available ? <>
         <p className={summaryStyles.notice}>{copy.current}</p>
         <p data-inspection-language={language ?? 'mixed'}>{copy.language}: <span>{languageName}</span></p>
-        <dl className={summaryStyles.totals} data-inspection-complete-counts>
-          <div><dt>{copy.checked}</dt><dd>{number(summary.checked)}</dd></div>
-          <div><dt>{copy.faults}</dt><dd>{number(summary.faults)}</dd></div>
-        </dl>
-        {summary.categories.length > 0 && <ul className={summaryStyles.categories}>{summary.categories.map(category =>
-          <li key={category.id} data-inspection-category={category.id} data-outcome={category.outcome}>
+        {totals.length > 0 && <dl className={summaryStyles.totals} data-inspection-complete-counts>
+          {totals.map(({ label, value }) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+        </dl>}
+        {available.categories.length > 0 && <ul className={summaryStyles.categories}>{available.categories.map(category => {
+          const counts = visibleCounts(category);
+          return <li key={category.id} data-inspection-category={category.id} data-outcome={category.outcome}>
             <strong><Text field={category.label} /></strong><span>{copy.outcomes[category.outcome]}</span>
-            <small>{copy.checked}: {number(category.checked)} · {copy.faults}: {number(category.faults)}</small>
-          </li>)}</ul>}
+            {counts.length > 0 && <small>{counts.map(({ label, value }) => `${label}: ${value}`).join(' · ')}</small>}
+          </li>;
+        })}</ul>}
         {conclusions.length > 0 && <div className={summaryStyles.findings}>
           <h3>{copy.conclusions}</h3><dl>{conclusions.map(item => <div key={item.id} data-inspection-conclusion>
             <dt><Text field={item.name} /></dt><dd><Text field={item.value} /></dd>
@@ -60,7 +64,7 @@ export function VehicleInspectionSummary({ vehicle, locale }: { vehicle: PublicV
             <span><Text field={item.name} /></span><p><Text field={item.value} /></p>
           </li>)}</ul>
         </div>}
-        {inline && <p data-inspection-normal-count>{copy.normal}: {number(inline.normalItemCount)}. <small>{copy.normalNote}</small></p>}
+        {inline && <p data-inspection-normal-count>{copy.normal}: {inline.normalItemCount.toLocaleString(locale)}. <small>{copy.normalNote}</small></p>}
         {(inline?.hasMoreConclusions || inline?.hasMoreDefects) && <p>{copy.more}</p>}
         <p className={summaryStyles.salesNote}>{copy.contact}</p>
       </> : <>

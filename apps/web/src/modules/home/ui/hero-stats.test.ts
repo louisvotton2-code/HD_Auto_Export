@@ -4,10 +4,8 @@ import { describe, expect, it } from 'vitest';
 import type { Locale } from '@/i18n/routing';
 import { HeroStats } from './hero-stats';
 
-function renderedNumber(html: string, metric: string): string {
-  const cell = html.split(`data-hero-stat="${metric}"`)[1]?.split('</div>')[0] ?? '';
-  return (cell.match(/<strong[^>]*>([\s\S]*?)<\/strong>/)?.[1] ?? '')
-    .replace(/<[^>]+>/g, '');
+function metricHtml(html: string, metric: string): string {
+  return html.split(`data-hero-stat="${metric}"`)[1]?.split('</div>')[0] ?? '';
 }
 
 describe('hero statistics server content', () => {
@@ -16,12 +14,15 @@ describe('hero statistics server content', () => {
     ['en', 'Cars in catalog', '23 years'],
     ['ru', 'Автомобили в каталоге', '23 года'],
   ] as const) {
-    it(`${locale}: renders API count and confirmed company figures before browser effects`, () => {
+    it(`${locale}: sends zero for animated metrics and final values for assistive reading`, () => {
       const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogCount: 42 }));
       expect(html).toContain(catalogLabel);
-      expect(renderedNumber(html, 'catalog')).toBe('42');
-      expect(renderedNumber(html, 'clients')).toBe('660+');
-      expect(renderedNumber(html, 'years')).toBe(years);
+      expect(metricHtml(html, 'catalog')).toContain('data-counter-value="0">0</span>');
+      expect(metricHtml(html, 'catalog')).toContain('class="sr-only">42</span>');
+      expect(metricHtml(html, 'clients')).toContain('data-counter-value="0">0</span>');
+      expect(metricHtml(html, 'clients')).toContain('class="sr-only">660+</span>');
+      expect(metricHtml(html, 'years')).toContain('data-counter-value="23">23</span>');
+      expect(metricHtml(html, 'years')).toContain(`class="sr-only">${years}</span>`);
       expect(html).not.toMatch(/1[ ,\u00a0]?240/);
     });
   }
@@ -30,8 +31,7 @@ describe('hero statistics server content', () => {
     const locale: Locale = 'en';
     const unknown = renderToStaticMarkup(createElement(HeroStats, { locale, catalogCount: null }));
     const empty = renderToStaticMarkup(createElement(HeroStats, { locale, catalogCount: 0 }));
-    expect(renderedNumber(unknown, 'catalog')).toBe('—');
-    expect(renderedNumber(empty, 'catalog')).toBe('0');
-    expect(renderedNumber(unknown, 'clients')).toBe('660+');
+    expect(metricHtml(unknown, 'catalog')).toContain('data-counter-value="unknown">—</span>');
+    expect(metricHtml(empty, 'catalog')).toContain('data-counter-value="0">0</span>');
   });
 });

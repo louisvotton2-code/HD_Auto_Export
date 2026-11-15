@@ -1,27 +1,10 @@
 import { expect, type Locator, type Page } from '@playwright/test';
-import { PublishReadinessResponseSchema } from '@hd/contracts/admin';
 import { tab } from './ui-helpers';
 
 /** Requires the real FE preview or installApi's explicitly synthetic iframe. Never fabricates a receipt. */
-export async function acknowledgePublicationPreview(page: Page) {
+export async function waitForPublicationPreview(page: Page) {
   await tab(page, '发布预览');
-  const checkbox = page.getByRole('checkbox', { name: '我已检查当前预览，确认图片、价格和文字正确', exact: true });
-  await expect(checkbox).toBeEnabled();
-  await checkbox.check();
-  // Ant's retained loading icon can prefix the accessible name after an earlier confirmation.
-  const confirm = page.getByRole('button', { name: /确认当前预览$/ });
-  await expect(confirm).toBeEnabled();
-  const [response] = await Promise.all([
-    page.waitForResponse(response => response.request().method() === 'POST'
-      && new URL(response.url()).pathname.endsWith('/publication-preview/confirm')),
-    confirm.click(),
-  ]);
-  expect(response.ok()).toBe(true);
-  const ready = PublishReadinessResponseSchema.parse(await response.json()).data;
-  expect(ready.previewConfirmed).toBe(true);
-  expect(ready.canPublish).toBe(true);
   await expect(page.getByTestId('vehicle-publish')).toBeEnabled();
-  return ready;
 }
 
 async function openPicker(page: Page, label: string) {

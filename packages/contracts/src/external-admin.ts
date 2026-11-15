@@ -36,12 +36,6 @@ function externalCopy(max: number) {
   return z.strictObject({
     original: taggedText(max),
     translations: z.partialRecord(LocaleSchema, taggedText(max)),
-  }).superRefine((value, ctx) => {
-    for (const [locale, text] of Object.entries(value.translations)) {
-      if (text.contentLocale.split('-')[0] !== locale) ctx.addIssue({
-        code: 'custom', path: ['translations', locale], message: 'Supplier text must declare its actual language',
-      });
-    }
   });
 }
 export const ExternalFactsSchema = VehicleFactsSchema.extend({ generation: NamedValueSchema.nullable(), drivetrain: DrivetrainSchema.nullable() });

@@ -2,8 +2,10 @@ import {constants} from 'node:fs';
 import {open} from 'node:fs/promises';
 import path from 'node:path';
 import {z} from 'zod';
+import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
 import {jsonHash} from '../normalize.js';
+import {FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 
 const bytes=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const token=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -71,4 +73,34 @@ export function capacityBinding(snapshotId:string,targetRows:number,sample:Capac
  // Canonical JSON: recursively lexicographic object keys, arrays retain order, UTF-8, no whitespace; no polling time or live sizes.
  const history=baseline?{model:baseline.model,cohortHash:baseline.cohortHash,stateHash:baseline.stateHash,sampleRows:baseline.sampleRows,snapshotId:baseline.snapshotId,targetRows:baseline.targetRows,bytesPerDetail:baseline.bytesPerDetail}:null;
  return {snapshotId,targetRows,sampleRows:sample.details,evidenceHash:jsonHash({model:'hd-ext07-evidence-v1',snapshotId,targetRows,cohortHash:sample.cohort_hash,stateHash:sample.state_hash,history})};
+}
+
+/** One verified target includes admitted identities absent from the current CSV. */
+export async function verifiedSnapshotTarget(tx:PoolClient,snapshotId:string) {
+ const result=await tx.query<{target_rows:string}>(`SELECT a.admitted_count+(
+   SELECT count(*) FROM (
+    SELECT 1 FROM external_full_stage s
+    WHERE s.snapshot_id=snapshot.id
+      AND NOT EXISTS(SELECT 1 FROM external_formal_admissions f WHERE f.source=s.source AND f.external_id=s.external_id)
+      AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state i
+       WHERE i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id
+         AND i.withdrawn AND i.business_at>=snapshot.generated_at)
+    ORDER BY s.row_number LIMIT greatest(0,$2-a.admitted_count)
+   ) eligible
+  ) AS target_rows FROM external_formal_admission_state a
+  CROSS JOIN external_full_snapshots snapshot WHERE a.id=1 AND snapshot.id=$1`,[snapshotId,FORMAL_LISTING_LIMIT]);
+ return result.rows[0]!.target_rows;
+}
+
+export function capacityTarget(snapshot:{rows:string|number;target_rows:string|number|null;admitted_count:string|number}) {
+ // Older snapshots have only the raw CSV count. Preserve the format and use a
+ // capped interpretation until a fresh verified snapshot supplies a bound.
+ const admitted=Number(snapshot.admitted_count);
+ const fallback=Math.min(FORMAL_LISTING_LIMIT, Number(snapshot.rows));
+ return Math.max(admitted, snapshot.target_rows===null ? fallback : Number(snapshot.target_rows));
+}
+
+/** The measured detail cohort is bounded by the verified CSV as well as the growth target. */
+export function capacitySampleTarget(snapshot:Parameters<typeof capacityTarget>[0]) {
+ return Math.min(10000,Number(snapshot.rows),capacityTarget(snapshot));
 }

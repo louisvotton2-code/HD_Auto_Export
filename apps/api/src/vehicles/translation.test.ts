@@ -20,7 +20,7 @@ test('LibreTranslate sends only explicit source text and languages to the config
     return Response.json({translatedText:'Автомобиль'});
   }) as typeof fetch);
   assert.equal(provider.engineVersion,'libretranslate:test-model:1');assert.equal(await provider.translate('车辆中文','ru',new AbortController().signal),'Автомобиль');
-  for(const result of [Response.json({error:'private detail'},{status:400}),Response.json({translatedText:['wrong shape']}),Response.json({translatedText:'车辆中文'})]) {
+  for(const result of [Response.json({error:'private detail'},{status:400}),Response.json({translatedText:['wrong shape']})]) {
     const broken=new LibreTranslateProvider({...config,libreUrl:'http://127.0.0.1:3340',libreEngineVersion:'test'},(async()=>result) as typeof fetch);
     await assert.rejects(broken.translate('车辆中文','en',new AbortController().signal),code('TRANSLATION_UPSTREAM_FAILED'));
   }
@@ -103,13 +103,22 @@ test('changing only Aliyun region cannot reuse another region translation cache'
   assert.notEqual(first.engineVersion,second.engineVersion);assert.notEqual(first.content.title.translations.en.text,second.content.title.translations.en.text);
   current=china;assert.deepEqual(await translator.generate(source()),first);assert.equal(calls['cn-hangzhou'],4);
 });
-test('bounded upstream rejects HTTP errors, business errors, blank/unchanged text, malformed/oversized JSON and timeout without leaking details',async()=>{
-  for(const fixture of [new Response('private failure',{status:500}),Response.json({Code:10013,Message:'private-account'}),Response.json({Code:200,Data:{Translated:'  '}}),Response.json({Code:200,Data:{Translated:'中文'}}),new Response('not json'),new Response('x'.repeat(150001))]) {
+test('bounded upstream rejects HTTP errors, business errors, blank text, malformed/oversized JSON and timeout without leaking details',async()=>{
+  for(const fixture of [new Response('private failure',{status:500}),Response.json({Code:10013,Message:'private-account'}),Response.json({Code:200,Data:{Translated:'  '}}),new Response('not json'),new Response('x'.repeat(150001))]) {
     const provider=new AliyunGeneralProvider(config,(async()=>fixture) as typeof fetch);
     await assert.rejects(provider.translate('中文','en',new AbortController().signal),code('TRANSLATION_UPSTREAM_FAILED'));
   }
   const provider=new AliyunGeneralProvider(config,(async(_url,init)=>{assert.equal(init?.signal?.aborted,true);init?.signal?.throwIfAborted();throw new Error('sensitive URL or secret');}) as typeof fetch);
   await assert.rejects(provider.translate('中文','en',AbortSignal.abort()),error=>code('TRANSLATION_UPSTREAM_FAILED')(error) && !String(error).includes('sensitive'));
+});
+test('proper-name and same-language replies may equal the source when nonblank', async () => {
+  const signal = new AbortController().signal;
+  const sourceText = '中文车辆';
+  const aliyun = new AliyunGeneralProvider(config, (async () => Response.json({ Code: 200, Data: { Translated: sourceText } })) as typeof fetch);
+  assert.equal(await aliyun.translate(sourceText, 'en', signal), sourceText);
+  const libre = new LibreTranslateProvider({ ...config, libreUrl: 'http://127.0.0.1:3340', libreEngineVersion: 'fixture' },
+    (async () => Response.json({ translatedText: sourceText })) as typeof fetch);
+  assert.equal(await libre.translate(sourceText, 'ru', signal), sourceText);
 });
 test('segments preserve every code point and stay within 5000 UTF-16 units',()=>{
   const text='中'.repeat(4999)+'😀'+'文'.repeat(4999)+'后';const chunks=splitTranslationText(text);

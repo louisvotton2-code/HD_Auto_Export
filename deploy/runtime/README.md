@@ -226,3 +226,24 @@ curl --cacert "$DATA_ROOT/tls/server.crt" -fsS https://127.0.0.1:3440/health/pro
 ## EXT09 精简发布与日备份
 
 实现入口见[单机平滑发布](production/ext09-release.md)与[在线每日备份](production/ext09-backups.md)。这两份维护说明描述操作边界；实际是否上线、一次恢复验证及离机状态须核对本轮交付日志。正常发布不再调用旧停站备份路径，旧runtime恢复工具仅保留兼容历史恢复点。
+
+### 生产发布前检查
+
+每次使用通过审查与 CI 的最终源码和实际生产配置核对以下三项。在记录中保留最终镜像 ID、检查结果和回退文件位置。任何一项不通过，先修正并重查受影响步骤。以下检查不启动正式迁移或额外备份。
+
+1. **Linux 源码归档及迁移镜像权限。** 在 root 私有父目录内导出正式源码，例如用 `git -c tar.umask=0022 archive --format=tar "$RELEASE_SHA" > source.tar`，再以 `tar --same-permissions -xf source.tar -C "$SOURCE_DIR"` 解包到空目录。若用其他解包工具，构建前确认源码目录可遍历、普通源码可读，已有执行位保留；只处理冻结的源码副本，私有 env、密钥和数据卷仍按各自权限保护。构建完，用渲染后的迁移配置核实实际应用 UID/GID，在**待发布的 Linux 镜像**中用该非 root 身份读取迁移清单及其全部 SQL。下面只读镜像文件，成功后才执行正式迁移。
+
+   ```sh
+   test "${APP_UID:?}" -gt 0 && test "${APP_GID:?}" -gt 0 &&
+   docker run --rm --network none --user "$APP_UID:$APP_GID" \
+     --workdir /app/apps/api --entrypoint node "$API_IMAGE" --input-type=module -e '
+       import { readFileSync } from "node:fs";
+       const entries = JSON.parse(readFileSync("migrations/meta/_journal.json", "utf8")).entries;
+       if (!Array.isArray(entries) || !entries.length) throw new Error("Empty migration journal");
+       for (const { tag } of entries) readFileSync("migrations/" + tag + ".sql");
+       console.log("Migration journal and SQL readable: " + entries.length);
+     '
+   ```
+
+2. **Nginx 测试、重载和回退使用同一主配置。** 先查看现有代理容器的主进程，例如 `docker exec "$PROXY_CONTAINER" cat /proc/1/cmdline | tr '\000' ' '`。使用进程实际的 `-c` 路径；默认启动则从该镜像的 `nginx -V` 确认配置路径。通过 [gateway-reload.py](production/gateway-reload.py) 按同一路径执行 `nginx -c "$NGINX_CONF" -t` 和 `nginx -c "$NGINX_CONF" -s reload`。媒体生产组合曾使用 `/etc/nginx/nginx-media-main.conf`，其中 PID 文件不同于默认配置。回退配置也用同一路径校验和重载。在重载前比对候选与当前持久目录的 `conf.d`、`hd-domains` 文件集，并检查有无遗留 `.pending` 文件；文件集不同或有未完成替换时先停止交接并核对现场。不挂载配置目录的代理会在重载后才把新配置写入持久目录；重载或持久写入失败都应停止交接，核实正在服务的配置和持久目录，必要时按同一主配置恢复旧版本并复查。重载后核对旧代理容器启动时间未变，通过双域实际 HTTPS 请求验证新路由和鉴权后再继续交接。
+3. **在线备份配置在目标同目录原子替换。** 切换前保存原私有 JSON、systemd drop-in 和旧脚本指向，确认这些回退输入存在、可读、权限正确且匹配旧槽。把新内容写入**各目标文件各自父目录**的临时文件，按目标权限设置并校验，再用 `os.replace(temp, target)` 替换；恢复旧内容也用同一方法。主机 `/etc/systemd/system` 与数据盘 `/srv/hd-auto` 是不同文件系统，可把回退副本写到私有发布目录，不能直接把生效的 drop-in 跨盘 `rename` 过去。应用新配置或回退后运行 `systemctl daemon-reload`，用 `systemctl show hd-auto-ext07-backup.service -p ExecStart -p DropInPaths` 核实实际脚本、配置路径和覆盖项，再用 `systemctl list-timers hd-auto-ext07-backup.timer` 核对下一次运行。确认实际脚本、数据库及备份保护配置与当前唯一写入槽一致，保留原备份点及日程。

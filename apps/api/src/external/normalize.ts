@@ -88,15 +88,6 @@ type Details = {
   relatedListingUrls: string[];
 };
 
-function usableSupplierText(original: string, translated: string, locale: string): boolean {
-  if (!isPublicText(translated)) return false;
-  if (locale === 'en' && (!/[A-Za-z]/.test(translated) || /[\p{Script=Han}\p{Script=Cyrillic}]/u.test(translated))) return false;
-  if (locale === 'ru' && (!/\p{Script=Cyrillic}/u.test(translated) || /\p{Script=Han}/u.test(translated))) return false;
-  if (locale === 'zh' && !/\p{Script=Han}/u.test(translated)) return false;
-  const numbers = (value: string) => (value.normalize('NFKC').match(/\d+(?:[.,]\d+)*/g) ?? []).sort().join('|');
-  return numbers(original) === numbers(translated);
-}
-
 export function sourceCopy(source: ExternalUpsertCandidate, facts: Facts = source.facts): Copy {
   // Free copy/specifications can restate disputed claims. Keep them in the source archive.
   if (source.disputes.length) return { title: null, model: null, description: null };
@@ -104,7 +95,7 @@ export function sourceCopy(source: ExternalUpsertCandidate, facts: Facts = sourc
     const item = source.copy[field];
     if (!item || !isPublicText(item.original.text)) return null;
     return { original: item.original, translations: Object.fromEntries(Object.entries(item.translations)
-      .filter(([locale, text]) => usableSupplierText(item.original.text, text.text, locale))) };
+      .filter(([, text]) => isPublicText(text.text))) };
   };
   const sameModel = (findBrand(facts.make)?.catalogId ?? facts.make?.id) === (findBrand(source.facts.make)?.catalogId ?? source.facts.make?.id) &&
     facts.model?.id === source.facts.model?.id && facts.model?.name === source.facts.model?.name;
@@ -200,7 +191,6 @@ function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy
     if (!item) return null;
     const staff = eligibleTextOverride(source, overrides, identities, field, locale, hashes[field]);
     if (staff) return publicText(locale, { text: staff.text, contentLocale: locale }, 'human');
-    if (item.original.contentLocale.split('-')[0] === locale) return publicText(locale, item.original);
     const translated = item.translations[locale];
     return translated ? publicText(locale, translated, 'supplier') : publicText(locale, item.original);
   };

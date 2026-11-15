@@ -73,9 +73,10 @@ describe('三语编辑、来源与审核版本', () => {
     current.translations.ru!.humanEditVersion = 7;
     const cleared = editTranslation(current, 'ru', '', current.sourceText!, 'zh');
     expect(cleared.translations.ru).toBeNull();
-    const restored = editTranslation(cleared, 'ru', 'Новый текст', current.sourceText!, 'zh', 7);
+    const restored = editTranslation(cleared, 'ru', 'Новый текст', current.sourceText!, 'zh', current);
     expect(restored.translations.ru!.humanEditVersion).toBe(7);
     expect(restored.translations.ru!.reviewStatus).toBe('pending');
+    expect(editTranslation(restored, 'ru', current.translations.ru!.text, current.sourceText!, 'zh', current)).toEqual(current);
   });
 
   it('未改的原文空白不被清理，新增输入沿用表单的归一化规则', () => {

@@ -17,7 +17,6 @@
 .language :global(textarea) { overflow-wrap: anywhere; }
 .languageCode { display: inline-block; width: 28px; border-radius: 6px; background: #f7f0de; color: #89671a; font-size: 11px; line-height: 28px; text-align: center; }
 .provenance { color: #716b5f; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.stale { display: block; color: #89671a; margin-top: 4px; }
 @media (max-width: 760px) {
   .languages { grid-template-columns: minmax(0, 1fr); }
   .source, .language :global(.ant-card-body) { padding: 12px; }

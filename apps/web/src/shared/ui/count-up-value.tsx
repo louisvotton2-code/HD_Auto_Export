@@ -3,12 +3,14 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { animateCount } from '@/shared/lib/count-up';
+import styles from './count-up-value.module.css';
 
 export function CountUpValue({
   value,
   locale,
   suffix = '',
   animated = true,
+  startAtZero = false,
   className,
   suffixClassName,
 }: {
@@ -16,6 +18,7 @@ export function CountUpValue({
   locale: Locale;
   suffix?: string;
   animated?: boolean;
+  startAtZero?: boolean;
   className?: string;
   suffixClassName?: string;
 }) {
@@ -26,6 +29,7 @@ export function CountUpValue({
     [locale],
   );
   const finalNumber = count === null ? '—' : formatter.format(count);
+  const startsAtZero = startAtZero && animated && count !== null && count > 0;
 
   useLayoutEffect(() => {
     const element = text.current;
@@ -65,12 +69,19 @@ export function CountUpValue({
       stop();
       preference.removeEventListener('change', reduceMotion);
     };
-  }, [count, formatter, animated]);
+  }, [count, formatter, animated, startsAtZero]);
 
   return (
     <>
       <strong className={className} aria-hidden="true" data-counter-target={count ?? 'unknown'}>
-        <span ref={text} data-counter-value={count ?? 'unknown'}>{finalNumber}</span>
+        <span
+          ref={text}
+          className={startsAtZero ? styles.animatedValue : undefined}
+          data-counter-value={startsAtZero ? 0 : count ?? 'unknown'}
+        >
+          {startsAtZero ? formatter.format(0) : finalNumber}
+        </span>
+        {startsAtZero && <span className={styles.staticValue}>{finalNumber}</span>}
         {count !== null && suffix && <span className={suffixClassName}>{suffix}</span>}
       </strong>
       <span className="sr-only">

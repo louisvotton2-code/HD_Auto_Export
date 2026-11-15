@@ -143,6 +143,8 @@ test('a supplier range uses six January dates in both calculators, on reload and
   await expect(budget.getByTestId('manufacture-range-result')).toContainText(note);
   const lower = budget.locator('[data-range-scenario="minimum"]');
   const upper = budget.locator('[data-range-scenario="maximum"]');
+  await expect(lower.locator('summary')).toContainText('Lowest cost');
+  await expect(upper.locator('summary')).toContainText('Highest cost');
   const lowerAmount = await lower.locator('summary strong').innerText();
   const upperAmount = await upper.locator('summary strong').innerText();
   const lowerMonth = await lower.locator('summary time').innerText();
@@ -160,6 +162,8 @@ test('a supplier range uses six January dates in both calculators, on reload and
     await expect.poll(async () => compact(await page.getByTestId('manufacture-range-total').innerText())).toBe(before);
     await expect(page.getByTestId('manufacture-range-result')).toContainText(note);
     await expect(page.locator('[data-range-scenario]')).toHaveCount(2);
+    await expect(page.locator('[data-range-scenario="minimum"] summary')).toContainText('Lowest cost');
+    await expect(page.locator('[data-range-scenario="maximum"] summary')).toContainText('Highest cost');
     await expect(page.locator('[data-range-scenario="minimum"] summary strong')).toHaveText(lowerAmount);
     await expect(page.locator('[data-range-scenario="maximum"] summary strong')).toHaveText(upperAmount);
     await expect(page.locator('[data-range-scenario="minimum"] summary time')).toHaveText(lowerMonth);
@@ -167,8 +171,8 @@ test('a supplier range uses six January dates in both calculators, on reload and
   }
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: 'Copy estimate' }).click();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Lower-cost scenario');
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Higher-cost scenario');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Lowest cost');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('Highest cost');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain(note);
   for (const [productionMonth, expectedAmount] of [[lowerMonth, lowerAmount], [upperMonth, upperAmount]]) {
     await fillNumericDate(page, 'manufactureDate', productionMonth);

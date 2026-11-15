@@ -138,7 +138,7 @@ export function PublicationPreviewPanel(props: Props) {
         options={Object.entries(languages).map(([value, label]) => ({ value, label }))} optionType="button" />
       <Button icon={<ReloadOutlined />} disabled={disabled || hasUnsavedChanges} onClick={reloadPreview}>重新载入预览</Button>
     </div>
-    <Typography.Paragraph type="secondary">检查封面、车辆事实、车况和价格，切换语言核对实际展示。下方确认只对应本次显示的已保存内容。</Typography.Paragraph>
+    <Typography.Paragraph type="secondary">检查封面、车辆资料、车况和价格。可切换语言核对，再在下方确认并发布。</Typography.Paragraph>
     {hasUnsavedChanges && <Alert showIcon type="warning" title="当前显示的是已保存草稿，请先保存修改" className={styles.notice} />}
     {error && <Alert showIcon type="error" title={error} className={styles.notice} />}
     <div className={styles.frameWrap}><iframe key={loadId} ref={frame} src={src} onLoad={() => documentLoaded.current()} title={`${languages[locale]}车辆发布预览`}

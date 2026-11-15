@@ -30,11 +30,26 @@ describe('same-response inspection summary', () => {
       categories: [{ id: 'accident', label: { status: 'ready', text: '事故损伤', requestedLocale: 'zh', contentLocale: 'zh', provenance: 'catalog', reviewed: false }, checked: 0, faults: null, outcome: 'unknown' }] };
     const html = renderToStaticMarkup(createElement(VehicleInspectionSummary, { vehicle, locale: 'zh' }));
     expect(html).toMatch(/<dd>0<\/dd>/);
-    expect(html).toMatch(/<dd>未提供<\/dd>/);
+    expect(html).toContain('<small>检查项: 0</small>');
+    expect(html).not.toContain('异常项');
     expect(html).not.toContain('/inspection/');
     expect(html).toContain('id="inspection"');
     expect(html).toContain('不代表历史事故或过户次数');
     expect(html).toContain('未提供结论');
+  });
+  it.each(['zh', 'en', 'ru'] as const)('omits empty statistics for an available report in %s', locale => {
+    const vehicle = makeLocalizedPublicVehicleFixture(locale);
+    const copy = inspectionSummaryCopy[locale];
+    vehicle.inspectionSummary = { status: 'available', contentLocale: 'en', checked: null, faults: null,
+      categories: [{ id: 'accident', label: { status: 'ready', text: 'Accident damage inspection', requestedLocale: locale,
+        contentLocale: 'en', provenance: 'catalog', reviewed: false }, checked: null, faults: null, outcome: 'unknown' }] };
+    const html = renderToStaticMarkup(createElement(VehicleInspectionSummary, { vehicle, locale }));
+    expect(html).not.toContain('data-inspection-complete-counts');
+    expect(html).not.toContain(`${copy.checked}:`);
+    expect(html).not.toContain(`${copy.faults}:`);
+    expect(html).toContain('Accident damage inspection');
+    expect(html).toContain(copy.outcomes.unknown);
+    expect(html).toContain(copy.contact);
   });
   it('shows the same finding separately for different concrete parts without altering complete statistics', () => {
     const base = makeLocalizedPublicVehicleFixture('zh');

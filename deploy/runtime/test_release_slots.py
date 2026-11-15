@@ -1,6 +1,9 @@
 import importlib.util
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('slots',Path(__file__).parent/'production/release-slots.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -32,7 +35,6 @@ class Slots(unittest.TestCase):
 
 class Assets(unittest.TestCase):
     def test_collision_does_not_replace_old_assets(self):
-        import tempfile
         spec=importlib.util.spec_from_file_location('assets',Path(__file__).parent/'production/immutable-assets.py')
         assets=importlib.util.module_from_spec(spec);spec.loader.exec_module(assets)
         with tempfile.TemporaryDirectory() as temp:
@@ -41,5 +43,88 @@ class Assets(unittest.TestCase):
             (source/'hash.js').write_text('changed')
             with self.assertRaises(ValueError):assets.merge(source,dest)
             self.assertEqual((dest/'hash.js').read_text(),'previous')
+
+class GatewayReload(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            'gateway', Path(__file__).parent/'production/gateway-reload.py'
+        )
+        self.gateway = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gateway)
+
+    def test_media_config_used_for_reload_and_rollback(self):
+        media = '/etc/nginx/nginx-media-main.conf'
+        checked = ['docker', 'exec', self.gateway.PROXY, 'nginx', '-c', media]
+        title = f'nginx: master process nginx -c {media} -g daemon off;\0'.encode()
+        inspected = b'[{"State":{"StartedAt":"original"},"Mounts":[]}]'
+        calls = []
+
+        def run(command, **kwargs):
+            if command[:4] == checked[:4]:
+                calls.append(command)
+                if len(calls) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            bundle = root/'bundles/release'
+            (bundle/'conf.d').mkdir(parents=True)
+            (bundle/'hd-domains').mkdir()
+            with patch.object(self.gateway, 'ROOT', root), \
+                 patch.object(self.gateway.os, 'getuid', return_value=0), \
+                 patch.object(self.gateway, 'regular_tree'), \
+                 patch.object(self.gateway.subprocess, 'check_output', side_effect=[title, inspected]), \
+                 patch.object(self.gateway.subprocess, 'run', side_effect=run):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.gateway.apply(bundle)
+
+        self.assertEqual(calls, [
+            checked + ['-t'], checked + ['-s', 'reload'],
+            checked + ['-t'], checked + ['-s', 'reload'],
+        ])
+
+    def test_gateway_preflight_rejects_extra_files_and_pending_replace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            new, live = root/'new', root/'live'
+            new.mkdir()
+            live.mkdir()
+            (new/'proxy.conf').write_text('new')
+            (live/'proxy.conf').write_text('old')
+            for filename, message in (('extra.conf', 'file-set'), ('proxy.conf.pending', 'Unfinished')):
+                extra = live/filename
+                extra.write_text('fixture')
+                with self.assertRaisesRegex(ValueError, message):
+                    self.gateway.preflight_config(new, live)
+                self.assertEqual((live/'proxy.conf').read_text(), 'old')
+                extra.unlink()
+
+    def test_default_discovered_from_live_image(self):
+        title = b'nginx: master process nginx -g daemon off;\0'
+        version = 'configure arguments: --conf-path=/etc/nginx/nginx.conf'
+        with patch.object(self.gateway.subprocess, 'check_output', side_effect=[title, version]):
+            self.assertEqual(self.gateway.nginx_command('proxy')[-2:], ['-c', '/etc/nginx/nginx.conf'])
+
+    def test_exact_master_without_arguments_uses_default_config(self):
+        title = b'nginx: master process nginx\0\0'
+        version = 'configure arguments: --conf-path=/etc/nginx/nginx.conf'
+        with patch.object(self.gateway.subprocess, 'check_output', side_effect=[title, version]):
+            self.assertEqual(self.gateway.nginx_command('proxy')[-2:], ['-c', '/etc/nginx/nginx.conf'])
+
+    def test_refuses_global_pid_override_even_after_daemon_off(self):
+        for directives in ('pid /tmp/other.pid;', 'daemon off; pid /tmp/other.pid;'):
+            title = f'nginx: master process nginx -c /etc/nginx/nginx.conf -g {directives}\0'.encode()
+            with self.subTest(directives=directives), \
+                 patch.object(self.gateway.subprocess, 'check_output', return_value=title):
+                with self.assertRaises(ValueError):
+                    self.gateway.nginx_command('proxy')
+
+    def test_refuses_unknown_master_and_relative_config(self):
+        for title in (b'entrypoint.sh\0', b'nginx: master process nginx -c conf/nginx.conf\0'):
+            with self.subTest(title=title), \
+                 patch.object(self.gateway.subprocess, 'check_output', return_value=title):
+                with self.assertRaises(ValueError):
+                    self.gateway.nginx_command('proxy')
+
 
 if __name__=='__main__':unittest.main()

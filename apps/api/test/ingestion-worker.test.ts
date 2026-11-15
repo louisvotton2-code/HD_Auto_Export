@@ -38,11 +38,28 @@ test('fixed-scope ingestion persists leases, pages, failures, withdrawal precede
    const actor=(await database.pool.query('SELECT banned FROM staff WHERE id=$1',[SERVICE_ACTOR])).rows[0];assert.equal(actor.banned,true);
   });
   await t.test('withdrawals apply first while the contiguous checkpoint waits for all earlier events',async()=>{
-   const id=await createImportJob(database,'withdraw',manifest,'worker-test-admin');await verifySnapshot(database,id,manifest.csv);
+   const id=await createImportJob(database,'withdraw',manifest,'worker-test-admin');
    await receivePage(database,id,{lane:'snapshot',inputCursor:null,nextCursor:null,terminal:true,events:[event('old-snapshot')]});
    await receivePage(database,id,{lane:'delta',inputCursor:null,nextCursor:'100',terminal:true,events:[event('removed','withdraw','100')]});
-   const result=await new FixedScopeWorker(database,apply).tick(id);assert.equal(result.state,'complete');assert.equal(result.checkpoint,'2');
-   const effects=(await database.pool.query('SELECT * FROM test_worker_effects ORDER BY event_key')).rows;assert.deepEqual(effects,[{event_key:'old-snapshot',obsolete:true},{event_key:'removed',obsolete:false}]);
+   const worker=new FixedScopeWorker(database,apply);
+   const outcomes=async()=>(await database.pool.query(
+    'SELECT event_key,outcome,completed_at IS NOT NULL AS completed FROM external_ingestion_events WHERE job_id=$1 ORDER BY seq',[id])).rows;
+   const effects=async()=>(await database.pool.query('SELECT * FROM test_worker_effects ORDER BY event_key')).rows;
+   assert.deepEqual(await worker.tick(id),{processed:1,checkpoint:'0',state:'awaiting_snapshot'});
+   assert.deepEqual(await outcomes(),[
+    {event_key:'old-snapshot',outcome:null,completed:false},{event_key:'removed',outcome:'applied',completed:true},
+   ]);
+   const tombstone=(await database.pool.query(`SELECT business_order::text,withdrawn FROM external_ingestion_identity_state
+    WHERE provider='chinacarapi' AND source='che168' AND external_id='123'`)).rows[0];
+   assert.deepEqual(tombstone,{business_order:'100',withdrawn:true});
+   assert.deepEqual(await effects(),[]);
+   await verifySnapshot(database,id,manifest.csv);
+   assert.deepEqual(await worker.tick(id),{processed:1,checkpoint:'2',state:'complete'});
+   assert.deepEqual(await outcomes(),[
+    {event_key:'old-snapshot',outcome:'obsolete',completed:true},{event_key:'removed',outcome:'applied',completed:true},
+   ]);
+   assert.deepEqual(await effects(),[{event_key:'old-snapshot',obsolete:true}]);
+   assert.equal((await database.pool.query("SELECT 1 FROM external_formal_admissions WHERE source='che168' AND external_id='123'")).rowCount,0);
    for(let run=0;run<2;run++){await beginCatchUp(database,id);await receivePage(database,id,{lane:'delta',inputCursor:'100',nextCursor:'100',terminal:true,events:[]});assert.equal((await new FixedScopeWorker(database,apply).tick(id)).state,'complete');}
    assert.equal((await database.pool.query('SELECT count(*)::int AS n FROM external_ingestion_members WHERE job_id=$1',[id])).rows[0].n,1);
   });

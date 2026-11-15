@@ -57,6 +57,15 @@ test('sample adaptation preserves dates, CNY and exact same-version language pai
   const wrongFacts = { ...source, title: 'Бензиновый S1 2024', fuel: 'Petrol', specs: { ...source.specs, energyType: 'Gasoline' } };
   const mismatched = adaptChinaCarSample(source, fetchedAt, { ru: wrongFacts })!;
   assert.equal(mismatched.copy.title?.translations.ru, undefined);
+  const differentScript = ExternalUpsertCandidateSchema.parse(adaptChinaCarSample(source, fetchedAt, {
+    ru: { ...source, title: 'Alternative fixture title 2032' },
+  }));
+  assert.deepEqual(differentScript.copy.title?.translations.ru,
+    { text: 'Alternative fixture title 2032', contentLocale: 'en' });
+  const russian = buildProjection(differentScript, emptyOverrides(), '懂车帝', chinaCarSampleProfile).localized.ru.title;
+  assert.equal(russian.text, 'Alternative fixture title 2032');
+  assert.equal(russian.contentLocale, 'en');
+  assert.equal(russian.kind, 'supplier');
   const olderPhoto = signed.replace('2000000000', '1000000000');
   const refreshed = adaptChinaCarSample({ ...source, image: olderPhoto }, fetchedAt)!;
   assert.equal(refreshed.images[0]?.sourceMediaId, parsed.images[0]?.sourceMediaId);
