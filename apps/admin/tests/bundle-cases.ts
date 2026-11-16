@@ -1,15 +1,14 @@
 /** Unified body/display persistence and recovery simulations, using the public contract only. */
 import { expect, test, type Page } from '@playwright/test';
-import { DisplayFieldSchema, SaveVehicleTranslationBundleSchema, TranslationPlanStatusSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField } from '@hd/contracts/admin';
-import { envelope, error, installApi, localization, reply, translationBundle, translationResult, vehicle } from './api-fixture';
+import { DisplayFieldSchema, SaveVehicleTranslationBundleSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField } from '@hd/contracts/admin';
+import { envelope, error, installApi, localization, reply, translationBundle, vehicle } from './api-fixture';
 import { syntheticHash } from './translation-fixture';
-import { bundleSave, generateSuggestions, noReviewControls, openWorkspace, planButton, recoverResult, requestPlan, saveBundle } from './translation-test-helpers';
+import { bundleSave, noReviewControls, openWorkspace, saveBundle } from './translation-test-helpers';
 import { notes, select, tab } from './ui-helpers';
 import { waitForPublicationPreview } from './publication-test-helpers';
 
 const id = '40000000-0000-4000-8000-000000000001';
 const path = `/api/v1/admin/vehicles/${id}/translation-bundle`;
-const planStatusPath = new RegExp(`/api/v1/admin/vehicles/${id}/translation-plans/[a-f0-9-]{36}$`, 'i');
 function record(): AdminVehicle {
   const item = { ...vehicle(), id }; item.draft.media = [];
   item.draft.content.title = { sourceLanguage: 'zh', sourceText: '独立中文标题', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
@@ -33,18 +32,20 @@ async function expand(page: Page, label: string) {
   await expect(input).toBeVisible();
 }
 
-test('bundle historical display source declaration is explicit and machine suggestions stay pending until one atomic save', async ({ page }) => {
+test('bundle historical display source declaration is explicit and hand-entered text stays pending until one atomic save', async ({ page }) => {
   const item = record(); const saved = localization(item, [field('model', '合成中文车型', 'und')]);
   const api = await installApi(page, { items: [item], localizations: [saved] }); await openWorkspace(page, id); await noReviewControls(page);
-  await expect(planButton(page)).toBeDisabled(); await page.getByTestId('translation-source-confirm').check();
-  expect(saved.data.fields[0]!.sourceLanguage).toBe('und'); await expect(planButton(page)).toBeDisabled();
+  await page.getByTestId('translation-source-confirm').check();
+  expect(saved.data.fields[0]!.sourceLanguage).toBe('und');
   await saveBundle(page); expect(api.bundleSaves[0]!.input.sourceLanguageConfirmations).toEqual(['model']);
   expect(saved.data.fields[0]).toMatchObject({ sourceLanguage: 'zh', sourceVersion: 2 });
-  await generateSuggestions(page); await expand(page, '车型名称');
-  await expect(page.getByLabel('英文车型名称', { exact: true })).toHaveValue('Synthetic English model');
+  await expand(page, '车型名称');
+  await page.getByLabel('英文车型名称', { exact: true }).fill('Synthetic English model');
+  await page.getByLabel('英文标题', { exact: true }).fill('Synthetic English title');
+  await saveBundle(page);
   await expect.poll(() => api.bundleSaves.length).toBe(2); expect(api.saves).toEqual([]);
-  expect(item.draft.content.title.translations.en).toMatchObject({ kind: 'machine', reviewStatus: 'pending' });
-  expect(saved.data.fields[0]!.translations.en).toMatchObject({ kind: 'machine', reviewStatus: 'pending', sourceVersion: 2 });
+  expect(item.draft.content.title.translations.en).toMatchObject({ kind: 'human', reviewStatus: 'pending' });
+  expect(saved.data.fields[0]!.translations.en).toMatchObject({ kind: 'human', reviewStatus: 'pending', sourceVersion: 2 });
 });
 
 test('bundle protects historical human and approved display text and their exact target revisions', async ({ page }) => {
@@ -52,30 +53,15 @@ test('bundle protects historical human and approved display text and their exact
   source.translations.en = { text: 'Human protected model', kind: 'human', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 3, engineVersion: null };
   source.translations.ru = { text: 'Проверенная модель', kind: 'machine', reviewStatus: 'approved', sourceVersion: 1, humanEditVersion: 2, engineVersion: 'historic' };
   const before = structuredClone(source.translations); const saved = localization(item, [source]);
-  const api = await installApi(page, { items: [item], localizations: [saved] }); await openWorkspace(page, id); await generateSuggestions(page); await expand(page, '车型名称');
+  const api = await installApi(page, { items: [item], localizations: [saved] }); await openWorkspace(page, id); await expand(page, '车型名称');
+  await page.getByLabel('英文标题', { exact: true }).fill('Synthetic English title');
+  await saveBundle(page);
   await expect(page.getByLabel('英文车型名称', { exact: true })).toHaveValue('Human protected model');
   await expect(page.getByLabel('俄文车型名称', { exact: true })).toHaveValue('Проверенная модель'); await noReviewControls(page);
   await expect.poll(() => api.bundleSaves.length).toBe(1);
   expect(api.bundleSaves[0]!.input.localization.fields[0]!.translations).toMatchObject({ en: before.en, ru: before.ru });
   expect(saved.data.fields[0]!.translations.en?.humanEditVersion).toBe(3); expect(saved.data.fields[0]!.translations.ru?.humanEditVersion).toBe(2);
 });
-
-for (const mutation of ['source hash', 'target human revision'] as const) {
-  test(`bundle recovered suggestions preserve current input after a display ${mutation} changes`, async ({ page }) => {
-    const item = record(), saved = localization(item, [field('model', '合成中文车型')]);
-    const api = await installApi(page, { items: [item], localizations: [saved] }); let result: ReturnType<typeof translationResult>; let posts = 0;
-    await page.route(`**/api/v1/admin/vehicles/${id}/translation-plans/*/generate`, route => { posts++; result = translationResult(translationBundle(item, saved), api.translationPlans[0]!.plan); return route.abort('failed'); });
-    await page.route(planStatusPath, route => {
-      if (route.request().method() !== 'GET') return route.fallback(); const now = new Date().toISOString();
-      return reply(route, envelope(TranslationPlanStatusSchema.parse({ planId: result.planId, vehicleId: id, state: 'completed', result, startedAt: now, finishedAt: now })));
-    });
-    await openWorkspace(page, id); await generateSuggestions(page); await expect(recoverResult(page)).toBeEnabled();
-    if (mutation === 'source hash') saved.data.fields[0]!.sourceHash = 'b'.repeat(64);
-    else saved.data.fields[0]!.translations.en = { text: 'Fresh human edit', kind: 'human', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 4, engineVersion: null };
-    await recoverResult(page).click(); await expect(page.locator('.ant-alert-error').first()).toBeVisible(); await expand(page, '车型名称');
-    await expect(page.getByLabel('英文车型名称', { exact: true })).toHaveValue(''); expect(posts).toBe(1); expect(api.bundleSaves).toEqual([]);
-  });
-}
 
 test('bundle conflict retains body and display inputs and cancelling reload does not discard either', async ({ page }) => {
   const item = record(), saved = localization(item, [field('model', '合成中文车型')]);
@@ -107,9 +93,9 @@ test('bundle unsaved translations guard navigation and double-click saves body a
   await page.getByLabel('英文车型名称', { exact: true }).fill('Unsaved model'); await page.getByLabel('俄文车型名称', { exact: true }).fill('Тестовая модель');
   await page.getByRole('button', { name: /返回车辆列表$/ }).click(); await expect(page.getByRole('dialog')).toContainText('离开当前草稿');
   await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  await expect(await notes(page)).toBeDisabled(); await expect(page.getByRole('button', { name: /保存草稿$/ })).toHaveCount(0); await expect(page.getByRole('button', { name: '返回多语处理修改', exact: true })).toBeVisible();
-  await tab(page, '公开字段多语'); await bundleSave(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
-  await expect.poll(() => calls).toBe(1); await expect(page.getByLabel('英文标题', { exact: true })).toBeDisabled(); await expect(planButton(page)).toBeDisabled();
+  await expect(await notes(page)).toBeDisabled(); await expect(page.getByRole('button', { name: /保存草稿$/ })).toHaveCount(0); await expect(page.getByRole('button', { name: '返回车辆配置处理', exact: true })).toBeVisible();
+  await tab(page, '车辆配置'); await bundleSave(page).evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
+  await expect.poll(() => calls).toBe(1); await expect(page.getByLabel('英文标题', { exact: true })).toBeDisabled();
   release(); await expect.poll(() => api.bundleSaves.length).toBe(1); await expect(bundleSave(page)).toBeDisabled();
   expect(api.bundleSaves[0]!.input.content.title.translations.en?.text).toBe('Unsaved title');
   expect(api.bundleSaves[0]!.input.localization.fields[0]!.translations.en?.text).toBe('Unsaved model'); expect(api.saves).toEqual([]);
@@ -123,10 +109,10 @@ test('bundle a delayed old atomic read cannot downgrade a newer vehicle or becom
   const pause = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**${path}`, async route => { if (route.request().method() !== 'GET') return route.fallback(); started = true; await pause; return reply(route, envelope(old)); });
   await page.goto(`/admin/vehicles/${id}`); await expect(page.getByLabel('标题原文', { exact: true })).toHaveValue('版本二中文标题');
-  await tab(page, '公开字段多语'); await expect.poll(() => started).toBe(true); release();
+  await tab(page, '车辆配置'); await expect.poll(() => started).toBe(true); release();
   await expect(page.locator('.ant-alert-error').first()).toBeVisible(); await tab(page, '基础资料');
   await expect(page.getByLabel('标题原文', { exact: true })).toHaveValue('版本二中文标题');
-  await page.unroute(`**${path}`); await tab(page, '公开字段多语');
+  await page.unroute(`**${path}`); await tab(page, '车辆配置');
   await page.getByRole('button', { name: /重新读取多语资料$/ }).click();
   await page.getByLabel('英文标题', { exact: true }).fill('Fresh version two title'); await saveBundle(page);
   expect(api.bundleSaves[0]!.input.version).toBe(2); expect(item.version).toBe(3);
@@ -174,17 +160,6 @@ test('bundle nullable extra facts stay unknown and generation references refresh
   expect(cleared.localization.retiredFieldCount).toBe(renamed.localization.retiredFieldCount + 1); expect(api.saves).toEqual([]); expect(api.translationGenerations).toEqual([]);
 });
 
-test('bundle plans include every server-selected public field instead of the removed ten-field selection UI', async ({ page }) => {
-  const item = record(); const refs = ['make', 'model', 'trim', 'generation', 'location.city', 'location.displayName', 'configuration.cfg-4e00.name', ...Array.from({ length: 5 }, (_, index) => `price.includes.40000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`)];
-  const saved = localization(item, refs.map((ref, index) => field(ref, `合成字段${index + 1}`)));
-  const api = await installApi(page, { items: [item], localizations: [saved] }); await openWorkspace(page, id); const plan = await requestPlan(page);
-  await expect(page.locator('.ant-collapse-header').filter({ hasText: '车辆展示资料' })).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.locator('.ant-collapse-header').filter({ hasText: '车辆配置译文' })).toHaveAttribute('aria-expanded', 'false');
-  expect(plan.fields.map(field => field.ref)).toEqual(['content.title', ...refs]); expect(new Set(plan.fields.map(field => field.ref)).size).toBe(13);
-  await expect(page.getByRole('button', { name: '选择前10个中文字段', exact: true })).toHaveCount(0);
-  expect(api.translationGenerations).toEqual([]); expect(api.bundleSaves).toEqual([]);
-});
-
 test('bundle preserves reverted old configuration translations and saves a nonblank manual translation', async ({ page }) => {
   const item = record();
   item.draft.configuration = { version: 1, items: [{ name: '一', value: '功率 85 kW' }, { name: '二', value: '4向电动调节' }] };
@@ -214,7 +189,7 @@ test('bundle authoritative no-op does not mark a version conflict or leave a red
   const item = record();
   const title = item.draft.content.title;
   completeFixtureTranslations(title);
-  title.translations.zh = { text: title.sourceText!, kind: 'human', reviewStatus: 'approved', sourceVersion: 1, humanEditVersion: 1, engineVersion: null };
+  title.translations.zh = null;
   const saved = localization(item);
   const api = await installApi(page, { items: [item], localizations: [saved] });
   await page.route(`**${path}`, route => route.request().method() === 'PUT'

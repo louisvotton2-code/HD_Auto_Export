@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Link, useBlocker, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Alert, App, Badge, Breadcrumb, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input, Modal, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, CheckCircleOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutlined, PlusOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { Alert, App, Badge, Breadcrumb, Button, Card, Col, Collapse, DatePicker, Descriptions, Empty, Form, Input, Modal, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { ArrowLeftOutlined, CheckCircleOutlined, CloudUploadOutlined, FileTextOutlined, PlusOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { AdminVehicleResponseSchema, VehicleDraftWriteSchema, type AdminVehicle, type ConfirmPublicationPreviewRequest, type PublicationIssue, type PublishReadiness, type VehicleDraftInput } from '@hd/contracts/admin';
 import type { Locale } from '@hd/contracts/public';
 import dayjs from 'dayjs';
@@ -25,9 +25,11 @@ import { externalSourceFormKeys, formForDemo, formForExternal, sourceForKind } f
 import { basicDraftIssues } from './draft-entry-validation';
 import { readConfigurationFacts } from './configuration-facts';
 import { configurationFormState } from './configuration-form';
-import { buildConfigurationAiPrompt, VehicleConfigurationEditor } from './vehicle-configuration-editor';
+import { VehicleConfigurationEditor } from './vehicle-configuration-editor';
+import { VehicleConfigurationImport } from './vehicle-configuration-import';
+import { configurationImportPrompt } from './configuration-import-model';
 
-type TabKey = 'basics' | 'configuration' | 'commercial' | 'images' | 'review' | 'localization';
+type TabKey = 'basics' | 'configuration' | 'commercial' | 'images' | 'review';
 type SourceKind = VehicleDraftInput['source']['kind'];
 type FieldIssue = { key?: keyof DraftForm; label: string; tab: TabKey };
 type CreateAttempt = { key: string; body: string; startedAt: number };
@@ -44,20 +46,19 @@ const steps: readonly { key: TabKey; label: string }[] = [
   { key: 'configuration', label: '车辆配置' },
   { key: 'commercial', label: '价格与内部信息' },
   { key: 'images', label: '图片管理' },
-  { key: 'localization', label: '公开字段多语' },
   { key: 'review', label: '发布预览' },
 ];
 
 function tabForField(key?: keyof DraftForm, path = ''): TabKey {
   if (key === 'configuration' || key === 'powertrain') return 'configuration';
-  if (path.replace(/^draft\./, '').startsWith('localization')) return 'localization';
+  if (path.replace(/^draft\./, '').startsWith('localization')) return 'configuration';
   if (path.includes('media')) return 'images';
-  if (path.includes('translations')) return 'localization';
+  if (path.includes('translations')) return 'configuration';
   if (key && ['priceKind', 'amount', 'currency', 'includes', 'purchaseAmount', 'purchaseCurrency', 'supplierContact', 'vin', 'notes'].includes(key)) return 'commercial';
   return 'basics';
 }
 function issueForPath(path: string): FieldIssue {
-  if (path.replace(/^draft\./, '').startsWith('localization')) return { label: '公开字段多语', tab: 'localization' };
+  if (path.replace(/^draft\./, '').startsWith('localization')) return { label: '三语展示资料', tab: 'configuration' };
   const key = fieldForPath(path);
   const visibleKey = key === 'makeId' ? 'makeName' : key === 'modelId' ? 'modelName' : key === 'trimId' ? 'trimName'
     : key === 'titleLanguage' ? 'title' : key === 'descriptionLanguage' ? 'description' : key;
@@ -93,19 +94,22 @@ export function VehicleEditorPage() {
   const [translationBusy, setTranslationBusy] = useState(false);
   const [localizationGuard, setLocalizationGuard] = useState<LocalizationGuard>({ dirty: false, busy: false, uncertain: false });
   const localizationGuardRef = useRef(localizationGuard);
-  const [localizationOpened, setLocalizationOpened] = useState(route.state?.afterCreate === 'localization');
+  const [importGuard, setImportGuard] = useState<LocalizationGuard>({ dirty: false, busy: false, uncertain: false });
+  const importLocked = importGuard.dirty || importGuard.busy || importGuard.uncertain;
+  const [localizationOpened, setLocalizationOpened] = useState(['configuration', 'localization'].includes(route.state?.afterCreate));
   const [loading, setLoading] = useState(!!id);
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [issues, setIssues] = useState<FieldIssue[]>([]);
+  const [fieldFocus, setFieldFocus] = useState<FieldIssue | null>(null);
   const [remote, setRemote] = useState<AdminVehicle | null>(null);
   const [conflict, setConflict] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
-    const requested = route.state?.afterCreate;
+    const requested = route.state?.afterCreate === 'localization' ? 'configuration' : route.state?.afterCreate;
     return id && steps.some(step => step.key === requested) ? requested as TabKey : 'basics';
   });
   const [newIdentity, setNewIdentity] = useState<'make' | 'model' | null>(null);
@@ -117,12 +121,12 @@ export function VehicleEditorPage() {
   const baseForm = draftToForm(base);
   const coreDirty = JSON.stringify(form) !== JSON.stringify(baseForm) || JSON.stringify(extras) !== JSON.stringify({ media: base.media, content: base.content }) || sourceKind !== base.source.kind || uncertain;
   const localizationLocked = localizationGuard.dirty || localizationGuard.busy || localizationGuard.uncertain;
-  const dirty = coreDirty || localizationGuard.dirty || localizationGuard.uncertain;
+  const dirty = coreDirty || localizationGuard.dirty || localizationGuard.uncertain || importGuard.dirty || importGuard.uncertain;
   const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationGuard.busy;
+  dirtyRef.current = dirty || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationGuard.busy || importGuard.busy;
   const blocker = useBlocker(() => dirtyRef.current || inFlight.current);
   const isDeleted = !!record?.deletedAt;
-  const locked = saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || isDeleted;
+  const locked = saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || importLocked || isDeleted;
   const isDemo = sourceKind === 'demo';
   const isExternal = sourceKind === 'external';
   const requiredFields = new Set<keyof DraftForm>(['makeName', 'modelName', 'title', 'trimName', 'configuration', 'modelYear', 'powertrain', 'mileageKm', 'priceKind', 'amount', 'currency', 'purchaseAmount', 'purchaseCurrency', 'description']);
@@ -163,7 +167,7 @@ export function VehicleEditorPage() {
     return () => window.removeEventListener('admin:unauthorized', expireReport);
   }, []);
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent('admin:dirty', { detail: dirty || saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationGuard.busy }));
+    window.dispatchEvent(new CustomEvent('admin:dirty', { detail: dirty || saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationGuard.busy || importGuard.busy }));
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirtyRef.current || inFlight.current) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', beforeUnload);
     return () => { window.removeEventListener('beforeunload', beforeUnload); window.dispatchEvent(new CustomEvent('admin:dirty', { detail: false })); };
@@ -173,7 +177,7 @@ export function VehicleEditorPage() {
 
   function localizationGuardChanged(next: LocalizationGuard) {
     localizationGuardRef.current = next;setLocalizationGuard(next);
-    dirtyRef.current = coreDirty || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || next.dirty || next.busy || next.uncertain;
+    dirtyRef.current = coreDirty || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || next.dirty || next.busy || next.uncertain || importLocked;
   }
 
   function accept(vehicle: AdminVehicle) {
@@ -244,15 +248,24 @@ export function VehicleEditorPage() {
     catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : '读取最新版本失败，当前输入已保留。'); }
   }
   function focusIssue(issue: FieldIssue) {
-    if (issue.key === 'powertrain' && sourceKind !== 'manual') issue = { ...issue, tab: 'basics' };
-    if (issue.tab === 'localization') setLocalizationOpened(true);
+    if (issue.tab === 'configuration') setLocalizationOpened(true);
     setActiveTab(issue.tab);
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      const node = (issue.key && document.getElementById(issue.key)) || document.querySelector(`[data-editor-section="${issue.tab}"]`);
-      node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      if (node instanceof HTMLElement) node.focus();
-    }));
+    setFieldFocus({ ...issue });
   }
+  useEffect(() => {
+    if (!fieldFocus || activeTab !== fieldFocus.tab || locked) return;
+    let focusFrame = 0;
+    const tabFrame = requestAnimationFrame(() => {
+      focusFrame = requestAnimationFrame(() => {
+        const node = (fieldFocus.key && document.getElementById(fieldFocus.key)) ||
+          document.querySelector(`[data-editor-section="${fieldFocus.tab}"]`);
+        node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (node instanceof HTMLElement) node.focus({ preventScroll: true });
+        setFieldFocus(null);
+      });
+    });
+    return () => { cancelAnimationFrame(tabFrame); cancelAnimationFrame(focusFrame); };
+  }, [activeTab, fieldFocus, locked]);
   function showEntryIssues() {
     const missing: FieldIssue[] = entryIssues.map(key => ({ key, label: fieldLabels[key], tab: 'basics' }));
     if (!missing.length) return;
@@ -276,26 +289,16 @@ export function VehicleEditorPage() {
   function openTab(tab: TabKey) {
     if (tab !== 'basics' && entryIssues.length) { showEntryIssues(); return; }
     if (!canContinuePastConfiguration(tab)) return;
+    setFieldFocus(null);
     setActiveTab(tab);
-    if (tab === 'localization') setLocalizationOpened(true);
+    if (tab === 'configuration') setLocalizationOpened(true);
   }
 
   function focusPublicationIssue(issue: PublicationIssue) {
     if (issue.stage === 'localization' && record) {
       setPublicationTranslationFocus({ issue, vehicleId: record.id, version: record.version });
-      openTab('localization');
+      openTab('configuration');
     } else focusIssue(issueForPath(issue.path));
-  }
-
-  function clearPowertrain() {
-    const config = configurationState.value;
-    const rows = config?.items.filter(item => item.name.normalize('NFKC').trim() !== '动力类型');
-    const configuration = rows && rows.length !== config?.items.length
-      ? (rows.length ? JSON.stringify({ version: 1, items: rows }, null, 2) : '')
-      : form.configuration;
-    setConfigurationReview(null);
-    setForm(current => ({ ...current, powertrain: 'unknown', configuration }));
-    setSuccess('');
   }
 
   function confirmConfiguration() {
@@ -308,8 +311,8 @@ export function VehicleEditorPage() {
   function advance(tab: TabKey) {
     if (entryIssues.length && !uncertain) { showEntryIssues(); return; }
     if (!canContinuePastConfiguration(tab, activeTab === 'configuration')) return;
-    if (localizationGuardRef.current.dirty || localizationGuardRef.current.uncertain) {
-      void message.warning('请先补齐并保存全部译文，再继续。');
+    if (localizationGuardRef.current.dirty || localizationGuardRef.current.uncertain || importLocked) {
+      void message.warning('请先保存或清除当前三语资料，再继续。');
       return;
     }
     if (!id || coreDirty) void save(tab);
@@ -318,7 +321,7 @@ export function VehicleEditorPage() {
 
   async function save(afterSave?: TabKey) {
     const guard = localizationGuardRef.current;
-    if (inFlight.current || conflict || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || isDeleted || guard.dirty || guard.busy || guard.uncertain || id && !coreDirty) return;
+    if (inFlight.current || conflict || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || isDeleted || guard.dirty || guard.busy || guard.uncertain || importLocked || id && !coreDirty) return;
     setError(''); setIssues([]); setSuccess('');
     if (!attempt.current && entryIssues.length) { showEntryIssues(); return; }
     const invalidPrice = invalidPriceFields[0];
@@ -494,7 +497,6 @@ export function VehicleEditorPage() {
     </Card>
     <Card title="基础事实" className={styles.card}>
       <Row gutter={[24, 0]}>
-        {sourceKind !== 'manual' && <Col xs={24} md={8}>{selectField('powertrain', powertrainLabels)}</Col>}
         <Col xs={24} md={8}>{textField('mileageKm', { inputMode: 'numeric', hint: '确认为零时填写 0。' })}</Col>
         <Col xs={24} md={8}>{selectField('registrationStatus', { unknown: '未知', never_registered: '从未登记', registered: '已登记' })}</Col>
         <Col xs={24} md={12}><Form.Item label="制造日期" htmlFor="manufacturedAt" extra="按已知精度选择，未知可留空。">
@@ -510,20 +512,30 @@ export function VehicleEditorPage() {
       </Row>
     </Card>
   </div>;
+  const currentPublicationIssues = record && publicationReadiness?.vehicleId === record.id && publicationReadiness.vehicleVersion === record.version
+    ? publicationReadiness.issues.filter(issue => issue.stage === 'localization') : [];
+  const localization = <div className={styles.sectionStack} data-editor-section="localization" tabIndex={-1}>
+    {record && localizationOpened ? <VehicleTranslationWorkspace key={record.id} vehicle={record} hasUnsavedChanges={coreDirty}
+      active={activeTab === 'configuration'} publicationIssues={currentPublicationIssues} publicationFocus={publicationTranslationFocus}
+      disabled={saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || conflict || importLocked} onGuardChange={localizationGuardChanged} onBusyChange={setTranslationBusy}
+      canAdoptVehicle={vehicle => !!acceptedRecord.current && acceptedRecord.current.id === vehicle.id && !acceptedRecord.current.deletedAt && vehicle.version >= acceptedRecord.current.version}
+      onVehicleUpdated={accept} onConflict={() => { setConflict(true); void loadRemote(); }} />
+      : <Alert showIcon type="info" title="先保存草稿，再编辑三语展示资料" description="标题和车况原文在基础资料填写。英俄文和其他公开字段在这里维护。" />}
+  </div>;
   const configuration = <div className={styles.sectionStack} data-editor-section="configuration" tabIndex={-1}>
-    <VehicleConfigurationEditor prompt={buildConfigurationAiPrompt(form)} value={form.configuration}
-      onChange={value => { setConfigurationReview(null); change('configuration', value); }}
-      onReview={() => setConfigurationReview({ input: form.configuration, confirmed: false })}
-      showReview={showConfigurationReview} rows={configurationState.value?.items ?? null}
-      errors={configurationState.errors} disabled={locked} requiredForPublish={!isDemo} />
-    {sourceKind === 'manual' && <Space wrap>
-      <Typography.Text type="secondary" id="powertrain" tabIndex={-1}>
-        当前动力类型：{form.powertrain === 'unknown' ? '待从 AI 配置导入' : powertrainLabels[form.powertrain]}
-      </Typography.Text>
-      {form.powertrain !== 'unknown' && <Button size="small" disabled={locked || configurationInvalid} onClick={clearPowertrain}>
-        清除动力类型
-      </Button>}
-    </Space>}
+    <VehicleConfigurationImport key={record?.id ?? 'new'} vehicle={record} prompt={configurationImportPrompt(form, record?.draft.configuration)}
+      hasUnsavedChanges={coreDirty || localizationGuard.dirty}
+      disabled={saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || localizationLocked || conflict}
+      onGuardChange={setImportGuard} onSaved={accept} />
+    <Card title="动力类型" className={styles.card}>
+      {selectField('powertrain', powertrainLabels)}
+    </Card>
+    <Collapse items={[{ key: 'legacy', label: '编辑中文配置（旧格式）', children:
+      <VehicleConfigurationEditor value={form.configuration}
+        onChange={value => { setConfigurationReview(null); change('configuration', value); }}
+        onReview={() => setConfigurationReview({ input: form.configuration, confirmed: false })}
+        showReview={showConfigurationReview} rows={configurationState.value?.items ?? null}
+        errors={configurationState.errors} disabled={locked} requiredForPublish={!isDemo} /> }]} />
     {!isDemo && showConfigurationReview && <Card title="可用于筛选及费用参考的标准参数" className={styles.card}>
       <Space orientation="vertical" size="middle">
         {!!configurationFactIssues.length && <Alert showIcon type="error" title={configurationFactIssues.join('；')} />}
@@ -536,6 +548,7 @@ export function VehicleEditorPage() {
             <Button type="primary" disabled={locked || configurationFactIssues.length > 0} onClick={confirmConfiguration}>人工核对无误</Button></>)}
       </Space>
     </Card>}
+    {localization}
   </div>;
   const commercial = <div className={styles.sectionStack} data-editor-section="commercial" tabIndex={-1}>
     <Card title="公开价格" extra={isDemo ? <Tag color="gold">样例不报价</Tag> : <Tag>公开字段</Tag>} className={styles.card}>
@@ -556,22 +569,12 @@ export function VehicleEditorPage() {
       </Row>
     </Card>
   </div>;
-  const images = <div data-editor-section="images" tabIndex={-1}>{externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}{record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} value={extras.media} savedMediaIds={base.media.map(media => media.id)} onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }} onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || conflict || externalSourceChanged} /> : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}</div>;
-  const currentPublicationIssues = record && publicationReadiness?.vehicleId === record.id && publicationReadiness.vehicleVersion === record.version
-    ? publicationReadiness.issues.filter(issue => issue.stage === 'localization') : [];
-  const localization = <div className={styles.sectionStack} data-editor-section="localization" tabIndex={-1}>
-    {record && localizationOpened ? <VehicleTranslationWorkspace key={record.id} vehicle={record} hasUnsavedChanges={coreDirty}
-      active={activeTab === 'localization'} publicationIssues={currentPublicationIssues} publicationFocus={publicationTranslationFocus}
-      disabled={saving || uncertain || mediaBusy || actionsBusy || lifecycleBusy || conflict} onGuardChange={localizationGuardChanged} onBusyChange={setTranslationBusy}
-      canAdoptVehicle={vehicle => !!acceptedRecord.current && acceptedRecord.current.id === vehicle.id && !acceptedRecord.current.deletedAt && vehicle.version >= acceptedRecord.current.version}
-      onVehicleUpdated={accept} onConflict={() => { setConflict(true); void loadRemote(); }} />
-      : <Alert showIcon type="info" title="先保存中文资料，再生成英俄译文" description="标题和车况描述在基础资料填写。多语页面引用已保存的原文。" />}
-  </div>;
+  const images = <div data-editor-section="images" tabIndex={-1}>{externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}{record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} value={extras.media} savedMediaIds={base.media.map(media => media.id)} onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }} onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || importLocked || conflict || externalSourceChanged} /> : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}</div>;
   const review = <div className={styles.sectionStack} data-editor-section="review" tabIndex={-1}>
-    {record && activeTab === 'review' && <PublicationPreviewPanel vehicleId={record.id} version={record.version} locale={previewLocale} onLocaleChange={setPreviewLocale} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onRendered={setPreviewReceipt} />}
+    {record && activeTab === 'review' && <PublicationPreviewPanel vehicleId={record.id} version={record.version} locale={previewLocale} onLocaleChange={setPreviewLocale} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || importLocked || conflict} onRendered={setPreviewReceipt} />}
     {record ? <VehicleActions key={record.id} publicationTabActive={activeTab === 'review'} previewLocale={previewLocale} previewReceipt={previewReceipt}
       onIssue={focusPublicationIssue} onReadinessChange={setPublicationReadiness} vehicle={record} hasUnsavedChanges={dirty}
-      disabled={saving || mediaBusy || lifecycleBusy || translationBusy || localizationLocked || conflict} onUpdated={acceptMutation}
+      disabled={saving || mediaBusy || lifecycleBusy || translationBusy || localizationLocked || importLocked || conflict} onUpdated={acceptMutation}
       onConflict={() => { setConflict(true); void loadRemote(); }} onBusyChange={setActionsBusy} />
       : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、多语和库存信息完善后，在这里检查预览并发布。" />}
   </div>;
@@ -587,24 +590,23 @@ export function VehicleEditorPage() {
     {uncertain && <Alert type="warning" showIcon title="创建结果尚未确认" description="已保留这次创建的原请求，表单暂时锁定。重试会核对原结果，避免重复建车。" className={styles.feedback} />}
     {conflict && <Card title="车辆已被其他操作更新" className={styles.feedback}><Alert type="warning" showIcon title="当前输入已保留" description="请对照最新草稿。重新载入会明确放弃当前输入，不会覆盖服务端。" /><Space wrap className={styles.conflictActions}><Button onClick={() => void loadRemote()}>读取最新版本供比较</Button>{remote && <><Tag>服务端版本 {remote.version}</Tag><Button danger onClick={async () => { if (await confirm('放弃当前输入？', '重新载入会放弃当前未保存的输入，载入同事已保存的最新版本。', '放弃并载入最新草稿') && mounted.current) { accept(remote); setError(''); } }}>放弃当前输入，载入最新草稿</Button></>}</Space>{remote && (comparisonRows.length ? <Table size="small" rowKey="key" pagination={false} scroll={{ x: 600 }} dataSource={comparisonRows} columns={[{ title: '字段', dataIndex: 'label', width: 130 }, { title: '当前输入', dataIndex: 'local', render: value => <span className={styles.compareText}>{value}</span> }, { title: '服务端最新内容', dataIndex: 'remote', render: value => <span className={styles.compareText}>{value}</span> }]} /> : <Typography.Paragraph type="secondary">可编辑字段一致，版本、库存、图片或译文状态可能已经变化。</Typography.Paragraph>)}</Card>}
     <Form layout="vertical" onFinish={() => void save()} disabled={locked} requiredMark className={styles.form}>
-      {(activeTab !== 'localization' || coreDirty || !record) && <div className={styles.saveBar}><div><Badge status={dirty ? 'warning' : 'success'} text={dirty ? '有未保存的输入' : record ? '已保存到草稿' : '填写后保存草稿'} /><Typography.Text type="secondary" className={styles.saveHint}>{entryIssues.length ? `请先补全：${entryIssues.map(key => fieldLabels[key]).join('、')}` : invalidPriceFields.length ? '请将价格和采购成本改为整数' : configurationInvalid ? '车辆配置格式有误，请到车辆配置页按提示修正后保存' : configurationNeedsConfirmation ? configurationReviewHint : localizationLocked ? '多语翻译有未处理的修改，请返回多语页面保存或放弃' : saving ? '正在保存，请稍候' : translationBusy ? '正在生成或核对机器译文' : lifecycleBusy ? '正在确认删除或恢复结果' : actionsBusy ? '正在确认发布或库存结果' : mediaBusy ? '正在处理图片' : '保存不会自动发布到公开页面'}</Typography.Text></div>{localizationLocked && activeTab !== 'localization' ? <Button onClick={() => { setLocalizationOpened(true); setActiveTab('localization'); }}>返回多语处理修改</Button>
-        : (activeTab !== 'localization' || coreDirty || !record) && <Button type="primary" htmlType="submit" icon={dirty ? <SaveOutlined /> : <CheckCircleOutlined />} loading={saving} disabled={(!uncertain && (entryIssues.length > 0 || configurationNeedsConfirmation || configurationFactIssues.length > 0 || configurationInvalid || invalidPriceFields.length > 0)) || conflict || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || (!!id && !coreDirty)}>{uncertain ? '重试原创建请求' : activeTab === 'localization' && record ? '保存基础资料' : '保存草稿'}</Button>}</div>}
+      {(activeTab !== 'configuration' || coreDirty || !record) && <div className={styles.saveBar}><div><Badge status={dirty ? 'warning' : 'success'} text={dirty ? '有未保存的输入' : record ? '已保存到草稿' : '填写后保存草稿'} /><Typography.Text type="secondary" className={styles.saveHint}>{entryIssues.length ? `请先补全：${entryIssues.map(key => fieldLabels[key]).join('、')}` : invalidPriceFields.length ? '请将价格和采购成本改为整数' : configurationInvalid ? '车辆配置格式有误，请到车辆配置页按提示修正后保存' : configurationNeedsConfirmation ? configurationReviewHint : (localizationLocked || importLocked) ? '请返回车辆配置处理未保存的三语资料' : saving ? '正在保存，请稍候' : translationBusy ? '正在读取或保存三语资料' : lifecycleBusy ? '正在确认删除或恢复结果' : actionsBusy ? '正在确认发布或库存结果' : mediaBusy ? '正在处理图片' : '保存不会自动发布到公开页面'}</Typography.Text></div>{(localizationLocked || importLocked) && activeTab !== 'configuration' ? <Button onClick={() => { setLocalizationOpened(true); setActiveTab('configuration'); }}>返回车辆配置处理</Button>
+        : (activeTab !== 'configuration' || coreDirty || !record) && <Button type="primary" htmlType="submit" icon={dirty ? <SaveOutlined /> : <CheckCircleOutlined />} loading={saving} disabled={(!uncertain && (entryIssues.length > 0 || configurationNeedsConfirmation || configurationFactIssues.length > 0 || configurationInvalid || invalidPriceFields.length > 0)) || conflict || mediaBusy || actionsBusy || lifecycleBusy || translationBusy || localizationLocked || importLocked || (!!id && !coreDirty)}>{uncertain ? '重试原创建请求' : '保存草稿'}</Button>}</div>}
       <Tabs activeKey={activeTab} onChange={key => openTab(key as TabKey)} destroyOnHidden={false} className={styles.tabs} items={[
         { key: 'basics', label: <span><FileTextOutlined /> 基础资料</span>, children: basics, forceRender: true },
         { key: 'configuration', label: <span><UnorderedListOutlined /> 车辆配置</span>, children: configuration, forceRender: true },
         { key: 'commercial', label: <span><UnorderedListOutlined /> 价格与内部信息</span>, children: commercial, forceRender: true },
         { key: 'images', label: <span><CloudUploadOutlined /> 图片管理 <Tag bordered={false}>{extras.media.length}</Tag></span>, children: images, forceRender: true },
-        { key: 'localization', label: <span><GlobalOutlined /> 公开字段多语</span>, children: localization, forceRender: true },
         { key: 'review', label: <span><CheckCircleOutlined /> 发布预览</span>, children: review, forceRender: true },
       ]} />
       {nextStep && <footer className={styles.nextBar}>
-        <Button loading={saving} disabled={mediaBusy || actionsBusy || lifecycleBusy || translationBusy || conflict || invalidPriceFields.length > 0}
+        <Button loading={saving} disabled={mediaBusy || actionsBusy || lifecycleBusy || translationBusy || importGuard.busy || conflict || invalidPriceFields.length > 0}
           onClick={() => advance(nextStep.key)}>下一步：{nextStep.label}</Button>
       </footer>}
     </Form>
     {record && <div className={styles.lifecyclePanel}>
       {dirty && <Alert type="info" showIcon title="先保存或处理当前修改，再移入回收站" className={styles.feedback} />}
-      <VehicleDeletionActions vehicle={record} isDeleted={false} disabled={dirty || saving || mediaBusy || actionsBusy || translationBusy || localizationLocked || conflict} onBusyChange={setLifecycleBusy} onDeleted={acceptMutation} onRestored={acceptMutation} onConflict={() => { setConflict(true); void loadRemote(); }} />
+      <VehicleDeletionActions vehicle={record} isDeleted={false} disabled={dirty || saving || mediaBusy || actionsBusy || translationBusy || localizationLocked || importLocked || conflict} onBusyChange={setLifecycleBusy} onDeleted={acceptMutation} onRestored={acceptMutation} onConflict={() => { setConflict(true); void loadRemote(); }} />
     </div>}
     {leaveDialog}
     <Modal open={newIdentity !== null} title={newIdentity === 'make' ? '新增品牌' : '新增车型'} okText={newIdentity === 'make' ? '添加品牌' : '添加车型'} cancelText="取消" onOk={addIdentity} onCancel={() => setNewIdentity(null)}><Typography.Paragraph type="secondary">只需填写名称。保存车辆草稿后，该名称会加入相应品牌车型选项。</Typography.Paragraph><Form layout="vertical"><Form.Item label={newIdentity === 'make' ? '品牌名称' : '车型名称'} validateStatus={nameError ? 'error' : undefined} help={nameError || undefined}><Input aria-label={newIdentity === 'make' ? '品牌名称' : '车型名称'} autoFocus value={newName} onChange={event => { setNewName(event.target.value); setNameError(''); }} maxLength={120} onPressEnter={addIdentity} /></Form.Item></Form></Modal>

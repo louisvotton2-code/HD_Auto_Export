@@ -235,7 +235,7 @@ describe('统一多语工作区的不可变计划与来源保护', () => {
     bundle.localization.data.fields[0]!.translations.zh = result.fields[1]!.translations.zh;
     expect(workspaceNeedsChineseNormalization(bundle)).toBe(false);
     bundle.localization.data.fields[0]!.translations.zh!.reviewStatus = 'stale';
-    expect(workspaceNeedsChineseNormalization(bundle)).toBe(true);
+    expect(workspaceNeedsChineseNormalization(bundle)).toBe(false);
   });
 });
 

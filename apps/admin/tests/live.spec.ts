@@ -1,6 +1,6 @@
 import { traceCase, traceCaseTitle, traceMode } from './trace-live-guard.mjs';
 import { expect, test, type Page } from '@playwright/test';
-import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, VehicleTranslationSuggestionsResponseSchema, type AdminVehicle, type VehicleDraftInput } from '@hd/contracts/admin';
+import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, type AdminVehicle, type VehicleDraftInput } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
 import { waitForPublicationPreview, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
@@ -8,7 +8,7 @@ import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
 import { makeDemoVehicleDraftFixture, makeExternalImportFixture, makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { extendRateDeadline, rateCooldownMs, rateLimitSeconds } from './live-rate-window';
-import { assertDisabledLivePlan, assertLivePublicConfiguration, completeLiveTranslations, enterLiveConfiguration, expandLiveTranslationGroup, liveConfiguration, readLiveBundle, saveLiveBundle } from './ux11-live-helpers';
+import { assertLivePublicConfiguration, completeLiveTranslations, enterLiveConfiguration, expandLiveTranslationGroup, liveConfiguration, readLiveBundle, saveLiveBundle } from './ux11-live-helpers';
 
 const manualLiveConfiguration = { ...liveConfiguration, items: [...liveConfiguration.items, { name: '动力类型', value: '汽油' }] };
 const rateWindows = new WeakMap<Page, { deadline: number; observations: number }>();
@@ -252,7 +252,6 @@ test('real localization sidecar preserves public language snapshots with disable
   expect(before.localization.data.fields.map(field => field.ref)).toEqual(['model', `media.${ready.draft.media[0]!.id}.alt`]);
   expect(before.sourceLanguageConfirmationRequired).toEqual([]);
   expect(before.localization.data.fields.every(field => field.sourceLanguage === 'zh')).toBe(true);
-  await assertDisabledLivePlan(page, before, read);
   const translated = await completeLiveTranslations(page, ready, read, {
     display: { model, [`media.${ready.draft.media[0]!.id}.alt`]: alt },
   });
@@ -285,7 +284,7 @@ test('real localization sidecar preserves public language snapshots with disable
   await verifyPublic(model.en);
   const beforeFacts = await readLiveBundle(initial.id, read);
   expect(beforeFacts.vehicle.version).toBe(first.version);
-  await tab(page, '公开字段多语');
+  await tab(page, '车辆配置');
   await expandLiveTranslationGroup(page, '补充代系与驱动形式');
   await page.getByRole('textbox', { name: '代系名称', exact: true }).fill(generation.zh);
   await select(page, '驱动形式', '全轮驱动');
@@ -439,7 +438,7 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   page.on('request', observeBlockedTranslationWrites);
   await tab(page, '基础资料');
   await page.getByLabel('标题原文', { exact: true }).fill('尚未发布的新原文');
-  await tab(page, '公开字段多语');
+  await tab(page, '车辆配置');
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('vehicle-translation-generate')).toHaveCount(0);
   await expect(page.getByText('请先保存车辆资料，再编辑或生成译文', { exact: true })).toBeVisible();
@@ -498,7 +497,7 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
   await screenshot(page, 'live-desktop-review');
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
-    for (const section of ['基础资料', '价格与内部信息', '车辆配置', '图片管理', '公开字段多语', '发布预览']) {
+    for (const section of ['基础资料', '价格与内部信息', '车辆配置', '图片管理', '发布预览']) {
       await tab(page, section);
       await fitsViewport(page);
       await screenshot(page, `live-${width}-${section}`);
@@ -751,143 +750,15 @@ test('translation disabled real API keeps Chinese source intact and never preten
   const initial = await create(page, 'manual', '中文首存与未配置机器翻译隔离测试');
   expect(initial.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: '中文首存与未配置机器翻译隔离测试' });
   expect(initial.draft.content.title.translations.en).toBeNull();
-  await tab(page, '公开字段多语');
+  await tab(page, '车辆配置');
   const read = (path: string) => readRespectingRateLimit(page, path);
   const bundle = await readLiveBundle(initial.id, read);
   expect(bundle.sourceLanguageConfirmationRequired).toEqual([]);
-  await assertDisabledLivePlan(page, bundle, read);
+  await expect(page.getByTestId('vehicle-translation-generate')).toHaveCount(0);
   await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('俄文标题', { exact: true })).toHaveValue('');
   const unchanged = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
   expect(unchanged.version).toBe(initial.version); expect(unchanged.draft).toEqual(initial.draft);
-});
-
-// Historical suggestions-API provider cases below retain their explicit mode/paid guards.
-// They are not part of the UX11 disabled-provider run and require a separate plan-workflow migration
-// before any newly authorized real provider execution; this task does not execute either case.
-test('actual local machine translation produces English/Russian suggestions and persists only after an explicit save', async ({ page }) => {
-  test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'libretranslate', 'Requires the explicitly selected loopback-only LibreTranslate service.');
-  test.setTimeout(90_000);
-  await login(page);
-  const sourceTitle = '2024款二手汽车';
-  const sourceDescription = '车辆行驶12000公里，售价50000元，仅用于本地翻译测试。';
-  const initial = await create(page, 'manual', sourceTitle);
-  await tab(page, '基础资料');
-  await page.getByLabel('车况描述', { exact: true }).fill(sourceDescription);
-  const withDescription = await save(page, initial.id);
-  await tab(page, '公开字段多语');
-  const generating = page.waitForResponse(response => response.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/translation-suggestions`) && response.request().method() === 'POST');
-  await page.getByRole('button', { name: /生成英俄译文$/ }).click();
-  const response = await generating;
-  expect(response.status()).toBe(200);
-  const generated = VehicleTranslationSuggestionsResponseSchema.parse(await response.json()).data;
-  expect(generated.engineVersion).toBe(`libretranslate:${process.env.LIBRETRANSLATE_ENGINE_VERSION}`);
-  expect(generated.content.title.translations.zh).toMatchObject({ text: sourceTitle, kind: 'original', reviewStatus: 'pending' });
-  expect(generated.content.description!.translations.zh).toMatchObject({ text: sourceDescription, kind: 'original', reviewStatus: 'pending' });
-  for (const field of ['title', 'description'] as const) {
-    const suggestion = generated.content[field]!;
-    for (const locale of ['en', 'ru'] as const) {
-      const translation = suggestion.translations[locale];
-      expect(translation).toMatchObject({ kind: 'machine', reviewStatus: 'pending', engineVersion: generated.engineVersion });
-      expect(translation.text.trim()).not.toBe(suggestion.sourceText.trim());
-      expect(translation.text).toMatch(locale === 'en' ? /[A-Za-z]/ : /[А-Яа-яЁё]/);
-      const normalized = translation.text.replace(/[,\s\u00a0\u202f]/g, '');
-      for (const number of field === 'title' ? ['2024'] : ['12000', '50000']) expect(normalized).toContain(number);
-    }
-  }
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(generated.content.title.translations.en.text);
-  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(generated.content.description!.translations.ru.text);
-  await expect(page.getByRole('checkbox', { name: '英文标题已审核', exact: true })).not.toBeChecked();
-  const beforeSave = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
-  expect(beforeSave.version).toBe(withDescription.version); expect(beforeSave.draft).toEqual(withDescription.draft);
-  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
-  await mkdir('/private/tmp/hd-ad-i18n-evidence', { recursive: true });
-  await writeFile('/private/tmp/hd-ad-i18n-evidence/actual-local-machine-output.json', JSON.stringify(generated, null, 2));
-  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/actual-local-machine-suggestions.png', fullPage: true, animations: 'disabled' });
-  const saved = await save(page, initial.id);
-  expect(saved.publicationState).toBe('draft'); expect(saved.hasUnpublishedChanges).toBe(true);
-  for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
-    expect(saved.draft.content[field].translations[locale]).toMatchObject({ text: generated.content[field]!.translations[locale].text, reviewStatus: 'pending', kind: locale === 'zh' ? 'original' : 'machine' });
-  }
-  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
-  await page.reload(); await tab(page, '公开字段多语');
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(generated.content.title.translations.en.text);
-  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(generated.content.description!.translations.ru.text);
-});
-
-test('real Aliyun international Chinese suggestion persistence', async ({ page }) => {
-  test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'aliyun', 'Requires the separately approved real Aliyun synthetic-only mode.');
-  test.setTimeout(90_000);
-  expect(process.env.ADMIN_LIVE_ALIYUN_CONFIRM).toBe('synthetic-only');
-  expect(process.env.ALI_MT_REGION).toBe('ap-southeast-1');
-  expect(process.env.TRANSLATION_MAX_CHARACTERS_PER_HOUR).toBe('500');
-  const sourceTitle = '2024款丰田卡罗拉';
-  const sourceDescription = '合成测试：里程12000km，参考价格50000CNY，库存和出口资格待核验。';
-  const sourceCharacters = sourceTitle.length + sourceDescription.length;
-  expect(sourceCharacters).toBeLessThanOrEqual(200);
-  expect(sourceCharacters * 2).toBeLessThan(400);
-  await login(page);
-  const initial = await create(page, 'manual', sourceTitle);
-  await tab(page, '基础资料');
-  await page.getByLabel('车况描述', { exact: true }).fill(sourceDescription);
-  const source = await save(page, initial.id);
-  await tab(page, '公开字段多语');
-  const responseReady = page.waitForResponse(response => response.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/translation-suggestions`) && response.request().method() === 'POST');
-  const startedAt = Date.now();
-  // Exactly one generation click: an unknown result fails this case instead of making more paid calls.
-  await page.getByRole('button', { name: /生成英俄译文$/ }).click();
-  const response = await responseReady;
-  const elapsedMs = Date.now() - startedAt;
-  expect(response.status()).toBe(200);
-  expect(response.request().postDataJSON()).toEqual({ version: source.version });
-  const generated = VehicleTranslationSuggestionsResponseSchema.parse(await response.json()).data;
-  expect(generated.engineVersion).toBe(`aliyun-general:2018-10-12:general:ap-southeast-1:${process.env.ALI_MT_CONFIG_VERSION ?? '1'}`);
-  expect(JSON.stringify(generated)).not.toContain('PRIVATE_AD_UX_ONLY');
-  const output = {
-    sampleKind: 'real Aliyun international synthetic sample; not operational inventory or professional translation certification',
-    engineVersion: generated.engineVersion, elapsedMs, sourceCharacters, maximumPlannedTranslatedSourceCharacters: sourceCharacters * 2,
-    zh: { title: sourceTitle, description: sourceDescription },
-    en: { title: generated.content.title.translations.en.text, description: generated.content.description!.translations.en.text },
-    ru: { title: generated.content.title.translations.ru.text, description: generated.content.description!.translations.ru.text },
-  };
-  await mkdir('/private/tmp/hd-ad-i18n-evidence', { recursive: true });
-  // Only the deliberately synthetic source/output and timing are written; no environment, signatures, or upstream messages.
-  await writeFile('/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-output.json', JSON.stringify(output, null, 2));
-  for (const field of ['title', 'description'] as const) {
-    const suggestion = generated.content[field]!;
-    expect(suggestion.translations.zh).toMatchObject({ text: field === 'title' ? sourceTitle : sourceDescription, kind: 'original', reviewStatus: 'pending' });
-    for (const locale of ['en', 'ru'] as const) {
-      const translation = suggestion.translations[locale];
-      expect(translation).toMatchObject({ kind: 'machine', reviewStatus: 'pending', engineVersion: generated.engineVersion });
-      expect(translation.text.trim()).not.toBe(suggestion.sourceText.trim());
-      const normalized = translation.text.replace(/[,\s\u00a0\u202f]/g, '');
-      for (const number of field === 'title' ? ['2024'] : ['12000', '50000']) expect(normalized).toContain(number);
-    }
-  }
-  expect(output.en.title).toMatch(/[A-Za-z]/); expect(output.en.description).toMatch(/[A-Za-z]/);
-  // A proper model name may remain Latin in Russian; the sentence must contain actual Cyrillic text.
-  expect(output.ru.description).toMatch(/[А-Яа-яЁё]/);
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(output.en.title);
-  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(output.ru.description);
-  const beforeSave = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
-  expect(beforeSave.version).toBe(source.version); expect(beforeSave.draft).toEqual(source.draft);
-  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
-  for (const locale of ['中文', '英文', '俄文']) await expect(page.getByRole('checkbox', { name: `${locale}标题已审核`, exact: true })).not.toBeChecked();
-  await page.evaluate(() => scrollTo(0, 0));
-  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-unsaved.png', fullPage: true, animations: 'disabled' });
-  const saved = await save(page, initial.id);
-  expect(saved.publicationState).toBe('draft'); expect(saved.publishedAt).toBeNull(); expect(saved.publishedRevisionId).toBeNull();
-  for (const field of ['title', 'description'] as const) for (const locale of ['zh', 'en', 'ru'] as const) {
-    expect(saved.draft.content[field].translations[locale]).toMatchObject({ text: generated.content[field]!.translations[locale].text, reviewStatus: 'pending', kind: locale === 'zh' ? 'original' : 'machine' });
-  }
-  expect(saved.draft.internal.notes).toBe('PRIVATE_AD_UX_ONLY');
-  expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
-  await page.reload(); await tab(page, '公开字段多语');
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(output.en.title);
-  await expect(page.getByLabel('俄文描述', { exact: true })).toHaveValue(output.ru.description);
-  await expect(page.locator('.ant-alert').filter({ hasText: /已填入\d+项语言内容，请核对并保存草稿|译文已填入当前草稿，请核对并保存/ })).toHaveCount(0);
-  await page.evaluate(() => scrollTo(0, 0));
-  await page.screenshot({ path: '/private/tmp/hd-ad-i18n-evidence/real-aliyun-international-synthetic-saved.png', fullPage: true, animations: 'disabled' });
 });
 
 test('real publication preview rejects private image failures until a new load succeeds', async ({ page }, testInfo) => {

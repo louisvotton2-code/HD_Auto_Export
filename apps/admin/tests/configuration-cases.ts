@@ -2,7 +2,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { parseVehicleConfigurationJson, vehicleConfigurationExample, VEHICLE_CONFIGURATION_LIMITS } from '@hd/contracts/admin';
 import { installApi, vehicle } from './api-fixture';
-import { fillRequiredVehicleBasics, notes, tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, notes, openLegacyConfiguration, tab } from './ui-helpers';
 
 const parse = (page: Page) => page.getByRole('button', { name: '解析并核对配置' });
 const confirmConfiguration = (page: Page) => page.getByRole('button', { name: '人工核对无误' });
@@ -21,6 +21,7 @@ test('configuration requires new draft basics before moving on and saves in CNY'
   await expect(page.getByRole('combobox', { name: '动力类型', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '下一步：车辆配置' }).click();
   await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
+  await openLegacyConfiguration(page);
   await expect(configuration(page)).toHaveValue('');
   await expect.poll(() => api.creates.length).toBe(1);
   expect(JSON.parse(api.creates[0]!.body!).draft).toMatchObject({
@@ -104,7 +105,7 @@ test('configuration saves only confirmed structured facts alongside the configur
   const api = await installApi(page);
   await page.goto('/admin/vehicles/new');
   await fillRequiredVehicleBasics(page);
-  await tab(page, '车辆配置');
+  await tab(page, '车辆配置'); await openLegacyConfiguration(page);
   const items = [
     { name: '排量(cc)', value: '1989' },
     { name: '原始马力(hp)', value: '140' },
@@ -139,7 +140,7 @@ const invalidConfigurations = [
 ] as const;
 
 test('configuration invalid nonempty JSON cannot create or save via button or form submission and never truncates input', async ({ page }) => {
-  const api = await installApi(page); await page.goto('/admin/vehicles/new'); await fillRequiredVehicleBasics(page); await tab(page, '车辆配置');
+  const api = await installApi(page); await page.goto('/admin/vehicles/new'); await fillRequiredVehicleBasics(page); await tab(page, '车辆配置'); await openLegacyConfiguration(page);
   for (const [label, raw] of invalidConfigurations) {
     expect(() => parseVehicleConfigurationJson(raw), label).toThrow(); await configuration(page).fill(raw);
     await expect(configuration(page)).toHaveValue(raw); await expect(configuration(page)).toHaveAttribute('aria-invalid', 'true'); await expect(save(page)).toBeDisabled();
@@ -154,7 +155,7 @@ test('configuration invalid nonempty JSON cannot create or save via button or fo
   await expect(save(page)).toBeDisabled();
   await confirmConfiguration(page).click();
   await save(page).click(); await expect.poll(() => api.creates.length).toBe(1); expect(JSON.parse(api.creates[0]!.body!).draft.configuration).toBe(raw);
-  expect(api.items[0]!.draft.configuration).toEqual(expected); await page.reload(); await tab(page, '车辆配置');
+  expect(api.items[0]!.draft.configuration).toEqual(expected); await page.reload(); await tab(page, '车辆配置'); await openLegacyConfiguration(page);
   expect(parseVehicleConfigurationJson(await configuration(page).inputValue())).toEqual(expected);
   await configuration(page).fill(''); await save(page).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(api.saves[0]!.draft.configuration).toBe(''); expect(api.items[0]!.draft.configuration).toBeNull();
@@ -164,44 +165,26 @@ test('configuration malformed edits send no PATCH and valid raw JSON remains los
   const item = vehicle(); item.draft.configuration = structuredClone(vehicleConfigurationExample);
   item.draft.configuration.items.push({ name: '动力类型', value: '汽油' });
   item.draft.facts.powertrain = 'hev';
-  const api = await installApi(page, { items: [item] }); await page.goto(`/admin/vehicles/${item.id}`); await tab(page, '车辆配置');
+  const api = await installApi(page, { items: [item] }); await page.goto(`/admin/vehicles/${item.id}`); await tab(page, '车辆配置'); await openLegacyConfiguration(page);
   await configuration(page).fill('{"version":1,"items":[{"name":"排量","value":1989}]}'); await expect(save(page)).toBeDisabled();
   await page.locator('form').filter({ has: configuration(page) }).evaluate(form => (form as HTMLFormElement).requestSubmit()); expect(api.saves).toEqual([]);
   const raw = '{ "items": [{ "value": "001.0", "name": "原样参数" }, { "name": "动力类型", "value": "汽油" }], "version": 1 }'; await configuration(page).fill(raw); await parse(page).click(); await confirmConfiguration(page).click(); await save(page).click();
   await expect.poll(() => api.saves.length).toBe(1); expect(api.saves[0]!.draft.configuration).toBe(raw); expect(item.draft.configuration).toEqual(parseVehicleConfigurationJson(raw));
   expect(item.draft.facts.powertrain).toBe('hev');
-  await page.reload(); await tab(page, '车辆配置'); expect(parseVehicleConfigurationJson(await configuration(page).inputValue())).toEqual(parseVehicleConfigurationJson(raw));
+  await page.reload(); await tab(page, '车辆配置'); await openLegacyConfiguration(page); expect(parseVehicleConfigurationJson(await configuration(page).inputValue())).toEqual(parseVehicleConfigurationJson(raw));
   await page.setViewportSize({ width: 320, height: 844 }); await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath('configuration-json-320.png'), fullPage: true, animations: 'disabled' });
 });
 
-test('configuration prompt includes online verification rules and the first-step data in both copy and preview', async ({ page }) => {
+test('configuration prompt copies basic facts and asks for one trilingual JSON without guessing', async ({ page }) => {
   await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copiedConfigurationPrompt: string }).copiedConfigurationPrompt = text; } } }); });
   await installApi(page); await page.goto('/admin/vehicles/new'); await fillRequiredVehicleBasics(page, '仅用于测试的中文标题'); await tab(page, '车辆配置');
-  await page.getByRole('button', { name: /复制 AI 配置提示词$/ }).click();
+  await page.getByRole('button', { name: /复制三语 JSON 提示词$/ }).click();
   const prompt = await page.evaluate(() => (window as unknown as { copiedConfigurationPrompt: string }).copiedConfigurationPrompt);
-  await page.getByText('查看完整 AI 提示词', { exact: true }).click();
-  await expect(page.getByLabel('AI 配置提示词', { exact: true })).toHaveValue(prompt);
-  expect(prompt).toContain('先联网查找');
-  expect(prompt).toContain('不少于 50 项');
-  expect(prompt).toContain('确定的配置事实需要同款官方资料支持');
-  expect(prompt).toContain('无法联网时，只处理用户明确提供的技术参数和装备');
-  expect(prompt).toContain('名称及文字说明用中文');
-  await expect(page.getByText(/若 AI 说明未找到可靠资料，配置先留空/)).toBeVisible();
-  expect(prompt).toContain('车型已确定且查到可靠配置时，只返回一个标准 JSON 对象。');
-  expect(prompt).not.toContain('{"version":1,"items":[]}');
-  const { items, nameUtf16, valueUtf16, totalUtf16, jsonBytes } = VEHICLE_CONFIGURATION_LIMITS;
-  for (const limit of [items, nameUtf16, valueUtf16, totalUtf16, jsonBytes]) expect(prompt).toContain(String(limit));
-  const marker = '\n以下是待检索车辆的基础资料：\n';
-  const closingRules = [
-    '若没有任何可靠技术参数或装备配置，直接告诉我为什么没有搜索到',
-    '如果配置或参数有疑问，检索到多个候选车型或款型，先列出候选及关键差异，向我确认具体版本。确认前暂停输出配置 JSON。',
-  ].join('\n');
-  expect(prompt).toContain(closingRules + '\n' + marker);
-  const input = prompt.split(marker)[1]!;
-  const expected = {
-    品牌: '丰田', 车型: '卡罗拉', 中文标题: '仅用于测试的中文标题', 配置款型: '合成配置款型',
-    年款: '2024', '里程（公里）': '0', 登记状态: '已登记',
-  };
-  expect(input).toBe(JSON.stringify(expected));
+  await page.getByText('查看 AI 提示词', { exact: true }).click();
+  await expect(page.getByLabel('三语 JSON 提示词', { exact: true })).toHaveValue(prompt);
+  expect(prompt).toContain('只使用我提供的事实');
+  expect(prompt).toContain('不要查询或补写缺失参数');
+  expect(prompt).toContain('中文 zh、英文 en 和俄文 ru');
+  expect(prompt).toContain(JSON.stringify({ 品牌: '丰田', 车型: '卡罗拉', 配置款型: '合成配置款型', 年款: '2024', 标题: '仅用于测试的中文标题' }));
 });

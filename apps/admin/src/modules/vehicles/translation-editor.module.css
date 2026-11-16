@@ -8,7 +8,7 @@
 .sourceAlert { margin-bottom: 16px; overflow-wrap: anywhere; }
 .sourceAlert :global(.ant-alert-section) { min-width: 0; }
 .emptyDescription { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
-.languages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.languages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .language { min-width: 0; background: #fff; border-color: #e8e2d5; }
 .language :global(.ant-card-head) { min-height: 52px; border-bottom-color: #eeebe3; }
 .language :global(.ant-card-head-wrapper) { gap: 8px; }

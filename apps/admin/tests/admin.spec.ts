@@ -5,6 +5,7 @@ import './workspace-layout-cases';
 import './workspace-cases';
 import './bundle-cases';
 import './configuration-cases';
+import './configuration-import-cases';
 import './publication-tab-cases';
 import './publication-preview-deadline-cases';
 import './publication-readiness-cases';

@@ -2,10 +2,6 @@ import type { LocalizedText, Locale, TranslatableField } from '@hd/contracts/adm
 
 export const translationLocales = ['zh', 'en', 'ru'] as const;
 
-export function needsManualChineseTranslation(field: TranslatableField): boolean {
-  return !!field.sourceText?.trim() && field.sourceLanguage.split('-')[0].toLowerCase() !== 'zh' &&
-    !field.translations.zh?.text.trim();
-}
 export const translationLocaleLabels = { zh: '中文', en: '英文', ru: '俄文' };
 export type TranslationReviewState = 'empty' | LocalizedText['reviewStatus'];
 

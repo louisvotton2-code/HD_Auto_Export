@@ -65,8 +65,7 @@ export function workspaceNeedsChineseNormalization(bundle: VehicleTranslationBun
     if (field.sourceLanguage.split('-')[0].toLowerCase() !== 'zh') return false;
     const chinese = field.translations.zh;
     if (!field.sourceText?.trim()) return chinese !== null;
-    return !chinese || chinese.text !== field.sourceText || chinese.kind !== 'original' || chinese.engineVersion !== null ||
-      chinese.sourceVersion !== field.sourceVersion || chinese.reviewStatus === 'stale';
+    return !chinese?.text.trim();
   });
 }
 
