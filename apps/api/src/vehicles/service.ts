@@ -26,6 +26,7 @@ import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
 import { configurationImportToken, prepareConfigurationImport, requireConfigurationImportToken } from './configuration-import.js';
+import { projectTechnicalDetail } from './technical-detail.js';
 
 export type Actor = { id: string; requestId: string };
 const staffProjectionPolicy=2;
@@ -41,6 +42,11 @@ type Row = {
   published_localization?:LocalizationData;published_bindings?:Record<string,string>;projections?:PublicProjections;
 };
 const iso = (date: Date|null) => date?.toISOString() ?? null;
+const locationPlaceholders = new Set(['-', '—', '未知', '待确认', '待填写', '暂无', 'unknown', 'n/a', 'not specified', 'неизвестно', 'не указано']);
+function hasRecordedLocation(value: string | null | undefined) {
+  const label = value?.normalize('NFKC').trim().toLowerCase();
+  return !!label && !locationPlaceholders.has(label);
+}
 const adminSelect = `SELECT ${staffActivitySql()} AS activity,v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,l.data AS localization_data,l.bindings AS localization_bindings,l.retired_fields,pl.data AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id`;
 const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
 const publicSelect = `SELECT v.*,p.data AS publication_data,pl.data AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
@@ -345,8 +351,8 @@ export class InventoryService {
       const row=await lockVehicle(tx,id,input.version);
       const current=syncLocalization(id,row.data,storedLocalization(row));
       if(current.revision!==input.localizationRevision)throw conflict();
-      const {changes,itemOrder}=prepareConfigurationImport(id,row.data,current,input.json);
-      return {version:row.version,localizationRevision:current.revision,changes,itemOrder,
+      const {changes,itemOrder,warnings}=prepareConfigurationImport(id,row.data,current,input.json);
+      return {version:row.version,localizationRevision:current.revision,changes,itemOrder,...(warnings ? {warnings} : {}),
         previewToken:configurationImportToken(secret,{vehicleId:row.id,actorId:actor.id,input})};
     });
   }
@@ -547,6 +553,8 @@ export class InventoryService {
           [facts.trim !== null, 'draft.facts.trim', 'Configuration name is required.'],
           [facts.modelYear !== null, 'draft.facts.modelYear', 'Model year is required.'],
           [facts.mileageKm !== null, 'draft.facts.mileageKm', 'Mileage is required; zero is valid.'],
+          [[facts.location?.city, facts.location?.displayName].some(hasRecordedLocation),
+            'draft.facts.location.city', 'Provide the actual vehicle city or region.'],
         ] as const;
         const fields = required.filter(([provided]) => !provided)
           .map(([, path, message]) => ({ path, message, code: 'REQUIRED_FOR_CREATION' }));
@@ -554,7 +562,6 @@ export class InventoryService {
       }
       const normalized=normalizeContent(draft);
       if (normalized.source.kind === 'manual') {
-        normalized.facts.location ??= { country: 'CN', city: null, displayName: null };
         normalized.internal.purchaseCost ??= { amount: null, currency: 'CNY' };
         if (normalized.price.kind === 'asking') normalized.price.money ??= { amount: null, currency: 'CNY' };
       }
@@ -696,11 +703,13 @@ export class InventoryService {
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
       const result=await tx.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
-      if(!result.rows[0])throw notFound();
-      const vehicle=toPublic(result.rows[0],locale,view,priceView,quote,true);
-      const report=await getStaffReport(tx,result.rows[0].publication_data!.source);
+      const row=result.rows[0];
+      if(!row)throw notFound();
+      const vehicle=toPublic(row,locale,view,priceView,quote,true);
+      const report=await getStaffReport(tx,row.publication_data!.source);
       vehicle.report={hasReport:report.hasReport};
-      return projection?inlineDetail(tx,vehicle,locale):vehicle;
+      return projection?inlineDetail(tx,{...vehicle,...projectTechnicalDetail(vehicle.facts,row.published_localization?.facts,
+        row.publication_data?.configuration,vehicle.configuration,locale)},locale):vehicle;
     });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string) {

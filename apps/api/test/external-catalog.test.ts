@@ -126,7 +126,8 @@ before(async () => {
   const draft = makeVehicleDraftFixture();
   draft.media = [];
   draft.configuration = { version: 1, items: [{ name: '基础配置', value: '标准' }] };
-  draft.facts = { ...draft.facts, make: { id: 'toyota', name: 'Toyota' }, model: { id: 'synthetic-r1', name: 'Example R1' }, trim: { id: 'test-trim', name: 'Test trim' }, powertrain: 'hev' };
+  draft.facts = { ...draft.facts, make: { id: 'toyota', name: 'Toyota' }, model: { id: 'synthetic-r1', name: 'Example R1' }, trim: { id: 'test-trim', name: 'Test trim' },
+    powertrain: 'hev', location: { country: 'CN', city: '隔离样例城市', displayName: null } };
   draft.price = { kind: 'asking', money: { amount: '128000.50', currency: 'CNY' }, includes: [] };
   let vehicle = await runtime.inventory.create(draft, actor, randomUUID());
   const png = await sharp({ create: { width: 30, height: 20, channels: 3, background: '#223344' } }).png().toBuffer();

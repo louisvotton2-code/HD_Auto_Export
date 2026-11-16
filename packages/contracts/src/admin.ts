@@ -7,6 +7,7 @@ import { LocalizationDataSchema, VehicleLocalizationSchema } from './localizatio
 import { TranslationPlanRefSchema } from './translation-plan.js';
 export * from './configuration.js';
 export * from './configuration-import.js';
+export * from './vehicle-technical.js';
 export * from './translation-plan.js';
 export * from './external-admin.js';
 export * from './publication.js';

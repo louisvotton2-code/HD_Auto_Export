@@ -1,9 +1,11 @@
 import {z} from 'zod';
 import {LanguageTagSchema,LocaleSchema,NamedValueSchema,VersionSchema,responseSchema} from './common.js';
+import {VehicleTechnicalFactsSchema} from './vehicle-technical.js';
 
 export const DrivetrainSchema=z.enum(['fwd','rwd','awd','four_wd']);
 export type Drivetrain=z.infer<typeof DrivetrainSchema>;
-export const VehicleExtraFactsSchema=z.strictObject({generation:NamedValueSchema.nullable(),drivetrain:DrivetrainSchema.nullable()});
+export const VehicleExtraFactsSchema=z.strictObject({generation:NamedValueSchema.nullable(),drivetrain:DrivetrainSchema.nullable(),
+  verifiedTechnical:VehicleTechnicalFactsSchema.optional()});
 export type VehicleExtraFacts=z.infer<typeof VehicleExtraFactsSchema>;
 /** Keep localized projections within the original field's public contract. Never truncate translations. */
 export function getDisplayTextLimit(ref:string):number {

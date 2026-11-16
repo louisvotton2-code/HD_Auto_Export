@@ -12,6 +12,7 @@ import { hasTranslationText, locales } from './content.js';
 import { projectUsdPrice } from './usd-price.js';
 import { resolveDisplay, type StoredLocalization } from './localization.js';
 import { projectConfiguration } from './configuration.js';
+import { projectTechnicalDetail } from './technical-detail.js';
 import { getStaffReport } from '../external/reports.js';
 
 export type PublicationRow = { id: string; stock_number: string; version: number; public_content_revision: number;
@@ -116,6 +117,7 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
   const named = (value: { id: string; name: string } | null, text: PublicationPreviewText) =>
     value ? { id: value.id, name: text.text ?? placeholder } : null;
   const report=await getStaffReport(tx,draft.source);
+  const configuration=projectConfiguration(draft.configuration,locale,ref=>resolveDisplay(byRef.get(ref),locale,draft.source.kind==='manual'));
   const vehicle = { id: row.id, stockCode: `HD-${String(row.stock_number).padStart(6, '0')}`,
     source: draft.source.kind === 'external' ? { kind: 'external',
       platform: { id: draft.source.platform.id, name: display.platform.text ?? placeholder }, listingUrl: draft.source.listingUrl } : { kind: draft.source.kind },
@@ -124,7 +126,7 @@ export async function preparePublication(tx: PoolClient, row: PublicationRow, lo
       drivetrain: localization.data.facts.drivetrain,
       location: draft.facts.location ? { country: draft.facts.location.country, city: display.city.text, displayName: display.location.text } : null },
     content: { title: previewText(draft.content.title, locale), description: previewText(draft.content.description, locale) }, display, price,
-    configuration: projectConfiguration(draft.configuration,locale,ref=>resolveDisplay(byRef.get(ref),locale,draft.source.kind==='manual')),
+    configuration, ...projectTechnicalDetail(draft.facts,localization.data.facts,draft.configuration,configuration,locale),
     report: {hasReport:report.hasReport},
     images: [...draft.media].sort((a, b) => a.sortOrder - b.sortOrder).map(image => {
       const stored = media.find(m => m.id === image.id.toLowerCase());

@@ -8,7 +8,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import sharp from 'sharp';
 import type {InjectOptions} from 'fastify';
 import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
-import {PublicVehicleResponseSchema,PublicVehicleListSchema,ApiErrorSchema} from '@hd/contracts/public';
+import {PublicVehicleResponseSchema,PublicVehicleListSchema,PublicVehicleInlineResponseSchema,ApiErrorSchema} from '@hd/contracts/public';
 import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,PublicationPreviewResponseSchema,PublishReadinessResponseSchema,TranslationPlanResponseSchema,TranslationPlanResultResponseSchema,VehicleTranslationBundleResponseSchema,MediaAssetResponseSchema,MediaUploadResponseSchema,type TranslationPlan,type TranslationPlanResult,type VehicleTranslationBundle,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {
   CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewResponseSchema, configurationImportExample,
@@ -47,7 +47,14 @@ function rejectedPublication(response:Awaited<ReturnType<typeof call>>,fieldPath
   assert.equal(error.code,'PUBLISH_VALIDATION_FAILED');assert.ok(error.fields?.some(field=>field.path===fieldPath),response.body);
 }
 const configuration=()=>({version:1 as const,items:[{name:'基础配置',value:'标准'}]});
-function draft():VehicleDraftInput {const value=makeVehicleDraftFixture();value.media=[];value.facts.trim={id:'fixture_trim',name:'Synthetic fixture configuration'};value.configuration=configuration();return value;}
+function draft():VehicleDraftInput {
+  const value=makeVehicleDraftFixture();
+  value.media=[];
+  value.facts.trim={id:'fixture_trim',name:'Synthetic fixture configuration'};
+  value.facts.location={country:'CN',city:'隔离样例城市',displayName:null};
+  value.configuration=configuration();
+  return value;
+}
 // Escape every UTF-16 unit in every JSON string, including property names, without changing the parsed request.
 function escapedJson(value:object):string {
   return JSON.stringify(value).replace(/"(?:[^"\\]|\\.)*"/g,token=>`"${(JSON.parse(token) as string).split('').map(unit=>`\\u${unit.charCodeAt(0).toString(16).padStart(4,'0')}`).join('')}"`);
@@ -134,7 +141,7 @@ async function confirmReady(vehicle:AdminVehicle):Promise<AdminVehicle> {
   return vehicle;
 }
 /** Models pre-ADUX10 published data in this random database, never a new publication request. */
-async function seedHistoricalPublication(vehicle:AdminVehicle):Promise<AdminVehicle> {
+async function seedHistoricalPublication(vehicle:AdminVehicle,localization?:VehicleLocalization['data']):Promise<AdminVehicle> {
   await runtime.db.transaction(async client=>{
     await client.query('SELECT id FROM vehicles WHERE id=$1 FOR UPDATE',[vehicle.id]);
     const media=await client.query<{id:string;width:number;height:number}>("SELECT id,width,height FROM media_assets WHERE vehicle_id=$1 AND state='ready'",[vehicle.id]);
@@ -142,8 +149,11 @@ async function seedHistoricalPublication(vehicle:AdminVehicle):Promise<AdminVehi
       const stored=media.rows.find(row=>row.id===image.id);assert.ok(stored);
       return {...image,url:`/api/v1/media/${image.id}`,width:stored.width,height:stored.height};
     });
-    const {source,facts,price,content}=vehicle.draft;const publication=randomUUID();
-    await client.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,vehicle.id,JSON.stringify({source,facts,price,content,images})]);
+    const {source,facts,price,content,configuration}=vehicle.draft;const publication=randomUUID();
+    const snapshot={source,facts,price,content,images,...(localization?{configuration}:{})};
+    await client.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,vehicle.id,JSON.stringify(snapshot)]);
+    if(localization)await client.query("INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,'{}','{}')",
+      [publication,JSON.stringify(localization)]);
     for(const image of images)await client.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publication,image.id]);
     await client.query("UPDATE vehicles SET publication_state='published',published_revision_id=$2,published_at=now(),version=version+1 WHERE id=$1",[vehicle.id,publication]);
   });
@@ -258,7 +268,7 @@ test('draft privacy and current-language publication validation',async()=>{
   assert.equal((await runtime.db.pool.query('SELECT count(*)::int AS count FROM vehicle_publications WHERE vehicle_id=$1',[vehicle.id])).rows[0].count,0);
   const current=await runtime.inventory.getAdmin(vehicle.id);assert.equal(current.version,vehicle.version);assert.equal(current.publicationState,'draft');
 });
-test('new manual drafts require six basics and allow powertrain and prices to be filled later in their default CNY currency',async()=>{
+test('vehicle entry location is part of manual creation basics while powertrain and prices may be filled later',async()=>{
   const input=draft();
   Object.assign(input.facts,{make:null,model:null,trim:null,modelYear:null,powertrain:'unknown',mileageKm:null,location:null});
   input.content.title.sourceText=null;
@@ -270,12 +280,12 @@ test('new manual drafts require six basics and allow powertrain and prices to be
   const submit=(value:VehicleDraftInput)=>call({method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload:{draft:value}});
   const rejected=await submit(input);
   assert.equal(rejected.statusCode,422,rejected.body);
-  assert.deepEqual(ApiErrorSchema.parse(rejected.json()).error.fields?.map(field=>field.path),[
+  assert.deepEqual(ApiErrorSchema.parse(rejected.json()).error.fields?.map(field=>field.path).sort(),[
     'draft.facts.make','draft.facts.model','draft.content.title.sourceText','draft.facts.trim',
-    'draft.facts.modelYear','draft.facts.mileageKm',
-  ]);
+    'draft.facts.modelYear','draft.facts.mileageKm','draft.facts.location.city',
+  ].sort());
   const basics=draft();
-  const complete={...input,facts:{...basics.facts,powertrain:'unknown' as const,mileageKm:0,location:null},content:basics.content};
+  const complete={...input,facts:{...basics.facts,powertrain:'unknown' as const,mileageKm:0},content:basics.content};
   const wrongLanguage=await submit({...complete,content:{...complete.content,title:{...complete.content.title,sourceLanguage:'en'}}});
   assert.equal(wrongLanguage.statusCode,422,wrongLanguage.body);
   assert.equal(ApiErrorSchema.parse(wrongLanguage.json()).error.fields?.[0]?.path,'draft.content.title.sourceLanguage');
@@ -287,13 +297,62 @@ test('new manual drafts require six basics and allow powertrain and prices to be
   assert.equal(vehicle.draft.facts.powertrain,'unknown');
   assert.deepEqual(vehicle.draft.price.money,{amount:null,currency:'CNY'});
   assert.deepEqual(vehicle.draft.internal.purchaseCost,{amount:null,currency:'CNY'});
-  assert.deepEqual(vehicle.draft.facts.location,{country:'CN',city:null,displayName:null});
+  assert.deepEqual(vehicle.draft.facts.location,basics.facts.location);
   assert.equal(vehicle.draft.configuration,null);
   assert.equal(vehicle.publicationState,'draft');
   const custom=await create({...basics,facts:{...basics.facts,location:{country:'RU',city:'Test city',displayName:null}}});
   assert.deepEqual(custom.draft.price,basics.price);
   assert.deepEqual(custom.draft.internal.purchaseCost,basics.internal.purchaseCost);
   assert.equal(custom.draft.facts.location?.city,'Test city');
+});
+test('vehicle entry location rejects blank manual places and preserves valid regions and legacy drafts',async()=>{
+  const initial=draft();
+  const key=randomUUID();
+  const submit=(location:VehicleDraftInput['facts']['location'])=>call({
+    method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},
+    payload:{draft:{...initial,facts:{...initial.facts,location}}},
+  });
+  for(const location of [
+    null,
+    {country:'CN',city:null,displayName:null},
+    {country:'CN',city:'  ',displayName:'\u3000'},
+  ]){
+    const rejected=await submit(location);
+    assert.equal(rejected.statusCode,422,rejected.body);
+    const error=ApiErrorSchema.parse(rejected.json()).error;
+    assert.equal(error.code,'INVALID_REQUEST');
+    assert.deepEqual(error.fields?.map(({path,code})=>({path,code})),[
+      {path:'draft.facts.location.city',code:'REQUIRED_FOR_CREATION'},
+    ]);
+  }
+  const invalidCountry=await submit({country:'RU1',city:'Synthetic city',displayName:null});
+  assert.equal(invalidCountry.statusCode,400,invalidCountry.body);
+  const region={country:'RU',city:null,displayName:'Synthetic region'};
+  const created=await submit(region);
+  assert.equal(created.statusCode,201,created.body);
+  const vehicle:AdminVehicle=created.json().data;
+  assert.deepEqual(vehicle.draft.facts.location,region);
+
+  await runtime.db.pool.query("UPDATE vehicle_drafts SET data=jsonb_set(data,'{facts,location}','null'::jsonb) WHERE vehicle_id=$1",[vehicle.id]);
+  const historical=await freshVehicle(vehicle.id);
+  assert.equal(historical.draft.facts.location,null);
+  historical.draft.internal.notes='Isolated edit to an older draft without a recorded location.';
+  const saved=await save(historical);
+  assert.equal(saved.draft.facts.location,null);
+  assert.equal(saved.draft.internal.notes,historical.draft.internal.notes);
+  const endpoint=`/api/v1/admin/vehicles/${vehicle.id}`;
+  const preview=await call({url:`${endpoint}/publication-preview?locale=zh`,headers:headers()});
+  assert.equal(preview.statusCode,200,preview.body);
+  assert.equal(PublicationPreviewResponseSchema.parse(preview.json()).data.vehicle.facts.location,null);
+  assert.equal((await call({url:`/api/v1/vehicles/${vehicle.id}?locale=zh`})).statusCode,404);
+
+  const demo=makeDemoVehicleDraftFixture();demo.media=[];
+  assert.equal((await create(demo)).draft.facts.location,null);
+  const external=makeExternalVehicleDraftFixture();external.media=[];
+  assert.ok(external.source.kind==='external');
+  external.source.externalId=randomUUID();
+  external.facts.location=null;
+  assert.equal((await create(external)).draft.facts.location,null);
 });
 test('confirmed configuration and structured facts save atomically and older drafts remain editable',async()=>{
   let vehicle=await create();
@@ -1052,6 +1111,66 @@ async function reviewDisplay(id:string,extra=false){
 }
 async function freshVehicle(id:string):Promise<AdminVehicle>{const r=await call({method:'GET',url:`/api/v1/admin/vehicles/${id}`,headers:headers()});assert.equal(r.statusCode,200,r.body);return r.json().data;}
 
+test('vehicle entry technical import binds structured facts and reports collisions without writing the public view',async()=>{
+  const draftInput=draft();
+  Object.assign(draftInput.facts,{engineCc:0,powerHp:null,body:null,transmission:null,mileageKm:0});
+  const vehicle=await ready(draftInput),base=await bundle(vehicle.id);
+  const row=(zh:string,en:string,ru:string,value:string|{zh:string;en:string;ru:string})=>({
+    id:vehicleConfigurationItemId(zh),name:{zh,en,ru},
+    value:typeof value==='string'?{zh:value,en:value,ru:value}:value,
+  });
+  const engine=row('发动机功率(kW)','Engine power (kW)','Мощность двигателя (кВт)','0');
+  const motor=row('电机功率(kW)','Motor power (kW)','Мощность электродвигателя (кВт)','110');
+  const classRow=row('车身级别','Vehicle class','Класс автомобиля',{zh:'紧凑型',en:'Compact',ru:'Компактный'});
+  const conflictRow=row('排量(cc)','Displacement (cc)','Рабочий объём (см³)','1998');
+  const raw=JSON.stringify({version:1,items:[engine,motor,classRow,conflictRow]});
+  const preview=await previewConfigurationImport(base,raw);
+  assert.deepEqual(preview.warnings,[{path:'json.items.3.value',code:'RETAINED_CONFIRMED_VALUE',retained:'0',submitted:'1998'}]);
+  assert.ok(preview.changes.some(change=>change.path==='localization.facts.verifiedTechnical.engineKw'&&change.after==='0'));
+  assert.deepEqual(await bundle(vehicle.id),base);
+  const saved=await call({method:'PUT',url:configurationImportPath(vehicle.id),headers:headers(),
+    payload:{...configurationImportPayload(base,raw),previewToken:preview.previewToken}});
+  assert.equal(saved.statusCode,200,saved.body);
+  const updated=VehicleTranslationBundleResponseSchema.parse(saved.json()).data;
+  assert.equal(updated.vehicle.version,base.vehicle.version+1);
+  assert.deepEqual(updated.vehicle.draft.facts,base.vehicle.draft.facts);
+  assert.equal(updated.vehicle.draft.configuration?.items.length,4);
+  const {identityHash,...technical}=updated.localization.data.facts.verifiedTechnical!;
+  assert.match(identityHash,/^[a-f0-9]{64}$/);
+  assert.deepEqual(technical,{engineKw:0,motorKw:110,vehicleClass:{id:classRow.id,value:classRow.value}});
+  const snapshots=new Map();
+  for(const locale of ['zh','en','ru'] as const){
+    const protectedView=await call({url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=${locale}`,headers:headers()});
+    assert.equal(protectedView.statusCode,200,protectedView.body);
+    const detail=PublicationPreviewResponseSchema.parse(protectedView.json()).data.vehicle;
+    assert.equal(detail.facts.mileageKm,0);
+    assert.equal(detail.technicalDetails?.power.engineKw,0);
+    assert.equal(detail.vehicleClass?.text,classRow.value[locale]);
+    assert.ok(detail.technicalDetails?.configurationMatches.some(match=>match.id===engine.id&&match.semanticKey==='engineKw'));
+    assert.ok(!detail.technicalDetails?.configurationMatches.some(match=>match.id===conflictRow.id));
+    snapshots.set(locale,{technicalDetails:detail.technicalDetails,vehicleClass:detail.vehicleClass});
+    assert.equal((await call({url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}&view=localized&projection=detail-inline-v1`})).statusCode,404);
+  }
+  const seeded=await seedHistoricalPublication(updated.vehicle,updated.localization.data);
+  const current=await bundle(seeded.id);
+  const newClass={...classRow,value:{...classRow.value,ru:'Компактный автомобиль'}};
+  const revised=JSON.stringify({version:1,items:[engine,motor,newClass,conflictRow]});
+  const revisedPreview=await previewConfigurationImport(current,revised);
+  const savedAgain=await call({method:'PUT',url:configurationImportPath(vehicle.id),headers:headers(),
+    payload:{...configurationImportPayload(current,revised),previewToken:revisedPreview.previewToken}});
+  assert.equal(savedAgain.statusCode,200,savedAgain.body);
+  const newProtected=await call({url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=ru`,headers:headers()});
+  assert.equal(newProtected.statusCode,200,newProtected.body);
+  assert.equal(PublicationPreviewResponseSchema.parse(newProtected.json()).data.vehicle.vehicleClass?.text,newClass.value.ru);
+  for(const locale of ['zh','en','ru'] as const){
+    const live=await call({url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}&view=localized&projection=detail-inline-v1`});
+    assert.equal(live.statusCode,200,live.body);
+    const detail=PublicVehicleInlineResponseSchema.parse(live.json()).data;
+    assert.deepEqual({technicalDetails:detail.technicalDetails,vehicleClass:detail.vehicleClass},snapshots.get(locale));
+    assert.equal(detail.configurationInline.length,4);
+  }
+});
+
 test('configuration import previews and atomically stores three languages while preserving facts and the published snapshot',async()=>{
   const vehicle=await ready();
   await reviewDisplay(vehicle.id,true);
@@ -1144,7 +1263,7 @@ test('configuration import rejects untrusted requests, duplicate keys and items,
     {json:JSON.stringify({version:1,items:[item,item]}),path:'json.items.1.id'},
     {json:JSON.stringify({version:1,items:[{...item,value:{...item.value,ru:'9'}}]}),path:'json.items.0.value.ru'},
     {json:JSON.stringify({version:1,content:{title:{zh:'标题',en:'Title',ru:' \uFEFF\t'}}}),path:'json.content.title.ru'},
-    {json:JSON.stringify({version:1,display:[{ref:'location.city',text:{zh:'城市',en:'City',ru:'Город'}}]}),path:'json.display.0.ref'},
+    {json:JSON.stringify({version:1,display:[{ref:'location.displayName',text:{zh:'地点',en:'Place',ru:'Место'}}]}),path:'json.display.0.ref'},
     ...['unknown',null,'Gasoline'].map(powertrain=>({
       json:JSON.stringify({version:1,facts:{powertrain}}),path:'json.facts.powertrain',
     })),

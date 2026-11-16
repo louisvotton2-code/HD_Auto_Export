@@ -10,6 +10,9 @@ type Source=Pick<VehicleDraftInput,'source'|'facts'|'price'|'configuration'> & {
 export type StoredLocalization={revision:number;data:LocalizationData;bindings:Record<string,string>;retiredFields:DisplayField[]};
 export type PublishedLocalization=Pick<StoredLocalization,'data'|'bindings'>;
 export const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function technicalFactsIdentity(facts:VehicleDraftInput['facts']) {
+  return digest([facts.make?.id, facts.model?.id, facts.trim?.id, facts.modelYear]);
+}
 export const emptyLocalization=():StoredLocalization=>({revision:0,data:{facts:{generation:null,drivetrain:null},fields:[]},bindings:{},retiredFields:[]});
 const stableId=(input:unknown)=>{const hex=digest(input);return `${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-a${hex.slice(17,20)}-${hex.slice(20,32)}`;};
 const fieldHash=(ref:string,binding:string,language:string,text:string)=>digest([ref,binding,language,text]);
@@ -95,7 +98,8 @@ export function applyLocalizationInput(id:string,source:Source,current:StoredLoc
     if (changedLanguage && isChineseSource(field.sourceLanguage) && !hasTranslationText(field.translations.zh)) field.translations.zh={text:field.sourceText,kind:'original',reviewStatus:'pending',sourceVersion:field.sourceVersion,humanEditVersion:(prior.translations.zh?.humanEditVersion??0)+1,engineVersion:null};
     return field;
   });
-  result.data.facts=structuredClone(parsed.facts);
+  result.data.facts={generation:structuredClone(parsed.facts.generation),drivetrain:parsed.facts.drivetrain,
+    ...(current.data.facts.verifiedTechnical ? {verifiedTechnical:structuredClone(current.data.facts.verifiedTechnical)} : {})};
   // A generation edit creates/invalidates its bound field; existing refs are never guessed by the client.
   return syncLocalization(id,source,result,'zh');
 }

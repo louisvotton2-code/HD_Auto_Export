@@ -43,6 +43,7 @@ function manualDraft() {
   const draft = makeVehicleDraftFixture();
   draft.media = [];
   draft.facts.trim = { id: 'activity_trim', name: 'Synthetic activity trim' };
+  draft.facts.location = { country: 'CN', city: '隔离样例城市', displayName: null };
   return draft;
 }
 const activity=async(id:string,cookie=cookieA,query='')=>{

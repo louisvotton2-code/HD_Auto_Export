@@ -14,9 +14,11 @@ const text = (max: number) => z.string().max(max).regex(/\S/u)
 const localeTexts = (max: number) => z.strictObject({ zh: text(max), en: text(max), ru: text(max) });
 const displayRef = DisplayRefSchema.refine(ref => !ref.startsWith('configuration.'), 'Configuration translations belong in items');
 
+const ConfigurationImportItemSchema = z.strictObject({ id: itemId, name: localeTexts(nameUtf16), value: localeTexts(valueUtf16) });
+export type ConfigurationImportItem = z.infer<typeof ConfigurationImportItemSchema>;
 export const ConfigurationImportDocumentSchema = z.strictObject({
   version: z.literal(1),
-  items: z.array(z.strictObject({ id: itemId, name: localeTexts(nameUtf16), value: localeTexts(valueUtf16) })).min(1).max(items).optional(),
+  items: z.array(ConfigurationImportItemSchema).min(1).max(items).optional(),
   content: z.strictObject({ title: localeTexts(10_000).optional(), description: localeTexts(10_000).optional() })
     .refine(value => value.title !== undefined || value.description !== undefined).optional(),
   display: z.array(z.strictObject({ ref: displayRef, text: localeTexts(500) })).min(1).max(70).optional(),
@@ -67,6 +69,10 @@ export const ConfigurationImportPreviewResponseSchema = responseSchema(z.strictO
   version: VersionSchema, localizationRevision: revision, previewToken,
   changes: z.array(z.strictObject({ path: z.string().min(1).max(480), before: z.string().max(10_000).nullable(), after: z.string().max(10_000).nullable() })).max(3500),
   itemOrder: z.strictObject({ before: z.array(itemId).max(items), after: z.array(itemId).max(items) }).nullable(),
+  warnings: z.array(z.strictObject({
+    path: z.string().min(1).max(120), code: z.enum(['RETAINED_CONFIRMED_VALUE', 'UNVERIFIED_CONFIGURATION_VALUE', 'CONFLICTING_CONFIGURATION_VALUES']),
+    retained: z.string().max(500).nullable(), submitted: z.string().max(500),
+  })).max(items).optional(),
 }));
 export type ConfigurationImportPreviewRequest = z.infer<typeof ConfigurationImportPreviewRequestSchema>;
 export type ConfigurationImportSaveRequest = z.infer<typeof ConfigurationImportSaveRequestSchema>;

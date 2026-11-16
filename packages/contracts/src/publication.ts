@@ -5,7 +5,8 @@ import { MAX_PUBLICATION_ISSUES,
   TimestampSchema, VehicleFactsSchema, VersionSchema, responseSchema,
 } from './common.js';
 import { PublicReportSchema } from './external-public.js';
-import { DrivetrainSchema } from './localization.js';
+import { DisplayTextSchema, DrivetrainSchema } from './localization.js';
+import { VehicleTechnicalDetailsSchema } from './vehicle-technical.js';
 import { PublicUsdPriceSchema, SourceSchema } from './public.js';
 
 /** Authenticated preview projection. Never serialize an AdminVehicle or internal data here. */
@@ -40,6 +41,8 @@ export const PublicationPreviewVehicleSchema = z.strictObject({
   facts: VehicleFactsSchema.extend({ generation: VehicleFactsSchema.shape.model, drivetrain: DrivetrainSchema.nullable() }),
   content: z.strictObject({ title: PublicationPreviewTextSchema, description: PublicationPreviewTextSchema }),
   configuration: ConfigurationDisplaySchema.nullable().optional(),
+  vehicleClass: DisplayTextSchema.nullable().optional(),
+  technicalDetails: VehicleTechnicalDetailsSchema.optional(),
   report: PublicReportSchema.optional(),
   display: z.strictObject({
     make: PublicationPreviewTextSchema, model: PublicationPreviewTextSchema, trim: PublicationPreviewTextSchema,
