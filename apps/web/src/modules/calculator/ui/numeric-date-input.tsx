@@ -57,8 +57,7 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
     <legend>{label}</legend>
     <input id={id} type="hidden" name={name} value={value} />
     <div className={styles.controls} data-precision={precision}>
-      {parts.map(part => <div key={part} className={styles.part}>
-        <label htmlFor={`${id}-${part}`}>{words[part]}</label>
+      {parts.map(part => <div key={part} className={styles.part} data-date-part={part}>
         <select id={`${id}-${part}`} name={`${name}${part[0].toUpperCase()}${part.slice(1)}`}
           value={current.parts[part]} disabled={part === 'day' && days === null}
           aria-label={`${label}: ${words[part]}`} aria-invalid={invalid || invalidPart === part}
@@ -67,6 +66,7 @@ export function NumericDateInput({ id, name, value, precision, label, locale, re
           {options(part).map(option => <option key={option} value={option}
             disabled={part === 'year' && limitToCurrentYear && Number(option) > lastYear}>{option}</option>)}
         </select>
+        <span className={styles.unit} aria-hidden="true">{words[part]}</span>
       </div>)}
     </div>
     {feedback && <small id={`${id}-date-feedback`} className={styles.feedback} role="status">{feedback}</small>}

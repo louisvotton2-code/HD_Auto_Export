@@ -59,12 +59,16 @@ test('a direct photo error is reported once and detail shows only a report summa
   await expect(main.getByText('Compare original and displayed text')).toHaveCount(0);
   // Manufacturing / first-registration dates alone do not invent an accident or ownership history.
   await expect(main.locator('[data-vehicle-history]')).toHaveCount(0);
-  await expect(main.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
   const parameters = main.locator('[data-vehicle-parameters]');
   await expect(parameters.locator('details')).toHaveCount(1);
+  await expect(parameters.locator(':scope > details')).not.toHaveAttribute('open', '');
   await expect(parameters.locator('[data-equipment-group]')).toHaveCount(0);
   await expect(parameters.getByText('Vehicle parameters and equipment', { exact: true })).toBeVisible();
-  await expect(parameters.locator('[data-configuration-field="value"]').filter({ hasText: /^运动型多用途车$/ })).toHaveAttribute('lang', 'zh');
+  const vehicleClass = parameters.locator('[data-configuration-field="value"]').filter({ hasText: /^运动型多用途车$/ });
+  await expect(vehicleClass).toBeHidden();
+  await parameters.locator('summary').click();
+  await expect(vehicleClass).toBeVisible();
+  await expect(vehicleClass).toHaveAttribute('lang', 'zh');
   await expect(main.getByText('Listing platform', { exact: true })).toHaveCount(0);
   await expect(main.getByText('Synthetic Market', { exact: true })).toHaveCount(0);
   await expect(main.getByRole('heading', { name: 'HD Auto Export consultation' })).toHaveCount(0);
@@ -154,7 +158,9 @@ test('inline report contacts retain vehicle identity and named destinations with
     await chooseVehicleDestination(budget, 'KZ');
     await expect(destination).toHaveText(countryNames[locale].KZ);
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
-    await expect(page.locator('[data-vehicle-parameters] > details')).toHaveAttribute('open', '');
+    const parameters = page.locator('[data-vehicle-parameters] > details');
+    await expect(parameters).toHaveCount(1);
+    await expect(parameters).not.toHaveAttribute('open', '');
     const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
     expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
   }

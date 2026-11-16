@@ -2,7 +2,7 @@
 export const kgMethodMessages = {
   zh: {
     dutyElectric:
-      '纯电／串联增程按未享配额优惠的标准情景，以计税价值 {value} EUR 的 {rate}% 计关税。先将欧元税额保留两位为 {eurAmount} EUR，再按 {euroRate} KGS/EUR 换算并保留两位。',
+      '车价和已填运保费先换算为欧元计税。纯电／串联增程按未享配额优惠的标准情景，以计税价值 {value} EUR 的 {rate}% 计关税。关税先四舍五入到欧分，得到 {eurAmount} EUR，再按 {euroRate} KGS/EUR 换成吉尔吉斯斯坦索姆并保留两位小数。美元金额是结果的参考换算。',
     dutyCompanyYoung:
       '企业进口按年份差为 {age} 年，命中不超过 3 年档；计税价值 {value} EUR 乘 {rate}%。先得两位欧元税额 {eurAmount} EUR，再按 {euroRate} KGS/EUR 换算并保留两位。',
     dutyPersonalYoung:
@@ -27,7 +27,7 @@ export const kgMethodMessages = {
   },
   en: {
     dutyElectric:
-      'BEVs and series range extenders use the standard scenario without a quota exemption: {rate}% of the customs value of EUR {value}. Round the duty to EUR {eurAmount} first, then convert at {euroRate} KGS/EUR and round to two decimals again.',
+      'The vehicle price and any entered freight and insurance are converted to EUR for the calculation. BEVs and series range extenders without a quota exemption are charged {rate}% of the EUR {value} customs value in this reference scenario. Round the duty to the nearest euro cent (EUR {eurAmount}), then convert at {euroRate} KGS/EUR and round to two decimal places. The USD amount is shown as a reference equivalent.',
     dutyCompanyYoung:
       'Company import, calendar-year age {age}, falls in the up-to-3-year band: {rate}% of EUR {value}. Round the duty to EUR {eurAmount} first, then convert at {euroRate} KGS/EUR and round to two decimals again.',
     dutyPersonalYoung:
@@ -54,7 +54,7 @@ export const kgMethodMessages = {
   },
   ru: {
     dutyElectric:
-      'Для электромобиля или последовательного гибрида применяется стандартный сценарий без льготной квоты: {rate}% от таможенной стоимости {value} EUR. Сначала пошлина округляется до {eurAmount} EUR, затем переводится по {euroRate} KGS/EUR и снова округляется до двух знаков.',
+      'Цена автомобиля и указанные расходы на доставку и страховку переводятся в евро для расчёта. Для электромобилей и последовательных гибридов в справочном сценарии без льготной квоты пошлина составляет {rate}% от таможенной стоимости {value} EUR. Пошлина округляется до евроцентов ({eurAmount} EUR), переводится в сомы по курсу {euroRate} KGS/EUR и снова округляется до двух знаков. Сумма в USD приводится для справки.',
     dutyCompanyYoung:
       'Ввоз юрлицом: возраст по разнице годов {age}, категория до 3 лет включительно; ставка {rate}% от {value} EUR. Сначала пошлина округляется до {eurAmount} EUR, затем переводится по {euroRate} KGS/EUR и снова округляется до двух знаков.',
     dutyPersonalYoung:

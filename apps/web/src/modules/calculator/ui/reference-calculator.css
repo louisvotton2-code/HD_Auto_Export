@@ -160,10 +160,27 @@
 }
 
 .calculator-reference.calculator-simple .form-field label,
+.calculator-reference.calculator-simple .form-field > [data-numeric-date] > legend,
 .calculator-reference.calculator-simple .powertrain-field legend {
   margin-bottom: 8px;
   color: #b9b3ac;
   font-size: 13px;
+}
+
+@media (max-width: 480px) {
+  .calculator-reference.calculator-simple .field-grid:has(> .form-field > [data-numeric-date='manufactureDate']) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.calculator-reference.calculator-simple .advanced-content {
+  container: calculator-settings / inline-size;
+}
+
+@container calculator-settings (max-width: 560px) {
+  .calculator-reference.calculator-simple .field-grid > .form-field:has(> [data-numeric-date='customsDate']) {
+    grid-column: 1 / -1;
+  }
 }
 
 .calculator-reference.calculator-simple .input-wrap {

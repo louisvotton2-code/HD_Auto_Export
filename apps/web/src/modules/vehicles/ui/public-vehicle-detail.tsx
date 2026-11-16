@@ -8,7 +8,6 @@ import { hasPrivateVehicleSource, publicVehicleReference } from '@/shared/lib/pu
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
-import { publicVehicleRecordsCopy } from '../public-vehicle-records-copy';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
   publicAvailabilityLabel,
@@ -47,7 +46,7 @@ export function PublicVehicleDetail({
 }) {
   const t = publicVehicleMessages(locale);
   const copy = detailContent[locale];
-  const recordsCopy = publicVehicleRecordsCopy[locale];
+  const facts = publicVehicleFacts(vehicle, locale);
   const reference = publicVehicleReference(vehicle);
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
@@ -130,25 +129,22 @@ export function PublicVehicleDetail({
               className={styles.mobileRateNote}
             />
 
-            <section className={styles.card}>
+            {facts.length > 0 && <section className={styles.card}>
               <details className={styles.information} open>
                 <summary>
                   {copy.basicInformation}
                   <Icon name="chevron" size={16} />
                 </summary>
                 <dl className={styles.specifications}>
-                  {publicVehicleFacts(vehicle, locale).map((fact) => (
-                    <div key={fact.label}>
+                  {facts.map((fact) => (
+                    <div key={fact.id} data-vehicle-fact={fact.id} data-public-vehicle-class={fact.id === 'vehicleClass' || undefined}>
                       <dt>{fact.label}</dt>
                       <dd lang={fact.lang} dir="auto">{fact.value}</dd>
                     </div>
                   ))}
-                  {vehicle.vehicleClass?.status === 'ready' && <div data-public-vehicle-class>
-                    <dt>{recordsCopy.vehicleClass}</dt><dd lang={vehicle.vehicleClass.contentLocale} dir="auto">{vehicle.vehicleClass.text}</dd>
-                  </div>}
                 </dl>
               </details>
-            </section>
+            </section>}
 
             <VehicleHistory vehicle={vehicle} locale={locale} />
             <VehicleInspectionSummary vehicle={vehicle} locale={locale} />
@@ -164,7 +160,7 @@ export function PublicVehicleDetail({
                 </p>
               </section>
             )}
-            <PublicVehicleConfiguration vehicle={vehicle} locale={locale} />
+            <PublicVehicleConfiguration vehicle={vehicle} locale={locale} facts={facts} />
             <ExternalVehicleInformation vehicle={vehicle} locale={locale} />
           </div>
 

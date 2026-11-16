@@ -1,13 +1,74 @@
 .group{border:0;margin:0;padding:0;min-width:0;width:100%;font:inherit;color:inherit}
-.group>legend{padding:0;margin:0 0 8px;font-size:12px;color:#b9b3ac}
+.group>legend{padding:0;margin:0 0 8px;font-size:12px;line-height:1.5;color:#b9b3ac}
 .controls{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:8px;min-width:0}
 .controls[data-precision=date]{grid-template-columns:minmax(0,1.4fr) repeat(2,minmax(0,1fr))}
-.part{display:grid;gap:5px;min-width:0}
-.part>label{margin:0!important;font-size:11px!important;color:#9d9893!important;line-height:1.4}
-.group .part>select{font:inherit;min-height:42px;min-width:0;width:100%;box-sizing:border-box;border:1px solid #4a4a4a66;border-radius:8px;background:#1e1e1e;color:#f5f0eb;padding:8px 30px 8px 8px;text-align:center;font-variant-numeric:tabular-nums;display:flex;align-items:center;font-size:14px;cursor:pointer}
+.part {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.group .part > select,
+.part > .unit {
+  --date-unit-inset: 25px;
+}
+
+.group .part > select {
+  --date-unit-width: 35px;
+  font: inherit;
+  min-height: 44px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #4a4a4a66;
+  border-radius: 8px;
+  background-color: #1e1e1e;
+  background-position: right 7px center;
+  color: #f5f0eb;
+  padding: 8px calc(var(--date-unit-inset) + var(--date-unit-width)) 8px 10px;
+  text-align: start;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.group .part[data-date-part='year'] > select,
+.group .part[data-date-part='day'] > select {
+  --date-unit-width: 25px;
+}
+
+.group .part[data-date-part] > select:lang(zh) {
+  --date-unit-width: 14px;
+}
+
+.part > .unit {
+  position: absolute;
+  inset-inline-end: var(--date-unit-inset);
+  top: 50%;
+  transform: translateY(-50%);
+  color: #aaa29a;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@container (max-width: 108px) {
+  .group .part > select,
+  .part > .unit {
+    --date-unit-inset: 8px;
+  }
+  .group .part > select {
+    background-image: none;
+    padding-inline-start: 6px;
+  }
+}
 .group .part>select:focus-visible{outline:2px solid #b67749;outline-offset:2px}
 .group .part>select[aria-invalid=true]{border-color:#df7771}
 .feedback{display:block;margin-top:7px;color:#f3c98a;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 
 .group .part>select:disabled{opacity:.55;cursor:not-allowed}
-.group[data-bounded] .part>select{border-color:#79614f;background:#25211d;text-align:start;padding-inline-start:12px}
+.group[data-bounded] .part>select{border-color:#79614f;background-color:#25211d}
