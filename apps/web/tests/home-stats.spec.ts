@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 test.skip(
   !process.env.PUBLIC_FIXTURE_API_URL,
@@ -12,11 +13,18 @@ test.afterEach(async ({ request }) => {
   await resetPublicFixture(request);
 });
 
-for (const locale of ['zh', 'en', 'ru']) {
-  test(`${locale}: hero uses the whole API catalog total and confirmed company metrics`, async ({
+const catalogLabels = {
+  zh: '目录中的汽车（约）',
+  en: 'Cars in catalog (approx.)',
+  ru: 'Автомобили в каталоге (прибл.)',
+};
+
+for (const locale of ['zh', 'en', 'ru'] as const) {
+  test(`${locale}: hero shows an approximate catalog count and confirmed company metrics`, async ({
     page,
     request,
   }) => {
+    await page.setViewportSize({ width: 320, height: 800 });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`/${locale}/`);
     const response = await request.get(
@@ -27,22 +35,22 @@ for (const locale of ['zh', 'en', 'ru']) {
     const catalog = page.getByTestId('hero-stat-catalog');
     const catalogTotal = catalog.locator('strong');
     await expect(catalogTotal).toBeVisible();
-    await expect(catalogTotal).toHaveText(new Intl.NumberFormat(locale).format(list.meta.total), {
-      useInnerText: true,
-    });
+    await expect(catalogTotal).toHaveText(new Intl.NumberFormat(locale).format(approximateCatalogVehicleCount));
+    await expect(catalog.locator('dt')).toHaveText(catalogLabels[locale]);
+    expect(await catalog.evaluate((item) => item.scrollWidth <= item.clientWidth + 1)).toBe(true);
     const cards = await page.locator('[data-home-section^="vehicles-"] article').count();
     expect(list.meta.total).toBeGreaterThan(cards);
+    expect(list.meta.total).toBeLessThan(approximateCatalogVehicleCount);
     const clients = page.getByTestId('hero-stat-clients').locator('strong');
     await expect(clients).toBeVisible();
     await expect(clients).toHaveText('660+', { useInnerText: true });
     await expect(page.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText(
       '23',
     );
-    if (locale === 'zh') await expect(catalog).toContainText('目录中的汽车');
   });
 }
 
-test('home counters grow from the first rendered zero while static fallbacks show the final values', async ({
+test('the customer counter grows from zero while the catalog estimate is always visible', async ({
   page,
   browser,
 }) => {
@@ -54,14 +62,15 @@ test('home counters grow from the first rendered zero while static fallbacks sho
   await expect(page.getByTestId('hero-stat-clients').locator('strong')).toHaveText('0+', {
     useInnerText: true,
   });
-  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('0', {
+  const estimate = new Intl.NumberFormat('en').format(approximateCatalogVehicleCount);
+  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText(estimate, {
     useInnerText: true,
   });
   await page.unroute(assets);
 
   await page.addInitScript(() => {
     const observed: number[] = [];
-    const catalogObserved: number[] = [];
+    const catalogObserved: string[] = [];
     Reflect.set(window, '__counterObservations', observed);
     Reflect.set(window, '__catalogCounterObservations', catalogObserved);
     const collect = () => {
@@ -70,9 +79,8 @@ test('home counters grow from the first rendered zero while static fallbacks sho
         ?.getAttribute('data-counter-value');
       if (value !== null && value !== undefined) observed.push(Number(value));
       const catalog = document
-        .querySelector('[data-testid="hero-stat-catalog"] [data-counter-value]')
-        ?.getAttribute('data-counter-value');
-      if (catalog !== null && catalog !== undefined) catalogObserved.push(Number(catalog));
+        .querySelector('[data-testid="hero-stat-catalog"] strong')?.textContent;
+      if (catalog) catalogObserved.push(catalog);
     };
     new MutationObserver(collect).observe(document, {
       subtree: true,
@@ -92,32 +100,18 @@ test('home counters grow from the first rendered zero while static fallbacks sho
         ),
       )
       .toBe(true);
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const target = Number(
-            document
-              .querySelector('[data-testid="hero-stat-catalog"] [data-counter-target]')
-              ?.getAttribute('data-counter-target'),
-          );
-          return (Reflect.get(window, '__catalogCounterObservations') as number[]).some(
-            (n) => n > 0 && n < target,
-          );
-        }),
-      )
-      .toBe(true);
     await expect(clients.locator('[data-counter-value]')).toHaveAttribute(
       'data-counter-value',
       '660',
     );
-    const observations = await page.evaluate(() => [
+    const [clientObservations, catalogObservations] = await page.evaluate(() => [
       Reflect.get(window, '__counterObservations') as number[],
-      Reflect.get(window, '__catalogCounterObservations') as number[],
-    ]);
-    for (const values of observations) {
-      expect(values[0]).toBe(0);
-      expect(values.every((value, index) => index === 0 || value >= values[index - 1])).toBe(true);
-    }
+      Reflect.get(window, '__catalogCounterObservations') as string[],
+    ] as const);
+    expect(clientObservations[0]).toBe(0);
+    expect(clientObservations.every((value, index) =>
+      index === 0 || value >= clientObservations[index - 1])).toBe(true);
+    expect(new Set(catalogObservations)).toEqual(new Set([estimate]));
     await expect(
       page.getByTestId('hero-stat-years').locator('[data-counter-value]'),
     ).toHaveAttribute('data-counter-value', '23');
@@ -136,6 +130,9 @@ test('home counters grow from the first rendered zero while static fallbacks sho
   const plainClients = plain.getByTestId('hero-stat-clients');
   await expect(plainClients.locator('strong')).toHaveText('660+', { useInnerText: true });
   await expect(plainClients.locator('[data-counter-value]')).toBeHidden();
+  await expect(plain.getByTestId('hero-stat-catalog').locator('strong')).toHaveText(
+    new Intl.NumberFormat('zh').format(approximateCatalogVehicleCount), { useInnerText: true },
+  );
   await expect(plain.getByTestId('hero-stat-years').locator('[data-counter-value]')).toHaveText('23');
   await noScript.close();
 });

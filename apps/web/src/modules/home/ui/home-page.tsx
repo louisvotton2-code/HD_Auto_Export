@@ -223,11 +223,6 @@ export function HomePage({
   const visibleSections = unavailable
     ? []
     : sections.filter((section) => section.vehicles.length > 0);
-  // Older APIs without an exact total returned a complete powertrain partition.
-  const catalogCount = catalogFilters
-    ? (catalogFilters.total ??
-      catalogFilters.powertrains.reduce((total, powertrain) => total + powertrain.count, 0))
-    : null;
   const brands =
     catalogFilters?.makes.filter((make) => make.count > 0).map((make) => make.name) ?? [];
   const models: HomeModel[] =
@@ -274,7 +269,7 @@ export function HomePage({
               {siteConfig.contacts.phone.display}
             </a>
           </div>
-          <HeroStats locale={locale} catalogCount={catalogCount} />
+          <HeroStats locale={locale} />
         </div>
         <a className={styles.scroll} href="#home-shortcuts">
           <span>{t.scroll}</span>

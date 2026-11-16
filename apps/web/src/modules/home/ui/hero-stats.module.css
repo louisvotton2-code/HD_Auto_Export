@@ -60,6 +60,12 @@
   overflow-wrap: anywhere;
 }
 
+@media (max-width: 374px) {
+  .catalogValue {
+    font-size: 20px;
+  }
+}
+
 @media (min-width: 640px) {
   .stats {
     gap: 32px;
