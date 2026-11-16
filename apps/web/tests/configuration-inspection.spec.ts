@@ -16,6 +16,17 @@ async function configurationFields(configuration: Locator) {
   })));
 }
 
+async function expandPublicConfiguration(configuration: Locator) {
+  const disclosure = configuration.locator(':scope > details');
+  const firstValue = configuration.locator('[data-configuration-field="value"]').first();
+  await expect(disclosure).toHaveCount(1);
+  await expect(disclosure).not.toHaveAttribute('open', '');
+  await expect(firstValue).toBeHidden();
+  await disclosure.locator('summary').click();
+  await expect(disclosure).toHaveAttribute('open', '');
+  await expect(firstValue).toBeVisible();
+}
+
 for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const) {
   test(`${locale}: public detail and private preview share configuration, retaining units and language at ${width}px`, async ({ page, context, request, baseURL }) => {
     await page.setViewportSize({ width, height: 1000 });
@@ -25,10 +36,9 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await page.goto(`/${locale}/cars/${externalFixtureId(1)}/`);
     const configuration = page.locator('main [data-vehicle-parameters]');
     await expect(configuration).toBeVisible();
-    await expect(configuration.locator('details')).toHaveCount(1);
-    await expect(configuration.locator(':scope > details')).toHaveAttribute('open', '');
     await expect(configuration.locator('[data-equipment-group]')).toHaveCount(0);
     await expect(configuration.getByText(configurationTitles[locale], { exact: true })).toBeVisible();
+    await expandPublicConfiguration(configuration);
     const fixture = makeConfigurationDisplayFixture(locale);
     const publicFields = await configurationFields(configuration);
     expect(publicFields).toEqual(fixture.items.flatMap((item) => [
@@ -56,6 +66,8 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     const privateConfiguration = frame.locator('[data-vehicle-parameters]');
     await expect(privateConfiguration).toBeVisible();
     await expect(privateConfiguration.getByText(configurationTitles[locale], { exact: true })).toBeVisible();
+    await expect(privateConfiguration.locator(':scope > details')).toHaveAttribute('open', '');
+    await expect(privateConfiguration.locator('[data-configuration-field="value"]').first()).toBeVisible();
     expect(await configurationFields(privateConfiguration)).toEqual(publicFields);
     const ready = await waitForPreviewEvent(page, 'ready');
     expect(ready.bodyRendered).toBe(true);
@@ -73,6 +85,7 @@ for (const mode of ['fallback', 'missing', 'long'] as const) {
     await page.goto('/ru/cars/fixture_car_1/');
     const configuration = page.locator('[data-vehicle-parameters]');
     await expect(configuration).toBeVisible();
+    await expandPublicConfiguration(configuration);
     const fields = await configurationFields(configuration);
     if (mode === 'fallback') {
       expect(fields[0]).toMatchObject({ text: '排量(cc)', lang: 'zh' });
@@ -170,7 +183,9 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
       const page = await context.newPage();
       await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
       await page.goto(`/${locale}/cars/${externalFixtureId(1)}/`);
-      await expect(page.locator('[data-vehicle-parameters] [data-configuration-field="value"][lang="und"]').first()).toHaveText('1989');
+      const configuration = page.locator('[data-vehicle-parameters]');
+      await expandPublicConfiguration(configuration);
+      await expect(configuration.locator('[data-configuration-field="value"][lang="und"]').first()).toHaveText('1989');
       const inspection = page.getByRole('region', { name: inspectionTitles[locale], exact: true });
       await expect(inspection).toBeVisible();
       await expect(inspection.locator('[data-public-inspection-item]')).toHaveCount(0);

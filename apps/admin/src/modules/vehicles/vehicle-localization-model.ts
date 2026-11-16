@@ -1,5 +1,5 @@
 import {
-  BRAND_CATALOG, findBrand, getDisplayTextLimit, SaveVehicleLocalizationSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField, type DisplayTranslationSuggestions,
+  getDisplayTextLimit, SaveVehicleLocalizationSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField, type DisplayTranslationSuggestions,
   type LocalizationData, type Locale, type VehicleLocalization,
 } from '@hd/contracts/admin';
 
@@ -127,13 +127,4 @@ export function localizationComparison(local: LocalizationData, remote: Localiza
     }
   }
   return rows;
-}
-export function brandIdentityOptions(choices: Array<{ id: string; name: string }>, selected: { id: string; name: string }): Array<{ value: string; label: string; rawName: string }> {
-  const all = [...choices];if (selected.id && !all.some(item => item.id === selected.id)) all.push(selected);
-  const options = all.map(item => {
-    const brand = findBrand(item);
-    return { value: item.id, rawName: item.name, label: brand ? `${brand.labels.zh} / ${brand.labels.en}${item.id !== brand.catalogId ? '（现有记录）' : ''}` : item.name };
-  });
-  for (const brand of BRAND_CATALOG) if (!options.some(item => item.value === brand.catalogId)) options.push({ value: brand.catalogId, label: `${brand.labels.zh} / ${brand.labels.en}`, rawName: brand.labels.zh });
-  return options;
 }

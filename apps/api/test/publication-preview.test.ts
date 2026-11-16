@@ -168,6 +168,7 @@ test('publication preview gates use current persisted data and an actor-specific
     function draft(kind: 'manual' | 'external' | 'demo' = 'manual') {
       const value = kind === 'manual' ? makeVehicleDraftFixture() : kind === 'external' ? makeExternalVehicleDraftFixture() : makeDemoVehicleDraftFixture();
       value.media = [];
+      if (kind === 'manual') value.facts.location = { country: 'CN', city: '隔离样例城市', displayName: null };
       if (value.source.kind === 'external') {
         value.source.externalId = `preview-${randomUUID()}`;
         value.source.listingUrl = `https://example.invalid/listings/${value.source.externalId}`;

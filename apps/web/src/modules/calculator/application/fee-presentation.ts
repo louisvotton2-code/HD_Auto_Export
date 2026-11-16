@@ -53,6 +53,19 @@ export function formatFeeFormula(
   }
   if (new Set(['0', '0.00', 'round(0)', 'round2(round2(0))']).has(line.formula))
     return `${labels.amount} = ${result} ${currency}`;
+  // KG rounds each fee in EUR before conversion. Show that intermediate value
+  // so the displayed equation does not multiply the unrounded fee by the rate.
+  if (currency === 'KGS' && line.method?.key.startsWith('KG.')) {
+    const eurAmount = String(line.method.params.eurAmount ?? '');
+    const euroRate = String(line.method.params.euroRate ?? '');
+    if (numeric.test(eurAmount) && numeric.test(euroRate)) {
+      const fee = numberText(eurAmount, locale, 2);
+      const rate = numberText(euroRate, locale, 6);
+      const exact = !fee.approximate && !rate.approximate
+        && new Amount(eurAmount).mul(euroRate).eq(line.amount);
+      return `${fee.text} EUR × ${rate.text} KGS/EUR ${exact ? '=' : '≈'} ${result} KGS`;
+    }
+  }
   let approximate = false;
   let expression = line.formula
     .replace(/round2?\(/g, '(')

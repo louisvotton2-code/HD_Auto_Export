@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.beforeEach(async ({ request }) => {
@@ -83,10 +84,9 @@ for (const path of ['/en/', '/en/cars/', '/en/cars/fixture_car_2/']) {
     await expect(page.getByTestId('public-catalog-empty')).toHaveCount(0);
     await expect(page.getByTestId('public-vehicle-missing')).toHaveCount(0);
     if (path === '/en/') {
-      // The per-visitor version quota blocks both home and facets; no total is available.
-      const total = page.getByTestId('hero-stat-catalog').locator('[data-counter-value]');
-      await expect(total).toHaveAttribute('data-counter-value', 'unknown');
-      await expect(total).toHaveText('—');
+      const total = page.getByTestId('hero-stat-catalog').locator('strong');
+      await expect(total).toBeVisible();
+      await expect(total).toHaveText(new Intl.NumberFormat('en').format(approximateCatalogVehicleCount));
     }
     await setPublicFixtureState(request, { publicRateLimited: false });
     await page.evaluate(() => {

@@ -1,14 +1,19 @@
 import type {PoolClient} from 'pg';
-import {CONFIGURATION_SEMANTIC_ALIASES,type ConfigurationSemanticKey} from '@hd/contracts/public';
+import {CONFIGURATION_SEMANTIC_ALIASES,type ConfigurationSemanticKey,type VehicleDetailMatchKey} from '@hd/contracts/public';
 import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,PublicInspectionConclusionSchema,type PublicVehicle,type Locale} from '@hd/contracts/public';
 import {emptyInspectionSummary} from '../external/sources/inspection-projection.js';
 import {sourceDisplay} from '../external/sources/display.js';
+import {configurationTechnicalKey} from './configuration-technical-facts.js';
 
 const normalized=(s:string)=>s.normalize('NFKC').toLowerCase().replace(/[\s_()（）·³/.-]/g,'');
 const names=new Map(Object.entries(CONFIGURATION_SEMANTIC_ALIASES).flatMap(([key,values])=>[key,...values].map(value=>[normalized(value),key as ConfigurationSemanticKey] as const)));
-export function configurationSemanticKey(id:string,label:string|null):ConfigurationSemanticKey|null {
+export function configurationSemanticKey(id:string,label:string|null):ConfigurationSemanticKey|VehicleDetailMatchKey|null {
  let stable=id.replace(/^(?:specs\.(?:ev\.)?|supplier[:/.]|sheet\.\d+\.)/,'');
- if(/^cfg-(?:[0-9a-f]{4})+$/.test(id))stable=String.fromCharCode(...(id.slice(4).match(/.{4}/g)??[]).map(hex=>parseInt(hex,16)));
+ if(/^cfg-(?:[0-9a-f]{4})+$/.test(id)){
+  stable=String.fromCharCode(...(id.slice(4).match(/.{4}/g)??[]).map(hex=>parseInt(hex,16)));
+  const technicalKey=configurationTechnicalKey(stable);
+  if(technicalKey)return technicalKey;
+ }
  return names.get(normalized(stable))??(label?names.get(normalized(label)):null)??null;
 }
 

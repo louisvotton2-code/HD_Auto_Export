@@ -3,17 +3,17 @@
 import type { PublicationPreview, PublicationPreviewText } from '@hd/contracts/admin';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
-import { catalogFilterCopy } from '../catalog-filter-copy';
 import { detailContent } from '../detail-content';
 import { publicationPreviewCopy } from '../publication-preview-copy';
 import { publicationPreviewImages, publicationPreviewPrice } from '../publication-preview-presentation';
 import { publicVehicleMessages } from '../public-messages';
 import { publicVehicleFacts } from '../public-presentation';
+import { configurationWithoutShownFacts } from '../vehicle-fact-configuration';
 import { VehicleGallery } from './vehicle-gallery';
 import type { VehicleGalleryImageStatus } from './vehicle-gallery-image';
 import { VehicleHistory } from './vehicle-history';
 import { VehiclePriceAmounts } from './vehicle-price-values';
-import { VehicleConfiguration } from './vehicle-configuration';
+import { ConfigurationDisplayMetadata, VehicleConfiguration } from './vehicle-configuration';
 import detailStyles from './public-detail.module.css';
 import styles from './publication-preview-detail.module.css';
 
@@ -37,27 +37,27 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
   const copy = publicationPreviewCopy[locale];
   const detail = detailContent[locale];
   const t = publicVehicleMessages(locale);
-  const filterLabels = catalogFilterCopy[locale];
   const title = vehicle.content.title;
   const description = vehicle.content.description;
   const images = publicationPreviewImages(vehicle.images);
   const missingImageCount = vehicle.images.length - images.length;
   const price = publicationPreviewPrice(vehicle.price, locale);
   const mileage = vehicle.facts.mileageKm?.toLocaleString(locale);
-  const locationText = vehicle.facts.location?.displayName
-    ? vehicle.display.location
-    : vehicle.facts.location?.city ? vehicle.display.city : undefined;
-  const factText = new Map<string, PublicationPreviewText>([
-    [filterLabels.trim, vehicle.display.trim],
-    [filterLabels.generation, vehicle.display.generation],
-  ]);
-  if (locationText) factText.set(t.locationLabel, locationText);
+  const shownFacts = publicVehicleFacts(vehicle, locale);
   const facts = [
-    { label: t.make, value: vehicle.display.make.text ?? copy.missing, field: vehicle.display.make },
-    { label: t.model, value: vehicle.display.model.text ?? copy.missing, field: vehicle.display.model },
-    ...publicVehicleFacts(vehicle, locale).map((fact) => ({ ...fact, field: factText.get(fact.label) })),
-    { label: t.availabilityLabel, value: t.availability[vehicle.availability] || t.unknown, field: undefined },
+    ...(['make', 'model'] as const).flatMap(id => {
+      const field = vehicle.display[id], value = field.text?.trim();
+      return value ? [{ id, label: t[id], value, field, lang: field.contentLocale ?? undefined }] : [];
+    }),
+    ...shownFacts.map(fact => ({ ...fact, field: fact.displayField ? vehicle.display[fact.displayField] : undefined })),
+    ...(t.availability[vehicle.availability] ? [{ id: 'availability', label: t.availabilityLabel,
+      value: t.availability[vehicle.availability], field: undefined, lang: undefined }] : []),
   ];
+  const configuration = vehicle.configuration && {
+    ...vehicle.configuration,
+    items: configurationWithoutShownFacts(vehicle.configuration.items, shownFacts,
+      vehicle.technicalDetails?.configurationMatches),
+  };
   const galleryKey = `${vehicle.id}:${preview.vehicleVersion}:${preview.publicContentRevision}:${preview.fingerprint}:${locale}`;
 
   return (
@@ -102,24 +102,26 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
               </div>
             </div>
 
-            <section className={detailStyles.card}>
+            {facts.length > 0 && <section className={detailStyles.card}>
               <details className={detailStyles.information} open>
                 <summary>{detail.basicInformation}<span aria-hidden="true"><Icon name="chevron" size={18} /></span></summary>
                 <dl className={`${detailStyles.specifications} ${styles.facts}`}>
-                  {facts.map(({ label, value, field }) => (
-                    <div key={label}>
+                  {facts.map(({ id, label, value, field, lang }) => (
+                    <div key={id} data-vehicle-fact={id}>
                       <dt>{label}</dt>
                       <dd>
-                        <span lang={field?.contentLocale ?? undefined} dir="auto">{field ? field.text ?? copy.missing : value}</span>
+                        <span lang={lang} dir="auto">{value}</span>
                         {field && <PreviewTextState field={field} locale={locale} />}
+                        {id === 'vehicleClass' && vehicle.vehicleClass &&
+                          <ConfigurationDisplayMetadata field={vehicle.vehicleClass} kind="value" locale={locale} />}
                       </dd>
                     </div>
                   ))}
                 </dl>
               </details>
-            </section>
+            </section>}
 
-            <VehicleConfiguration configuration={vehicle.configuration} locale={locale} showMetadata />
+            <VehicleConfiguration configuration={configuration} locale={locale} showMetadata defaultOpen />
 
             <VehicleHistory vehicle={vehicle} locale={locale} />
 

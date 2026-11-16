@@ -24,6 +24,21 @@ describe('readable substituted formulas', () => {
     ).toBe('按计税价值查表(2,049,229.55) = 13,541 RUB');
   });
 
+  it('shows the EUR fee actually multiplied by the KGS rate after intermediate rounding', () => {
+    const duty = {
+      ...line('round2(round2(172.5 × 0.15) × 2)', '51.76'),
+      method: { key: 'KG.dutyElectric', params: { eurAmount: '25.88', euroRate: '2' } },
+    };
+    expect(formatFeeFormula(duty, 'KGS', 'zh', labels)).toBe('25.88 EUR × 2 KGS/EUR = 51.76 KGS');
+    const dutyWithLocalRounding = {
+      ...duty,
+      amount: '2607.93',
+      method: { ...duty.method, params: { eurAmount: '25.88', euroRate: '100.77' } },
+    };
+    expect(formatFeeFormula(dutyWithLocalRounding, 'KGS', 'zh', labels))
+      .toBe('25.88 EUR × 100.77 KGS/EUR ≈ 2,607.93 KGS');
+  });
+
   it('separates max operands from grouping commas and marks shortened long decimals', () => {
     const displayed = formatFeeFormula(
       line('round(max(10000.123456789 × 0.2, 1998 × 0.44 × 422.7))', '371616'),

@@ -1,25 +1,41 @@
 import { expect, type APIResponse, type Page } from '@playwright/test';
 import {
-  SaveVehicleTranslationBundleSchema, VehicleConfigurationSchema, VehicleTranslationBundleResponseSchema,
-  vehicleConfigurationItemId, type AdminVehicle, type VehicleTranslationBundle,
+  ConfigurationImportPreviewRequestSchema, ConfigurationImportPreviewResponseSchema, ConfigurationImportSaveRequestSchema,
+  VehicleTranslationBundleResponseSchema, parseConfigurationImportJson, vehicleConfigurationItemId, type AdminVehicle, type ConfigurationImportDocument,
 } from '@hd/contracts/admin';
 import type { Locale, PublicVehicle } from '@hd/contracts/public';
-import { openLegacyConfiguration, tab } from './ui-helpers';
+import { tab } from './ui-helpers';
 
 // These helpers exercise the real API through the isolated runner. They never install API routes,
 // fabricate preview receipts, call a translation provider, or write directly to the database.
 type LiveRead = (path: string) => Promise<APIResponse>;
-export const liveConfiguration = VehicleConfigurationSchema.parse({
-  version: 1, items: [{ name: '座位数', value: '5' }, { name: '内饰说明', value: '合成织物座椅' }],
-});
+type LocaleTexts = Record<Locale, string>;
+type ImportOptions = Pick<ConfigurationImportDocument, 'items' | 'facts'> & {
+  title?: Omit<LocaleTexts, 'zh'>;
+  description?: LocaleTexts;
+  display?: Record<string, LocaleTexts>;
+};
 
-export async function enterLiveConfiguration(page: Page, config = liveConfiguration) {
-  await tab(page, '车辆配置');
-  await openLegacyConfiguration(page);
-  await page.getByLabel('配置内容（JSON）', { exact: true }).fill(JSON.stringify(config, null, 2));
-  await expect(page.getByLabel('配置内容（JSON）', { exact: true })).not.toHaveAttribute('aria-invalid', 'true');
-  await page.getByRole('button', { name: '解析并核对配置' }).click();
-  await page.getByRole('button', { name: '人工核对无误' }).click();
+export function liveConfigurationItem(name: LocaleTexts, value: LocaleTexts) {
+  return { id: vehicleConfigurationItemId(name.zh), name, value };
+}
+
+export const liveConfiguration = [
+  liveConfigurationItem({ zh: '座位数', en: 'Seats', ru: 'Количество мест' }, { zh: '5', en: '5', ru: '5' }),
+  liveConfigurationItem({ zh: '内饰说明', en: 'Interior description', ru: 'Описание салона' },
+    { zh: '合成织物座椅', en: 'Synthetic fabric seats', ru: 'Синтетические тканевые сиденья' }),
+];
+
+export function configurationJson(page: Page) {
+  return page.getByRole('textbox', { name: '三语 JSON', exact: true });
+}
+
+export function previewConfigurationButton(page: Page) {
+  return page.getByRole('button', { name: '预览导入变更', exact: true });
+}
+
+export function confirmConfigurationButton(page: Page) {
+  return page.getByRole('button', { name: '确认并保存三语资料', exact: true });
 }
 
 export async function readLiveBundle(id: string, read: LiveRead) {
@@ -28,148 +44,105 @@ export async function readLiveBundle(id: string, read: LiveRead) {
   return VehicleTranslationBundleResponseSchema.parse(await response.json()).data;
 }
 
-export async function saveLiveBundle(page: Page, id: string) {
-  const result = page.waitForResponse(response => response.request().method() === 'PUT'
-    && new URL(response.url()).pathname === `/api/v1/admin/vehicles/${id}/translation-bundle`);
-  await expect(page.getByTestId('translation-bundle-save')).toBeEnabled();
-  await page.getByTestId('translation-bundle-save').click();
-  const response = await result;
+type PreviewOptions = { omitItemIds?: boolean };
+
+export async function previewLiveImport(page: Page, id: string, document: ConfigurationImportDocument, options: PreviewOptions = {}) {
+  await tab(page, '车辆配置');
+  const source = options.omitItemIds
+    ? { ...document, items: document.items?.map(({ name, value }) => ({ name, value })) }
+    : document;
+  const json = JSON.stringify(source, null, 2);
+  await configurationJson(page).fill(json);
+  const [response] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === `/api/v1/admin/vehicles/${id}/configuration-import/preview`),
+    previewConfigurationButton(page).click(),
+  ]);
   expect(response.status()).toBe(200);
-  const input = SaveVehicleTranslationBundleSchema.parse(response.request().postDataJSON());
+  const input = ConfigurationImportPreviewRequestSchema.parse(response.request().postDataJSON());
+  const preview = ConfigurationImportPreviewResponseSchema.parse(await response.json()).data;
+  expect(parseConfigurationImportJson(input.json)).toEqual(document);
+  expect(preview).toMatchObject({ version: input.version, localizationRevision: input.localizationRevision });
+  await expect(confirmConfigurationButton(page)).toBeEnabled();
+  return { input, preview };
+}
+
+export async function importLiveConfiguration(page: Page, vehicle: AdminVehicle, document: ConfigurationImportDocument, options?: PreviewOptions) {
+  const { input, preview } = await previewLiveImport(page, vehicle.id, document, options);
+  expect(input.version).toBe(vehicle.version);
+  const [response] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === `/api/v1/admin/vehicles/${vehicle.id}/configuration-import`),
+    confirmConfigurationButton(page).click(),
+  ]);
+  expect(response.status()).toBe(200);
+  expect(ConfigurationImportSaveRequestSchema.parse(response.request().postDataJSON())).toEqual({ ...input, previewToken: preview.previewToken });
   const bundle = VehicleTranslationBundleResponseSchema.parse(await response.json()).data;
-  expect(bundle.vehicle.id).toBe(id);
-  expect(bundle.vehicle.version).toBe(input.version + 1);
+  expect(bundle.vehicle).toMatchObject({ id: vehicle.id, version: vehicle.version + 1 });
   expect(bundle.localization.revision).toBe(input.localizationRevision + 1);
-  await expect(page.getByTestId('translation-bundle-save')).toBeDisabled();
-  return { bundle, input };
-}
-
-export async function expandLiveTranslationGroup(page: Page, label: string) {
-  const header = page.locator('.ant-collapse-header').filter({ has: page.getByText(label, { exact: true }) });
-  await expect(header).toHaveCount(1);
-  if (await header.getAttribute('aria-expanded') === 'false') await header.click();
-  await expect(header).toHaveAttribute('aria-expanded', 'true');
-}
-
-function groupFor(ref: string) {
-  return ref.startsWith('configuration.') ? '车辆配置译文' : ref.startsWith('media.') ? '图片说明'
-    : ref.startsWith('price.includes.') ? '价格包含项目' : '车辆展示资料';
-}
-function labelFor(ref: string, bundle: VehicleTranslationBundle) {
-  const labels: Record<string, string> = { make: '品牌名称', model: '车型名称', trim: '配置名称', generation: '代系名称', 'location.city': '所在地城市', 'location.displayName': '所在地说明', 'source.platform': '来源平台名称' };
-  if (labels[ref]) return labels[ref];
-  if (ref.startsWith('configuration.')) {
-    const item = bundle.vehicle.draft.configuration?.items.find(item => ref.startsWith(`configuration.${vehicleConfigurationItemId(item.name)}.`));
-    expect(item, 'The live configuration ref must identify an actual saved item').toBeTruthy();
-    return `${item!.name} · ${ref.endsWith('.name') ? '配置名称' : '配置内容'}`;
-  }
-  if (ref.startsWith('media.')) {
-    const index = [...bundle.vehicle.draft.media].sort((a, b) => a.sortOrder - b.sortOrder).findIndex(image => ref === `media.${image.id}.alt`);
-    expect(index).toBeGreaterThanOrEqual(0);
-    return `图片 ${index + 1} 说明`;
-  }
-  if (ref.startsWith('price.includes.')) return `费用条目 ${bundle.localization.data.fields.filter(field => field.ref.startsWith('price.includes.')).findIndex(field => field.ref === ref) + 1}`;
-  throw new Error(`Unexpected live display field: ${ref}`);
-}
-
-type Targets = { en: string; ru: string };
-function syntheticDisplayTargets(ref: string): Targets {
-  // Configuration translations preserve all fact tokens. In particular, the numeric value "5"
-  // has no translation ref and must remain the server's original neutral value in every locale.
-  const configuration: Record<string, Targets> = {
-    [`configuration.${vehicleConfigurationItemId('动力类型')}.name`]: { en: 'Powertrain', ru: 'Тип двигателя' },
-    [`configuration.${vehicleConfigurationItemId('动力类型')}.value`]: { en: 'Petrol', ru: 'Бензин' },
-    [`configuration.${vehicleConfigurationItemId('座位数')}.name`]: { en: 'Seats', ru: 'Количество мест' },
-    [`configuration.${vehicleConfigurationItemId('内饰说明')}.name`]: { en: 'Interior description', ru: 'Описание салона' },
-    [`configuration.${vehicleConfigurationItemId('内饰说明')}.value`]: { en: 'Synthetic fabric seats', ru: 'Синтетические тканевые сиденья' },
-  };
-  if (ref.startsWith('configuration.')) {
-    expect(configuration[ref], 'Only known synthetic configuration fields may be translated by this helper').toBeTruthy();
-    return configuration[ref]!;
-  }
-  return { en: 'Synthetic display text', ru: 'Синтетический текст' };
+  expect(bundle.vehicle.draft.configuration).toEqual(document.items
+    ? { version: 1, items: document.items.map(({ name, value }) => ({ name: name.zh, value: value.zh })) }
+    : vehicle.draft.configuration);
+  await expect(configurationJson(page)).toHaveValue('');
+  await expect(confirmConfigurationButton(page)).toHaveCount(0);
+  return bundle;
 }
 
 export function assertLivePublicConfiguration(value: PublicVehicle['configuration'], locale: Locale, config = liveConfiguration) {
   expect(value?.version).toBe(1);
-  expect(value?.items).toHaveLength(config.items.length);
-  for (const source of config.items) {
-    const id = vehicleConfigurationItemId(source.name);
-    const item = value!.items.find(item => item.id === id);
+  expect(value?.items).toHaveLength(config.length);
+  for (const source of config) {
+    const item = value!.items.find(item => item.id === source.id);
     expect(item).toBeTruthy();
-    expect(item!.name).toMatchObject({ status: 'ready', text: locale === 'zh' ? source.name : syntheticDisplayTargets(`configuration.${id}.name`)[locale],
+    expect(item!.name).toMatchObject({ status: 'ready', text: source.name[locale],
       contentLocale: locale, provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
-    expect(item!.value).toMatchObject(source.name === '座位数'
+    expect(item!.value).toMatchObject(source.value.zh === '5'
       ? { status: 'ready', text: '5', contentLocale: 'und', provenance: 'original', reviewed: false }
-      : { status: 'ready', text: locale === 'zh' ? source.value : syntheticDisplayTargets(`configuration.${id}.value`)[locale],
+      : { status: 'ready', text: source.value[locale],
         contentLocale: locale, provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
   }
 }
-/** Manually enter the synthetic translations once; never mislabel them as approved or machine output. */
-export async function completeLiveTranslations(page: Page, vehicle: AdminVehicle, read: LiveRead, overrides: {
-  title?: Targets; description?: Targets; display?: Record<string, Targets>;
-} = {}) {
-  await tab(page, '车辆配置');
-  let current = await readLiveBundle(vehicle.id, read);
+
+export async function importLiveVehicleDetails(page: Page, vehicle: AdminVehicle, read: LiveRead, options: ImportOptions = {}) {
+  const current = await readLiveBundle(vehicle.id, read);
   expect(current.vehicle.version).toBe(vehicle.version);
-  await expect(page.getByTestId('vehicle-publish')).toHaveCount(0);
-  await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveValue(vehicle.draft.content.title.sourceText!);
-  await expect(page.getByRole('checkbox', { name: /已审核/ })).toHaveCount(0);
-  await expect(page.getByRole('combobox', { name: /来源语言$/ })).toHaveCount(0);
-  if (current.sourceLanguageConfirmationRequired.length) {
-    // Legacy imports require one explicit whole-page confirmation before editing translations.
-    // The real server decides which refs need confirmation; do not silently relabel any source.
-    const required = current.sourceLanguageConfirmationRequired;
-    await page.getByTestId('translation-source-confirm').check();
-    const confirmed = await saveLiveBundle(page, vehicle.id);
-    expect(confirmed.input.sourceLanguageConfirmations).toEqual(required);
-    expect(confirmed.bundle.sourceLanguageConfirmationRequired).toEqual([]);
-    current = confirmed.bundle;
-  }
-  const values = {
-    title: overrides.title ?? { en: 'Synthetic test vehicle', ru: 'Тестовый автомобиль' },
-    description: overrides.description ?? { en: 'Synthetic condition for an isolated test, not real inventory.', ru: 'Синтетическое состояние для изолированного теста, не реальный автомобиль.' },
-  };
-  for (const [name, label] of [['title', '标题'], ['description', '描述']] as const) {
-    const source = current.vehicle.draft.content[name];
-    if (!source.sourceText?.trim()) continue;
-    expect(source.sourceLanguage).toBe('zh');
-    await expect(page.getByLabel(`${label}原文（只读）`, { exact: true })).toHaveValue(source.sourceText);
-    await page.getByLabel(`英文${label}`, { exact: true }).fill(values[name].en);
-    await page.getByLabel(`俄文${label}`, { exact: true }).fill(values[name].ru);
-  }
-  const fields = current.localization.data.fields;
-  for (const group of new Set(fields.map(field => groupFor(field.ref)))) {
-    await expandLiveTranslationGroup(page, group);
-    for (const field of fields) {
-      if (groupFor(field.ref) !== group) continue;
-      expect(field.sourceLanguage).toBe('zh');
-      const label = labelFor(field.ref, current);
-      await expect(page.getByLabel(`${label}原文（只读）`, { exact: true })).toHaveValue(field.sourceText);
-      const target = overrides.display?.[field.ref] ?? syntheticDisplayTargets(field.ref);
-      await page.getByLabel(`英文${label}`, { exact: true }).fill(target.en);
-      await page.getByLabel(`俄文${label}`, { exact: true }).fill(target.ru);
-    }
-  }
-  const saved = await saveLiveBundle(page, vehicle.id);
-  expect(saved.input.version).toBe(current.vehicle.version);
-  expect(saved.input.localizationRevision).toBe(current.localization.revision);
-  expect(saved.bundle.vehicle.draft.configuration).toEqual(current.vehicle.draft.configuration);
-  for (const field of [...Object.values(saved.bundle.vehicle.draft.content), ...saved.bundle.localization.data.fields]) {
-    if (!field.sourceText?.trim()) continue;
+  const originalTitle = vehicle.draft.content.title.sourceText;
+  expect(originalTitle).toBeTruthy();
+  const title = { zh: originalTitle!, ...options.title ?? { en: 'Synthetic test vehicle', ru: 'Тестовый автомобиль' } };
+  const originalDescription = vehicle.draft.content.description.sourceText;
+  const description = options.description ?? (originalDescription?.trim() ? {
+    zh: originalDescription, en: 'Synthetic condition for an isolated test, not real inventory.',
+    ru: 'Синтетическое состояние для изолированного теста, не реальный автомобиль.',
+  } : undefined);
+  const display = current.localization.data.fields.filter(field => !field.ref.startsWith('configuration.')).map(field => {
     expect(field.sourceLanguage).toBe('zh');
-    for (const locale of ['zh', 'en', 'ru'] as const) expect(field.translations[locale]).toMatchObject({
-      text: locale === 'zh' ? field.sourceText : expect.any(String),
-      kind: locale === 'zh' ? 'original' : 'human', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
-    });
-  }
+    return { ref: field.ref, text: options.display?.[field.ref] ?? {
+      zh: field.sourceText, en: 'Synthetic display text', ru: 'Синтетический текст',
+    } };
+  });
+  const content = { title, description };
+  const saved = await importLiveConfiguration(page, vehicle, {
+    version: 1, items: options.items, facts: options.facts, content,
+    display: display.length ? display : undefined,
+  });
+  expect(saved.localization.revision).toBe(current.localization.revision + 1);
+  if (options.facts) expect(saved.vehicle.draft.facts.powertrain).toBe(options.facts.powertrain);
   for (const name of ['title', 'description'] as const) {
-    const field = saved.bundle.vehicle.draft.content[name];
-    if (field.sourceText?.trim()) for (const locale of ['en', 'ru'] as const) expect(field.translations[locale]?.text).toBe(values[name][locale]);
+    const text = content[name];
+    if (text) expectImportedTexts(saved.vehicle.draft.content[name], text);
   }
-  for (const field of saved.bundle.localization.data.fields) {
-    const targets = overrides.display?.[field.ref] ?? syntheticDisplayTargets(field.ref);
-    for (const locale of ['en', 'ru'] as const) expect(field.translations[locale]?.text).toBe(targets[locale]);
+  for (const { ref, text } of display) {
+    const field = saved.localization.data.fields.find(field => field.ref === ref);
+    expect(field, ref).toBeDefined();
+    expectImportedTexts(field!, text);
   }
-  return saved.bundle;
+  return saved;
+}
+
+function expectImportedTexts(field: AdminVehicle['draft']['content']['title'], text: LocaleTexts) {
+  expect(field.sourceLanguage).toBe('zh');
+  expect(field.sourceText).toBe(text.zh);
+  for (const locale of ['zh', 'en', 'ru'] as const) expect(field.translations[locale]).toMatchObject({
+    text: text[locale], kind: locale === 'zh' ? 'original' : 'human', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
+  });
 }

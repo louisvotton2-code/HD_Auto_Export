@@ -1,0 +1,24 @@
+import { z } from 'zod';
+import { VehicleFactsSchema } from './common.js';
+
+export const VEHICLE_POWER_DETAIL_KEYS = ['engineKw', 'motorKw', 'systemKw', 'engineHp', 'motorHp', 'systemHp'] as const;
+const power = VehicleFactsSchema.shape.powerKw.unwrap().optional();
+const VehicleTechnicalPowerSchema = z.strictObject({ engineKw: power, motorKw: power, systemKw: power, engineHp: power, motorHp: power, systemHp: power });
+const itemId = z.string().regex(/^cfg-(?:[0-9a-f]{4}){1,100}$/);
+const classText = z.string().max(120).regex(/\S/u);
+export const VehicleTechnicalFactsSchema = VehicleTechnicalPowerSchema.extend({
+  identityHash: z.string().regex(/^[a-f0-9]{64}$/),
+  vehicleClass: z.strictObject({ id: itemId, value: z.strictObject({ zh: classText, en: classText, ru: classText }) }).optional(),
+});
+export type VehicleTechnicalFacts = z.infer<typeof VehicleTechnicalFactsSchema>;
+export const VehicleDetailMatchKeySchema = z.enum([
+  'displacementCc', 'powerKw', 'powerHp', ...VEHICLE_POWER_DETAIL_KEYS, 'bodyType', 'transmissionType', 'driveType', 'vehicleClass', 'energyType',
+]);
+export type VehicleDetailMatchKey = z.infer<typeof VehicleDetailMatchKeySchema>;
+export const VehicleTechnicalDetailsSchema = z.strictObject({
+  power: VehicleTechnicalPowerSchema,
+  configurationMatches: z.array(z.strictObject({
+    id: itemId, semanticKey: VehicleDetailMatchKeySchema, source: z.enum(['record', 'configuration']),
+  })).max(200),
+});
+export type VehicleTechnicalDetails = z.infer<typeof VehicleTechnicalDetailsSchema>;

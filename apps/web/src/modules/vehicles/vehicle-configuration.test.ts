@@ -6,8 +6,8 @@ import { makeConfigurationDisplayFixture } from '@hd/contracts/fixtures';
 import type { Locale } from '@/i18n/routing';
 import { VehicleConfiguration } from './ui/vehicle-configuration';
 
-function render(configuration: ConfigurationDisplay | null | undefined, locale: Locale = 'en', showMetadata = false) {
-  return renderToStaticMarkup(createElement(VehicleConfiguration, { configuration, locale, showMetadata }));
+function render(configuration: ConfigurationDisplay | null | undefined, locale: Locale = 'en', showMetadata = false, defaultOpen = false) {
+  return renderToStaticMarkup(createElement(VehicleConfiguration, { configuration, locale, showMetadata, defaultOpen }));
 }
 
 function values(html: string) {
@@ -15,11 +15,12 @@ function values(html: string) {
 }
 
 describe('shared public and staff vehicle configuration', () => {
-  it.each(['zh', 'en', 'ru'] as const)('renders the %s display projection in source order with the section expanded', (locale) => {
+  it.each(['zh', 'en', 'ru'] as const)('renders the %s display projection in source order within a collapsed section', (locale) => {
     const configuration = makeConfigurationDisplayFixture(locale);
     const html = render(configuration, locale);
     expect(html).toContain('data-vehicle-configuration="true"');
-    expect(html).toMatch(/<details[^>]* open=""/);
+    expect(html).toMatch(/<details\b/);
+    expect(html).not.toMatch(/<details[^>]* open=""/);
     expect([...html.matchAll(/data-configuration-item="([^"]+)"/g)].map((match) => match[1]))
       .toEqual(configuration.items.map((item) => item.id));
     expect(values(html)).toEqual(['1989', '8']);
@@ -66,8 +67,9 @@ describe('shared public and staff vehicle configuration', () => {
   it('shares the exact same values in public and preview while showing audit labels only to staff', () => {
     const configuration = makeConfigurationDisplayFixture('en');
     const publicHtml = render(configuration);
-    const previewHtml = render(configuration, 'en', true);
+    const previewHtml = render(configuration, 'en', true, true);
     expect(values(publicHtml)).toEqual(values(previewHtml));
+    expect(previewHtml).toMatch(/<details[^>]* open=""/);
     expect(publicHtml).toContain('data-provenance="machine"');
     expect(publicHtml).toContain('data-reviewed="false"');
     expect(publicHtml).not.toContain('data-configuration-metadata');

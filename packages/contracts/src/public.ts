@@ -6,6 +6,8 @@ import { isPublicCatalogOffsetAllowed, PublicCatalogResponseMetaSchema } from '.
 export * from './catalog-cache.js';
 export * from './configuration-display.js';
 export * from './configuration-semantics.js';
+export * from './vehicle-technical.js';
+import { VehicleTechnicalDetailsSchema } from './vehicle-technical.js';
 import {
   AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
   PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
@@ -136,7 +138,7 @@ export const PublicInspectionInlineSchema=z.strictObject({
 export const PublicConfigurationInlineItemSchema=z.strictObject({id:z.string().min(1).max(450),semanticKey:z.string().regex(/^[a-z][A-Za-z0-9]{0,79}$/).nullable(),name:DisplayTextSchema,value:DisplayTextSchema});
 export const PublicVehicleInlineSchema=PublicVehicleSchema.safeExtend({projection:z.literal('detail-inline-v1'),
   inspectionSummary:PublicInspectionSummarySchema,inspectionInline:PublicInspectionInlineSchema,
-  configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200)});
+  configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200),technicalDetails:VehicleTechnicalDetailsSchema.optional()});
 export type PublicVehicleInline=z.infer<typeof PublicVehicleInlineSchema>;
 export const PublicVehicleInlineResponseSchema=responseSchema(PublicVehicleInlineSchema).extend({meta:PublicCatalogResponseMetaSchema});
 export type PublicVehicleInlineResponse=z.infer<typeof PublicVehicleInlineResponseSchema>;

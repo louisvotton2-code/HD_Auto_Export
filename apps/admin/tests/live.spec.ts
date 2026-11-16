@@ -8,9 +8,15 @@ import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
 import { makeDemoVehicleDraftFixture, makeExternalImportFixture, makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { extendRateDeadline, rateCooldownMs, rateLimitSeconds } from './live-rate-window';
-import { assertLivePublicConfiguration, completeLiveTranslations, enterLiveConfiguration, expandLiveTranslationGroup, liveConfiguration, readLiveBundle, saveLiveBundle } from './ux11-live-helpers';
+import {
+  assertLivePublicConfiguration, configurationJson, confirmConfigurationButton, importLiveConfiguration, importLiveVehicleDetails,
+  liveConfiguration, liveConfigurationItem, previewConfigurationButton, previewLiveImport, readLiveBundle,
+} from './ux11-live-helpers';
 
-const manualLiveConfiguration = { ...liveConfiguration, items: [...liveConfiguration.items, { name: '动力类型', value: '汽油' }] };
+const manualLiveConfiguration = [...liveConfiguration,
+  liveConfigurationItem({ zh: '动力类型', en: 'Powertrain', ru: 'Тип двигателя' }, { zh: '汽油', en: 'Petrol', ru: 'Бензин' }),
+];
+const manualLiveImport = { items: manualLiveConfiguration, facts: { powertrain: 'petrol' as const } };
 const rateWindows = new WeakMap<Page, { deadline: number; observations: number }>();
 function observeRateWindow(page: Page, response: { url(): string; headers(): Record<string, string> }) {
   const url = new URL(response.url());
@@ -67,7 +73,6 @@ async function login(page: Page, path = '/admin/vehicles') {
   await expect(page.getByRole('heading', { name: '车辆管理', exact: true })).toBeVisible();
 }
 async function save(page: Page, id?: string) {
-  // Core facts and the translation bundle have separate save actions in UX11.
   await tab(page, '基础资料');
   const response = page.waitForResponse(r => r.url().endsWith(`/api/v1/admin/vehicles${id ? `/${id}` : ''}`) && r.request().method() === (id ? 'PATCH' : 'POST'));
   await page.getByRole('button', { name: /保存草稿$/ }).click();
@@ -102,10 +107,12 @@ async function create(page: Page, kind: 'manual' | 'demo', title: string, modelN
   await page.getByLabel('配置名称', { exact: true }).fill('隔离合成测试配置');
   await chooseYear(page, '年款', 2024);
   await page.getByLabel('里程（公里）', { exact: true }).fill('12345');
+  await page.getByLabel('车辆所在地', { exact: true }).fill('成都市');
   await (await notes(page)).fill(internalNote);
   return save(page);
 }
 async function selectPetrolFromUnknown(page: Page) {
+  await tab(page, '车辆配置');
   const input = page.getByRole('combobox', { name: '动力类型', exact: true });
   await input.click();
   await expect(input).toHaveAttribute('aria-expanded', 'true');
@@ -129,20 +136,19 @@ async function contentAndImage(page: Page, vehicle: AdminVehicle) {
     await page.getByLabel('内部采购成本', { exact: true }).fill('15000');
     await tab(page, '基础资料');
     await page.getByLabel('车况描述', { exact: true }).fill('仅供隔离测试的合成车况，不是真实库存或车辆承诺。');
-    await enterLiveConfiguration(page, manualLiveConfiguration);
-    vehicle = await save(page, vehicle.id);
-    expect(vehicle.draft.configuration).toEqual(manualLiveConfiguration);
-    expect(vehicle.draft.facts.powertrain).toBe('petrol');
-    expect(vehicle.draft.price.money?.currency).toBe('CNY');
-    expect(vehicle.draft.internal.purchaseCost?.currency).toBe('CNY');
   }
   await tab(page, '图片管理');
   if (vehicle.draft.source.kind !== 'manual') await page.getByLabel('图片来源／授权说明', { exact: true }).fill('隔离浏览器测试生成图片，不是真实库存。');
   const png = Buffer.from(await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 48; const ctx = c.getContext('2d')!; ctx.fillStyle = '#315b50'; ctx.fillRect(0, 0, 64, 48); return c.toDataURL('image/png').split(',')[1]!; }), 'base64');
-  await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: png });
+  await page.locator('input[type=file][accept*="image/png"]').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('textbox', { name: '图片 1 说明', exact: true })).toBeVisible();
   await page.getByRole('textbox', { name: '图片 1 说明', exact: true }).fill('合成测试封面');
-  return save(page, vehicle.id);
+  const saved = await save(page, vehicle.id);
+  if (saved.draft.source.kind === 'manual') {
+    expect(saved.draft.price.money?.currency).toBe('CNY');
+    expect(saved.draft.internal.purchaseCost?.currency).toBe('CNY');
+  }
+  return saved;
 }
 async function operation(page: Page, id: string, button: string, route: string) {
   await tab(page, '发布预览');
@@ -227,7 +233,7 @@ test('real localization sidecar preserves public language snapshots with disable
   const privateMarker = 'PRIVATE_I18N02_SYNTHETIC_ONLY';
   const model = { zh: '合成中文车型', en: 'Synthetic model', ru: 'Синтетическая модель' };
   const alt = { zh: '合成测试封面', en: 'Synthetic cover image', ru: 'Синтетическое изображение' };
-  const generation = { zh: '合成测试代系', en: 'Synthetic generation', ru: 'Синтетическое поколение' };
+  const revisedModel = { ...model, en: 'Synthetic revised model' };
   let translationExecutions = 0;
   page.on('request', request => {
     const path = new URL(request.url()).pathname;
@@ -252,7 +258,7 @@ test('real localization sidecar preserves public language snapshots with disable
   expect(before.localization.data.fields.map(field => field.ref)).toEqual(['model', `media.${ready.draft.media[0]!.id}.alt`]);
   expect(before.sourceLanguageConfirmationRequired).toEqual([]);
   expect(before.localization.data.fields.every(field => field.sourceLanguage === 'zh')).toBe(true);
-  const translated = await completeLiveTranslations(page, ready, read, {
+  const translated = await importLiveVehicleDetails(page, ready, read, {
     display: { model, [`media.${ready.draft.media[0]!.id}.alt`]: alt },
   });
   expect(translated.vehicle.draft.internal.notes).toBe(privateMarker);
@@ -260,81 +266,50 @@ test('real localization sidecar preserves public language snapshots with disable
   let publishCalls = 0; page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith(`/api/v1/admin/vehicles/${initial.id}/publish`)) publishCalls++; });
   const firstPublish = await operation(page, initial.id, '确认并发布', 'publish'); expect(firstPublish.status()).toBe(200);
   const first = AdminVehicleResponseSchema.parse(await firstPublish.json()).data; expect(first.hasUnpublishedChanges).toBe(false);
-  async function verifyPublic(expectedEnglish: string, publishedGeneration: typeof generation | null = null) {
+  async function verifyPublic(expectedModel: typeof model) {
     for (const locale of ['zh', 'en', 'ru'] as const) {
       const response = await readRespectingRateLimit(page, `/api/v1/vehicles/${initial.id}?locale=${locale}&view=localized`); expect(response.status()).toBe(200);
       const raw = await response.text();
       for (const secret of [privateMarker, 'purchaseCost', 'supplierContact', 'sourceHash', 'humanEditVersion', 'engineVersion']) expect(raw).not.toContain(secret);
       const publicVehicle = PublicVehicleResponseSchema.parse(JSON.parse(raw)).data;
       expect(publicVehicle.source.kind).toBe('demo'); expect(publicVehicle.availability).toBe('unknown');
-      expect(publicVehicle.facts.model?.name).toBe(locale === 'en' ? expectedEnglish : model[locale]);
-      expect(publicVehicle.display?.model).toMatchObject({ status: 'ready', text: locale === 'en' ? expectedEnglish : model[locale], requestedLocale: locale, contentLocale: locale, provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
+      expect(publicVehicle.facts.model?.name).toBe(expectedModel[locale]);
+      expect(publicVehicle.display?.model).toMatchObject({ status: 'ready', text: expectedModel[locale], requestedLocale: locale, contentLocale: locale, provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
       expect(publicVehicle.images[0]!.alt).toBe(alt[locale]);
       expect(publicVehicle.display?.mediaAlt.find(entry => entry.mediaId === ready.draft.media[0]!.id)?.value).toMatchObject({ status: 'ready', text: alt[locale], contentLocale: locale });
-      if (publishedGeneration) {
-        expect(publicVehicle.facts.generation?.name).toBe(publishedGeneration[locale]);
-        expect(publicVehicle.display?.generation).toMatchObject({ status: 'ready', text: publishedGeneration[locale], contentLocale: locale,
-          provenance: locale === 'zh' ? 'original' : 'human', reviewed: false });
-        expect(publicVehicle.facts.drivetrain).toBe('awd');
-      } else {
-        expect(publicVehicle.facts.generation).toBeNull(); expect(publicVehicle.facts.drivetrain).toBeNull();
-      }
+      expect(publicVehicle.facts.generation).toBeNull(); expect(publicVehicle.facts.drivetrain).toBeNull();
     }
   }
-  await verifyPublic(model.en);
-  const beforeFacts = await readLiveBundle(initial.id, read);
-  expect(beforeFacts.vehicle.version).toBe(first.version);
-  await tab(page, '车辆配置');
-  await expandLiveTranslationGroup(page, '补充代系与驱动形式');
-  await page.getByRole('textbox', { name: '代系名称', exact: true }).fill(generation.zh);
-  await select(page, '驱动形式', '全轮驱动');
-  // The same bundle transaction saves extra facts and derives the new field on the server.
-  // No client-invented ref, per-field review, or provider request participates in this change.
-  const factsSaved = await saveLiveBundle(page, initial.id);
-  expect(factsSaved.input.version).toBe(beforeFacts.vehicle.version);
-  expect(factsSaved.input.localizationRevision).toBe(beforeFacts.localization.revision);
-  expect(factsSaved.input.localization.facts).toMatchObject({ generation: { name: generation.zh }, drivetrain: 'awd' });
-  expect(factsSaved.input.localization.fields).toEqual(beforeFacts.localization.data.fields);
-  expect(factsSaved.bundle.localization.data.facts).toEqual(factsSaved.input.localization.facts);
-  expect(factsSaved.bundle.vehicle.draft).toEqual(beforeFacts.vehicle.draft);
-  expect(factsSaved.bundle.sourceLanguageConfirmationRequired).toEqual([]);
-  expect(factsSaved.bundle.localization.data.fields.filter(field => field.ref !== 'generation')).toEqual(beforeFacts.localization.data.fields);
-  const generationField = factsSaved.bundle.localization.data.fields.find(field => field.ref === 'generation');
-  expect(generationField).toMatchObject({ sourceLanguage: 'zh', sourceText: generation.zh, sourceVersion: 1,
-    translations: { zh: { text: generation.zh, kind: 'original', reviewStatus: 'pending', sourceVersion: 1 }, en: null, ru: null } });
-  await expandLiveTranslationGroup(page, '车辆展示资料');
-  await expect(page.getByLabel('代系名称原文（只读）', { exact: true })).toHaveValue(generation.zh);
-  await expect(page.getByLabel('英文代系名称', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('俄文代系名称', { exact: true })).toHaveValue('');
-  await page.getByLabel('英文代系名称', { exact: true }).fill(generation.en);
-  await page.getByLabel('俄文代系名称', { exact: true }).fill(generation.ru);
-  await page.getByLabel('英文车型名称', { exact: true }).fill('Synthetic revised model');
-  const revision = await saveLiveBundle(page, initial.id);
-  expect(revision.input.version).toBe(factsSaved.bundle.vehicle.version);
-  expect(revision.input.localizationRevision).toBe(factsSaved.bundle.localization.revision);
-  const savedGeneration = revision.bundle.localization.data.fields.find(field => field.ref === 'generation');
-  for (const locale of ['en', 'ru'] as const) expect(savedGeneration?.translations[locale]).toMatchObject({
-    text: generation[locale], kind: 'human', reviewStatus: 'pending', sourceVersion: generationField!.sourceVersion,
+  await verifyPublic(model);
+  const beforeRevision = await readLiveBundle(initial.id, read);
+  expect(beforeRevision.vehicle.version).toBe(first.version);
+  const previousModel = beforeRevision.localization.data.fields.find(field => field.ref === 'model');
+  expect(previousModel).toBeDefined();
+  const revision = await importLiveConfiguration(page, first, { version: 1, display: [{ ref: previousModel!.ref, text: revisedModel }] });
+  expect(revision.localization.revision).toBe(beforeRevision.localization.revision + 1);
+  expect(revision.localization.data.facts).toEqual(beforeRevision.localization.data.facts);
+  expect(revision.localization.data.fields.filter(field => field.ref !== 'model'))
+    .toEqual(beforeRevision.localization.data.fields.filter(field => field.ref !== 'model'));
+  expect(revision.localization.data.fields.find(field => field.ref === 'model')?.translations.en).toMatchObject({
+    text: revisedModel.en, kind: 'human', reviewStatus: 'pending', sourceVersion: previousModel!.sourceVersion,
   });
-  expect(revision.bundle.localization.data.fields.filter(field => field.ref !== 'generation' && field.ref !== 'model'))
-    .toEqual(beforeFacts.localization.data.fields.filter(field => field.ref !== 'model'));
   const changedResponse = await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`); expect(changedResponse.status()).toBe(200);
   const changed = AdminVehicleResponseSchema.parse(await changedResponse.json()).data;
   expect(changed.hasUnpublishedChanges).toBe(true); expect(changed.publishedRevisionId).toBe(first.publishedRevisionId); expect(changed.draft).toEqual(first.draft);
-  expect(revision.bundle.vehicle.version).toBe(changed.version); expect(publishCalls).toBe(1);
-  await verifyPublic(model.en); await tab(page, '发布预览');
+  expect(revision.vehicle.version).toBe(changed.version); expect(publishCalls).toBe(1);
+  await verifyPublic(model); await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toHaveText('确认并发布'); await evidence('translation-only-unpublished');
   const secondPublish = await operation(page, initial.id, '确认并发布', 'publish'); expect(secondPublish.status()).toBe(200);
   const second = AdminVehicleResponseSchema.parse(await secondPublish.json()).data;
   expect(second.publishedRevisionId).not.toBe(first.publishedRevisionId); expect(second.hasUnpublishedChanges).toBe(false);
-  await verifyPublic('Synthetic revised model', generation);
+  await verifyPublic(revisedModel);
   await expect(page.getByTestId('vehicle-publish')).toHaveText('已发布，暂无待发布修改');
   await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
   await page.reload(); await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toHaveText('已发布，暂无待发布修改');
   await expect(page.getByTestId('vehicle-publish')).toBeDisabled(); expect(publishCalls).toBe(2);
   expect(translationExecutions).toBe(0);
-  await writeFile('/private/tmp/hd-ad-i18n02-evidence/real-disabled-sidecar-summary.json', JSON.stringify({ sampleKind: 'Real API isolated synthetic demo; translator disabled; all translations entered manually', provider: 'disabled', vehicleId: initial.id, refs: revision.bundle.localization.data.fields.map(field => field.ref), firstPublication: first.publishedRevisionId, secondPublication: second.publishedRevisionId, model, alt, generation, drivetrain: 'awd', revisedEnglish: 'Synthetic revised model', publishCalls, translationExecutions }, null, 2));
+  await writeFile('/private/tmp/hd-ad-i18n02-evidence/real-disabled-sidecar-summary.json', JSON.stringify({ sampleKind: 'Real API isolated synthetic demo; translator disabled; translations imported from JSON', provider: 'disabled', vehicleId: initial.id, refs: revision.localization.data.fields.map(field => field.ref), firstPublication: first.publishedRevisionId, secondPublication: second.publishedRevisionId, model, alt, revisedModel, publishCalls, translationExecutions }, null, 2));
 });
 
 test('real cookie login, draft persistence/privacy and logout', async ({ page }) => {
@@ -349,18 +324,27 @@ test('real cookie login, draft persistence/privacy and logout', async ({ page })
   expect(initial.draft.configuration).toBeNull();
   let invalidConfigurationWrites = 0;
   const observeInvalidWrite = (request: import('@playwright/test').Request) => {
-    if (request.method() === 'PATCH' && new URL(request.url()).pathname === `/api/v1/admin/vehicles/${initial.id}`) invalidConfigurationWrites++;
+    const vehiclePath = `/api/v1/admin/vehicles/${initial.id}`;
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    if ((method === 'PATCH' && path === vehiclePath) || (method === 'PUT' && path === `${vehiclePath}/configuration-import`) ||
+        (method === 'POST' && path === `${vehiclePath}/configuration-import/preview`)) invalidConfigurationWrites++;
   };
   page.on('request', observeInvalidWrite);
   await tab(page, '车辆配置');
-  await page.getByLabel('配置内容（JSON）', { exact: true }).fill('{"version":1,"version":1,"items":[{"name":"座位数","value":"5"}]}');
-  await expect(page.getByLabel('配置内容（JSON）', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+  const validConfiguration = JSON.stringify({ version: 1, items: liveConfiguration });
+  await configurationJson(page).fill(validConfiguration.replace('"version":1', '"version":1,"version":1'));
+  await previewConfigurationButton(page).click();
+  await expect(configurationJson(page)).toHaveAttribute('aria-invalid', 'true');
+  await expect(confirmConfigurationButton(page)).toHaveCount(0);
   await expect(page.getByRole('button', { name: /保存草稿$/ })).toBeDisabled();
   expect(invalidConfigurationWrites).toBe(0);
-  await page.getByLabel('配置内容（JSON）', { exact: true }).fill('');
+  await configurationJson(page).fill('');
   page.off('request', observeInvalidWrite);
   await (await notes(page)).fill('PRIVATE_UPDATED');
-  await save(page, initial.id);
+  const updated = await save(page, initial.id);
+  expect(updated.version).toBe(initial.version + 1);
+  expect(updated.draft.configuration).toBeNull();
   await page.reload();
   await expect(await notes(page)).toHaveValue('PRIVATE_UPDATED');
   expect((await page.request.get(`/api/v1/vehicles/${initial.id}`)).status()).toBe(404);
@@ -374,9 +358,8 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   await login(page);
   const initial = await create(page, 'manual', '人工车源完整隔离联调');
   const ready = await contentAndImage(page, initial);
-  const translated = await completeLiveTranslations(page, ready, path => readRespectingRateLimit(page, path));
+  const translated = await importLiveVehicleDetails(page, ready, path => readRespectingRateLimit(page, path), manualLiveImport);
   expect(translated.vehicle.draft.content.title.translations.ru).toMatchObject({ kind: 'human', reviewStatus: 'pending' });
-  expect(translated.vehicle.draft.configuration).toEqual(manualLiveConfiguration);
   await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
   const currentBeforeRejection = AdminVehicleResponseSchema.parse(await (await readRespectingRateLimit(page, `/api/v1/admin/vehicles/${initial.id}`)).json()).data;
@@ -426,47 +409,29 @@ test('manual image/translation/inventory publishing, draft snapshot and archive'
   }
   const versionBeforeSourceEdit = AdminVehicleResponseSchema.parse(await inventoryOnly.json()).data.version;
   const vehiclePath = `/api/v1/admin/vehicles/${initial.id}`;
-  const blockedTranslationWrites = { bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 };
-  const observeBlockedTranslationWrites = (request: import('@playwright/test').Request) => {
+  const blockedConfigurationRequests: string[] = [];
+  const observeBlockedConfigurationRequests = (request: import('@playwright/test').Request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === 'PUT' && path === `${vehiclePath}/translation-bundle`) blockedTranslationWrites.bundle++;
-    if (request.method() !== 'POST') return;
-    if (path === `${vehiclePath}/translation-plans`) blockedTranslationWrites.plan++;
-    if (path.startsWith(`${vehiclePath}/translation-plans/`) && path.endsWith('/generate')) blockedTranslationWrites.generate++;
-    if (path.startsWith(`${vehiclePath}/`) && path.endsWith('/translation-suggestions')) blockedTranslationWrites.legacySuggestions++;
+    if (path.startsWith(`${vehiclePath}/configuration-import`)) blockedConfigurationRequests.push(path);
   };
-  page.on('request', observeBlockedTranslationWrites);
+  page.on('request', observeBlockedConfigurationRequests);
   await tab(page, '基础资料');
   await page.getByLabel('标题原文', { exact: true }).fill('尚未发布的新原文');
   await tab(page, '车辆配置');
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId('vehicle-translation-generate')).toHaveCount(0);
-  await expect(page.getByText('请先保存车辆资料，再编辑或生成译文', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /重新读取多语资料$/ })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: /已审核/ })).toHaveCount(0);
-  expect(blockedTranslationWrites).toEqual({ bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 });
-  // The first workspace visit after reload has no bundle while core facts are dirty.
-  // Save this tab's core action explicitly; its footer disappears once the new bundle can load.
-  const sourceSaved = page.waitForResponse(response => response.request().method() === 'PATCH' && new URL(response.url()).pathname === vehiclePath);
-  await page.getByRole('button', { name: /保存基础资料$/ }).click();
-  const sourceResponse = await sourceSaved;
-  expect(sourceResponse.status()).toBe(200);
-  const { SaveVehicleRequestSchema } = await import('@hd/contracts/admin');
-  const sourceInput = SaveVehicleRequestSchema.parse(sourceResponse.request().postDataJSON());
-  expect(sourceInput.version).toBe(versionBeforeSourceEdit);
-  const edited = AdminVehicleResponseSchema.parse(await sourceResponse.json()).data;
+  await expect(page.getByText('请先保存当前草稿编辑，再导入 JSON', { exact: true })).toBeVisible();
+  await expect(configurationJson(page)).toBeDisabled();
+  await expect(previewConfigurationButton(page)).toBeDisabled();
+  await expect(confirmConfigurationButton(page)).toHaveCount(0);
+  expect(blockedConfigurationRequests).toEqual([]);
+  const edited = await save(page, initial.id);
   expect(edited.id).toBe(initial.id);
   expect(edited.version).toBe(versionBeforeSourceEdit + 1);
   expect(edited.draft.content.title.sourceText).toBe('尚未发布的新原文');
-  await expect(page.getByRole('button', { name: /保存基础资料$/ })).toHaveCount(0);
-  await expect(page.getByText('请先保存车辆资料，再编辑或生成译文', { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveValue('尚未发布的新原文');
-  await expect(page.getByLabel('标题原文（只读）', { exact: true })).toHaveAttribute('readonly', '');
-  await expect(page.getByLabel('英文标题', { exact: true })).toBeEnabled();
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue(edited.draft.content.title.translations.en!.text);
-  await expect(page.getByTestId('vehicle-translation-generate')).toBeEnabled();
-  expect(blockedTranslationWrites).toEqual({ bundle: 0, plan: 0, generate: 0, legacySuggestions: 0 });
-  page.off('request', observeBlockedTranslationWrites);
+  await tab(page, '车辆配置');
+  await expect(configurationJson(page)).toBeEnabled();
+  await expect(confirmConfigurationButton(page)).toHaveCount(0);
+  expect(blockedConfigurationRequests).toEqual([]);
+  page.off('request', observeBlockedConfigurationRequests);
   expect(edited.hasUnpublishedChanges).toBe(true);
   expect(edited.draft.content.title.translations.en?.reviewStatus).toBe('stale');
   expect(PublicVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/vehicles/${initial.id}?locale=zh`)).json()).data.content.title.text).toBe(initial.draft.content.title.sourceText);
@@ -486,7 +451,7 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
   const draftOptions = AdminVehicleFiltersResponseSchema.parse(await (await page.request.get('/api/v1/admin/vehicle-filters')).json()).data;
   expect(draftOptions.makes.some(item => item.id === demo.draft.facts.make?.id)).toBe(true);
   const ready = await contentAndImage(page, demo);
-  const translated = await completeLiveTranslations(page, ready, path => readRespectingRateLimit(page, path));
+  const translated = await importLiveVehicleDetails(page, ready, path => readRespectingRateLimit(page, path));
   expect(translated.vehicle.draft.content.title.translations.en?.reviewStatus).toBe('pending');
   expect(translated.vehicle.draft.configuration).toBeNull();
   expect((await operation(page, demo.id, '确认并发布', 'publish')).status()).toBe(200);
@@ -597,7 +562,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
     context.fillStyle = '#fff'; context.font = '24px sans-serif'; context.fillText(`SYNTHETIC ${index + 1}`, 32, 125);
     return canvas.toDataURL('image/png').split(',')[1]!;
   }));
-  await page.locator('input[type=file]').setInputFiles(pngs.map((png, i) => ({ name: `synthetic-${i + 1}.png`, mimeType: 'image/png', buffer: Buffer.from(png, 'base64') })));
+  await page.locator('input[type=file][accept*="image/png"]').setInputFiles(pngs.map((png, i) => ({ name: `synthetic-${i + 1}.png`, mimeType: 'image/png', buffer: Buffer.from(png, 'base64') })));
   await expect(page.getByRole('textbox', { name: '图片 8 说明', exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('.ant-message-success').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
   await expect(page.locator('.ant-alert').filter({ hasText: '8张图片已上传，请保存草稿' })).toBeVisible();
@@ -639,16 +604,14 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await tab(page, '价格与内部信息');
   await page.getByLabel('内部采购成本', { exact: true }).fill('100000');
   const condition = '仅用于隔离测试的外部挂牌车况，不代表真实车辆或库存。';
-  await tab(page, '基础资料');
-  await page.getByLabel('车况描述', { exact: true }).fill(condition);
-  await enterLiveConfiguration(page);
   const configured = await save(page, initial.id);
   expect(configured.draft.facts.powertrain).toBe('petrol');
   expect(configured.draft.internal.purchaseCost?.currency).toBe('CNY');
-  expect(configured.draft.configuration).toEqual(liveConfiguration);
-  const translated = await completeLiveTranslations(page, configured, path => readRespectingRateLimit(page, path), {
+  expect(configured.draft.configuration).toBeNull();
+  const translated = await importLiveVehicleDetails(page, configured, path => readRespectingRateLimit(page, path), {
+    items: liveConfiguration,
     title: { en: 'Synthetic external lifecycle vehicle', ru: 'Синтетический внешний автомобиль' },
-    description: { en: 'Synthetic external vehicle condition for an isolated test only.', ru: 'Синтетическое состояние внешнего автомобиля только для изолированного теста.' },
+    description: { zh: condition, en: 'Synthetic external vehicle condition for an isolated test only.', ru: 'Синтетическое состояние внешнего автомобиля только для изолированного теста.' },
   });
   for (const field of [translated.vehicle.draft.content.title, translated.vehicle.draft.content.description]) {
     for (const locale of ['zh', 'en', 'ru'] as const) expect(field.translations[locale]).toMatchObject({
@@ -744,21 +707,74 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await page.screenshot({ path: '/private/tmp/hd-ad-del-evidence/restored-draft.png', fullPage: true, animations: 'disabled' });
 });
 
-test('translation disabled real API keeps Chinese source intact and never pretends machine suggestions were saved', async ({ page }) => {
+test('translation disabled real API keeps Chinese source intact when an import preview is edited', async ({ page }) => {
   test.skip(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER !== 'disabled', 'This case verifies the explicitly disabled provider.');
+  test.setTimeout(90_000);
+  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
   await login(page);
-  const initial = await create(page, 'manual', '中文首存与未配置机器翻译隔离测试');
-  expect(initial.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: '中文首存与未配置机器翻译隔离测试' });
-  expect(initial.draft.content.title.translations.en).toBeNull();
-  await tab(page, '车辆配置');
+  const title = { zh: '中文首存与未配置机器翻译隔离测试', en: 'Synthetic preview title', ru: 'Синтетический заголовок предпросмотра' };
+  const initial = await create(page, 'manual', title.zh);
+  expect(initial.draft.content.title).toMatchObject({ sourceLanguage: 'zh', sourceText: title.zh, translations: { en: null, ru: null } });
+  expect(initial.draft.facts.location).toEqual({ country: 'CN', city: '成都市', displayName: null });
   const read = (path: string) => readRespectingRateLimit(page, path);
-  const bundle = await readLiveBundle(initial.id, read);
-  expect(bundle.sourceLanguageConfirmationRequired).toEqual([]);
-  await expect(page.getByTestId('vehicle-translation-generate')).toHaveCount(0);
-  await expect(page.getByLabel('英文标题', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('俄文标题', { exact: true })).toHaveValue('');
-  const unchanged = AdminVehicleResponseSchema.parse(await (await page.request.get(`/api/v1/admin/vehicles/${initial.id}`)).json()).data;
-  expect(unchanged.version).toBe(initial.version); expect(unchanged.draft).toEqual(initial.draft);
+  const startingBundle = await readLiveBundle(initial.id, read);
+  const vehiclePath = `/api/v1/admin/vehicles/${initial.id}`;
+  const importPath = `${vehiclePath}/configuration-import`;
+  const mutations: string[] = [];
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    if ((method === 'PUT' && path === importPath) || (method === 'PATCH' && path === vehiclePath) ||
+        (method === 'POST' && (path === `${vehiclePath}/publish` || path === `${vehiclePath}/publication-preview/confirm` ||
+          path.includes('/translation-plans') || path.endsWith('/translation-suggestions')))) mutations.push(path);
+  });
+  const { preview } = await previewLiveImport(page, initial.id, { version: 1, content: { title } });
+  expect(preview).toMatchObject({ version: initial.version, localizationRevision: startingBundle.localization.revision });
+  expect(preview.changes).toEqual([
+    { path: 'content.title.en', before: null, after: title.en },
+    { path: 'content.title.ru', before: null, after: title.ru },
+  ]);
+  const revised = { ...title, en: 'Revised synthetic preview title' };
+  await configurationJson(page).fill(JSON.stringify({ version: 1, content: { title: revised } }));
+  await expect(confirmConfigurationButton(page)).toHaveCount(0);
+  await expect(previewConfigurationButton(page)).toBeEnabled();
+  expect(await readLiveBundle(initial.id, read)).toEqual(startingBundle);
+  expect(mutations).toEqual([]);
+
+  const currentModel = startingBundle.localization.data.fields.find(field => field.ref === 'model');
+  const currentCity = startingBundle.localization.data.fields.find(field => field.ref === 'location.city');
+  expect(currentModel).toBeDefined();
+  expect(currentCity?.sourceText).toBe('成都市');
+  const model = { zh: currentModel!.sourceText, en: 'Synthetic test model', ru: 'Синтетическая тестовая модель' };
+  const city = { zh: '成都市', en: 'Chengdu', ru: 'Чэнду' };
+  const description = { zh: '隔离测试使用的合成车况。', en: 'Synthetic vehicle condition for an isolated test.', ru: 'Синтетическое состояние автомобиля для изолированного теста.' };
+  const saved = await importLiveConfiguration(page, initial, {
+    version: 1, items: liveConfiguration, content: { title: revised, description },
+    display: [{ ref: currentModel!.ref, text: model }, { ref: 'location.city', text: city }], facts: { powertrain: 'petrol' },
+  }, { omitItemIds: true });
+  expect(saved.vehicle).toMatchObject({ publicationState: 'draft', publishedRevisionId: null });
+  expect(saved.vehicle.draft.facts.powertrain).toBe('petrol');
+  expect(saved.vehicle.draft.content.title.sourceText).toBe(title.zh);
+  expect(saved.vehicle.draft.content.description.sourceText).toBe(description.zh);
+  const savedModel = saved.localization.data.fields.find(field => field.ref === currentModel!.ref);
+  const savedCity = saved.localization.data.fields.find(field => field.ref === 'location.city');
+  for (const locale of ['zh', 'en', 'ru'] as const) {
+    const metadata = { kind: locale === 'zh' ? 'original' : 'human', reviewStatus: 'pending' };
+    expect(saved.vehicle.draft.content.title.translations[locale]).toMatchObject({ text: revised[locale], ...metadata });
+    expect(saved.vehicle.draft.content.description.translations[locale]).toMatchObject({ text: description[locale], ...metadata });
+    expect(savedModel?.translations[locale]).toMatchObject({ text: model[locale], ...metadata });
+    expect(savedCity?.translations[locale]).toMatchObject({ text: city[locale], ...metadata });
+  }
+
+  await page.reload();
+  await expect(page.getByLabel('标题原文', { exact: true })).toHaveValue(title.zh);
+  await expect(page.getByLabel('车况描述', { exact: true })).toHaveValue(description.zh);
+  expect(await readLiveBundle(initial.id, read)).toEqual(saved);
+  await tab(page, '车辆配置');
+  const table = page.getByRole('region', { name: '已保存的三语资料' });
+  await expect(table.getByRole('columnheader')).toHaveText(['字段', '中文', '英文', '俄文']);
+  await expect(table.getByRole('row').filter({ hasText: '所在地城市' }).getByRole('cell')).toHaveText(['成都市', 'Chengdu', 'Чэнду']);
+  expect(mutations).toEqual([importPath]);
 });
 
 test('real publication preview rejects private image failures until a new load succeeds', async ({ page }, testInfo) => {
@@ -777,13 +793,13 @@ test('real publication preview rejects private image failures until a new load s
     context.fillStyle = '#4a376d'; context.fillRect(0, 0, 96, 64);
     return canvas.toDataURL('image/png').split(',')[1]!;
   }), 'base64');
-  await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-second.png', mimeType: 'image/png', buffer: png });
+  await page.locator('input[type=file][accept*="image/png"]').setInputFiles({ name: 'synthetic-second.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('textbox', { name: '图片 2 说明', exact: true })).toBeVisible();
   await page.getByRole('textbox', { name: '图片 2 说明', exact: true }).fill('合成测试第二张图片');
   const withImages = await save(page, initial.id);
   expect(withImages.draft.media).toHaveLength(2);
   expect(withImages.draft.media[0]!.id).toBe(firstImage.draft.media[0]!.id);
-  await completeLiveTranslations(page, withImages, path => readRespectingRateLimit(page, path));
+  await importLiveVehicleDetails(page, withImages, path => readRespectingRateLimit(page, path), manualLiveImport);
   await tab(page, '发布预览');
   await select(page, '核验后的库存状态', '可售');
   const availability = await operation(page, initial.id, '核验并更新库存', 'availability');
@@ -978,7 +994,7 @@ test(traceCaseTitle, async ({ page }, testInfo) => {
   const ready = await contentAndImage(page, edited);
   // A completed upload/binding is a business-stage boundary; respect the actual server window.
   await waitForServerWindow(rateCooldownMs(rateWindows.get(page)?.deadline ?? 0, Date.now()), 'trace-before-publish');
-  const translated = await completeLiveTranslations(page, ready, read);
+  const translated = await importLiveVehicleDetails(page, ready, read, manualLiveImport);
   await tab(page, '发布预览');
   await select(page, '核验后的库存状态', '可售');
   expect((await operation(page, initial.id, '核验并更新库存', 'availability')).status()).toBe(200);

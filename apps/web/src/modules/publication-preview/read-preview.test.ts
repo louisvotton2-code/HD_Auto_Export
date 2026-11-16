@@ -25,6 +25,17 @@ describe('private preview scope', () => {
     expect(parsePreviewFrameScope('../another-vehicle', 'en', loadId)).toBeNull();
   });
 
+  it('retains the actual language of vehicle class but refuses a different requested locale', () => {
+    const preview = makePublicationPreviewFixture('en');
+    preview.vehicle.vehicleClass = {
+      status: 'ready', text: '紧凑型', requestedLocale: 'en', contentLocale: 'zh',
+      provenance: 'human', reviewed: false,
+    };
+    expect(validatePreviewScope(preview, scope)).toBe(preview);
+    preview.vehicle.vehicleClass.requestedLocale = 'ru';
+    expect(() => validatePreviewScope(preview, scope)).toThrow('invalid_response');
+  });
+
   it('rejects another vehicle or requested language while preserving an actual language fallback', () => {
     const preview = makePublicationPreviewFixture('en');
     expect(validatePreviewScope(preview, scope)).toBe(preview);

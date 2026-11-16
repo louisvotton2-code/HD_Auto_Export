@@ -27,10 +27,5 @@ export async function fillRequiredVehicleBasics(page: Page, title = '合成测�
   await page.getByRole('textbox', { name: '年款', exact: true }).click();
   await page.locator('.ant-picker-dropdown:visible td[title="2024"]').click();
   await page.getByLabel('里程（公里）', { exact: true }).fill('0');
-}
-
-export async function openLegacyConfiguration(page: Page) {
-  const header = page.getByRole('button', { name: /编辑中文配置（旧格式）/ });
-  await expect(header).toBeVisible();
-  if (await header.getAttribute('aria-expanded') === 'false') await header.click();
+  await page.getByLabel('车辆所在地', { exact: true }).fill('成都市');
 }

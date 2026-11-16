@@ -63,13 +63,17 @@ export function formToDraft(base: VehicleDraftInput, form: DraftForm): VehicleDr
     firstRegistration: partialDate(form.firstRegistration, form.registrationPrecision) as PartialDate | null,
     registrationStatus: form.registrationStatus, powertrain: form.powertrain,
     body: form.body || null, transmission: form.transmission || null,
-    location: form.country.trim() ? { country: form.country.trim().toUpperCase(), city: base.facts.location?.city ?? null, displayName: base.facts.location?.displayName ?? null } : null,
+    location: form.country.trim() ? {
+      country: form.country.trim().toUpperCase(),
+      city: unchanged('city') ? base.facts.location?.city ?? null : nullable(form.city),
+      displayName: unchanged('locationName') ? base.facts.location?.displayName ?? null : nullable(form.locationName),
+    } : null,
   };
   const factFields: Record<keyof VehicleDraftInput['facts'], (keyof DraftForm)[]> = {
     make: ['makeId', 'makeName'], model: ['modelId', 'modelName'], trim: ['trimId', 'trimName'],
     modelYear: ['modelYear'], mileageKm: ['mileageKm'], engineCc: ['engineCc'], powerKw: ['powerKw'], powerHp: ['powerHp'],
     manufacturedAt: ['manufacturedAt', 'manufacturedPrecision'], firstRegistration: ['firstRegistration', 'registrationPrecision'],
-    registrationStatus: ['registrationStatus'], powertrain: ['powertrain'], body: ['body'], transmission: ['transmission'], location: ['country'],
+    registrationStatus: ['registrationStatus'], powertrain: ['powertrain'], body: ['body'], transmission: ['transmission'], location: ['country', 'city', 'locationName'],
   };
   for (const [key, keys] of Object.entries(factFields)) {
     if (!unchanged(...keys)) continue;
@@ -105,7 +109,7 @@ export const fieldLabels: Record<keyof DraftForm, string> = {
   modelYear: '年款', mileageKm: '里程（公里）', engineCc: '排量（cc）', powerKw: '功率（kW）', powerHp: '原始马力（hp）',
   manufacturedAt: '制造日期', manufacturedPrecision: '制造日期精度', firstRegistration: '首次登记日期', registrationPrecision: '首次登记日期精度',
   registrationStatus: '登记状态', powertrain: '动力类型', body: '车身形式', transmission: '变速箱',
-  country: '所在地国家代码', city: '所在地城市', locationName: '公开所在地描述',
+  country: '所在地国家或地区代码', city: '车辆所在地', locationName: '车辆所在地',
   priceKind: '公开价格口径', amount: '公开价格金额', currency: '公开价格币种', includes: '价格包含项目',
   titleLanguage: '标题原文语言', title: '标题原文', descriptionLanguage: '描述原文语言', description: '车况描述',
   purchaseAmount: '内部采购成本', purchaseCurrency: '采购成本币种', notes: '内部备注', supplierContact: '供应商联系方式', vin: 'VIN',

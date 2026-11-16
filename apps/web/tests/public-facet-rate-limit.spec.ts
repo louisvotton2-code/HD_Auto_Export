@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
+import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 const fixtureOrigin = process.env.PUBLIC_FIXTURE_API_URL;
@@ -32,18 +33,17 @@ function collectBusiness(page: Page) {
   });
   return requests;
 }
-async function expectExistingCars(page: Page, home: boolean, catalogTotalKnown = false) {
+async function expectExistingCars(page: Page, home: boolean) {
   await expect(page.locator('main [data-public-vehicle]')).toHaveCount(home ? 3 : 2);
   await expect(page.getByTestId('home-catalog-empty')).toHaveCount(0);
   await expect(page.getByTestId('home-catalog-error')).toHaveCount(0);
   await expect(page.getByTestId('public-catalog-empty')).toHaveCount(0);
   await expect(page.getByTestId('public-catalog-error')).toHaveCount(0);
   await expect(page.getByTestId('public-vehicle-missing')).toHaveCount(0);
-  // Home cards can remain valid while the full-catalog dictionary total is unknown.
   if (home) {
     const total = page.getByTestId('hero-stat-catalog').locator('strong');
     await expect(total).toBeVisible();
-    await expect(total).toHaveText(catalogTotalKnown ? '26' : '—', { useInnerText: true });
+    await expect(total).toHaveText(new Intl.NumberFormat('en').format(approximateCatalogVehicleCount));
   }
 }
 
@@ -109,7 +109,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
           page.locator('[data-home-section="popular-models"] a[href*="model="]'),
         ).toHaveCount(2);
         await expect(status).not.toBeVisible();
-        await expectExistingCars(page, true, true);
+        await expectExistingCars(page, true);
       }
     });
   }
@@ -223,7 +223,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         await reload.click();
         expect((await document).status()).toBe(200);
         await expect(page.getByTestId('public-resource-status')).not.toBeVisible();
-        await expectExistingCars(page, entry.home, true);
+        await expectExistingCars(page, entry.home);
         if (!entry.home)
           await expect(page.locator('select[name="make"] option[value="beta"]')).toHaveCount(1);
       } finally {

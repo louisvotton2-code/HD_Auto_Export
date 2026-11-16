@@ -131,6 +131,13 @@ describe('草稿表单与统一契约', () => {
     expect(result.price.includes).toEqual(draft.price.includes);
     expect(result.facts.location).toEqual(draft.facts.location);
   });
+  it('更新所在地时保留未编辑的历史国家和公开说明', () => {
+    const draft = makeVehicleDraftFixture();
+    draft.facts.location = { country: 'DE', city: 'Berlin', displayName: ' 历史公开说明 ' };
+    const result = formToDraft(draft, { ...draftToForm(draft), city: ' Leipzig ' });
+    expect(result.facts.location).toEqual({ country: 'DE', city: 'Leipzig', displayName: ' 历史公开说明 ' });
+    expect(draft.facts.location.city).toBe('Berlin');
+  });
   it('保留年精度，不把首次登记填成制造日期', () => {
     const draft = emptyDraft();
     const result = formToDraft(draft, { ...draftToForm(draft), manufacturedAt: '2021', manufacturedPrecision: 'year' });

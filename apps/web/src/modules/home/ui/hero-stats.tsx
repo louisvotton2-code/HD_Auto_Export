@@ -1,22 +1,15 @@
 'use client';
 
 import type { Locale } from '@/i18n/routing';
-import { companyMetrics } from '../content/company-metrics';
+import { approximateCatalogVehicleCount, companyMetrics } from '../content/company-metrics';
 import { homeContent } from '../content/home-content';
 import { CountUpValue } from '@/shared/ui/count-up-value';
 import styles from './hero-stats.module.css';
 
-/** API catalog totals and user-confirmed company figures have distinct sources. */
-export function HeroStats({
-  locale,
-  catalogCount,
-}: {
-  locale: Locale;
-  catalogCount: number | null;
-}) {
+export function HeroStats({ locale }: { locale: Locale }) {
   const t = homeContent[locale];
   const metrics = [
-    { id: 'catalog', value: catalogCount, suffix: '', animated: true },
+    { id: 'catalog', value: approximateCatalogVehicleCount },
     {
       id: 'clients',
       value: companyMetrics.happyClients,
@@ -24,7 +17,7 @@ export function HeroStats({
       animated: true,
     },
     { id: 'years', value: companyMetrics.yearsOnMarket, suffix: t.yearsSuffix, animated: false },
-  ];
+  ] as const;
   return (
     <dl className={styles.stats} data-testid="hero-stats">
       {metrics.map((metric, index) => (
@@ -34,17 +27,26 @@ export function HeroStats({
           data-testid={`hero-stat-${metric.id}`}
           key={metric.id}
         >
-          <dt className={styles.label}>{t.stats[index]}</dt>
+          <dt className={styles.label}>
+            {t.stats[index]}
+            {metric.id === 'catalog' && <><wbr />{t.catalogApproximation}</>}
+          </dt>
           <dd className={styles.number}>
-            <CountUpValue
-              value={metric.value}
-              suffix={metric.suffix}
-              locale={locale}
-              animated={metric.animated}
-              startAtZero
-              className={styles.value}
-              suffixClassName={styles.suffix}
-            />
+            {metric.id === 'catalog' ? (
+              <strong className={`${styles.value} ${styles.catalogValue}`}>
+                {new Intl.NumberFormat(locale).format(metric.value)}
+              </strong>
+            ) : (
+              <CountUpValue
+                value={metric.value}
+                suffix={metric.suffix}
+                locale={locale}
+                animated={metric.animated}
+                startAtZero
+                className={styles.value}
+                suffixClassName={styles.suffix}
+              />
+            )}
           </dd>
         </div>
       ))}

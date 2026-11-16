@@ -44,7 +44,7 @@ export default async function Home({ params }: Props) {
     getPublicHome(locale),
     getPublicFilters(locale),
   ]);
-  // The homepage needs the total and basic facets, never catalog-only trim dictionaries.
+  // The brand and model sections only use the basic facets.
   const facets = filters.status === 'fulfilled' ? filters.value.data : null;
   return (
     <PublicHome
@@ -53,7 +53,6 @@ export default async function Home({ params }: Props) {
       home={home.status === 'fulfilled' ? home.value : null}
       filters={facets ? {
         catalog: facets.catalog,
-        total: facets.total,
         makes: facets.makes,
         models: facets.models,
         powertrains: facets.powertrains,
