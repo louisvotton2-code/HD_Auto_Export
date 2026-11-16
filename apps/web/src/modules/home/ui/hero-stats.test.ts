@@ -18,9 +18,9 @@ describe('hero statistics server content', () => {
       const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogCount: 42 }));
       expect(html).toContain(catalogLabel);
       expect(metricHtml(html, 'catalog')).toContain('data-counter-value="0">0</span>');
-      expect(metricHtml(html, 'catalog')).toContain('class="sr-only">42</span>');
+      expect(metricHtml(html, 'catalog')).toMatch(/class="sr-only"[^>]*>42<\/span>/);
       expect(metricHtml(html, 'clients')).toContain('data-counter-value="0">0</span>');
-      expect(metricHtml(html, 'clients')).toContain('class="sr-only">660+</span>');
+      expect(metricHtml(html, 'clients')).toMatch(/class="sr-only"[^>]*>660\+<\/span>/);
       expect(metricHtml(html, 'years')).toContain('data-counter-value="23">23</span>');
       expect(metricHtml(html, 'years')).toContain(`class="sr-only">${years}</span>`);
       expect(html).not.toMatch(/1[ ,\u00a0]?240/);

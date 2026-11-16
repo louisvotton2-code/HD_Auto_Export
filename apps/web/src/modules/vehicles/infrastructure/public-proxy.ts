@@ -17,6 +17,7 @@ import {
 import type { Locale } from '@/i18n/routing';
 import { parseVehicleSegment, type VehicleSegmentKind } from '../public-segments';
 import { catalogQueryKeys, parseFilterQuery } from '../public-query';
+import { projectCatalogFacetOverview, projectCatalogFacetScope } from '../catalog-facets';
 import {
   publicFiltersSchema,
   legacyHomeSchema,
@@ -66,7 +67,11 @@ function failure(status: number, retryAfter?: string) {
 }
 
 /** An allowlisted public BFF, not an arbitrary reverse proxy or an admin/auth endpoint. */
-export async function proxyPublicRequest(request: Request, parts: string[]) {
+export async function proxyPublicRequest(
+  request: Request,
+  parts: string[],
+  websiteFacets = false,
+) {
   const path = parts.join('/');
   const isMedia = /^media\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
   const isDetail = /^vehicles\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(path);
@@ -74,9 +79,17 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
   if (!['home/vehicles', 'vehicles', 'vehicle-filters'].includes(path) && !isMedia && !isDetail && !isSegment)
     return failure(404);
   const params = new URL(request.url).searchParams;
+  const selectedModels = websiteFacets ? params.getAll('selectedModel') : [];
+  if (websiteFacets) {
+    params.delete('selectedModel');
+    if (selectedModels.length > 1 || (selectedModels.length && !IdSchema.safeParse(selectedModels[0]).success))
+      return failure(400);
+  }
   // Old website bookmarks must query all valid listings, even with an obsolete value.
   if (path === 'vehicles' || path === 'vehicle-filters') params.delete('exportStatus');
-  const allowed = isSegment ? (parts[2] === 'inspection' ? ['locale', 'limit', 'cursor', 'category', 'part', 'outcome', 'order'] : ['locale', 'limit', 'cursor']) : isMedia
+  const allowed = websiteFacets
+    ? ['catalog', 'locale', 'view', 'priceView', 'q', 'priceMin', 'priceMax', 'priceCurrency', 'make', 'model']
+    : isSegment ? (parts[2] === 'inspection' ? ['locale', 'limit', 'cursor', 'category', 'part', 'outcome', 'order'] : ['locale', 'limit', 'cursor']) : isMedia
     ? ['variant']
     : path === 'vehicles'
       ? catalogQueryKeys
@@ -124,6 +137,15 @@ export async function proxyPublicRequest(request: Request, parts: string[]) {
         : failure(404);
     }
     const upstream = `/api/v1/${path}${Object.keys(query).length ? `?${queryString(query)}` : ''}`;
+    if (websiteFacets) {
+      const { make, model } = query as { make?: string; model?: string };
+      if ((model && !make) || (make && selectedModels.length)) return failure(400);
+      const filters = await readPublicJson(upstream, publicFiltersSchema, request.headers);
+      return Response.json(
+        make ? projectCatalogFacetScope(filters, make, model) : projectCatalogFacetOverview(filters, selectedModels[0]),
+        { headers },
+      );
+    }
     if (isMedia) {
       const response = await requestPublicApi(upstream, fetch, request.headers);
       const type = response.headers.get('content-type')?.split(';')[0].trim();

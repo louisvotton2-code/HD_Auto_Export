@@ -47,6 +47,18 @@ test('home counters grow from the first rendered zero while static fallbacks sho
   browser,
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
+  // Keep scripting enabled, but simulate delayed styles and JavaScript at first paint.
+  const assets = /\/_next\/static\/.*\.(?:css|js)(?:\?|$)/;
+  await page.route(assets, (route) => route.abort());
+  await page.goto('/en/');
+  await expect(page.getByTestId('hero-stat-clients').locator('strong')).toHaveText('0+', {
+    useInnerText: true,
+  });
+  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('0', {
+    useInnerText: true,
+  });
+  await page.unroute(assets);
+
   await page.addInitScript(() => {
     const observed: number[] = [];
     const catalogObserved: number[] = [];

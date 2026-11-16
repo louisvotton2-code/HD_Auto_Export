@@ -19,10 +19,12 @@ if (fixtureOrigin) {
     );
 }
 const pathOf = (url: string) => new URL(url).pathname.replace(/\/$/, '');
-const isBusiness = (request: Request) =>
-  /^\/api\/v1\/(?:home\/vehicles|vehicles(?:\/[^/]+)?|vehicle-filters)$/.test(
-    pathOf(request.url()),
-  );
+const catalogFacetsPath = '/catalog-facets.json';
+const isBusiness = (request: Request) => {
+  const path = pathOf(request.url());
+  return path === catalogFacetsPath ||
+    /^\/api\/v1\/(?:home\/vehicles|vehicles(?:\/[^/]+)?|vehicle-filters)$/.test(path);
+};
 function collectBusiness(page: Page) {
   const requests: Request[] = [];
   page.on('request', (request) => {
@@ -137,7 +139,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
       const form = page.locator('main form');
       const facets429 = page.waitForResponse(
         (response) =>
-          pathOf(response.url()) === '/api/v1/vehicle-filters' && response.status() === 429,
+          pathOf(response.url()) === catalogFacetsPath && response.status() === 429,
       );
       await form.locator('[name="q"]').fill('Alpha Model');
       await form.locator('[type="submit"]').last().click();
@@ -177,7 +179,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         2,
       );
       expect(
-        requests.filter((entry) => pathOf(entry.url()) === '/api/v1/vehicle-filters'),
+        requests.filter((entry) => pathOf(entry.url()) === catalogFacetsPath),
       ).toHaveLength(2);
       await expect(page.locator('[data-public-vehicle="fixture_demo"]')).toHaveCount(0);
       await expect(form.locator('select[name="make"] option[value="beta"]')).toHaveCount(1);

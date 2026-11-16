@@ -44,12 +44,20 @@ export default async function Home({ params }: Props) {
     getPublicHome(locale),
     getPublicFilters(locale),
   ]);
+  // The homepage needs the total and basic facets, never catalog-only trim dictionaries.
+  const facets = filters.status === 'fulfilled' ? filters.value.data : null;
   return (
     <PublicHome
       key={locale}
       locale={locale}
       home={home.status === 'fulfilled' ? home.value : null}
-      filters={filters.status === 'fulfilled' ? filters.value.data : null}
+      filters={facets ? {
+        catalog: facets.catalog,
+        total: facets.total,
+        makes: facets.makes,
+        models: facets.models,
+        powertrains: facets.powertrains,
+      } : null}
       initialRetryAfter={publicRetryAfter(home, filters)}
     />
   );

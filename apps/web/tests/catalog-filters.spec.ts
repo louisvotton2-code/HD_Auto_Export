@@ -114,6 +114,72 @@ test('combined criteria filter the whole catalog before pagination and survive l
   ).toBe(true);
 });
 
+test('shared catalog selections hydrate without facet reads and draft requests stay in their locale', async ({ page }) => {
+  const reads: URL[] = [];
+  const isFacet = (url: URL) => url.pathname.replace(/\/$/, '') === '/catalog-facets.json';
+  const isScope = (url: URL, locale: string, make: string, model: string | null = null) =>
+    isFacet(url) && url.searchParams.get('locale') === locale &&
+    url.searchParams.get('make') === make && url.searchParams.get('model') === model;
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (isFacet(url)) reads.push(url);
+  });
+
+  await page.goto('/ru/cars/?make=beta&model=beta_model&trim=beta_model_trim');
+  const sharedUrl = page.url();
+  const form = page.locator('main form').first();
+  const make = form.locator('[name=make]');
+  const model = form.locator('[name=model]');
+  await expect(make).toHaveValue('beta');
+  await expect(model).toHaveValue('beta_model');
+  await expect(form.locator('[name=trim]')).toHaveValue('beta_model_trim');
+  expect(reads).toHaveLength(0);
+
+  // Keep the older draft request pending while returning to the server-provided brand.
+  const russianAlpha = (url: URL) => isScope(url, 'ru', 'alpha');
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(russianAlpha, async (route) => {
+    await held;
+    if (!route.request().failure()) await route.continue();
+  });
+  try {
+    const requested = page.waitForRequest((request) => russianAlpha(new URL(request.url())));
+    await make.selectOption('alpha');
+    await requested;
+    expect(reads).toHaveLength(1);
+    await expect(model).toHaveValue('');
+    await expect(page).toHaveURL(sharedUrl);
+
+    const aborted = page.waitForEvent('requestfailed', (request) => russianAlpha(new URL(request.url())));
+    await make.selectOption('beta');
+    expect((await aborted).failure()?.errorText).toContain('ERR_ABORTED');
+    await expect(model.locator('option[value=beta_model]')).toHaveCount(1);
+    await expect(model.locator('option[value=alpha_model]')).toHaveCount(0);
+    await expect(form.locator('[name=trim]')).toHaveValue('');
+    await expect(page).toHaveURL(sharedUrl);
+
+    await page.locator('.language-switch summary').click();
+    await page.locator('.language-switch a[lang=en]').click();
+    await expect(page).toHaveURL(/\/en\/cars\/$/);
+    await expect(make).toHaveValue('');
+    await expect(model).toBeDisabled();
+    expect(reads).toHaveLength(1);
+  } finally {
+    release();
+    await page.unroute(russianAlpha);
+  }
+
+  await make.selectOption('beta');
+  await expect(model.locator('option[value=beta_model]')).toHaveCount(1);
+  await model.selectOption('beta_model');
+  await expect(form.locator('[name=trim] option[value=beta_model_trim]')).toHaveCount(1);
+  await expect(page).toHaveURL(/\/en\/cars\/$/);
+  expect(reads).toHaveLength(3);
+  expect(isScope(reads[1]!, 'en', 'beta')).toBe(true);
+  expect(isScope(reads[2]!, 'en', 'beta', 'beta_model')).toBe(true);
+});
+
 test('range validation blocks a reversed UI range; the BFF rejects malformed and repeated filters', async ({
   page,
   request,
@@ -201,6 +267,7 @@ test('a model-only URL remains constrained when submitting other criteria, with 
       const form = page.locator('main form').first();
       await expect(form.locator('[name=model]')).toHaveValue('beta_model');
       await expect(form.locator('[name=model]')).toBeEnabled();
+      await expect(form.locator('[name=model] option[value=alpha_model]')).toHaveCount(1);
       await form.locator('[name=mileageMin]').selectOption('0');
       await form.getByRole('button', { name: 'Apply filters', exact: true }).click();
       await expect(page.locator('main')).toContainText('12 vehicle records');

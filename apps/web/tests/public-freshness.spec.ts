@@ -63,10 +63,12 @@ async function expectDetailContactRegions(scope: Locator, id: string) {
   await expect(service.locator('a')).toHaveCount(0);
 }
 const cleanPath = (url: string) => new URL(url).pathname.replace(/\/$/, '');
-const isDataRequest = (request: Request) =>
-  /\/api\/v1\/(?:home\/vehicles|vehicles(?:\/[^/]+)?|vehicle-filters)\/?$/.test(
-    new URL(request.url()).pathname,
-  );
+const catalogFacetsPath = '/catalog-facets.json';
+const isDataRequest = (request: Request) => {
+  const path = cleanPath(request.url());
+  return path === catalogFacetsPath ||
+    /^\/api\/v1\/(?:home\/vehicles|vehicles(?:\/[^/]+)?|vehicle-filters)$/.test(path);
+};
 function networkAudit(page: Page) {
   const requests: Request[] = [];
   const collect = (request: Request) => requests.push(request);
@@ -155,21 +157,47 @@ test.describe('explicit public queries, stable activation and media regression',
   test('search, selectors and pagination fetch scoped JSON and restore the URL without RSC or documents', async ({
     page,
   }) => {
+    const audit = networkAudit(page);
     await page.goto('/en/cars/?page=2&pageSize=2');
     const current = await resource(page, '/api/v1/vehicles');
     await expect(current).toHaveAttribute('data-freshness', 'fresh');
     await beginShellAudit(page);
-    const audit = networkAudit(page);
+    const initialDocuments = audit.documents();
     const form = page.locator('main form').first();
     await form.locator('[name="q"]').fill('Alpha Model');
     await form.locator('select[name="make"]').selectOption('alpha');
+    const draftModelResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return cleanPath(url.href) === catalogFacetsPath &&
+        url.searchParams.get('make') === 'alpha' && url.searchParams.get('model') === 'alpha_model' &&
+        !url.searchParams.has('q');
+    });
     await form.locator('select[name="model"]').selectOption('alpha_model');
+    expect((await draftModelResponse).status()).toBe(200);
     await form.locator('select[name="powertrain"]').selectOption('bev');
     await form.locator('[type="submit"]').last().click();
     await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('1');
     await expect(current).toHaveAttribute('data-freshness', 'fresh');
     await expect(current.locator('[data-public-vehicle]')).toHaveCount(2);
     await expect(form.locator('select[name="make"] option[value="beta"]')).toHaveCount(0);
+    await expect.poll(() => audit.data()
+      .map((request) => new URL(request.url()))
+      .filter((url) => cleanPath(url.href) === catalogFacetsPath)
+      .map(({ searchParams }) => [
+        searchParams.get('q') ?? '', searchParams.get('make') ?? '', searchParams.get('model') ?? '',
+      ].join('|')).sort(),
+    ).toEqual([
+      'Alpha Model|alpha|',
+      'Alpha Model|alpha|alpha_model',
+      'Alpha Model||',
+      '|alpha|',
+      '|alpha|alpha_model',
+    ]);
+    for (const request of audit.data().filter((entry) => cleanPath(entry.url()) === catalogFacetsPath)) {
+      const response = await request.response();
+      expect(response?.status()).toBe(200);
+      await response?.finished();
+    }
     const requested = audit.data().map((request) => new URL(request.url()));
     expect(
       requested.some(
@@ -183,13 +211,8 @@ test.describe('explicit public queries, stable activation and media regression',
           url.searchParams.get('pageSize') === '2',
       ),
     ).toBe(true);
-    expect(
-      requested.some(
-        (url) =>
-          cleanPath(url.href) === '/api/v1/vehicle-filters' &&
-          url.searchParams.get('q') === 'Alpha Model',
-      ),
-    ).toBe(true);
+    expect(requested.filter((url) => cleanPath(url.href) === '/api/v1/vehicle-filters')).toHaveLength(0);
+    const requestsBeforePagination = audit.data().length;
     await page.locator('main a[rel="next"]').click();
     await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('2');
     await expect(current).toHaveAttribute('data-freshness', 'fresh');
@@ -203,6 +226,8 @@ test.describe('explicit public queries, stable activation and media regression',
             new URL(request.url()).searchParams.get('q') === 'Alpha Model',
         ),
     ).toBe(true);
+    expect(audit.data().slice(requestsBeforePagination)
+      .filter((request) => cleanPath(request.url()) === catalogFacetsPath)).toHaveLength(0);
     const requestsBeforeBack = audit.data().length;
     await page.goBack();
     await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('1');
@@ -213,7 +238,7 @@ test.describe('explicit public queries, stable activation and media regression',
     const backRequests = audit.data().slice(requestsBeforeBack);
     expect(backRequests).toHaveLength(1);
     expect(cleanPath(backRequests[0]!.url())).toBe('/api/v1/vehicles');
-    expect(audit.documents()).toHaveLength(0);
+    expect(audit.documents()).toEqual(initialDocuments);
     // Global navigation can prefetch its unfiltered destinations when the footer enters view.
     const queryRsc = audit.rsc().filter((request) => {
       const params = new URL(request.url()).searchParams;

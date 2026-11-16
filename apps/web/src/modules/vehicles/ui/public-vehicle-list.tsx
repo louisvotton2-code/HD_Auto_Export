@@ -16,8 +16,8 @@ import {
   parseCatalogPageQuery,
   publicQueryString,
   publicUsdCatalogQuery,
-  publicUsdFilterQuery,
 } from '../public-query';
+import { catalogFacetOverviewSchema, catalogFacetUrl, type CatalogFacetOverview } from '../catalog-facets';
 import { localizedCardListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
@@ -31,12 +31,16 @@ export function PublicVehicleList({
   locale,
   result,
   filters,
+  initialBrandFilters,
+  initialModelFilters,
   query: initialQuery,
   initialRetryAfter = 0,
 }: {
   locale: Locale;
   result: CatalogResult | null;
-  filters: PublicVehicleFilters['data'] | null;
+  filters: CatalogFacetOverview | null;
+  initialBrandFilters: PublicVehicleFilters | null;
+  initialModelFilters: PublicVehicleFilters | null;
   query: PublicVehicleQuery;
   error?: boolean;
   initialRetryAfter?: number;
@@ -59,6 +63,12 @@ export function PublicVehicleList({
     return parseCatalogPageQuery(input, locale);
   }, [search, locale]);
   const selected = query ?? initialQuery;
+  const appliedKey = publicCatalogHref(locale, selected);
+  const [draftParents, setDraftParents] = useState<{ appliedKey: string; make: string; model: string } | null>(null);
+  const parents = draftParents?.appliedKey === appliedKey ? draftParents : null;
+  if (draftParents && !parents) setDraftParents(null);
+  const make = parents?.make ?? selected.make ?? '';
+  const model = parents?.model ?? selected.model ?? '';
   const url = `/api/v1/vehicles/?${publicQueryString(publicUsdCatalogQuery(selected))}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const resource = usePublicResource(url, result, localizedCardListSchema(locale, 'usd'), {
@@ -66,14 +76,30 @@ export function PublicVehicleList({
     initialRetryAfter,
     cooldown,
   });
-  const initialFilters = useMemo(
-    () => (filters ? { data: filters, meta: { requestId: 'server-rendered' } } : null),
-    [filters],
-  );
-  const filterUrl = `/api/v1/vehicle-filters/?${publicQueryString(publicUsdFilterQuery(locale, selected))}`;
-  const facets = usePublicResource(filterUrl, initialFilters, PublicVehicleFiltersSchema, {
-    cooldown,
+  const filterUrl = catalogFacetUrl(locale, selected, {
+    selectedModel: selected.make ? undefined : selected.model,
   });
+  const facets = usePublicResource(filterUrl, filters, catalogFacetOverviewSchema, { cooldown });
+  const brand = usePublicResource(
+    make ? catalogFacetUrl(locale, selected, { make }) : null,
+    initialBrandFilters, PublicVehicleFiltersSchema, { cooldown },
+  );
+  const modelOptions = usePublicResource(
+    make && model ? catalogFacetUrl(locale, selected, { make, model }) : null,
+    initialModelFilters, PublicVehicleFiltersSchema, { cooldown },
+  );
+  const facetOverview = facets.dataCurrent ? facets.data : null;
+  const brandFilters = brand.dataCurrent ? brand.data?.data : null;
+  const modelFilters = modelOptions.dataCurrent ? modelOptions.data?.data ?? null : null;
+  const brandPhase = make && !brandFilters ? brand.phase : undefined;
+  const modelPhase = make && model && !modelFilters ? modelOptions.phase : undefined;
+  const scopedPhase = brandPhase === 'checking' || modelPhase === 'checking' ? 'checking'
+    : brandPhase === 'error' || modelPhase === 'error' ? 'error'
+      : undefined;
+  function reloadScopedFilters() {
+    if (brandPhase === 'error') void brand.reload();
+    if (modelPhase === 'error') void modelOptions.reload();
+  }
   const data = resource.data;
   const phase = navigationFrom !== null ? 'checking' : resource.phase;
   const tiltLayout = useMemo(
@@ -110,7 +136,6 @@ export function PublicVehicleList({
         ?.scrollIntoView({ block: 'start', behavior: 'instant' });
     }
   }
-  const appliedKey = publicCatalogHref(locale, selected);
   return (
     <PublicFreshnessBoundary phase={phase} url={url}>
       <main id="main" className={styles.page} data-testid="public-vehicle-catalog">
@@ -121,10 +146,22 @@ export function PublicVehicleList({
               <PublicVehicleFiltersForm
                 key={appliedKey}
                 locale={locale}
-                filters={facets.dataCurrent ? (facets.data?.data ?? null) : null}
+                filters={facetOverview?.data ?? null}
+                brandModels={make ? brandFilters?.models ?? [] : facetOverview?.data.models ?? []}
+                brandPending={brandPhase === 'checking'}
+                modelFilters={modelFilters}
+                showModelOptions={{
+                  trim: facetOverview?.hasTrims ?? false,
+                  generation: facetOverview?.hasGenerations ?? false,
+                }}
+                modelFiltersPhase={scopedPhase}
+                onRetryModelFilters={reloadScopedFilters}
                 query={selected}
+                make={make}
+                model={model}
+                onModelScopeChange={(make, model) => setDraftParents({ appliedKey, make, model })}
                 pending={phase === 'checking'}
-                retryAfter={resource.retryAfter}
+                retryAfter={Math.max(resource.retryAfter, brand.retryAfter, modelOptions.retryAfter)}
                 navigate={navigate}
                 onRetry={reloadCatalog}
               />
