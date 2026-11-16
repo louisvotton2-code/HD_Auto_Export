@@ -119,6 +119,11 @@ function importTechnicalFacts(draft: VehicleDraftInput, localization: StoredLoca
   const commonFields = { displacementCc: 'engineCc', powerHp: 'powerHp', bodyType: 'body', transmissionType: 'transmission' } as const;
   const commonField = (key: VehicleDetailMatchKey) => Object.hasOwn(commonFields, key) ? commonFields[key as keyof typeof commonFields] : null;
   const description = (value: Candidate['value'] | undefined | null) => typeof value === 'object' ? value?.zh ?? null : value == null ? null : String(value);
+  const sameCandidateValue = (left: Candidate['value'], right: Candidate['value']) => {
+    if (typeof left === 'object' && typeof right === 'object')
+      return locales.every(locale => left[locale] === right[locale]);
+    return left === right;
+  };
   const powerField = (key: VehicleDetailMatchKey) => VEHICLE_POWER_DETAIL_KEYS.find(power => power === key);
   const existingValue = (key: VehicleDetailMatchKey) => {
     const field = commonField(key), powerKey = powerField(key);
@@ -143,7 +148,7 @@ function importTechnicalFacts(draft: VehicleDraftInput, localization: StoredLoca
     const field = commonField(key);
     const powerKey = powerField(key);
     const prior = existingValue(key);
-    if (group.some(entry => description(entry.value) !== description(first.value)) || invalid.some(entry => entry.key === key)) {
+    if (group.some(entry => !sameCandidateValue(entry.value, first.value)) || invalid.some(entry => entry.key === key)) {
       for (const candidate of group) warn(candidate.index, 'CONFLICTING_CONFIGURATION_VALUES', description(prior));
       continue;
     }

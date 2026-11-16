@@ -47,9 +47,13 @@ function hasRecordedLocation(value: string | null | undefined) {
   const label = value?.normalize('NFKC').trim().toLowerCase();
   return !!label && !locationPlaceholders.has(label);
 }
-const adminSelect = `SELECT ${staffActivitySql()} AS activity,v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,l.data AS localization_data,l.bindings AS localization_bindings,l.retired_fields,pl.data AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id`;
+function localizationDataSql(alias: 'l' | 'pl') {
+  return `CASE WHEN ${alias}.verified_technical IS NULL THEN ${alias}.data
+    ELSE jsonb_set(${alias}.data,'{facts,verifiedTechnical}',${alias}.verified_technical) END`;
+}
+const adminSelect = `SELECT ${staffActivitySql()} AS activity,v.*,d.data,p.data AS publication_data,l.revision AS localization_revision,${localizationDataSql('l')} AS localization_data,l.bindings AS localization_bindings,l.retired_fields,${localizationDataSql('pl')} AS published_localization FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id LEFT JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN vehicle_localizations l ON l.vehicle_id=v.id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id`;
 const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
-const publicSelect = `SELECT v.*,p.data AS publication_data,pl.data AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
+const publicSelect = `SELECT v.*,p.data AS publication_data,${localizationDataSql('pl')} AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
 const catalogVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved')) OR ${unverifiedVisible})`;
 const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability='available') OR ${unverifiedVisible})`;
@@ -168,10 +172,15 @@ async function lockVehicle(tx: PoolClient, id: string, version?: number, include
 function storedLocalization(row:Row):StoredLocalization {
   return row.localization_data?{revision:row.localization_revision!,data:row.localization_data,bindings:row.localization_bindings!,retiredFields:row.retired_fields??[]}:emptyLocalization();
 }
+function splitLocalizationData(data: LocalizationData) {
+  const { verifiedTechnical, ...facts } = data.facts;
+  return { legacyData: JSON.stringify({ ...data, facts }), verifiedTechnical: verifiedTechnical ? JSON.stringify(verifiedTechnical) : null };
+}
 async function persistLocalization(tx:PoolClient,id:string,state:StoredLocalization,revision:number){
-  await tx.query(`INSERT INTO vehicle_localizations(vehicle_id,revision,data,bindings,retired_fields) VALUES($1,$2,$3,$4,$5)
-    ON CONFLICT(vehicle_id) DO UPDATE SET revision=excluded.revision,data=excluded.data,bindings=excluded.bindings,retired_fields=excluded.retired_fields`,
-    [id,revision,JSON.stringify(state.data),JSON.stringify(state.bindings),JSON.stringify(state.retiredFields)]);
+  const { legacyData, verifiedTechnical } = splitLocalizationData(state.data);
+  await tx.query(`INSERT INTO vehicle_localizations(vehicle_id,revision,data,bindings,retired_fields,verified_technical) VALUES($1,$2,$3,$4,$5,$6)
+    ON CONFLICT(vehicle_id) DO UPDATE SET revision=excluded.revision,data=excluded.data,bindings=excluded.bindings,retired_fields=excluded.retired_fields,verified_technical=excluded.verified_technical`,
+    [id,revision,legacyData,JSON.stringify(state.bindings),JSON.stringify(state.retiredFields),verifiedTechnical]);
 }
 function localizationResponse(row:Row):VehicleLocalization {
   const state=syncLocalization(row.id,row.data,storedLocalization(row));
@@ -612,7 +621,7 @@ export class InventoryService {
       await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publicationId,id,JSON.stringify(snapshot)]);
       if(localization){
         const projections={policyVersion:staffProjectionPolicy,...Object.fromEntries(locales.map(locale=>[locale,projectDisplay(id,snapshot,locale,localization)]))};
-        await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',[publicationId,JSON.stringify(localization.data),JSON.stringify(localization.bindings),JSON.stringify(projections)]);
+        await tx.query('INSERT INTO publication_localizations(publication_id,data,bindings,projections) VALUES($1,$2,$3,$4)',[publicationId,splitLocalizationData(localization.data).legacyData,JSON.stringify(localization.bindings),JSON.stringify(projections)]);
       }
       for (const m of images) await tx.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publicationId,m.id]);
       await tx.query(`UPDATE vehicles SET published_revision_id=$2,publication_state='published',published_at=now(),version=version+1,updated_at=now() WHERE id=$1`,[id,publicationId]);

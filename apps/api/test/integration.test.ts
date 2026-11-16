@@ -1138,6 +1138,17 @@ test('vehicle entry technical import binds structured facts and reports collisio
   const {identityHash,...technical}=updated.localization.data.facts.verifiedTechnical!;
   assert.match(identityHash,/^[a-f0-9]{64}$/);
   assert.deepEqual(technical,{engineKw:0,motorKw:110,vehicleClass:{id:classRow.id,value:classRow.value}});
+  const {data:legacyData,verified_technical:storedTechnical}= (await runtime.db.pool.query(
+    'SELECT data,verified_technical FROM vehicle_localizations WHERE vehicle_id=$1',[vehicle.id])).rows[0];
+  assert.deepEqual(Object.keys(legacyData.facts).sort(),['drivetrain','generation']);
+  assert.deepEqual(storedTechnical,updated.localization.data.facts.verifiedTechnical);
+  // The v1.0.4 writer replaces the legacy JSON while omitting the new column.
+  const legacyEdit={...legacyData,facts:{...legacyData.facts,drivetrain:'awd'}};
+  await runtime.db.pool.query('UPDATE vehicle_localizations SET data=$2,revision=revision+1 WHERE vehicle_id=$1',
+    [vehicle.id,JSON.stringify(legacyEdit)]);
+  const afterLegacyEdit=await bundle(vehicle.id);
+  assert.equal(afterLegacyEdit.localization.data.facts.drivetrain,'awd');
+  assert.deepEqual(afterLegacyEdit.localization.data.facts.verifiedTechnical,storedTechnical);
   const snapshots=new Map();
   for(const locale of ['zh','en','ru'] as const){
     const protectedView=await call({url:`/api/v1/admin/vehicles/${vehicle.id}/publication-preview?locale=${locale}`,headers:headers()});
@@ -1151,7 +1162,11 @@ test('vehicle entry technical import binds structured facts and reports collisio
     snapshots.set(locale,{technicalDetails:detail.technicalDetails,vehicleClass:detail.vehicleClass});
     assert.equal((await call({url:`/api/v1/vehicles/${vehicle.id}?locale=${locale}&view=localized&projection=detail-inline-v1`})).statusCode,404);
   }
-  const seeded=await seedHistoricalPublication(updated.vehicle,updated.localization.data);
+  const seeded=await seedHistoricalPublication(updated.vehicle,legacyEdit);
+  const snapshotStorage=(await runtime.db.pool.query(`SELECT data,verified_technical FROM publication_localizations
+    WHERE publication_id=$1`,[seeded.publishedRevisionId])).rows[0];
+  assert.deepEqual(Object.keys(snapshotStorage.data.facts).sort(),['drivetrain','generation']);
+  assert.deepEqual(snapshotStorage.verified_technical,storedTechnical);
   const current=await bundle(seeded.id);
   const newClass={...classRow,value:{...classRow.value,ru:'Компактный автомобиль'}};
   const revised=JSON.stringify({version:1,items:[engine,motor,newClass,conflictRow]});

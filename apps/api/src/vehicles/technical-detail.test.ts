@@ -105,6 +105,18 @@ test('technical class refreshes translations only when the verified item and Chi
   assert.equal(retained.warnings?.[0]?.code, 'RETAINED_CONFIRMED_VALUE');
 });
 
+test('technical class aliases with conflicting translations leave the verified value and source rows intact', () => {
+  const draft = draftWithoutMedia();
+  const initial = prepareConfigurationImport(vehicleId, draft, syncLocalization(vehicleId, draft),
+    JSON.stringify({ version: 1, items: [vehicleClass] }));
+  const alias = item('车型级别', 'Vehicle class', 'Класс автомобиля', { ...vehicleClass.value, en: 'Full-size' });
+  const collision = prepareConfigurationImport(vehicleId, initial.draft, initial.localization,
+    JSON.stringify({ version: 1, items: [vehicleClass, alias] }));
+  assert.deepEqual(collision.localization.data.facts.verifiedTechnical?.vehicleClass, { id: vehicleClass.id, value: vehicleClass.value });
+  assert.deepEqual(collision.draft.configuration?.items.map(row => row.name), [vehicleClass.name.zh, alias.name.zh]);
+  assert.deepEqual(collision.warnings?.map(warning => warning.code), ['CONFLICTING_CONFIGURATION_VALUES', 'CONFLICTING_CONFIGURATION_VALUES']);
+});
+
 test('contradictory recognized drivetrain translations are surfaced as a conflict and retained verbatim', () => {
   const draft = draftWithoutMedia();
   const localization = syncLocalization(vehicleId, draft);
