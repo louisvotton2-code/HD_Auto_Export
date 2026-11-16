@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 
-export const FORMAL_LISTING_LIMIT = 100_000;
+export const FORMAL_LISTING_LIMIT = 150_000;
 export const FORMAL_LISTING_LIMIT_CODE = 'SYNC_LISTING_LIMIT';
 
 export async function admitFormalListing(tx: PoolClient, source: string, externalId: string): Promise<boolean> {

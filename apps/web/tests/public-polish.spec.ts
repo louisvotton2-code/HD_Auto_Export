@@ -158,7 +158,7 @@ test('a keyword change during cooldown waits for an explicit retry of results an
   const calls: string[] = [];
   page.on('request', (req) => {
     const path = new URL(req.url()).pathname.replace(/\/$/, '');
-    if (path === '/api/v1/vehicles' || path === '/api/v1/vehicle-filters') calls.push(path);
+    if (path === '/api/v1/vehicles' || path === '/catalog-facets.json') calls.push(path);
   });
   const form = page.locator('main form');
   await form.locator('[name="q"]').fill('Alpha Model');
@@ -179,7 +179,7 @@ test('a keyword change during cooldown waits for an explicit retry of results an
   await expect(page.locator('[data-resource-url]')).toHaveAttribute('data-freshness', 'fresh');
   await expect.poll(() => calls.length).toBe(4);
   expect(calls.filter((path) => path === '/api/v1/vehicles')).toHaveLength(2);
-  expect(calls.filter((path) => path === '/api/v1/vehicle-filters')).toHaveLength(2);
+  expect(calls.filter((path) => path === '/catalog-facets.json')).toHaveLength(2);
 });
 
 test('the hero vehicle link remains one line on desktop and narrow phones', async ({ page }) => {

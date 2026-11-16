@@ -38,7 +38,7 @@ def config():
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', c['database']):
         raise ValueError('Invalid database')
     target = c.get('admissionTargetRows')
-    if target is not None and (type(target) is not int or not 1 <= target <= 100_000):
+    if target is not None and (type(target) is not int or not 1 <= target <= 150_000):
         raise ValueError('Invalid bounded admission target')
     if subprocess.check_output(['findmnt','--mountpoint',str(ROOT/'data'),'-no','UUID'],text=True).strip() != c['filesystemUuid']:
         raise ValueError('Unexpected filesystem')
@@ -86,18 +86,21 @@ def stream_size(argv, timeout=600, maximum=2*1024**3):
             except subprocess.TimeoutExpired: os.killpg(p.pid,signal.SIGKILL); p.wait()
 
 
-def project(e, probe, *, used, total, media, controls, daily, raw):
+def project(e, probe, *, used, total, media, controls, daily, raw, wal_on_disk, wal_configured):
     n=e['distinctProcessed']; target=e['targetRows']
     if not e.get('sampleEvidenceSufficient') or n<=0 or target<=0: raise ValueError('Insufficient sample')
-    for value in (used,total,media,controls,daily,raw,n,target,e['businessBytes'],e['sqlStagingBytes'],e['archiveDirectoryBytes'],e['walBytes']):
+    for value in (used,total,media,controls,daily,raw,wal_on_disk,wal_configured,n,target,e['businessBytes'],e['sqlStagingBytes'],e['archiveDirectoryBytes']):
         if type(value) is not int or value<0: raise ValueError('Invalid byte measurement')
     business=max(e['businessBytes'],math.ceil(e['projectedBytesPerDetail']*target))
     history=math.ceil(raw*max(n,target)/n)
-    stage=e['sqlStagingBytes']; csv=e['archiveDirectoryBytes']; wal=max(e['walBytes'],2*1024**3)
+    stage=e['sqlStagingBytes']; csv=e['archiveDirectoryBytes']
+    # The worker's LSN difference counts all WAL generated since its baseline.
+    # Only resident WAL can be subtracted from observed filesystem usage.
+    wal=max(wal_on_disk,wal_configured,2*1024**3)
     # Archive directory is conservatively all fixed CSV, never scaled by details.
     full_dump=math.ceil((probe['businessDumpBytes']+probe['rawDumpBytes'])*max(n,target,probe['processedRows'])/probe['processedRows'])
     point=full_dump+3*stage+3*csv+media+controls
-    protected=max(0,used-e['businessBytes']-stage-csv-media-e['walBytes']-daily)
+    protected=max(0,used-e['businessBytes']-stage-csv-media-wal_on_disk-daily)
     # Existing fixed baseline is already in protectedBytes. Two successful
     # encrypted daily points remain while the next point's compressed components
     # and ciphertext coexist. No per-release clone/restore reservation.
@@ -161,6 +164,9 @@ def measure():
     used = (fs.f_blocks-fs.f_bfree) * fs.f_frsize
     sizes = sql(c, """SELECT jsonb_build_object(
         'database', pg_database_size(current_database()),
+        'walOnDisk', (SELECT coalesce(sum(size),0) FROM pg_ls_waldir()),
+        'walConfigured', pg_size_bytes(current_setting('max_wal_size'))
+                         + pg_size_bytes(current_setting('wal_keep_size')),
         'raw', coalesce(sum(pg_total_relation_size(c.oid)),0))
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname='public' AND c.relkind='r'
@@ -173,7 +179,8 @@ def measure():
     result = project(e, cached, used=used, total=total,
                      media=sum(allocated(p) for p in c['mediaRoots']),
                      controls=sum(allocated(p) for p in c['controlRoots']),
-                     daily=daily_bytes(), raw=sizes['raw'])
+                     daily=daily_bytes(), raw=sizes['raw'],
+                     wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'])
     latest = evidence(c)
     if not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash']:
         return None

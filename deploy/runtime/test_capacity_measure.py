@@ -8,8 +8,19 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Peak(unittest.TestCase):
     def data(self):
         return dict(distinctProcessed=10000,targetRows=500000,sampleEvidenceSufficient=True,businessBytes=10000000,projectedBytesPerDetail=1000,sqlStagingBytes=20000000,archiveDirectoryBytes=1000000,walBytes=100000)
-    def calculate(self,e):
-        return m.project(e,dict(processedRows=10000,businessDumpBytes=1000000,rawDumpBytes=200000),used=50000000,total=400*1024**3,media=100000,controls=1000,daily=0,raw=2000000)
+    def calculate(self,e, *, wal_on_disk=100000, wal_configured=1024**3):
+        return m.project(e,dict(processedRows=10000,businessDumpBytes=1000000,rawDumpBytes=200000),used=50000000,total=400*1024**3,media=100000,controls=1000,daily=0,raw=2000000,wal_on_disk=wal_on_disk,wal_configured=wal_configured)
+    def test_cumulative_wal_does_not_replace_disk_usage(self):
+        e=self.data() | {'walBytes': 150*1024**3}
+        result=self.calculate(e)
+        self.assertEqual(result,self.calculate(self.data()))
+        self.assertEqual(result['components']['protectedBytes'],18800000)
+        self.assertEqual(result['components']['walBytes'],2*1024**3)
+    def test_retained_wal_or_configuration_can_exceed_minimum(self):
+        for resident,configured in ((4,3),(3,4)):
+            with self.subTest(resident=resident,configured=configured):
+                result=self.calculate(self.data(),wal_on_disk=resident*1024**3,wal_configured=configured*1024**3)
+                self.assertEqual(result['components']['walBytes'],4*1024**3)
     def test_fixed_stage_not_scaled_by_details(self):
         e=self.data();r=self.calculate(e);self.assertEqual(r['components']['sqlSnapshotsBytes'],60000000)
         self.assertEqual(r['components']['recoveryPointBytes'],123101000)
@@ -42,7 +53,7 @@ class BoundedAdmission(unittest.TestCase):
         c = {'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
         with patch.object(m, 'config', return_value=c), \
              patch.object(m, 'evidence', return_value=e), \
-             patch.object(m, 'sql', return_value={'database': 500_000_000, 'raw': 200_000_000}), \
+             patch.object(m, 'sql', return_value={'database': 500_000_000, 'raw': 200_000_000, 'walOnDisk': 100000, 'walConfigured': 1024**3}), \
              patch.object(m, 'daily_bytes', return_value=0), \
              patch.object(m.os, 'statvfs') as disk, \
              patch.object(m.subprocess, 'run') as run:
