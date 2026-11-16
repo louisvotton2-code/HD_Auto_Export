@@ -251,7 +251,7 @@ export class FullSyncWorker{
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    const atLimit=(await tx.query<{reached:boolean}>('SELECT admitted_count >= $1 AS reached FROM external_formal_admission_state WHERE id=1',[FORMAL_LISTING_LIMIT])).rows[0]!.reached;
    // When full, jump over unadmitted rows but still refresh every admitted
-   // member in the export, including those after the first 100000 CSV rows.
+   // member in the export, including those after the initial CSV rows.
    const eligible=atLimit?'AND EXISTS(SELECT 1 FROM external_formal_admissions a WHERE a.source=s.source AND a.external_id=s.external_id)':'';
    const rows=(await tx.query(`SELECT s.*,i.business_at AS withdrawn_at FROM external_full_stage s
      LEFT JOIN external_ingestion_identity_state i ON i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id AND i.withdrawn
@@ -261,6 +261,10 @@ export class FullSyncWorker{
     if(entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at))continue;
     if(!await admitFormalListing(tx,entry.source,entry.external_id))continue;
     let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
+    if(m.state==='withdrawn'&&new Date(snap.generated_at)<=new Date(m.business_at)){
+     await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
+     continue;
+    }
     const alias=parseAlias(row.duplicate_of);if(alias)await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString());
     m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
     const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd'].includes(key)));const rowHash=jsonHash(stableRow);

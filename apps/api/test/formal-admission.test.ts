@@ -38,7 +38,8 @@ test('formal listing admissions persist across CSV and delta runs, including exi
   await mkdir(path.join(previous,'meta'),{recursive:true});
   const source=new URL('../migrations/',import.meta.url);
   const journal=JSON.parse(await readFile(new URL('meta/_journal.json',source),'utf8'));
-  journal.entries=journal.entries.filter((entry:{idx:number})=>entry.idx<28);
+  const entries=journal.entries as Array<{idx:number;tag:string}>;
+  journal.entries=entries.filter(entry=>entry.idx<28);
   await Promise.all(journal.entries.map(({tag}:{tag:string})=>copyFile(new URL(tag+'.sql',source),path.join(previous,tag+'.sql'))));
   await writeFile(path.join(previous,'meta/_journal.json'),JSON.stringify(journal));
   await migrate(database.orm,{migrationsFolder:previous});
@@ -55,7 +56,40 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    ('che168','101','shared-canonical','active',0,$1,NULL),
    ('dongchedi','101','shared-canonical','withdrawn',5,$1,$1),
    ('che168','103','pure-withdrawal','withdrawn',8,$1,NULL)`,[earlier]);
-  await migrateDatabase(database);
+  const admissionMigration=entries.find(entry=>entry.idx===28)!;
+  await copyFile(new URL(admissionMigration.tag+'.sql',source),path.join(previous,admissionMigration.tag+'.sql'));
+  await writeFile(path.join(previous,'meta/_journal.json'),JSON.stringify({...journal,entries:[...journal.entries,admissionMigration]}));
+  await migrate(database.orm,{migrationsFolder:previous});
+  await t.test('the expanded release reopens the verified CSV behind a fresh capacity decision',async()=>{
+   const id=randomUUID();
+   await database.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,apply_cursor,target_rows,completed_at)
+    VALUES($1,$2,'complete',$3,3,3,3,2,now())`,[id,earlier,path.join(directory,id+'.csv.gz')]);
+   await database.pool.query(`INSERT INTO external_full_stage VALUES
+    ($1,1,'che168','101','{}'),($1,2,'che168','103','{}'),($1,3,'che168','104','{}')`,[id]);
+   await database.pool.query(`UPDATE external_full_sync SET enabled=true,paused=false,last_capacity_sample=10000 WHERE id=1`);
+   // A short retained fixture must leave the old database ceiling in place.
+   await assert.rejects(migrateDatabase(database));
+   const oldDefinition=(await database.pool.query("SELECT pg_get_functiondef('reserve_external_formal_listing(text,text)'::regprocedure) AS definition")).rows[0].definition;
+   assert.match(oldDefinition,/admitted_count<100000/);
+   await database.pool.query('UPDATE external_formal_admission_state SET admitted_count=$1 WHERE id=1',[FORMAL_LISTING_LIMIT-1]);
+   const oldWorker=await database.pool.connect();
+   try{
+    await oldWorker.query('SELECT pg_advisory_lock(78291333)');
+    await assert.rejects(migrateDatabase(database));
+   }finally{
+    await oldWorker.query('SELECT pg_advisory_unlock(78291333)');
+    oldWorker.release();
+   }
+   await migrateDatabase(database);
+   const state=(await database.pool.query(`SELECT s.state,s.apply_cursor,s.target_rows,s.completed_at,f.capacity_pending
+    FROM external_full_snapshots s CROSS JOIN external_full_sync f WHERE s.id=$1 AND f.id=1`,[id])).rows[0];
+   assert.deepEqual(state,{state:'verified',apply_cursor:'0',target_rows:String(FORMAL_LISTING_LIMIT),completed_at:null,capacity_pending:true});
+   assert.equal(await database.transaction(tx=>admitFormalListing(tx,'che168','104')),false);
+   await database.pool.query('DELETE FROM external_full_stage WHERE snapshot_id=$1',[id]);
+   await database.pool.query('DELETE FROM external_full_snapshots WHERE id=$1',[id]);
+   await database.pool.query(`UPDATE external_full_sync SET enabled=false,paused=true,last_capacity_sample=0,capacity_pending=false WHERE id=1`);
+   await database.pool.query('UPDATE external_formal_admission_state SET admitted_count=2 WHERE id=1');
+  });
   await rm(previous,{recursive:true,force:true});
   assert.equal(await formalAdmissionInstalled(database.pool),true);
   const count=async()=>Number((await database.pool.query('SELECT admitted_count FROM external_formal_admission_state WHERE id=1')).rows[0].admitted_count);
@@ -150,6 +184,16 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.deepEqual(verified,{state:'complete',target_rows:String(FORMAL_LISTING_LIMIT-1)});
   });
 
+  await t.test('CSV replay cannot reactivate a known withdrawal at the same business time',async()=>{
+   await database.pool.query("UPDATE external_full_members SET business_at=$1 WHERE source='dongchedi' AND external_id='101'",[at]);
+   const snapshot=await stage([{source:'dongchedi',id:'101'}],FORMAL_LISTING_LIMIT-1);
+   await worker!.promoteSnapshot(snapshot);
+   const state=(await database.pool.query(`SELECT state,EXISTS(SELECT 1 FROM external_full_work w
+    WHERE w.source=m.source AND w.external_id=m.external_id) AS queued
+    FROM external_full_members m WHERE source='dongchedi' AND external_id='101'`)).rows[0];
+   assert.deepEqual(state,{state:'withdrawn',queued:false});
+  });
+
   await t.test('unknown fixed-scope withdrawal does not apply or hydrate an older delta',async()=>{
    const id='115';
    const snapshot={sha256:'b'.repeat(64),bytes:1,rows:1,sourceCounts:{che168:1,dongchedi:0},generatedAt:at,complete:true as const};
@@ -227,7 +271,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    const second=await stage([{source:'che168',id:'130'},{source:'dongchedi',id:'131'},{source:'dongchedi',id:'101'},{source:'che168',id:'132'}]);
    assert.equal(await worker!.promoteSnapshot(second),1);
    const completed=(await database.pool.query('SELECT state,apply_cursor,rows,target_rows FROM external_full_snapshots WHERE id=$1',[second])).rows[0];
-   assert.deepEqual(completed,{state:'complete',apply_cursor:'4',rows:'4',target_rows:'100000'});
+   assert.deepEqual(completed,{state:'complete',apply_cursor:'4',rows:'4',target_rows:String(FORMAL_LISTING_LIMIT)});
    assert.equal((await database.pool.query("SELECT last_snapshot FROM external_full_members WHERE source='dongchedi' AND external_id='101'")).rows[0].last_snapshot,second);
   });
 
@@ -274,7 +318,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.equal(await count(),FORMAL_LISTING_LIMIT);
   });
 
-  await t.test('legacy CSV metadata remains raw while capacity binds the 100000 target',async()=>{
+  await t.test('legacy CSV metadata remains raw while capacity binds the admission target',async()=>{
    const legacy=randomUUID();
    await database.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,bytes,apply_cursor)
     VALUES($1,$2,'complete',$3,476416,476416,0,476416)`,[legacy,at,path.join(directory,legacy+'.csv.gz')]);
