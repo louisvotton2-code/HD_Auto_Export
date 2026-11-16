@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
-import { envelope, error, installApi, reply, vehicle } from './api-fixture';
-import { fillRequiredVehicleBasics, select, tab } from './ui-helpers';
+import { installApi, vehicle } from './api-fixture';
+import { fillRequiredVehicleBasics, tab } from './ui-helpers';
 
 test('vehicle list distinguishes an incomplete asking quote from an explicit on-request price', async ({ page }) => {
   const missingMoney = vehicle(); missingMoney.stockCode = 'ASKING-NO-MONEY';
@@ -29,45 +28,57 @@ test('manual entry defaults and model suggestions are saved as draft facts only'
   const api = await installApi(page);
   await page.goto('/admin/vehicles/new');
   await fillRequiredVehicleBasics(page);
-  await expect(page.getByLabel('所在地城市', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('车辆所在地', { exact: true })).toHaveValue('成都市');
   await expect(page.getByLabel('公开所在地描述', { exact: true })).toHaveCount(0);
   await tab(page, '价格与内部信息');
   await expect(page.getByLabel('价格包含项目', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   await expect.poll(() => api.creates.length).toBe(1);
   expect(JSON.parse(api.creates[0].body!)).toMatchObject({ draft: {
-    facts: { model: { id: 'toyota-corolla', name: '卡罗拉' }, registrationStatus: 'registered', location: { country: 'CN', city: null, displayName: null } },
+    facts: { model: { id: 'toyota-corolla', name: '卡罗拉' }, registrationStatus: 'registered', location: { country: 'CN', city: '成都市', displayName: null } },
     price: { includes: [] },
   } });
   expect(api.items[0]).toMatchObject({ availability: 'unknown', availabilityCheckedAt: null });
   await expect(page).toHaveURL(/\/admin\/vehicles\/fixture_vehicle_1$/);
   await tab(page, '发布预览');
-  await expect(page.getByText('发布后可在这里查看官网访客能读取的内容。', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '预览官网公开内容' })).toHaveCount(0);
+  await expect(page.getByText('官网公开内容', { exact: true })).toHaveCount(0);
   await expect(page.locator('.ant-form-item').filter({ has: page.getByRole('combobox', { name: '核验后的库存状态' }) })).toContainText('可售');
 });
 
-test('public snapshot preview distinguishes a missing locale from a proxy route failure', async ({ page }) => {
-  const published = makeLocalizedPublicVehicleFixture('zh');
-  await installApi(page, { items: [{ ...vehicle(), publicationState: 'published', publishedRevisionId: 'rev1', publishedAt: published.publishedAt }] });
-  await page.route(`**/api/v1/vehicles/${published.id}?*`, route => {
-    const query = new URL(route.request().url()).searchParams;
-    expect(query.get('view')).toBe('localized');
-    if (query.get('locale') === 'en') return reply(route, error('NOT_FOUND'), 404);
-    if (query.get('locale') === 'ru') return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
-    return reply(route, envelope(published));
-  });
-  await page.goto(`/admin/vehicles/${published.id}`);
+test('manual entry finds expanded brands by alias and searches within the selected brand', async ({ page }) => {
+  await installApi(page);
+  await page.goto('/admin/vehicles/new');
+  const brand = page.getByRole('combobox', { name: '品牌', exact: true });
+  const model = page.getByRole('combobox', { name: '车型', exact: true });
+  const choices = page.locator('.ant-select-dropdown:visible');
+
+  await brand.click();
+  await brand.fill('Сяоми');
+  await choices.getByText('小米汽车 / Xiaomi Auto', { exact: true }).click();
+  await model.click();
+  await model.fill('SU7');
+  await choices.getByText('小米SU7 / Xiaomi SU7', { exact: true }).click();
+  await expect(page.getByText('小米SU7 / Xiaomi SU7', { exact: true })).toBeVisible();
+
+  await brand.click();
+  await brand.fill('Toyota');
+  await choices.getByText('丰田 / Toyota', { exact: true }).click();
+  await expect(page.getByText('小米SU7 / Xiaomi SU7', { exact: true })).toBeHidden();
+  await model.click();
+  await model.fill('Corolla');
+  await expect(choices.getByText('卡罗拉 / Corolla', { exact: true })).toBeVisible();
+});
+
+test('publication preview omits the public content card for a published vehicle', async ({ page }) => {
+  const item = { ...vehicle(), id: '30000000-0000-4000-8000-000000000001',
+    publicationState: 'published' as const, publishedRevisionId: 'rev1', publishedAt: '2026-11-16T08:00:00Z' };
+  await installApi(page, { items: [item] });
+  await page.goto(`/admin/vehicles/${item.id}`);
   await tab(page, '发布预览');
-  const preview = page.getByRole('button', { name: '预览官网公开内容' });
-  await preview.click();
-  await expect(page.getByRole('heading', { name: published.content.title.text, exact: true })).toBeVisible();
-  await select(page, '公开内容语言', '英文');
-  await preview.click();
-  await expect(page.getByText(/当前没有这个语言的公开版本/)).toBeVisible();
-  await select(page, '公开内容语言', '俄文');
-  await preview.click();
-  await expect(page.getByText('服务暂时不可用，请稍后重试。', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('iframe[title="中文车辆发布预览"]')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '库存与发布' })).toBeVisible();
+  await expect(page.getByText('官网公开内容', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '预览官网公开内容' })).toHaveCount(0);
 });
 
 for (const startsOnDesktop of [false, true]) {

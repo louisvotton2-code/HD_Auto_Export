@@ -1,8 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { makeExternalVehicleDraftFixture, makePublishReadinessFixture } from '@hd/contracts/fixtures';
-import { PublicationPreviewResponseSchema, PublishReadinessSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField, type PublishReadiness } from '@hd/contracts/admin';
-import { envelope, error, installApi, localization, publicationKey, reply, vehicle } from './api-fixture';
-import { saveBundle } from './translation-test-helpers';
+import { PublicationPreviewResponseSchema, PublishReadinessSchema, type AdminVehicle, type PublishReadiness } from '@hd/contracts/admin';
+import { envelope, error, installApi, publicationKey, reply, vehicle } from './api-fixture';
 import { notes, tab } from './ui-helpers';
 
 const publish = (page: Page) => page.getByTestId('vehicle-publish');
@@ -69,7 +68,11 @@ for (const scenario of [
     await expect(publish(page)).toBeDisabled();
     await page.getByRole('button', { name: scenario.message, exact: true }).click();
     await expect(page.getByRole('tab', { name: new RegExp(scenario.target) })).toHaveAttribute('aria-selected', 'true');
-    if (scenario.stage === 'localization') await expect(page.getByLabel('英文标题', { exact: true })).toBeFocused();
+    if (scenario.stage === 'localization') {
+      await expect(page.getByLabel('三语 JSON', { exact: true })).toBeFocused();
+      await expect(page.getByText('发布前请在 JSON 中补齐资料', { exact: true })).toBeVisible();
+      await expect(page.getByText(scenario.message, { exact: true })).toBeVisible();
+    }
     await tab(page, '发布预览');
     await frameMessage(page, ready, 'ready');
     await expect(publish(page)).toBeDisabled();
@@ -85,78 +88,11 @@ test('publication readiness opens the external vehicle powertrain on the configu
     issues: [{ stage: 'required_fields', path: 'draft.facts.powertrain', code: 'REQUIRED', message: 'A known powertrain is required.' }],
   });
   await setup(page, ready, item);
-  let finishRead!: () => void;
-  const loading = new Promise<void>(resolve => { finishRead = resolve; });
-  await page.route(`**/api/v1/admin/vehicles/${item.id}/translation-bundle`, async route => {
-    await loading;
-    return route.fallback();
-  });
   const powertrain = page.getByRole('combobox', { name: '动力类型', exact: true });
-  try {
-    await page.getByRole('button', { name: '动力类型：请选择已知动力类型', exact: true }).click();
-    await expect(page.getByRole('tab', { name: /车辆配置/ })).toHaveAttribute('aria-selected', 'true');
-    await expect(powertrain).toBeDisabled();
-  } finally { finishRead(); }
+  await page.getByRole('button', { name: '动力类型：请选择已知动力类型', exact: true }).click();
+  await expect(page.getByRole('tab', { name: /车辆配置/ })).toHaveAttribute('aria-selected', 'true');
   await expect(powertrain).toBeEnabled();
   await expect(powertrain).toBeFocused();
-});
-
-test('publication readiness preserves separate Russian issues, focuses exact fields and refreshes after each save', async ({ page }) => {
-  const item = record();
-  const first = '测试充电电量范围', second = '测试座椅调节方式';
-  item.draft.configuration = { version: 1, items: [{ name: first, value: '已配置' }, { name: second, value: '4向电动调节' }] };
-  const firstRef = `configuration.${vehicleConfigurationItemId(first)}.name`;
-  const secondRef = `configuration.${vehicleConfigurationItemId(second)}.value`;
-  const issues = [{
-    stage: 'localization' as const, path: `localization.${firstRef}.ru`, code: 'REQUIRED_FOR_PUBLICATION',
-    message: 'A display translation is required.',
-  }, {
-    stage: 'localization' as const, path: `localization.${secondRef}.ru`, code: 'REQUIRED_FOR_PUBLICATION',
-    message: 'A display translation is required.',
-  }, {
-    stage: 'preview' as const, path: 'publicationPreview', code: 'PREVIEW_CONFIRMATION_REQUIRED',
-    message: 'Confirm the current publication preview before publishing.',
-  }];
-  const fields: DisplayField[] = [
-    { ref: firstRef, sourceLanguage: 'zh', sourceText: first, sourceVersion: 1, sourceHash: '1'.repeat(64),
-      translations: { zh: null, en: null, ru: null } },
-    { ref: secondRef, sourceLanguage: 'zh', sourceText: '4向电动调节', sourceVersion: 2, sourceHash: '2'.repeat(64),
-      translations: { zh: null, en: null, ru: null } },
-  ];
-  const ready = gate(item, false, { localizationReady: false, issues });
-  const api = await setup(page, ready, item);
-  const saved = localization(item, fields);
-  api.localizations.set(item.id, saved);
-  await page.route(`**/api/v1/admin/vehicles/${item.id}/publish-readiness?*`, route => {
-    const current = api.publishReadiness.get(publicationKey(item.id))!;
-    const remaining = issues.filter((issue, index) => issue.stage === 'preview' || !api.localizations.get(item.id)?.data.fields[index]?.translations.ru?.text.trim());
-    api.publishReadiness.set(publicationKey(item.id), PublishReadinessSchema.parse({ ...current,
-      localizationReady: !remaining.some(issue => issue.stage === 'localization'), issues: remaining }));
-    return route.fallback();
-  });
-  await expect(page.getByTestId('vehicle-publish')).toBeDisabled();
-  const firstLabel = `${first} · 配置名称 · 俄文`, secondLabel = `${second} · 配置内容 · 俄文`;
-  await expect(page.getByRole('button', { name: secondLabel, exact: true })).toBeVisible();
-  await page.getByRole('button', { name: firstLabel, exact: true }).click();
-  await expect(page.getByRole('tab', { name: /车辆配置/ })).toHaveAttribute('aria-selected', 'true');
-  const firstInput = page.getByLabel(`俄文${first} · 配置名称`, { exact: true });
-  const secondInput = page.getByLabel(`俄文${second} · 配置内容`, { exact: true });
-  await expect(firstInput).toBeFocused();
-  const pending = page.getByRole('region', { name: '发布检查待处理' });
-  await firstInput.fill('Исправленный перевод');
-  await saveBundle(page);
-  await expect(pending.getByRole('button', { name: firstLabel, exact: true })).toHaveCount(0);
-  await pending.getByRole('button', { name: secondLabel, exact: true }).click();
-  await expect(secondInput).toBeFocused();
-  await secondInput.fill('Электрорегулировка в 4 направлениях');
-  await saveBundle(page);
-  await expect(pending).toHaveCount(0);
-  await tab(page, '发布预览');
-  await expect(publish(page)).toBeDisabled();
-  await frameMessage(page, api.publishReadiness.get(publicationKey(item.id))!, 'ready');
-  await expect(publish(page)).toBeEnabled();
-  expect(api.previewConfirmations).toEqual([]);
-  expect(api.translationGenerations).toEqual([]);
 });
 
 test('publication readiness retries after a failed preview confirmation without publishing early', async ({ page }) => {
@@ -178,46 +114,6 @@ test('publication readiness retries after a failed preview confirmation without 
   await publish(page).click();
   await expect.poll(() => publishes).toBe(1);
   expect(api.previewConfirmations).toHaveLength(1);
-});
-
-test('publication readiness opens missing legacy Chinese content for entry without relabeling its source', async ({ page }) => {
-  const item = record();
-  item.draft.content.title = { sourceLanguage: 'en', sourceText: 'Legacy title', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
-  item.draft.content.description = { sourceLanguage: 'und', sourceText: 'Legacy description', sourceVersion: 1, translations: { zh: null, en: null, ru: null } };
-  const issues = ['draft.content.title.translations.zh', 'draft.content.description.translations.zh', 'localization.model.zh']
-    .map(path => ({ stage: 'localization' as const, path, code: 'REQUIRED_FOR_PUBLICATION', message: 'A nonempty translation is required.' }));
-  const ready = gate(item, false, { localizationReady: false, issues });
-  const api = await setup(page, ready, item);
-  api.localizations.set(item.id, localization(item, [{
-    ref: 'model', sourceLanguage: 'und', sourceText: 'Legacy model', sourceVersion: 1, sourceHash: '3'.repeat(64),
-    translations: { zh: null, en: null, ru: null },
-  }]));
-  await page.getByRole('button', { name: '车辆标题 · 中文', exact: true }).click();
-  const title = page.getByLabel('中文标题', { exact: true });
-  await expect(title).toBeFocused();
-  await title.fill('补充的中文标题');
-  const pending = page.getByRole('region', { name: '发布检查待处理' });
-  await pending.getByRole('button', { name: '车况描述 · 中文', exact: true }).click();
-  const description = page.getByLabel('中文描述', { exact: true });
-  await expect(description).toBeFocused();
-  await description.fill('补充的中文车况');
-  await pending.getByRole('button', { name: '车型名称 · 中文', exact: true }).click();
-  const model = page.getByLabel('中文车型名称', { exact: true });
-  await expect(model).toBeFocused();
-  await model.fill('补充的中文车型');
-  await saveBundle(page);
-  const input = api.bundleSaves[0]!.input;
-  expect(input.sourceLanguageConfirmations).toEqual([]);
-  for (const [field, sourceLanguage, text] of [
-    [input.content.title, 'en', '补充的中文标题'],
-    [input.content.description, 'und', '补充的中文车况'],
-    [input.localization.fields[0]!, 'und', '补充的中文车型'],
-  ] as const) {
-    expect(field).toMatchObject({ sourceLanguage, translations: { zh: { text, kind: 'human', engineVersion: null } } });
-  }
-  await expect(title).toHaveValue('补充的中文标题');
-  await expect(description).toHaveValue('补充的中文车况');
-  await expect(model).toHaveValue('补充的中文车型');
 });
 
 test('publication readiness requires a matching rendered receipt and confirms it before the publish request', async ({ page }) => {

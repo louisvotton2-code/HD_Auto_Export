@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { Alert, App, Button, Card, Descriptions, Divider, Form, Image, Select, Space, Tag, Typography } from 'antd';
-import { CloudUploadOutlined, EyeOutlined, LinkOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
-import { AdminVehicleResponseSchema, type AdminVehicle, type Availability, type ConfirmPublicationPreviewRequest, type PublicationIssue, type PublishReadiness, type StaffMe } from '@hd/contracts/admin';
-import { PublicVehicleResponseSchema, type Locale, type PublicVehicle } from '@hd/contracts/public';
+import { Alert, App, Button, Card, Descriptions, Form, Select, Space, Tag, Typography } from 'antd';
+import { CloudUploadOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
+import { AdminVehicleResponseSchema, type AdminVehicle, type Availability, type ConfirmPublicationPreviewRequest, type PublicationIssue, type StaffMe } from '@hd/contracts/admin';
+import type { Locale } from '@hd/contracts/public';
 import { ApiClientError, request } from '../../shared/api/client';
 import { readVehicleLifecycle } from '../../shared/api/vehicle-lifecycle';
 import { availabilityLabels, formatTime, publicationLabels } from './draft-form';
@@ -21,19 +21,17 @@ type Props = {
   onUpdated: (vehicle: AdminVehicle) => void;
   onConflict?: () => void;
   onIssue: (issue: PublicationIssue) => void;
-  onReadinessChange: (ready: PublishReadiness | null) => void;
   onBusyChange?: (busy: boolean) => void;
 };
 
 type Operation = 'availability' | 'publish' | 'archive';
 const operationLabels = { availability: '库存核验', publish: '发布', archive: '下架' };
-const localeLabels = { zh: '中文', en: '英文', ru: '俄文' };
 
 function proposedAvailability(vehicle: AdminVehicle): Availability {
   return vehicle.publicationState === 'draft' && vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null ? 'available' : vehicle.availability;
 }
 
-export function VehicleActions({ publicationTabActive, previewLocale, previewReceipt, vehicle, hasUnsavedChanges, disabled = false, onUpdated, onConflict, onIssue, onReadinessChange, onBusyChange }: Props) {
+export function VehicleActions({ publicationTabActive, previewLocale, previewReceipt, vehicle, hasUnsavedChanges, disabled = false, onUpdated, onConflict, onIssue, onBusyChange }: Props) {
   const staff = useOutletContext<StaffMe>();
   const { modal, message: toast } = App.useApp();
   const canWrite = staff.permissions.includes('vehicles:write');
@@ -47,18 +45,12 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   const [issues, setIssues] = useState<string[]>([]);
   const [success, setSuccess] = useState('');
   const [latest, setLatest] = useState<AdminVehicle | null>(null);
-  const [locale, setLocale] = useState<Locale>('zh');
-  const [publicVehicle, setPublicVehicle] = useState<PublicVehicle | null>(null);
-  const [publicError, setPublicError] = useState('');
-  const [publicLoading, setPublicLoading] = useState(false);
   const inFlight = useRef(false);
   const actionGuard = useRef(false);
-  const publicInFlight = useRef(false);
   const mounted = useRef(true);
   const publishIntent = useRef<PublishIntent | null>(null);
   const parentBusy = useRef(onBusyChange);
   parentBusy.current = onBusyChange;
-  const publicRequest = useRef(0);
   const confirmation = useRef<{ cancel(): void } | null>(null);
   const readiness = usePublicationReadiness({ vehicleId: vehicle.id, version: vehicle.version, locale: previewLocale, onConflict });
   const receiptKey = previewReceipt ? JSON.stringify([vehicle.id, previewReceipt.version, previewReceipt.publicContentRevision, previewReceipt.fingerprint, previewReceipt.locale]) : null;
@@ -71,8 +63,6 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   const locked = unconfirmed !== null;
   const unavailable = disabled || hasUnsavedChanges || busy || confirming || locked || readiness.confirming;
   const publicationStatus = publicationControlState(vehicle);
-  const canReadPublic = vehicle.publicationState === 'published';
-  const publicUrl = `/api/v1/vehicles/${encodeURIComponent(vehicle.id)}?locale=${locale}&view=localized`;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; confirmation.current?.cancel(); parentBusy.current?.(false); }; }, []);
   useEffect(() => { parentBusy.current?.(busy || confirming || locked || readiness.confirming); }, [busy, confirming, locked, readiness.confirming]);
@@ -83,10 +73,6 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
     lastReceipt.current = receiptKey;
   }, [receiptKey, readiness.reload]);
   useEffect(() => { setAvailability(proposedAvailability(vehicle)); }, [vehicle.id, vehicle.availability, vehicle.availabilityCheckedAt, vehicle.publicationState, vehicle.version]);
-  useEffect(() => {
-    publicRequest.current += 1; publicInFlight.current = false;
-    setPublicVehicle(null); setPublicError(''); setPublicLoading(false);
-  }, [vehicle.id, vehicle.version, locale]);
 
   async function confirmAction(title: string, content: string, danger = false): Promise<boolean> {
     if (confirmation.current || !mounted.current) return false;
@@ -235,29 +221,11 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
     accept(latest); setError(''); setIssues([]); setSuccess('已载入核对到的服务端版本，请按实际状态继续操作。'); void toast.success('已采用核对到的当前状态，没有再次执行发布。');
   }
 
-  async function readPublic() {
-    if (!canReadPublic || publicInFlight.current) return;
-    publicInFlight.current = true;
-    const sequence = ++publicRequest.current;
-    setPublicLoading(true); setPublicError(''); setPublicVehicle(null);
-    try {
-      const response = await request(publicUrl, PublicVehicleResponseSchema);
-      if (mounted.current && sequence === publicRequest.current) { setPublicVehicle(response.data); void toast.success('已读取当前公开内容。'); }
-    } catch (failure) {
-      if (mounted.current && sequence === publicRequest.current) {
-        const missing = failure instanceof ApiClientError && failure.code === 'NOT_FOUND';
-        const detail = missing ? '当前没有这个语言的公开版本，或车辆的发布状态已变化。可切换语言或刷新页面后重试。' : failure instanceof Error ? failure.message : '读取公开数据失败。';
-        setPublicError(detail); if (missing) void toast.info('当前没有可读取的公开记录。'); else void toast.error(detail);
-      }
-    } finally { if (sequence === publicRequest.current) { publicInFlight.current = false; if (mounted.current) setPublicLoading(false); } }
-  }
-
   const ready = readiness.ready;
   const receiptMatches = Boolean(ready && previewReceipt && previewReceipt.version === vehicle.version && publicationReceiptMatches(ready, previewReceipt));
   const publishAllowed = publicationTabActive && canPublish && !unavailable && !publicationStatus.blocked &&
     !readiness.loading && !readiness.error && receiptMatches && !!ready?.requiredFieldsReady && !!ready.localizationReady;
 
-  useEffect(() => { onReadinessChange(ready); }, [ready, onReadinessChange]);
 
   const pending = ready?.issues.filter(issue => issue.stage !== 'preview') ?? [];
   const publishLabel = busy && activeOperation === 'publish' ? '正在发布' : publicationStatus.blocked ? publicationStatus.actionLabel : '确认并发布';
@@ -295,47 +263,24 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
           })}</ul>
           : !receiptMatches && <Typography.Paragraph>请完整载入当前草稿预览后再发布。</Typography.Paragraph>}
         {(readiness.error || (previewReceipt && !receiptMatches && !readiness.loading)) && <Button icon={<ReloadOutlined />} disabled={unavailable} onClick={() => void readiness.reload()}>重新检查发布条件</Button>}
-        {canPublish && unconfirmed !== 'publish' && <><Typography.Paragraph type="secondary">核对当前预览中的图片、价格和文字。点击确认并发布会更新官网公开内容。</Typography.Paragraph>
-          <Button data-testid="vehicle-publish" type="primary" size="large" icon={<CloudUploadOutlined />}
-            className={publishAllowed ? styles.publishReady : styles.publishIncomplete}
-            disabled={!publishAllowed} loading={busy && activeOperation === 'publish'} onClick={() => void perform('publish')}>{publishLabel}</Button>
-        </>}
       </section>}
       {canWrite && !allowsPending && <div className={styles.inventory}>
-        <Form.Item label="核验后的库存状态" htmlFor="verified-availability"><Select id="verified-availability" aria-label="核验后的库存状态" value={availability} disabled={unavailable} onChange={setAvailability} options={Object.entries(availabilityLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
-        <Button icon={<SafetyCertificateOutlined />} loading={busy && activeOperation === 'availability'} disabled={unavailable} onClick={() => void perform('availability')}>核验并更新库存</Button>
+        <div className={styles.inventoryControls}>
+          <Form.Item label="核验后的库存状态" htmlFor="verified-availability"><Select id="verified-availability" aria-label="核验后的库存状态" value={availability} disabled={unavailable} onChange={setAvailability} options={Object.entries(availabilityLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
+          <Button icon={<SafetyCertificateOutlined />} loading={busy && activeOperation === 'availability'} disabled={unavailable} onClick={() => void perform('availability')}>核验并更新库存</Button>
+        </div>
         <Typography.Text type="secondary">当前：{availabilityLabels[vehicle.availability]} · 最近核验：{formatTime(vehicle.availabilityCheckedAt)}。请按实际库存确认后更新。</Typography.Text>
       </div>}
-      <div className={styles.publishBar}>
-        <Space wrap>{canWrite && <Button danger icon={<StopOutlined />} loading={busy && activeOperation === 'archive'} disabled={unavailable || vehicle.publicationState === 'archived'} onClick={() => void perform('archive')}>下架车辆</Button>}</Space>
-        <Typography.Text type="secondary">发布后更新公开内容，下架立即撤销公开访问。</Typography.Text>
-      </div>
-    </Card>
-    <Card className={styles.publicArea} title={<Space><EyeOutlined />官网公开内容</Space>} extra={canReadPublic && <Button type="link" icon={<LinkOutlined />} href={publicUrl} target="_blank" rel="noreferrer">查看公开接口响应 ↗</Button>}>
-      {canReadPublic ? <div className={styles.publicToolbar}>
-        <Form.Item label="公开内容语言" htmlFor="public-content-locale"><Select id="public-content-locale" aria-label="公开内容语言" value={locale} onChange={setLocale} options={Object.entries(localeLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
-        <Button icon={<ReloadOutlined />} loading={publicLoading} onClick={() => void readPublic()}>预览官网公开内容</Button>
-        <Typography.Text type="secondary">仅展示当前发布版本，不包含未发布草稿与内部资料。</Typography.Text>
-      </div> : <Alert showIcon type="info" title={vehicle.publicationState === 'draft' ? '草稿尚未发布' : '车辆已下架'} description="发布后可在这里查看官网访客能读取的内容。" />}
-      {publicError && <Alert showIcon type="info" title={publicError} />}
-      {canReadPublic && !publicVehicle && !publicError && <div className={styles.publicEmpty}><EyeOutlined /><Typography.Text type="secondary">选择语言后预览已发布的车辆资料。</Typography.Text></div>}
-      {canReadPublic && publicVehicle && <article className={styles.publicCard}>
-        {String(publicVehicle.source.kind) === 'demo' && <Alert className={styles.notice} showIcon type="warning" title="展示样例，非实际库存" />}
-        {publicVehicle.source.kind === 'external' && <Alert className={styles.notice} showIcon type="info" title={`外部挂牌 · ${publicVehicle.source.platform.name}`} description={<Space wrap>{publicVehicle.source.listingUrl && <a href={publicVehicle.source.listingUrl} target="_blank" rel="noreferrer">查看原始挂牌 ↗</a>}<span>采集：{formatTime(publicVehicle.fetchedAt)}</span><span>外部资料不代表自有现货，译文未经人工审核。</span></Space>} />}
-        <div className={styles.publicHeading}><div><Typography.Text type="secondary">{publicVehicle.stockCode}</Typography.Text><Typography.Title level={3}>{publicVehicle.content.title.text}</Typography.Title></div><Tag color={publicVehicle.availability === 'available' ? 'success' : 'default'}>{availabilityLabels[publicVehicle.availability]}</Tag></div>
-        <Typography.Title level={3} className={styles.price}>{publicVehicle.price.kind === 'on_request' ? '待询价' : `${publicVehicle.price.kind === 'reference' ? '参考价格' : '公开报价'} ${publicVehicle.price.money.amount} ${publicVehicle.price.money.currency}`}</Typography.Title>
-        {publicVehicle.price.includes.length > 0 && <Typography.Paragraph type="secondary">价格包含：{publicVehicle.price.includes.join('；')}</Typography.Paragraph>}
-        <Descriptions column={{ xs: 1, sm: 2 }} size="small" items={[
-          { key: 'make', label: '品牌车型', children: `${publicVehicle.facts.make?.name ?? '未填写'} ${publicVehicle.facts.model?.name ?? ''}` },
-          { key: 'location', label: '所在地', children: publicVehicle.facts.location?.displayName ?? ([publicVehicle.facts.location?.country, publicVehicle.facts.location?.city].filter(Boolean).join(' / ') || '未填写') },
-          { key: 'year', label: '年款', children: publicVehicle.facts.modelYear ?? '未知' },
-          { key: 'mileage', label: '里程', children: publicVehicle.facts.mileageKm === null ? '未知' : `${publicVehicle.facts.mileageKm} 公里` },
-          { key: 'locale', label: '内容语言', children: `${localeLabels[publicVehicle.content.title.requestedLocale]} · ${publicVehicle.content.title.reviewed ? '已审核' : '未审核'}` },
-          { key: 'published', label: '发布于', children: formatTime(publicVehicle.publishedAt) },
-        ]} />
-        {publicVehicle.content.description && <><Divider /><Typography.Paragraph className={styles.description}>{publicVehicle.content.description.text}</Typography.Paragraph></>}
-        <Image.PreviewGroup><div className={styles.images}>{publicVehicle.images.map(image => <figure key={image.id}><Image src={image.url} alt={image.alt} loading="lazy" /><figcaption>{image.isCover ? '封面' : `图片 ${image.sortOrder + 1}`}{image.alt ? ` · ${image.alt}` : ''}</figcaption></figure>)}</div></Image.PreviewGroup>
-      </article>}
+      {(canWrite || (publicationTabActive && canPublish && unconfirmed !== 'publish')) &&
+        <div className={styles.publishBar} role="group" aria-label="发布与下架">
+          <Space wrap>
+            {publicationTabActive && canPublish && unconfirmed !== 'publish' && <Button data-testid="vehicle-publish" type="primary" size="large" icon={<CloudUploadOutlined />}
+              className={publishAllowed ? styles.publishReady : styles.publishIncomplete}
+              disabled={!publishAllowed} loading={busy && activeOperation === 'publish'} onClick={() => void perform('publish')}>{publishLabel}</Button>}
+            {canWrite && <Button danger size="large" icon={<StopOutlined />} loading={busy && activeOperation === 'archive'} disabled={unavailable || vehicle.publicationState === 'archived'} onClick={() => void perform('archive')}>下架车辆</Button>}
+          </Space>
+          <Typography.Text type="secondary">确认发布前请核对预览中的图片、价格和文字。下架立即撤销公开访问。</Typography.Text>
+        </div>}
     </Card>
   </section>;
 }

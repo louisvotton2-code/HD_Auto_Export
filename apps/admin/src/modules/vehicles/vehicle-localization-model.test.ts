@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makeVehicleLocalizationFixture, contractFixtures } from '@hd/contracts/fixtures';
 import { DisplayTranslationSuggestionsSchema, type DisplayTranslationSuggestions } from '@hd/contracts/admin';
 import {
-  applyDisplaySuggestions, assertLocalizationReadNotOlder, assertLocalizationSnapshot, brandIdentityOptions, changeDisplayLanguage, displayFieldLabel,
+  applyDisplaySuggestions, assertLocalizationReadNotOlder, assertLocalizationSnapshot, changeDisplayLanguage, displayFieldLabel,
   displayReviewState, editDisplayTranslation, localizationChanged, localizationComparison, localizationSaveRequest, reviewDisplayTranslation,
 } from './vehicle-localization-model';
 
@@ -119,13 +119,6 @@ describe('稳定引用与品牌目录接入', () => {
     field.ref = 'media.550e8400-e29b-41d4-a716-446655440001.alt';expect(displayFieldLabel(field, [field], vehicle)).toBe('图片 2 说明');
     vehicle.draft.media[0].sortOrder = 0;vehicle.draft.media[1].sortOrder = 1;expect(displayFieldLabel(field, [field], vehicle)).toBe('图片 1 说明');
     const fee = { ...field, ref: 'price.includes.550e8400-e29b-41d4-a716-446655440003' };expect(displayFieldLabel(fee, [field, fee], vehicle)).toBe('费用条目 1');expect(fee.ref).toContain('550e8400');
-  });
-  it('提供预设品牌并保留历史ID与原名，未识别品牌照常保留', () => {
-    const selected = { id: 'manual_existing_toyota', name: 'Toyota' };
-    const options = brandIdentityOptions([{ ...selected }, { id: 'custom', name: 'Custom Brand' }], selected);
-    expect(options.find(option => option.value === selected.id)).toMatchObject({ rawName: 'Toyota', label: expect.stringContaining('丰田') });
-    expect(options.find(option => option.value === 'toyota')).toMatchObject({ rawName: '丰田' });
-    expect(options.find(option => option.value === 'custom')?.label).toBe('Custom Brand');expect(selected).toEqual({ id: 'manual_existing_toyota', name: 'Toyota' });
   });
   it('冲突比较保留本地与服务端差异，不把远端自动覆盖为输入', () => {
     const base = makeVehicleLocalizationFixture();const remote = structuredClone(base.data);remote.fields[0].translations.en!.text = 'Remote result';

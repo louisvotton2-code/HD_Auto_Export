@@ -1,4 +1,4 @@
-/** Publication contract simulations; translation coverage now lives in workspace-cases and bundle-cases. */
+/** Publication contract simulations. Trilingual import is covered in configuration-import-cases. */
 import { expect, test, type Page, type Route } from '@playwright/test';
 import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
@@ -13,6 +13,25 @@ function publishedVehicle(): AdminVehicle {
 const publishButton = (page: Page) => page.getByTestId('vehicle-publish');
 function requestSnapshot(route: Route) { return { key: route.request().headers()['idempotency-key'], body: route.request().postData() }; }
 async function openPreview(page: Page, record: AdminVehicle) { await page.goto(`/admin/vehicles/${record.id}`); await tab(page, '发布预览'); }
+
+test('publication inventory is aligned above the grouped publish and archive actions', async ({ page }) => {
+  const record = publishedVehicle();
+  await installApi(page, { items: [record] });
+  await openPreview(page, record);
+  const selectControl = page.locator('.ant-select').filter({ has: page.getByRole('combobox', { name: '核验后的库存状态' }) });
+  const verify = page.getByRole('button', { name: '核验并更新库存' });
+  const actions = page.getByRole('group', { name: '发布与下架' });
+  await expect(actions.getByTestId('vehicle-publish')).toBeVisible();
+  await expect(actions.getByRole('button', { name: '下架车辆' })).toBeVisible();
+  const desktop = (await selectControl.boundingBox())!;
+  const verifyPosition = (await verify.boundingBox())!;
+  expect(Math.abs(desktop.y + desktop.height - verifyPosition.y - verifyPosition.height)).toBeLessThan(2);
+  expect(verifyPosition.y + verifyPosition.height).toBeLessThan((await actions.boundingBox())!.y);
+  await page.setViewportSize({ width: 375, height: 844 });
+  await expect(verify).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await verify.boundingBox())!.y).toBeLessThan((await actions.boundingBox())!.y);
+});
 
 test('publication unchanged state survives refresh and internal or inventory changes do not unlock publishing', async ({ page }) => {
   const record = publishedVehicle(); const api = await installApi(page, { items: [record] });

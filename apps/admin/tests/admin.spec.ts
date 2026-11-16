@@ -1,9 +1,6 @@
 import './sync-cases';
 import './activity-cases';
 import './report-cases';
-import './workspace-layout-cases';
-import './workspace-cases';
-import './bundle-cases';
 import './configuration-cases';
 import './configuration-import-cases';
 import './publication-tab-cases';

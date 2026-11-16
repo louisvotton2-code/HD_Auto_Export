@@ -1,27 +1,40 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Alert, App, Button, Card, Collapse, Form, Input, Space, Table, Typography } from 'antd';
+import type { TableColumnsType } from 'antd';
 import { CopyOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewRequestSchema, ConfigurationImportPreviewResponseSchema,
-  ConfigurationImportSaveRequestSchema, VehicleTranslationBundleResponseSchema, parseConfigurationImportJson, vehicleConfigurationItemId,
-  type AdminVehicle, type ConfigurationImportDocument, type ConfigurationImportPreview, type ConfigurationImportPreviewRequest,
+  CONFIGURATION_IMPORT_JSON_BYTES, CONFIGURATION_IMPORT_LOCALES, ConfigurationImportPreviewRequestSchema, ConfigurationImportPreviewResponseSchema,
+  ConfigurationImportSaveRequestSchema, VehicleTranslationBundleResponseSchema, vehicleConfigurationItemId,
+  type AdminVehicle, type ConfigurationImportDocument, type ConfigurationImportPreview, type ConfigurationImportPreviewRequest, type DisplayField,
+  type VehicleTranslationBundle,
 } from '@hd/contracts/admin';
 import { ApiClientError, request } from '../../shared/api/client';
-import { configurationImportIssues, importExampleText } from './configuration-import-model';
+import {
+  configurationImportIssues, importExampleText, importLocaleLabels, prepareConfigurationImport, previewImportRows, savedImportRows,
+  type ImportComparisonRow,
+} from './configuration-import-model';
 import { ConfigurationImportFields } from './configuration-import-fields';
-import { powertrainLabels } from './draft-form';
-import styles from './vehicle-configuration-editor.module.css';
+import { readConfigurationFacts } from './configuration-facts';
+import styles from './vehicle-configuration-import.module.css';
 
-type Guard = { dirty: boolean; busy: boolean; uncertain: boolean };
+export type ConfigurationImportGuard = { dirty: boolean; busy: boolean; uncertain: boolean };
 type Props = {
-  vehicle: AdminVehicle | null; prompt: string; disabled: boolean; hasUnsavedChanges: boolean;
-  onGuardChange: (guard: Guard) => void; onSaved: (vehicle: AdminVehicle) => void;
+  vehicle: AdminVehicle | null; active: boolean; disabled: boolean; hasUnsavedChanges: boolean;
+  prompt: (fields: readonly DisplayField[]) => string;
+  publicationIssue?: (fields: readonly DisplayField[]) => string;
+  onGuardChange: (guard: ConfigurationImportGuard) => void; onSaved: (vehicle: AdminVehicle) => void;
 };
 type Phase = 'reading' | 'previewing' | 'saving' | 'refreshing' | null;
-type Preview = { input: ConfigurationImportPreviewRequest; output: ConfigurationImportPreview };
+type Preview = { source: string; input: ConfigurationImportPreviewRequest; output: ConfigurationImportPreview };
 type Issue = { path: string; message: string };
+type ContextError = { vehicleId: string; version: number; message: string };
+const comparisonColumns: TableColumnsType<ImportComparisonRow> = [
+  { title: '字段', dataIndex: 'label', rowScope: 'row', width: '28%' },
+  ...CONFIGURATION_IMPORT_LOCALES.map(locale => ({ title: importLocaleLabels[locale], dataIndex: locale,
+    render: (text: string | null) => text ?? '—' })),
+];
 
-export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsavedChanges, onGuardChange, onSaved }: Props) {
+export function VehicleConfigurationImport({ vehicle, active, prompt, disabled, hasUnsavedChanges, publicationIssue, onGuardChange, onSaved }: Props) {
   const { message, modal } = App.useApp();
   const [raw, setRaw] = useState('');
   const [document, setDocument] = useState<ConfigurationImportDocument | null>(null);
@@ -33,6 +46,9 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
   const [uncertain, setUncertain] = useState(false);
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [open, setOpen] = useState<string[]>([]);
+  const [bundle, setBundle] = useState<VehicleTranslationBundle | null>(null);
+  const [contextError, setContextError] = useState<ContextError | null>(null);
+  const [contextRetry, setContextRetry] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const operation = useRef(false);
   const mounted = useRef(true);
@@ -41,19 +57,70 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
   const hasChanges = !!raw.trim();
   const editable = !!vehicle && !disabled && !hasUnsavedChanges && !busy && !uncertain;
   const path = vehicle ? `/api/v1/admin/vehicles/${encodeURIComponent(vehicle.id)}` : '';
-  const beforeItems = new Map(vehicle?.draft.configuration?.items.map(item => [vehicleConfigurationItemId(item.name), item.name]));
+  const vehicleId = vehicle?.id;
+  const version = vehicle?.version;
+  const currentBundle = bundle && bundle.vehicle.id === vehicleId && bundle.vehicle.version === version ? bundle : null;
+  const currentFields = currentBundle?.localization.data.fields;
+  const readError = contextError?.vehicleId === vehicleId && contextError?.version === version ? contextError?.message : undefined;
+  const promptReady = !vehicle || (!!currentFields && !hasUnsavedChanges && !needsRefresh && !readError);
+  const currentPreview = !needsRefresh && preview && preview.input.version === version && preview.source === raw ? preview : null;
+  const comparisonRows = useMemo(() => {
+    if (currentPreview && document && vehicle) return previewImportRows(document, vehicle, currentFields ?? []);
+    return currentBundle ? savedImportRows(currentBundle) : [];
+  }, [currentPreview, document, vehicle, currentFields, currentBundle]);
+  const savedItems = vehicle?.draft.configuration?.items;
+  const beforeItems = new Map(savedItems?.map(item => [vehicleConfigurationItemId(item.name), item.name]));
   const afterItems = new Map(document?.items?.map(item => [item.id, item.name.zh]));
-  function displayValue(path: string, value: string | null, empty: string) {
-    if (value === null) return empty;
-    if (path === 'facts.powertrain') return powertrainLabels[value as keyof typeof powertrainLabels] ?? value;
-    return value;
-  }
+  const itemOrder = currentPreview?.output.itemOrder;
+  const removedItems = itemOrder ? itemOrder.before.filter(id => !itemOrder.after.includes(id)).map(id => beforeItems.get(id) ?? id) : [];
+  const conflicts = currentPreview?.output.warnings?.filter(warning => warning.code !== 'UNVERIFIED_CONFIGURATION_VALUE') ?? [];
+  const { fields: standardValues, errors: standardErrors } = useMemo(() => {
+    const rows = document?.items?.map(({ name, value }) => ({ name: name.zh, value: value.zh })) ?? [];
+    const savedValues = new Map(savedItems?.map(({ name, value }) => [name, value]));
+    return { fields: readConfigurationFacts(rows).fields, errors: readConfigurationFacts(rows.filter(row => savedValues.get(row.name) !== row.value)).errors };
+  }, [document, savedItems]);
+  const currentPowertrain = vehicle?.draft.facts.powertrain;
+  const savedPowertrain = useMemo(() => readConfigurationFacts(savedItems ?? []).fields.powertrain, [savedItems]);
+  const configurationPowertrain = document?.items ? standardValues.powertrain : savedPowertrain;
+  const powertrain = document?.facts?.powertrain ?? currentPowertrain;
+  const powertrainMismatch = !!configurationPowertrain && configurationPowertrain !== powertrain &&
+    (configurationPowertrain !== savedPowertrain || powertrain !== currentPowertrain);
+  const standardInvalid = powertrainMismatch || standardErrors.length > 0;
+
+  const rememberBundle = useCallback((data: VehicleTranslationBundle) => {
+    setBundle(previous => {
+      if (previous?.vehicle.id === data.vehicle.id &&
+          (previous.vehicle.version > data.vehicle.version || previous.localization.revision > data.localization.revision)) return previous;
+      return data;
+    });
+    setContextError(null);
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; guard.current({ dirty: false, busy: false, uncertain: false }); };
   }, []);
   useEffect(() => { guard.current({ dirty: hasChanges, busy, uncertain }); }, [hasChanges, busy, uncertain]);
+  useEffect(() => {
+    if (!active || !vehicleId || version === undefined || hasUnsavedChanges) return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+    void request(`${path}/translation-bundle`, VehicleTranslationBundleResponseSchema, { signal })
+      .then(({ data }) => {
+        if (controller.signal.aborted) return;
+        if (data.vehicle.id !== vehicleId || data.vehicle.deletedAt) throw new ApiClientError(0, 'INVALID_RESPONSE');
+        if (data.vehicle.version !== version) {
+          setContextError({ vehicleId, version, message: '草稿版本已变化。请先读取最新草稿。' });
+          setNeedsRefresh(true);
+          return;
+        }
+        rememberBundle(data);
+      })
+      .catch((failure: unknown) => {
+        if (!controller.signal.aborted) setContextError({ vehicleId, version, message: failure instanceof ApiClientError ? failure.message : '暂时无法读取车辆公开字段。' });
+      });
+    return () => controller.abort();
+  }, [active, contextRetry, hasUnsavedChanges, path, rememberBundle, vehicleId, version]);
 
   function start(next: Phase) {
     if (operation.current) return false;
@@ -72,8 +139,9 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
     setOpen(previous => previous.includes(key) ? previous : [...previous, key]);
   }
   async function copyPrompt() {
+    if (!promptReady || busy) return;
     try {
-      await navigator.clipboard.writeText(prompt);
+      await navigator.clipboard.writeText(prompt(currentFields ?? []));
       void message.success('已复制三语 JSON 提示词。');
     } catch {
       expand('prompt');
@@ -111,15 +179,16 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
     if (!editable || !hasChanges || !start('previewing')) return;
     setPreview(null);
     try {
-      const parsed = parseConfigurationImportJson(raw);
-      setDocument(parsed);
+      const { document, json } = prepareConfigurationImport(raw);
+      setDocument(document);
       const current = await loadBundle();
       if (!mounted.current) return;
       if (current.vehicle.version !== vehicle?.version) {
         setNeedsRefresh(true); setError('草稿有更新，请先读取最新版本，再预览当前文件。'); return;
       }
+      rememberBundle(current);
       const input = ConfigurationImportPreviewRequestSchema.parse({
-        version: current.vehicle.version, localizationRevision: current.localization.revision, json: raw,
+        version: current.vehicle.version, localizationRevision: current.localization.revision, json,
       });
       const { data } = await request(`${path}/configuration-import/preview`, ConfigurationImportPreviewResponseSchema, {
         method: 'POST', body: JSON.stringify(input), signal: AbortSignal.timeout(25_000),
@@ -127,7 +196,7 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
       if (!mounted.current) return;
       if (data.version !== input.version || data.localizationRevision !== input.localizationRevision)
         throw new ApiClientError(0, 'INVALID_RESPONSE');
-      setPreview({ input, output: data });
+      setPreview({ source: raw, input, output: data });
       setNeedsRefresh(false);
     } catch (failure) {
       if (!mounted.current) return;
@@ -137,18 +206,19 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
   }
 
   async function saveImport() {
-    if (!editable || !preview || preview.input.version !== vehicle?.version || preview.input.json !== raw ||
-        (!preview.output.changes.length && !preview.output.itemOrder) || !start('saving')) return;
+    if (!editable || !currentPreview || standardInvalid ||
+        (!currentPreview.output.changes.length && !currentPreview.output.itemOrder) || !start('saving')) return;
     try {
-      const body = ConfigurationImportSaveRequestSchema.parse({ ...preview.input, previewToken: preview.output.previewToken });
+      const body = ConfigurationImportSaveRequestSchema.parse({ ...currentPreview.input, previewToken: currentPreview.output.previewToken });
       const { data } = await request(`${path}/configuration-import`, VehicleTranslationBundleResponseSchema, {
         method: 'PUT', body: JSON.stringify(body), signal: AbortSignal.timeout(35_000),
       });
       if (!mounted.current) return;
       if (data.vehicle.id !== vehicle.id || data.vehicle.deletedAt || data.localization.vehicleId !== vehicle.id ||
-          data.localization.vehicleVersion !== data.vehicle.version || data.vehicle.version <= preview.input.version ||
-          data.localization.revision < preview.input.localizationRevision) throw new ApiClientError(0, 'INVALID_RESPONSE');
+          data.localization.vehicleVersion !== data.vehicle.version || data.vehicle.version <= currentPreview.input.version ||
+          data.localization.revision < currentPreview.input.localizationRevision) throw new ApiClientError(0, 'INVALID_RESPONSE');
       change('');
+      rememberBundle(data);
       onSaved(data.vehicle);
       setNotice('三语资料已保存到草稿。'); void message.success('三语资料已保存到草稿。');
     } catch (failure) {
@@ -166,6 +236,7 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
     try {
       const current = await loadBundle();
       if (!mounted.current) return;
+      rememberBundle(current);
       onSaved(current.vehicle);
       setPreview(null); setUncertain(false); setNeedsRefresh(false);
       setNotice('已读取当前草稿。请重新预览并核对导入差异。');
@@ -181,15 +252,19 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
 
   return <Card title="导入中英俄车辆资料" className={styles.card}>
     <div className={styles.instructions}>
-      <Typography.Paragraph>复制提示词给你的 AI。上传或粘贴单个 JSON，预览变更后保存到草稿。</Typography.Paragraph>
-      <Button icon={<CopyOutlined />} disabled={busy} onClick={() => void copyPrompt()}>复制三语 JSON 提示词</Button>
+      <Typography.Paragraph>复制提示词给你的 AI。上传生成的 JSON 文件，核对后保存到草稿。</Typography.Paragraph>
+      <Button icon={<CopyOutlined />} disabled={busy || !promptReady} onClick={() => void copyPrompt()}>复制三语 JSON 提示词</Button>
     </div>
+    {vehicle && !hasUnsavedChanges && !currentBundle && !readError && <Typography.Text type="secondary">正在读取本车三语资料…</Typography.Text>}
+    {readError && !hasUnsavedChanges && <Alert type="warning" showIcon title={readError}
+      action={<Button disabled={busy} onClick={() => { setContextError(null); setContextRetry(previous => previous + 1); }}>重新读取公开字段</Button>} />}
     <Collapse className={styles.details} activeKey={open} onChange={keys => setOpen(keys)} items={[
-      { key: 'prompt', label: '查看 AI 提示词', children: <Input.TextArea aria-label="三语 JSON 提示词" readOnly value={prompt} autoSize={{ minRows: 8, maxRows: 20 }} className={styles.input} /> },
+      { key: 'prompt', label: '查看 AI 提示词', collapsible: promptReady ? undefined : 'disabled', children: <Input.TextArea aria-label="三语 JSON 提示词" readOnly value={promptReady ? prompt(currentFields ?? []) : ''} autoSize={{ minRows: 8, maxRows: 20 }} className={styles.input} /> },
       { key: 'example', label: '查看三语 JSON 示例', children: <pre className={styles.example}>{importExampleText}</pre> },
     ]} />
     {!vehicle && <Alert type="info" showIcon title="先保存基础资料，再导入 JSON" />}
     {vehicle && hasUnsavedChanges && <Alert type="info" showIcon title="请先保存当前草稿编辑，再导入 JSON" />}
+    {publicationIssue && <Alert type="warning" showIcon title="发布前请在 JSON 中补齐资料" description={publicationIssue(currentFields ?? [])} />}
     <Form.Item label="三语 JSON" htmlFor="configuration-import-json">
       <Input.TextArea id="configuration-import-json" value={raw} disabled={!editable} onChange={event => change(event.target.value)}
         aria-invalid={issues.length > 0} placeholder="粘贴完整 JSON，或从文件读取" autoSize={{ minRows: 5, maxRows: 14 }} className={styles.input} spellCheck={false} />
@@ -209,20 +284,34 @@ export function VehicleConfigurationImport({ vehicle, prompt, disabled, hasUnsav
       <Typography.Title level={5}>核对并编辑文件内容</Typography.Title>
       <ConfigurationImportFields key={String(document.items?.length ?? 0)} document={document} disabled={!editable} edit={edit} />
     </section>}
-    {preview && preview.input.version === vehicle?.version && <>
-      <Typography.Title level={5}>将保存到草稿的变更</Typography.Title>
-      {preview.output.itemOrder && <Collapse items={[{ key: 'item-order', label: '查看配置项目和顺序变化', children: <>
-        <Typography.Paragraph>当前：{preview.output.itemOrder.before.map(id => beforeItems.get(id) ?? id).join('、') || '无配置'}</Typography.Paragraph>
-        <Typography.Paragraph>导入后：{preview.output.itemOrder.after.map(id => afterItems.get(id) ?? id).join('、') || '无配置'}</Typography.Paragraph>
+    {currentPreview && <>
+      {powertrainMismatch && <Alert type="error" showIcon title="配置项目中的动力类型与车辆动力类型不一致"
+        description="请在 JSON 中核对动力类型配置和 facts.powertrain，再重新预览。" />}
+      {standardErrors.length > 0 && <Alert type="error" showIcon title="请修正标准参数并重新预览"
+        description={<ul className={styles.errors}>{standardErrors.map(issue => <li key={issue}>{issue}</li>)}</ul>} />}
+      {conflicts.length > 0 && <Alert type="warning" showIcon title="部分配置与详细车辆信息有差异" description={<ul className={styles.errors}>
+        {conflicts.map(warning => {
+          const index = /^json\.items\.(\d+)\.value$/.exec(warning.path)?.[1];
+          const name = index === undefined ? '配置项目' : document?.items?.[Number(index)]?.name.zh ?? '配置项目';
+          return <li key={`${warning.path}.${warning.code}`}>{name}。本次配置填写「{warning.submitted}」。{warning.retained === null
+            ? '发现同一参数有不同值，请核对后再确认。'
+            : `详细车辆信息采用已确认的「${warning.retained}」。`}</li>;
+        })}
+      </ul>} />}
+      {removedItems.length > 0 && <Alert type="warning" showIcon title={`本次将移除 ${removedItems.length} 项配置`}
+        description={<Typography.Text className={styles.removedItems}>{removedItems.join('、')}</Typography.Text>} />}
+      {itemOrder && <Collapse items={[{ key: 'item-order', label: '查看导入后的配置顺序', children: <>
+        <Typography.Paragraph>{itemOrder.after.map(id => afterItems.get(id) ?? id).join('、') || '无配置'}</Typography.Paragraph>
       </> }]} />}
-      <Table size="small" dataSource={preview.output.changes} rowKey="path" pagination={{ pageSize: 8, showSizeChanger: false }}
-        className={styles.details} locale={{ emptyText: '没有文字内容发生变化' }} columns={[
-          { title: '字段', dataIndex: 'path', render: value => value === 'facts.powertrain' ? '动力类型' : value },
-          { title: '当前草稿', dataIndex: 'before', render: (value, row) => displayValue(row.path, value, '未填写') },
-          { title: '导入后', dataIndex: 'after', render: (value, row) => displayValue(row.path, value, '移除') },
-        ]} />
-      <Button type="primary" disabled={!editable || (!preview.output.changes.length && !preview.output.itemOrder)} loading={phase === 'saving'}
-        onClick={() => void saveImport()}>确认并保存三语资料</Button>
+      {!currentPreview.output.changes.length && <Typography.Paragraph>没有文字内容发生变化</Typography.Paragraph>}
     </>}
+    {comparisonRows.length > 0 && <section aria-label={currentPreview ? '待保存的三语资料' : '已保存的三语资料'} className={styles.comparisonTable}>
+      <Typography.Title level={5}>{currentPreview ? '待保存的三语资料' : '已保存的三语资料'}</Typography.Title>
+      <Table size="small" tableLayout="fixed" dataSource={comparisonRows} pagination={{ pageSize: 10, showSizeChanger: false }} columns={comparisonColumns} />
+    </section>}
+    {currentPreview &&
+      <Button type="primary" disabled={!editable || standardInvalid || (!currentPreview.output.changes.length && !currentPreview.output.itemOrder)} loading={phase === 'saving'}
+        onClick={() => void saveImport()}>确认并保存三语资料</Button>
+    }
   </Card>;
 }

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { CONFIGURATION_IMPORT_LOCALES, ConfigurationImportPowertrainSchema, VEHICLE_CONFIGURATION_LIMITS, getDisplayTextLimit, type ConfigurationImportDocument } from '@hd/contracts/admin';
 import { editImportItem, importLocaleLabels, type ImportLocale } from './configuration-import-model';
 import { powertrainLabels } from './draft-form';
-import styles from './vehicle-configuration-editor.module.css';
+import styles from './vehicle-configuration-import.module.css';
 
 type Texts = Record<ImportLocale, string>;
 type Edit = (update: (document: ConfigurationImportDocument) => void) => void;
