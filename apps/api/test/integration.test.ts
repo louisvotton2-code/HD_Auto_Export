@@ -10,6 +10,10 @@ import type {InjectOptions} from 'fastify';
 import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleResponseSchema,PublicVehicleListSchema,ApiErrorSchema} from '@hd/contracts/public';
 import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,PublicationPreviewResponseSchema,PublishReadinessResponseSchema,TranslationPlanResponseSchema,TranslationPlanResultResponseSchema,VehicleTranslationBundleResponseSchema,MediaAssetResponseSchema,MediaUploadResponseSchema,type TranslationPlan,type TranslationPlanResult,type VehicleTranslationBundle,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
+import {
+  CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewResponseSchema, configurationImportExample,
+  vehicleConfigurationItemId, type ConfigurationImportDocument,
+} from '@hd/contracts/admin';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createDatabase} from '../src/db/index.js';
@@ -65,6 +69,16 @@ async function bundle(id:string):Promise<VehicleTranslationBundle> {
 }
 const bundlePayload=(value:VehicleTranslationBundle)=>({version:value.vehicle.version,localizationRevision:value.localization.revision,
   content:value.vehicle.draft.content,localization:value.localization.data,sourceLanguageConfirmations:[]});
+const configurationImportPath=(id:string)=>`/api/v1/admin/vehicles/${id}/configuration-import`;
+const configurationImportPayload=(base:VehicleTranslationBundle,json:string)=>({
+  version:base.vehicle.version,localizationRevision:base.localization.revision,json,
+});
+async function previewConfigurationImport(base:VehicleTranslationBundle,json:string){
+  const result=await call({method:'POST',url:`${configurationImportPath(base.vehicle.id)}/preview`,headers:headers(),
+    payload:configurationImportPayload(base,json)});
+  assert.equal(result.statusCode,200,result.body);
+  return ConfigurationImportPreviewResponseSchema.parse(result.json()).data;
+}
 async function plan(vehicle:AdminVehicle):Promise<TranslationPlan> {
   const response=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/translation-plans`,headers:headers(),payload:{version:vehicle.version}});
   assert.equal(response.statusCode,200,response.body);return TranslationPlanResponseSchema.parse(response.json()).data;
@@ -1037,6 +1051,170 @@ async function reviewDisplay(id:string,extra=false){
   return saveLocalization(local);
 }
 async function freshVehicle(id:string):Promise<AdminVehicle>{const r=await call({method:'GET',url:`/api/v1/admin/vehicles/${id}`,headers:headers()});assert.equal(r.statusCode,200,r.body);return r.json().data;}
+
+test('configuration import previews and atomically stores three languages while preserving facts and the published snapshot',async()=>{
+  const vehicle=await ready();
+  await reviewDisplay(vehicle.id,true);
+  const published=await publish(await freshVehicle(vehicle.id));
+  await confirmReady(published);
+  const base=await bundle(vehicle.id);
+  const publicUrl=`/api/v1/vehicles/${vehicle.id}?locale=ru&view=localized`;
+  const beforePublic=await call({url:publicUrl});
+  assert.equal(beforePublic.statusCode,200,beforePublic.body);
+  const auditCount=async()=>Number((await runtime.db.pool.query(
+    'SELECT count(*) FROM audit_events WHERE vehicle_id=$1',[vehicle.id])).rows[0].count);
+  const auditsBefore=await auditCount(),callsBefore=translationCalls;
+  const title=base.vehicle.draft.content.title;
+  const gears=configurationImportExample.items![0]!;
+  const seats={id:vehicleConfigurationItemId('座椅加热'),
+    name:{zh:'座椅加热',en:'Seat heating',ru:'Подогрев сидений'},
+    value:{zh:'前排',en:'Front seats',ru:'Передние сиденья'}};
+  const document:ConfigurationImportDocument={
+    version:1,facts:{powertrain:'hev'},items:[seats,gears],
+    content:{title:{zh:title.translations.zh!.text,en:title.translations.en!.text,ru:'Обновлённый тестовый автомобиль'}},
+    display:[{ref:'model',text:{zh:'车型展示名',en:'Localized test model',ru:'Тестовая модель'}}],
+  };
+  const raw=JSON.stringify(document),preview=await previewConfigurationImport(base,raw);
+  assert.equal(preview.version,base.vehicle.version);
+  assert.equal(preview.localizationRevision,base.localization.revision);
+  const oldItemId=vehicleConfigurationItemId('基础配置');
+  assert.deepEqual(preview.itemOrder,{before:[oldItemId],after:[seats.id,gears.id]});
+  const byPath=new Map(preview.changes.map(change=>[change.path,change]));
+  assert.deepEqual(byPath.get('content.title.ru'),{
+    path:'content.title.ru',before:title.translations.ru!.text,after:document.content!.title!.ru,
+  });
+  assert.equal(byPath.has('content.title.en'),false);
+  assert.deepEqual(byPath.get('facts.powertrain'),{path:'facts.powertrain',before:'petrol',after:'hev'});
+  assert.equal(byPath.get('display.model.ru')?.after,'Тестовая модель');
+  assert.equal(byPath.get(`items.${oldItemId}.name.zh`)?.after,null);
+  assert.equal(byPath.get(`items.${seats.id}.value.ru`)?.after,'Передние сиденья');
+  assert.deepEqual(await bundle(vehicle.id),base);
+  assert.equal(await auditCount(),auditsBefore);
+
+  const savedResult=await call({method:'PUT',url:configurationImportPath(vehicle.id),headers:headers(),
+    payload:{...configurationImportPayload(base,raw),previewToken:preview.previewToken}});
+  assert.equal(savedResult.statusCode,200,savedResult.body);
+  const saved=VehicleTranslationBundleResponseSchema.parse(savedResult.json()).data;
+  assert.deepEqual(await bundle(vehicle.id),saved);
+  assert.equal(saved.vehicle.version,base.vehicle.version+1);
+  assert.equal(saved.localization.revision,base.localization.revision+1);
+  assert.equal(saved.vehicle.publishedRevisionId,published.publishedRevisionId);
+  const {configuration:storedConfiguration,content:storedContent,facts:storedFacts,...otherDraft}=saved.vehicle.draft;
+  const {configuration:priorConfiguration,content:priorContent,facts:priorFacts,...priorDraft}=base.vehicle.draft;
+  assert.ok(priorConfiguration);
+  assert.deepEqual(otherDraft,priorDraft);
+  assert.deepEqual(storedFacts,{...priorFacts,powertrain:'hev'});
+  assert.deepEqual(storedConfiguration,{version:1,items:[{name:'座椅加热',value:'前排'},{name:'挡位数',value:'8'}]});
+  assert.deepEqual(saved.localization.data.facts,base.localization.data.facts);
+  assert.deepEqual(saved.localization.data.fields.find(field=>field.ref==='trim'),base.localization.data.fields.find(field=>field.ref==='trim'));
+  assert.equal(saved.localization.data.fields.find(field=>field.ref==='model')?.sourceText,priorFacts.model!.name);
+  assert.equal(saved.localization.data.fields.find(field=>field.ref===`configuration.${seats.id}.value`)?.translations.ru?.text,'Передние сиденья');
+  assert.deepEqual(storedContent.description,priorContent.description);
+  assert.equal(storedContent.title.sourceText,title.sourceText);
+  assert.deepEqual(storedContent.title.translations.en,title.translations.en);
+  assert.equal(storedContent.title.translations.ru?.reviewStatus,'pending');
+  assert.equal(storedContent.title.translations.ru?.humanEditVersion,title.translations.ru!.humanEditVersion+1);
+  assert.equal(await auditCount(),auditsBefore+1);
+  assert.equal(translationCalls,callsBefore);
+  const unchangedPublic=await call({url:publicUrl});
+  assert.equal(unchangedPublic.statusCode,200,unchangedPublic.body);
+  assert.deepEqual(unchangedPublic.json().data,beforePublic.json().data);
+  const stalePublish=await call({method:'POST',url:`/api/v1/admin/vehicles/${vehicle.id}/publish`,
+    headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:saved.vehicle.version}});
+  rejectedPublication(stalePublish,'publicationPreview');
+  const republished=await publish(saved.vehicle);
+  assert.notEqual(republished.publishedRevisionId,published.publishedRevisionId);
+  const afterPublic=await call({url:publicUrl});
+  assert.equal(afterPublic.statusCode,200,afterPublic.body);
+  assert.equal(afterPublic.json().data.content.title.text,document.content!.title!.ru);
+  assert.equal(afterPublic.json().data.facts.model.name,'Тестовая модель');
+  assert.equal(afterPublic.json().data.facts.powertrain,'hev');
+});
+
+test('configuration import rejects untrusted requests, duplicate keys and items, invalid values, and unknown bound display refs',async()=>{
+  const vehicle=await create(),base=await bundle(vehicle.id);
+  const url=`${configurationImportPath(vehicle.id)}/preview`;
+  const raw=JSON.stringify(configurationImportExample);
+  const payload=configurationImportPayload(base,raw);
+  assert.equal((await call({method:'POST',url,payload})).statusCode,401);
+  assert.equal((await call({method:'POST',url,headers:{cookie,origin:'https://untrusted.example.invalid'},payload})).statusCode,403);
+  const item=configurationImportExample.items![0]!;
+  const invalid=[
+    {json:raw.replace('"version":1','"version":1,"vers\\u0069on":1'),path:'json.version'},
+    {json:JSON.stringify({version:1,items:[item,item]}),path:'json.items.1.id'},
+    {json:JSON.stringify({version:1,items:[{...item,value:{...item.value,ru:'9'}}]}),path:'json.items.0.value.ru'},
+    {json:JSON.stringify({version:1,content:{title:{zh:'标题',en:'Title',ru:' \uFEFF\t'}}}),path:'json.content.title.ru'},
+    {json:JSON.stringify({version:1,display:[{ref:'location.city',text:{zh:'城市',en:'City',ru:'Город'}}]}),path:'json.display.0.ref'},
+    ...['unknown',null,'Gasoline'].map(powertrain=>({
+      json:JSON.stringify({version:1,facts:{powertrain}}),path:'json.facts.powertrain',
+    })),
+  ];
+  for(const {json,path:fieldPath} of invalid){
+    const response=await call({method:'POST',url,headers:headers(),payload:{...payload,json}});
+    assert.equal(response.statusCode,400,response.body);
+    const error=ApiErrorSchema.parse(response.json()).error;
+    assert.equal(error.code,'INVALID_REQUEST');
+    assert.ok(error.fields?.some(field=>field.path===fieldPath),response.body);
+  }
+  const oversized=await call({method:'POST',url,headers:headers(),payload:{...payload,json:raw+' '.repeat(CONFIGURATION_IMPORT_JSON_BYTES)}});
+  assert.equal(oversized.statusCode,413,oversized.body);
+  assert.deepEqual(await bundle(vehicle.id),base);
+});
+
+test('configuration import binds both versions and the preview actor, rolls back failures, and commits only once concurrently',async()=>{
+  const input=draft();
+  input.facts.powertrain='diesel';
+  input.content.description={sourceLanguage:'und',sourceText:null,sourceVersion:1,translations:{zh:null,en:null,ru:null}};
+  const vehicle=await create(input);
+  const legacyEnglish={text:configurationImportExample.content!.description!.en,kind:'original',reviewStatus:'approved',
+    sourceVersion:1,humanEditVersion:2,engineVersion:null};
+  await runtime.db.pool.query(`UPDATE vehicle_drafts SET data=jsonb_set(data,'{content,description,translations,en}',$2::jsonb)
+    WHERE vehicle_id=$1`,[vehicle.id,JSON.stringify(legacyEnglish)]);
+  const base=await bundle(vehicle.id);
+  const raw=JSON.stringify({...configurationImportExample,facts:undefined}),url=configurationImportPath(vehicle.id);
+  const preview=await previewConfigurationImport(base,raw);
+  assert.ok(!preview.changes.some(change=>change.path==='facts.powertrain'));
+  const payload={...configurationImportPayload(base,raw),previewToken:preview.previewToken};
+  const put=(data=payload,requestHeaders:Record<string,string>=headers())=>call({method:'PUT',url,headers:requestHeaders,payload:data});
+  assert.equal((await put(payload,{})).statusCode,401);
+  assert.equal((await put(payload,{cookie})).statusCode,403);
+  const tampered=preview.previewToken.slice(0,-1)+(preview.previewToken.endsWith('0')?'1':'0');
+  for(const data of [{...payload,previewToken:tampered},{...payload,json:raw+'\n'},{...payload,localizationRevision:payload.localizationRevision+1}]){
+    const response=await put(data);
+    assert.equal(response.statusCode,409,response.body);
+    assert.equal(ApiErrorSchema.parse(response.json()).error.code,'VERSION_CONFLICT');
+  }
+  const adminLogin=await call({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email:'admin@example.invalid',password}});
+  assert.equal(adminLogin.statusCode,200,adminLogin.body);
+  const adminCookie=adminLogin.cookies.map(value=>`${value.name}=${value.value}`).join('; ');
+  const anotherActor=await put(payload,{cookie:adminCookie,origin});
+  assert.equal(anotherActor.statusCode,409,anotherActor.body);
+  assert.deepEqual(await bundle(vehicle.id),base);
+
+  await runtime.db.pool.query(`CREATE FUNCTION test_fail_configuration_import_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'injected configuration import audit failure'; END $$`);
+  await runtime.db.pool.query('CREATE TRIGGER test_configuration_import_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION test_fail_configuration_import_audit()');
+  try{
+    const failed=await put();
+    assert.equal(failed.statusCode,500,failed.body);
+    assert.deepEqual(await bundle(vehicle.id),base);
+  }finally{
+    await runtime.db.pool.query('DROP TRIGGER test_configuration_import_failure ON audit_events');
+    await runtime.db.pool.query('DROP FUNCTION test_fail_configuration_import_audit()');
+  }
+  const results=await Promise.all([put(),put()]);
+  assert.deepEqual(results.map(result=>result.statusCode).sort(),[200,409],results.map(result=>result.body).join('\n'));
+  const saved=await bundle(vehicle.id);
+  assert.equal(saved.vehicle.version,base.vehicle.version+1);
+  assert.equal(saved.localization.revision,base.localization.revision+1);
+  assert.equal(saved.vehicle.draft.facts.powertrain,'diesel');
+  assert.equal(saved.vehicle.draft.content.description.sourceLanguage,'zh');
+  assert.equal(saved.vehicle.draft.content.description.sourceText,configurationImportExample.content!.description!.zh);
+  assert.deepEqual(saved.vehicle.draft.content.description.translations.en,{...legacyEnglish,kind:'human',reviewStatus:'pending',
+    sourceVersion:saved.vehicle.draft.content.description.sourceVersion,humanEditVersion:3});
+  const stalePreview=await call({method:'POST',url:`${url}/preview`,headers:headers(),payload:configurationImportPayload(base,raw)});
+  assert.equal(stalePreview.statusCode,409,stalePreview.body);
+});
 
 test('localized sidecars may be incomplete in drafts but are required, private and immutable on new publication',async()=>{
   let vehicle=await ready();vehicle.draft.facts.make={id:'manual_toyota_localized',name:'丰田'};vehicle.draft.facts.model={id:'localized_model',name:'车型甲'};vehicle=await save(vehicle);

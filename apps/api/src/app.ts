@@ -34,6 +34,10 @@ const idemHeader=z.object({'idempotency-key':adm.IdempotencyKeySchema});
 // Full drafts include two source fields, six translations and bounded private/media metadata.
 // Allow their UTF-8/JSON-escaped encoding without raising the limits of small mutations.
 const vehicleDraftBodyLimit=1024*1024;
+const configurationImportPath='/api/v1/admin/vehicles/:id/configuration-import';
+const configurationImportPreviewPath=`${configurationImportPath}/preview`;
+// A JSON string wrapper may escape each byte of the original JSON file as a six-byte sequence.
+const configurationImportBodyLimit=6*adm.CONFIGURATION_IMPORT_JSON_BYTES+1024;
 const errorResponses=Object.fromEntries([400,401,403,404,409,413,422,429,500,503].map(code=>[code,pub.ApiErrorSchema]));
 const schema=(tag:string,operationId:string,options:Record<string,unknown>)=>({tags:[tag],operationId,...options});
 
@@ -140,7 +144,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       }
       const changesExternalListing = request.method==='PUT' && route===externalOverridesPath ||
         request.method==='POST' && route===externalBulkVisibilityPath;
-      if(changesExternalListing && !member.permissions.includes('vehicles:write')) {
+      if((changesExternalListing || route===configurationImportPath || route===configurationImportPreviewPath) && !member.permissions.includes('vehicles:write')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle write permission is required.');
       }
       if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath,'/api/v1/admin/external/sync-control'].includes(route))) {
@@ -302,6 +306,14 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get('/api/v1/admin/vehicles/:id/activity',{schema:adminSchema('getVehicleActivity',{params:IdParams,querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.staff((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
   app.get('/api/v1/admin/external/listings/:id/activity',{schema:adminSchema('getExternalListingActivity',{params:z.strictObject({id:pub.ExternalListingIdSchema}),querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.external((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
   app.put('/api/v1/admin/vehicles/:id/translation-bundle',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicleTranslationBundle',{params:IdParams,body:adm.SaveVehicleTranslationBundleSchema,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.saveTranslationBundle((request.params as {id:string}).id,request.body as adm.SaveVehicleTranslationBundle,actor(request)),request));
+  app.post(configurationImportPreviewPath,{bodyLimit:configurationImportBodyLimit,schema:adminSchema('previewConfigurationImport',{
+    params:IdParams,body:adm.ConfigurationImportPreviewRequestSchema,response:{200:adm.ConfigurationImportPreviewResponseSchema,...errorResponses},
+  })},async request=>response(await inventory.previewConfigurationImport((request.params as {id:string}).id,
+    request.body as adm.ConfigurationImportPreviewRequest,actor(request),config.authSecret),request));
+  app.put(configurationImportPath,{bodyLimit:configurationImportBodyLimit,schema:adminSchema('saveConfigurationImport',{
+    params:IdParams,body:adm.ConfigurationImportSaveRequestSchema,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses},
+  })},async request=>response(await inventory.saveConfigurationImport((request.params as {id:string}).id,
+    request.body as adm.ConfigurationImportSaveRequest,actor(request),config.authSecret),request));
   app.post('/api/v1/admin/vehicles/:id/translation-plans',{schema:adminSchema('createVehicleTranslationPlan',{params:IdParams,body:adm.CreateTranslationPlanRequestSchema,response:{200:adm.TranslationPlanResponseSchema,...errorResponses}})},async request=>response(await translationPlans.create((request.params as {id:string}).id,request.body as adm.CreateTranslationPlanRequest,actor(request)),request));
   app.post('/api/v1/admin/vehicles/:id/translation-plans/:planId/generate',{schema:adminSchema('generateConfirmedVehicleTranslationPlan',{params:PlanParams,body:adm.GenerateTranslationPlanRequestSchema,headers:idemHeader,response:{200:adm.TranslationPlanResultResponseSchema,...errorResponses}})},async request=>{
     const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.generate(id,planId,request.body as adm.GenerateTranslationPlanRequest,actor(request),request.headers['idempotency-key'] as string),request);

@@ -14,7 +14,8 @@ import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { hasTranslationText, locales, normalizeContent, sourceHash } from './content.js';
-import { VehicleTranslationBundleSchema, type VehicleTranslationBundle, type SaveVehicleTranslationBundle } from '@hd/contracts/admin';
+import { VehicleTranslationBundleSchema, type VehicleTranslationBundle, type SaveVehicleTranslationBundle,
+  type ConfigurationImportPreviewRequest, type ConfigurationImportSaveRequest } from '@hd/contracts/admin';
 import { TRANSLATION_PLAN_TARGETS, type CreateTranslationPlanRequest } from '@hd/contracts/admin';
 import type { TranslationPlanInput, TranslationPlanInputField } from './translation-plans.js';
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
@@ -24,6 +25,7 @@ import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets,
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
+import { configurationImportToken, prepareConfigurationImport, requireConfigurationImportToken } from './configuration-import.js';
 
 export type Actor = { id: string; requestId: string };
 const staffProjectionPolicy=2;
@@ -333,6 +335,39 @@ export class InventoryService {
     return this.db.transaction(async tx=>{
       await requirePublicationActor(tx,actor.id);
       const bundle=translationBundle(await lockVehicle(tx,id));
+      bundle.vehicle.report=await getStaffReport(tx,bundle.vehicle.draft.source);
+      return bundle;
+    });
+  }
+  async previewConfigurationImport(id:string,input:ConfigurationImportPreviewRequest,actor:Actor,secret:string) {
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      const row=await lockVehicle(tx,id,input.version);
+      const current=syncLocalization(id,row.data,storedLocalization(row));
+      if(current.revision!==input.localizationRevision)throw conflict();
+      const {changes,itemOrder}=prepareConfigurationImport(id,row.data,current,input.json);
+      return {version:row.version,localizationRevision:current.revision,changes,itemOrder,
+        previewToken:configurationImportToken(secret,{vehicleId:row.id,actorId:actor.id,input})};
+    });
+  }
+  async saveConfigurationImport(id:string,input:ConfigurationImportSaveRequest,actor:Actor,secret:string) {
+    return this.db.transaction(async tx=>{
+      await requirePublicationActor(tx,actor.id);
+      const row=await lockVehicle(tx,id,input.version);
+      const current=syncLocalization(id,row.data,storedLocalization(row));
+      if(current.revision!==input.localizationRevision)throw conflict();
+      requireConfigurationImportToken(secret,{vehicleId:row.id,actorId:actor.id,input},input.previewToken);
+      const {draft,localization}=prepareConfigurationImport(id,row.data,current,input.json);
+      let saved=row;
+      if(!sameValue(draft,row.data)||!sameValue(localization.data,current.data)){
+        await tx.query('UPDATE vehicle_drafts SET data=$2 WHERE vehicle_id=$1',[id,JSON.stringify(draft)]);
+        await persistLocalization(tx,id,localization,current.revision+1);
+        await tx.query('UPDATE vehicles SET version=version+1,updated_at=now() WHERE id=$1',[id]);
+        await audit(tx,actor,'vehicle.configurationImport.save',id,row.version,row.version+1,
+          [...draftChanges(row.data,draft),...activityChanges(localizationActivity(current.data),localizationActivity(localization.data),'localization')]);
+        saved=await lockVehicle(tx,id);
+      }
+      const bundle=translationBundle(saved);
       bundle.vehicle.report=await getStaffReport(tx,bundle.vehicle.draft.source);
       return bundle;
     });
