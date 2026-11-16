@@ -1,7 +1,7 @@
 import { getDisplayTextLimit, type DisplayField } from '@hd/contracts/admin';
 import { Collapse, Form, Input, Typography } from 'antd';
 import { useId } from 'react';
-import { needsManualChineseTranslation, translationLocales } from './translation-model';
+import { translationLocales } from './translation-model';
 import { displayLocaleLabels, editDisplayTranslation } from './vehicle-localization-model';
 import styles from './display-translations-editor.module.css';
 
@@ -21,7 +21,6 @@ export type DisplayTranslationsEditorProps = {
   labelForField: (field: DisplayField) => string;
 };
 
-const targetLocales = ['en', 'ru'] as const;
 const kindLabels = { original: '原文', machine: '机器译文', human: '人工编辑' };
 
 type FieldEditorProps = {
@@ -37,7 +36,6 @@ function DisplayFieldEditor({ field, saved, label, disabled, onChange }: FieldEd
   const sourceId = `${id}-source`;
   const headingId = `${id}-heading`;
   const chineseSource = field.sourceLanguage.split('-')[0].toLowerCase() === 'zh';
-  const shownLocales = saved && needsManualChineseTranslation(saved) ? translationLocales : targetLocales;
   const limit = getDisplayTextLimit(field.ref);
 
   return <section className={styles.field} aria-labelledby={headingId}>
@@ -49,7 +47,7 @@ function DisplayFieldEditor({ field, saved, label, disabled, onChange }: FieldEd
     </div>
     {!saved && <Typography.Paragraph className={styles.notice}>请先保存原文资料，再填写对应译文。</Typography.Paragraph>}
     <div className={styles.targets}>
-      {shownLocales.map(locale => {
+      {translationLocales.map(locale => {
         const translation = field.translations[locale];
         const inputId = `${id}-${locale}`;
         const helpId = `${inputId}-help`;

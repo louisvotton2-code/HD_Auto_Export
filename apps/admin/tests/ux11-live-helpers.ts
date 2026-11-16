@@ -1,11 +1,10 @@
-import { expect, type APIResponse, type Page, type Request } from '@playwright/test';
+import { expect, type APIResponse, type Page } from '@playwright/test';
 import {
-  CreateTranslationPlanRequestSchema, SaveVehicleTranslationBundleSchema, TranslationPlanResponseSchema,
-  TranslationPlanStatusResponseSchema, VehicleConfigurationSchema, VehicleTranslationBundleResponseSchema,
+  SaveVehicleTranslationBundleSchema, VehicleConfigurationSchema, VehicleTranslationBundleResponseSchema,
   vehicleConfigurationItemId, type AdminVehicle, type VehicleTranslationBundle,
 } from '@hd/contracts/admin';
 import type { Locale, PublicVehicle } from '@hd/contracts/public';
-import { tab } from './ui-helpers';
+import { openLegacyConfiguration, tab } from './ui-helpers';
 
 // These helpers exercise the real API through the isolated runner. They never install API routes,
 // fabricate preview receipts, call a translation provider, or write directly to the database.
@@ -16,6 +15,7 @@ export const liveConfiguration = VehicleConfigurationSchema.parse({
 
 export async function enterLiveConfiguration(page: Page, config = liveConfiguration) {
   await tab(page, '车辆配置');
+  await openLegacyConfiguration(page);
   await page.getByLabel('配置内容（JSON）', { exact: true }).fill(JSON.stringify(config, null, 2));
   await expect(page.getByLabel('配置内容（JSON）', { exact: true })).not.toHaveAttribute('aria-invalid', 'true');
   await page.getByRole('button', { name: '解析并核对配置' }).click();
@@ -109,7 +109,7 @@ export function assertLivePublicConfiguration(value: PublicVehicle['configuratio
 export async function completeLiveTranslations(page: Page, vehicle: AdminVehicle, read: LiveRead, overrides: {
   title?: Targets; description?: Targets; display?: Record<string, Targets>;
 } = {}) {
-  await tab(page, '公开字段多语');
+  await tab(page, '车辆配置');
   let current = await readLiveBundle(vehicle.id, read);
   expect(current.vehicle.version).toBe(vehicle.version);
   await expect(page.getByTestId('vehicle-publish')).toHaveCount(0);
@@ -172,40 +172,4 @@ export async function completeLiveTranslations(page: Page, vehicle: AdminVehicle
     for (const locale of ['en', 'ru'] as const) expect(field.translations[locale]?.text).toBe(targets[locale]);
   }
   return saved.bundle;
-}
-
-/** A real disabled plan is an estimate only. Its API/UI must never authorize a provider execution. */
-export async function assertDisabledLivePlan(page: Page, before: VehicleTranslationBundle, read: LiveRead) {
-  expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
-  expect(process.env.TRANSLATION_PROVIDER).toBe('disabled');
-  const root = `/api/v1/admin/vehicles/${before.vehicle.id}`;
-  const executions: string[] = [];
-  const observe = (request: Request) => {
-    const path = new URL(request.url()).pathname;
-    if (request.method() === 'POST' && path.startsWith(`${root}/`) && (path.endsWith('/generate') || path.endsWith('/translation-suggestions'))) executions.push(path);
-  };
-  page.on('request', observe);
-  try {
-    await tab(page, '公开字段多语');
-    const result = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === `${root}/translation-plans`);
-    await page.getByTestId('vehicle-translation-generate').click();
-    const response = await result; expect(response.status()).toBe(200);
-    expect(CreateTranslationPlanRequestSchema.parse(response.request().postDataJSON())).toEqual({ version: before.vehicle.version });
-    const plan = TranslationPlanResponseSchema.parse(await response.json()).data;
-    expect(plan).toMatchObject({ vehicleId: before.vehicle.id, vehicleVersion: before.vehicle.version, localizationRevision: before.localization.revision,
-      sourceLanguage: 'zh', targetLocales: ['en', 'ru'], provider: 'disabled', engineVersion: null,
-      estimate: { cost: { status: 'unknown', amount: null, currency: null, freeAllowanceCharacters: null } } });
-    const expectedRefs = [...(['title', 'description'] as const).filter(name => before.vehicle.draft.content[name].sourceText?.trim()).map(name => `content.${name}`), ...before.localization.data.fields.map(field => field.ref)];
-    expect(plan.fields.map(field => field.ref).sort()).toEqual(expectedRefs.sort());
-    await expect(page.getByTestId('translation-plan-confirmation')).toBeVisible();
-    await expect(page.getByTestId('translation-generate-confirm')).toBeDisabled();
-    await expect(page.getByTestId('translation-plan-start')).toBeDisabled();
-    const statusResponse = await read(`${root}/translation-plans/${plan.id}`);
-    expect(statusResponse.status()).toBe(200);
-    expect(TranslationPlanStatusResponseSchema.parse(await statusResponse.json()).data).toEqual({ planId: plan.id, vehicleId: before.vehicle.id, state: 'ready', result: null, startedAt: null, finishedAt: null });
-    await page.getByRole('dialog').getByRole('button', { name: /取\s*消$/ }).click();
-    expect(await readLiveBundle(before.vehicle.id, read)).toEqual(before);
-    expect(executions).toEqual([]);
-    return plan;
-  } finally { page.off('request', observe); }
 }

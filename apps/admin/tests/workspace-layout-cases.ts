@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { parseVehicleConfigurationJson, VEHICLE_CONFIGURATION_LIMITS } from '@hd/contracts/admin';
 import { installApi, vehicle } from './api-fixture';
 import { noReviewControls, openWorkspace } from './translation-test-helpers';
-import { tab } from './ui-helpers';
+import { openLegacyConfiguration, tab } from './ui-helpers';
 
 async function capture(page: Page, name: string) {
   for (const width of [1440, 320]) {
@@ -37,6 +37,7 @@ test('UX11 layout long valid configuration example stays within desktop and 320p
   })) };
   const raw = JSON.stringify(example, null, 2); item.draft.configuration = parseVehicleConfigurationJson(raw);
   const api = await installApi(page, { items: [item] }); await page.goto(`/admin/vehicles/${item.id}`); await tab(page, '车辆配置');
+  await openLegacyConfiguration(page);
   const input = page.getByLabel('配置内容（JSON）', { exact: true }); expect(parseVehicleConfigurationJson(await input.inputValue())).toEqual(example);
   await page.locator('.ant-collapse-header').filter({ hasText: '核对已解析的 4 项配置' }).click();
   await expect(page.getByRole('cell', { name: example.items[0]!.name, exact: true })).toBeVisible();

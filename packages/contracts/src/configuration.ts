@@ -75,9 +75,13 @@ function invalidJson(path: JsonPath, message: string): never {
  * Parsing is bounded by UTF-8 bytes, nesting and value count, and has no I/O.
  */
 export function parseVehicleConfigurationJson(raw: string): VehicleConfiguration {
+  return VehicleConfigurationSchema.parse(parseBoundedJson(raw, VEHICLE_CONFIGURATION_LIMITS));
+}
+
+export function parseBoundedJson(raw: string, limits: { jsonBytes: number; jsonNodes: number; jsonDepth: number }): unknown {
   if (typeof raw !== 'string') invalidJson([], 'Configuration JSON must be a string');
-  if (raw.length > VEHICLE_CONFIGURATION_LIMITS.jsonBytes || new TextEncoder().encode(raw).byteLength > VEHICLE_CONFIGURATION_LIMITS.jsonBytes) {
-    invalidJson([], `Configuration JSON must not exceed ${VEHICLE_CONFIGURATION_LIMITS.jsonBytes} UTF-8 bytes`);
+  if (raw.length > limits.jsonBytes || new TextEncoder().encode(raw).byteLength > limits.jsonBytes) {
+    invalidJson([], `Configuration JSON must not exceed ${limits.jsonBytes} UTF-8 bytes`);
   }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
@@ -100,8 +104,8 @@ export function parseVehicleConfigurationJson(raw: string): VehicleConfiguration
     return invalidJson([], 'Unterminated JSON string');
   }
   function value(path: JsonPath, depth: number): void {
-    if (++nodes > VEHICLE_CONFIGURATION_LIMITS.jsonNodes) invalidJson(path, 'Configuration JSON has too many values');
-    if (depth > VEHICLE_CONFIGURATION_LIMITS.jsonDepth) invalidJson(path, 'Configuration JSON is nested too deeply');
+    if (++nodes > limits.jsonNodes) invalidJson(path, 'Configuration JSON has too many values');
+    if (depth > limits.jsonDepth) invalidJson(path, 'Configuration JSON is nested too deeply');
     whitespace();
     if (raw[cursor] === '{') {
       cursor++;
@@ -142,5 +146,5 @@ export function parseVehicleConfigurationJson(raw: string): VehicleConfiguration
     }
   }
   value([], 0);
-  return VehicleConfigurationSchema.parse(parsed);
+  return parsed;
 }

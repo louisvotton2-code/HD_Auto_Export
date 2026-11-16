@@ -18,7 +18,16 @@ const mileageSteps = [0, 10000, 20000, 30000, 50000, 75000, 100000, 150000, 2000
 export function PublicVehicleFiltersForm({
   locale,
   filters,
+  brandModels,
+  brandPending,
+  modelFilters,
+  showModelOptions,
+  modelFiltersPhase,
+  onRetryModelFilters,
   query,
+  make,
+  model,
+  onModelScopeChange,
   pending = false,
   retryAfter = 0,
   navigate,
@@ -26,7 +35,16 @@ export function PublicVehicleFiltersForm({
 }: {
   locale: Locale;
   filters: PublicVehicleFilters['data'] | null;
+  brandModels: PublicVehicleFilters['data']['models'];
+  brandPending: boolean;
+  modelFilters: Pick<PublicVehicleFilters['data'], 'trims' | 'generations'> | null;
+  showModelOptions: { trim: boolean; generation: boolean };
+  modelFiltersPhase: 'checking' | 'error' | 'fresh' | undefined;
+  onRetryModelFilters: () => void;
   query: PublicVehicleQuery;
+  make: string;
+  model: string;
+  onModelScopeChange: (make: string, model: string) => void;
   pending?: boolean;
   retryAfter?: number;
   navigate: (href: string) => void;
@@ -35,18 +53,16 @@ export function PublicVehicleFiltersForm({
   const t = publicVehicleMessages(locale),
     live = liveVehicleCopy[locale],
     c = catalogFilterCopy[locale];
-  const [make, setMake] = useState(query.make ?? '');
-  const [model, setModel] = useState(query.model ?? '');
   const [generation, setGeneration] = useState(query.generation ?? '');
   const [trim, setTrim] = useState(query.trim ?? '');
   const [error, setError] = useState(false);
-  const models = (filters?.models ?? []).filter((x) => !make || x.makeId === make);
-  const trims = (filters?.trims ?? []).filter((x) => x.makeId === make && x.modelId === model);
-  const generations = (filters?.generations ?? []).filter(
+  const models = brandModels;
+  const trims = (modelFilters?.trims ?? []).filter((x) => x.makeId === make && x.modelId === model);
+  const generations = (modelFilters?.generations ?? []).filter(
     (x) => x.makeId === make && x.modelId === model,
   );
-  const showGeneration = Boolean(filters?.generations?.length || query.generation);
-  const showTrim = Boolean(filters?.trims?.length || query.trim);
+  const showGeneration = showModelOptions.generation || generations.length > 0 || Boolean(generation);
+  const showTrim = showModelOptions.trim || trims.length > 0 || Boolean(trim);
   const showDrive = Boolean(filters?.drivetrains?.length || query.drivetrain);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -159,8 +175,7 @@ export function PublicVehicleFiltersForm({
           name="make"
           value={make}
           onChange={(e) => {
-            setMake(e.target.value);
-            setModel('');
+            onModelScopeChange(e.target.value, '');
             setGeneration('');
             setTrim('');
           }}
@@ -174,8 +189,9 @@ export function PublicVehicleFiltersForm({
           name="model"
           value={model}
           disabled={!make && !model}
+          aria-busy={brandPending || undefined}
           onChange={(e) => {
-            setModel(e.target.value);
+            onModelScopeChange(make, e.target.value);
             setGeneration('');
             setTrim('');
           }}
@@ -190,6 +206,7 @@ export function PublicVehicleFiltersForm({
             name="generation"
             value={generation}
             disabled={!make || !model}
+            aria-busy={modelFiltersPhase === 'checking' || undefined}
             onChange={(e) => setGeneration(e.target.value)}
           >
             {options(generations, generation)}
@@ -233,11 +250,30 @@ export function PublicVehicleFiltersForm({
             name="trim"
             value={trim}
             disabled={!make || !model}
+            aria-busy={modelFiltersPhase === 'checking' || undefined}
             onChange={(e) => setTrim(e.target.value)}
           >
             {options(trims, trim)}
           </select>
         </label>
+      )}
+      {modelFiltersPhase === 'checking' && (
+        <p className={styles.filterNotice} role="status">{c.optionsLoading}</p>
+      )}
+      {modelFiltersPhase === 'error' && (
+        <p className={styles.filterNotice} data-testid="public-model-filters-unavailable">
+          {t.filterUnavailable}{' '}
+          <a
+            href={retryAfter > 0 ? undefined : publicCatalogHref(locale, query)}
+            aria-disabled={retryAfter > 0 || undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              if (retryAfter <= 0) onRetryModelFilters();
+            }}
+          >
+            {t.retry}
+          </a>
+        </p>
       )}
       <div className={styles.filterDivider} />
       <input type="hidden" name="priceCurrency" value="USD" />
@@ -268,8 +304,7 @@ export function PublicVehicleFiltersForm({
             ) {
               event.preventDefault();
               event.currentTarget.closest('form')?.reset();
-              setMake('');
-              setModel('');
+              onModelScopeChange('', '');
               setGeneration('');
               setTrim('');
               setError(false);

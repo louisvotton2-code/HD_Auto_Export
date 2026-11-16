@@ -18,7 +18,7 @@ test('publication tab only exposes confirm and publish controls in the rendered 
   const item = { ...vehicle(), id }; const api = await installApi(page, { items: [item], publicationDefaultConfirmed: false }); let writes = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => { writes++; return reply(route, envelope(item)); });
   await page.goto(`/admin/vehicles/${id}`); await expectNoPublicationControls(page);
-  for (const name of ['车辆配置', '价格与内部信息', '图片管理', '公开字段多语']) { await tab(page, name); await expectNoPublicationControls(page); }
+  for (const name of ['车辆配置', '价格与内部信息', '图片管理']) { await tab(page, name); await expectNoPublicationControls(page); }
   await waitForPublicationPreview(page);
   expect(api.previewConfirmations).toEqual([]);
   await tab(page, '基础资料'); await expectNoPublicationControls(page);

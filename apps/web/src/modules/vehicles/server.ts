@@ -20,3 +20,4 @@ export const getPublicVehicleById = cache((id: string, locale: Locale) =>
 );
 export { proxyPublicRequest } from './infrastructure/public-proxy';
 export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';
+export { projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';

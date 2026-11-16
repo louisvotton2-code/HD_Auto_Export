@@ -216,6 +216,7 @@ const resetState = () => ({
   filtersRateLimited: false,
   longTitles: false,
   richCatalog: false,
+  largeFacetDictionary: false,
   usdRateAvailable: true,
   usdRateDivisor: 8,
   cacheVersionFailure: false,
@@ -238,6 +239,26 @@ const resetState = () => ({
   segmentFallback: false,
   segmentOverlap: false,
 });
+
+const largeFacetTrimCount = 23_375;
+function syntheticLargeFacetTrims(locale) {
+  const prefix = { zh: '测试配置', en: 'Fixture trim', ru: 'Тестовая комплектация' }[locale];
+  const equipment = ['Touring', 'Sport', 'Luxury', 'Premium', 'Comfort', 'Executive'];
+  return Array.from({ length: largeFacetTrimCount }, (_, index) => {
+    const variant = index + 1;
+    const model = Math.floor(index / 24);
+    const make = Math.floor(model / 8);
+    const code = (Math.imul(variant, 2_654_435_761) >>> 0).toString(36).toUpperCase();
+    const line = equipment[index % equipment.length];
+    return {
+      id: `fixture_scale_trim_${variant}`,
+      name: `${prefix} ${line} ${code} ${2020 + (index % 7)}`,
+      makeId: `fixture_scale_make_${make}`,
+      modelId: `fixture_scale_model_${model}`,
+      count: 1,
+    };
+  });
+}
 
 // Synthetic segment collections stay server-side; the public vehicle seed remains bounded.
 function segmentDisplay(text, locale, contentLocale = locale) {
@@ -700,6 +721,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           filtersRateLimited: (v) => typeof v === 'boolean',
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
+          largeFacetDictionary: (v) => typeof v === 'boolean',
           usdRateAvailable: (v) => typeof v === 'boolean',
           usdRateDivisor: (v) => [4, 8].includes(v),
           cacheVersionFailure: (v) => typeof v === 'boolean',
@@ -1053,6 +1075,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       if (url.pathname === '/api/v1/vehicle-filters') {
         const searched = all.filter((v) => queryMatches(v, filterQuery));
         const makes = new Map(), models = new Map(), powertrains = new Map();
+        const includeSyntheticTrims = state.largeFacetDictionary && !filterQuery.make && !filterQuery.model
+          && !filterQuery.q && filterQuery.priceMin === undefined && filterQuery.priceMax === undefined;
         for (const row of searched) {
           const { make, model, powertrain } = row.facts;
           if (make) makes.set(make.id, {...make,count:(makes.get(make.id)?.count ?? 0)+1});
@@ -1090,6 +1114,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                             },
                           ]),
                       ).values(),
+                      // Exercise transport size without adding matching vehicles or changing totals.
+                      ...(includeSyntheticTrims ? syntheticLargeFacetTrims(locale) : []),
                     ],
                     generations: [
                       ...new Map(

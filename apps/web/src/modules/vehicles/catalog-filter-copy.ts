@@ -15,6 +15,7 @@ type Copy = {
   to: string;
   rangeError: string;
   selected: string;
+  optionsLoading: string;
   drives: Record<Drivetrain, string>;
 };
 export const catalogFilterCopy = {
@@ -31,6 +32,7 @@ export const catalogFilterCopy = {
     to: '上限',
     rangeError: '请检查筛选条件：上限不能低于下限，价格范围需选择币种。',
     selected: '当前所选条件',
+    optionsLoading: '正在加载筛选选项…',
     drives: { fwd: '前轮驱动', rwd: '后轮驱动', awd: '全轮驱动', four_wd: '四轮驱动' },
   },
   en: {
@@ -47,6 +49,7 @@ export const catalogFilterCopy = {
     rangeError:
       'Check the filters: the upper limit must not be below the lower limit. Price ranges require a currency.',
     selected: 'Current selection',
+    optionsLoading: 'Loading filter options…',
     drives: {
       fwd: 'Front-wheel drive',
       rwd: 'Rear-wheel drive',
@@ -68,6 +71,7 @@ export const catalogFilterCopy = {
     rangeError:
       'Проверьте фильтры: верхняя граница не должна быть ниже нижней. Для диапазона цен выберите валюту.',
     selected: 'Текущее условие',
+    optionsLoading: 'Загружаем варианты фильтра…',
     drives: {
       fwd: 'Передний привод',
       rwd: 'Задний привод',

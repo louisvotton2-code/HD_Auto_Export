@@ -29,11 +29,13 @@ export function localization(record: AdminVehicle, fields: DisplayField[] = []):
     data: { facts: { generation: null, drivetrain: null }, fields }, retiredFieldCount: 0 });
 }
 /** Simulates the BE normalization only after an explicit write; GET never mutates source metadata. */
-function normalizeChinese(field: TranslatableField) {
+function normalizeChinese(field: TranslatableField, original?: TranslatableField) {
   if (field.sourceLanguage.split('-')[0].toLowerCase() !== 'zh') return;
   const previous = field.translations.zh;
   if (!field.sourceText?.trim()) { field.translations.zh = null; return; }
-  if (previous && previous.text === field.sourceText && previous.kind === 'original' && previous.sourceVersion === field.sourceVersion && previous.engineVersion === null && previous.reviewStatus !== 'stale') return;
+  const refreshOriginal = original && original.sourceText !== field.sourceText && original.translations.zh?.kind === 'original' &&
+    previous?.kind === 'original' && previous.text === original.sourceText;
+  if (previous?.text.trim() && !refreshOriginal) return;
   field.translations.zh = { text: field.sourceText, kind: 'original', reviewStatus: 'pending', sourceVersion: field.sourceVersion,
     humanEditVersion: (previous?.humanEditVersion ?? 0) + 1, engineVersion: null };
 }
@@ -242,14 +244,14 @@ export async function installApi(page: Page, options: {
                 for (const value of Object.values(next.translations)) if (value) value.reviewStatus = 'stale';
               }
               next.sourceText = generation.name; next.sourceHash = hash;
-              normalizeChinese(next); data.fields.push(next);
+              normalizeChinese(next, prior); data.fields.push(next);
             } else {
               data.fields.push({ ref: 'generation', sourceText: generation.name, sourceLanguage: language, sourceVersion: 1, sourceHash: hash,
                 translations: { zh: { text: generation.name, kind: 'original', reviewStatus: 'pending', sourceVersion: 1, humanEditVersion: 0, engineVersion: null }, en: null, ru: null } });
             }
           } else if (prior) retiredFieldCount++;
         }
-        normalizeChinese(content.title); normalizeChinese(content.description); data.fields.forEach(normalizeChinese);
+        normalizeChinese(content.title); normalizeChinese(content.description); data.fields.forEach(field => normalizeChinese(field));
         item.draft.content = content; item.version++; item.hasUnpublishedChanges = true;
         Object.assign(saved, { data, revision: saved.revision + 1, vehicleVersion: item.version, retiredFieldCount }); updatePublicationState(item, true);
         return reply(route, VehicleTranslationBundleResponseSchema.parse(envelope(bundle())));
@@ -317,7 +319,8 @@ export async function installApi(page: Page, options: {
         const published = publishedDrafts.get(item.id);
         const parsedDraft = parseVehicleDraftWrite(body.draft);
         if (!Object.hasOwn(body.draft, 'configuration') && item.draft.configuration !== undefined) parsedDraft.configuration = structuredClone(item.draft.configuration);
-        normalizeChinese(parsedDraft.content.title); normalizeChinese(parsedDraft.content.description);
+        normalizeChinese(parsedDraft.content.title, item.draft.content.title);
+        normalizeChinese(parsedDraft.content.description, item.draft.content.description);
         const publicChanged = publicDraft(item.draft) !== publicDraft(parsedDraft);
         Object.assign(item, { draft: parsedDraft, version: item.version + 1,
           hasUnpublishedChanges: !item.publishedRevisionId || published === undefined ? true : publicDraft(parsedDraft) !== published || JSON.stringify(state.localizations.get(item.id)?.data ?? emptyDisplayData()) !== publishedLocalizations.get(item.id) });

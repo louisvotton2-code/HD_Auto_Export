@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { makePublishReadinessFixture } from '@hd/contracts/fixtures';
+import { makeExternalVehicleDraftFixture, makePublishReadinessFixture } from '@hd/contracts/fixtures';
 import { PublicationPreviewResponseSchema, PublishReadinessSchema, vehicleConfigurationItemId, type AdminVehicle, type DisplayField, type PublishReadiness } from '@hd/contracts/admin';
 import { envelope, error, installApi, localization, publicationKey, reply, vehicle } from './api-fixture';
 import { saveBundle } from './translation-test-helpers';
@@ -57,7 +57,7 @@ async function frameMessage(page: Page, ready: PublishReadiness, event: 'loading
 
 for (const scenario of [
   { stage: 'required_fields' as const, path: 'draft.price.money.amount', message: '公开价格：请检查价格口径、金额和币种', target: '价格与内部信息' },
-  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '车辆标题 · 英文', target: '公开字段多语' },
+  { stage: 'localization' as const, path: 'draft.content.title.translations.en', message: '车辆标题 · 英文', target: '车辆配置' },
 ]) {
   test(`publication readiness reports and navigates server ${scenario.stage} issues`, async ({ page }) => {
     const item = record();
@@ -76,6 +76,30 @@ for (const scenario of [
     expect(api.previewConfirmations).toEqual([]);
   });
 }
+
+test('publication readiness opens the external vehicle powertrain on the configuration tab', async ({ page }) => {
+  const item = { ...record(), draft: makeExternalVehicleDraftFixture() };
+  item.draft.facts.powertrain = 'unknown';
+  const ready = gate(item, false, {
+    requiredFieldsReady: false,
+    issues: [{ stage: 'required_fields', path: 'draft.facts.powertrain', code: 'REQUIRED', message: 'A known powertrain is required.' }],
+  });
+  await setup(page, ready, item);
+  let finishRead!: () => void;
+  const loading = new Promise<void>(resolve => { finishRead = resolve; });
+  await page.route(`**/api/v1/admin/vehicles/${item.id}/translation-bundle`, async route => {
+    await loading;
+    return route.fallback();
+  });
+  const powertrain = page.getByRole('combobox', { name: '动力类型', exact: true });
+  try {
+    await page.getByRole('button', { name: '动力类型：请选择已知动力类型', exact: true }).click();
+    await expect(page.getByRole('tab', { name: /车辆配置/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(powertrain).toBeDisabled();
+  } finally { finishRead(); }
+  await expect(powertrain).toBeEnabled();
+  await expect(powertrain).toBeFocused();
+});
 
 test('publication readiness preserves separate Russian issues, focuses exact fields and refreshes after each save', async ({ page }) => {
   const item = record();
@@ -114,7 +138,7 @@ test('publication readiness preserves separate Russian issues, focuses exact fie
   const firstLabel = `${first} · 配置名称 · 俄文`, secondLabel = `${second} · 配置内容 · 俄文`;
   await expect(page.getByRole('button', { name: secondLabel, exact: true })).toBeVisible();
   await page.getByRole('button', { name: firstLabel, exact: true }).click();
-  await expect(page.getByRole('tab', { name: /公开字段多语/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /车辆配置/ })).toHaveAttribute('aria-selected', 'true');
   const firstInput = page.getByLabel(`俄文${first} · 配置名称`, { exact: true });
   const secondInput = page.getByLabel(`俄文${second} · 配置内容`, { exact: true });
   await expect(firstInput).toBeFocused();
@@ -191,9 +215,9 @@ test('publication readiness opens missing legacy Chinese content for entry witho
   ] as const) {
     expect(field).toMatchObject({ sourceLanguage, translations: { zh: { text, kind: 'human', engineVersion: null } } });
   }
-  await expect(title).toHaveCount(0);
-  await expect(description).toHaveCount(0);
-  await expect(model).toHaveCount(0);
+  await expect(title).toHaveValue('补充的中文标题');
+  await expect(description).toHaveValue('补充的中文车况');
+  await expect(model).toHaveValue('补充的中文车型');
 });
 
 test('publication readiness requires a matching rendered receipt and confirms it before the publish request', async ({ page }) => {

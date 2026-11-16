@@ -6,6 +6,7 @@ import { VehicleConfigurationSchema, parseVehicleConfigurationJson } from './con
 import { LocalizationDataSchema, VehicleLocalizationSchema } from './localization.js';
 import { TranslationPlanRefSchema } from './translation-plan.js';
 export * from './configuration.js';
+export * from './configuration-import.js';
 export * from './translation-plan.js';
 export * from './external-admin.js';
 export * from './publication.js';

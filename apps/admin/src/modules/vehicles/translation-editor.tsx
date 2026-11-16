@@ -2,7 +2,7 @@ import type { TranslatableField } from '@hd/contracts/admin';
 import { Alert, App, Button, Card, Form, Input, Space, Typography } from 'antd';
 import { DeleteOutlined, GlobalOutlined } from '@ant-design/icons';
 import {
-  editTranslation, needsManualChineseTranslation, translationLocaleLabels, translationLocales,
+  editTranslation, translationLocaleLabels, translationLocales,
   translationSource,
 } from './translation-model';
 import styles from './translation-editor.module.css';
@@ -18,7 +18,6 @@ type Props = {
   requiredForPublish?: boolean;
 };
 const kindLabels = { original: '原文', machine: '机器译文', human: '人工编辑' };
-const targetLocales = ['en', 'ru'] as const;
 const languageCodes = { zh: 'ZH', en: 'EN', ru: 'RU' };
 
 export function TranslationEditor({ name, value, saved, sourceText, sourceLanguage, onChange, disabled = false, requiredForPublish = false }: Props) {
@@ -30,7 +29,6 @@ export function TranslationEditor({ name, value, saved, sourceText, sourceLangua
   const sourceHelpId = `${sourceId}-help`;
   const chineseSource = source.language.split('-')[0].toLowerCase() === 'zh';
   const sourceLocation = '基础资料';
-  const shownLocales = needsManualChineseTranslation(saved) ? translationLocales : targetLocales;
   const hasTranslations = translationLocales.some(locale => value.translations[locale] !== null);
   return <section className={styles.editor} aria-labelledby={headingId}>
     <div className={styles.heading}>
@@ -48,7 +46,7 @@ export function TranslationEditor({ name, value, saved, sourceText, sourceLangua
       <Button size="small" icon={<DeleteOutlined />} disabled={disabled} onClick={() => modal.confirm({ title: '清空三语描述？', content: '这会移除当前草稿的中英俄描述，保存后才会生效。', okText: '清空描述', cancelText: '保留内容', okButtonProps: { danger: true }, onOk: () => onChange({ ...value, translations: { zh: null, en: null, ru: null } }) })}>清空三语描述</Button>
     </div>}
     <div className={styles.languages}>
-      {shownLocales.map(locale => {
+      {translationLocales.map(locale => {
         const translation = value.translations[locale];
         const id = `${name}-translation-${locale}`;
         const helpId = `${id}-help`;
@@ -58,7 +56,7 @@ export function TranslationEditor({ name, value, saved, sourceText, sourceLangua
               data-translation-ref={`content.${name}`} data-translation-locale={locale}
               autoSize={{ minRows: name === 'title' ? 3 : 5, maxRows: 10 }} maxLength={10000} disabled={disabled || !source.text?.trim()} aria-describedby={helpId} placeholder={`填写${translationLocaleLabels[locale]}${fieldName}`} onChange={event => onChange(editTranslation(value, locale, event.target.value, sourceText, sourceLanguage, saved))} />
           </Form.Item>
-          <div id={helpId} className={styles.provenance}>{translation?.text.trim() ? kindLabels[translation.kind] : locale === 'zh' ? '请填写供官网展示的中文内容。' : '尚无译文，可生成或直接填写。'}</div>
+          <div id={helpId} className={styles.provenance}>{translation?.text.trim() ? kindLabels[translation.kind] : locale === 'zh' ? '请填写供官网展示的中文内容。' : '请填写供官网展示的译文。'}</div>
         </Card>;
       })}
     </div>

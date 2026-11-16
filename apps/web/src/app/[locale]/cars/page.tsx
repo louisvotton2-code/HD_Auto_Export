@@ -8,6 +8,8 @@ import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, p
 import {
   getPublicCatalog,
   getPublicFilters,
+  projectCatalogFacetOverview,
+  projectCatalogFacetScope,
   publicRetryAfter,
 } from '@/modules/vehicles/server';
 import { localizedAlternates } from '@/shared/config/site';
@@ -41,13 +43,18 @@ export default async function CarsPage({ params, searchParams }: Props) {
     getPublicCatalog(query),
     getPublicFilters(locale, query),
   ]);
+  const dictionary = filters.status === 'fulfilled' ? filters.value : null;
   return (
     <PublicVehicleList
       key={locale}
       locale={locale}
       query={query}
       result={result.status === 'fulfilled' ? result.value : null}
-      filters={filters.status === 'fulfilled' ? filters.value.data : null}
+      filters={dictionary ? projectCatalogFacetOverview(dictionary, query.make ? undefined : query.model) : null}
+      initialBrandFilters={dictionary && query.make ? projectCatalogFacetScope(dictionary, query.make) : null}
+      initialModelFilters={dictionary && query.make && query.model
+        ? projectCatalogFacetScope(dictionary, query.make, query.model)
+        : null}
       error={result.status === 'rejected'}
       initialRetryAfter={publicRetryAfter(result, filters)}
     />

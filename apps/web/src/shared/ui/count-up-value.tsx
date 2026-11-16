@@ -47,18 +47,30 @@ export function CountUpValue({
       finish();
       return;
     }
-    const stop = animateCount(
-      count,
-      (value) => {
-        element.textContent = formatter.format(value);
-        element.dataset.counterValue = String(value);
-      },
-      {
-        now: () => performance.now(),
-        request: (callback) => requestAnimationFrame(callback),
-        cancel: (id) => cancelAnimationFrame(id),
-      },
-    );
+    let pendingStart: number | undefined;
+    let stopAnimation: (() => void) | undefined;
+    const start = () => {
+      pendingStart = undefined;
+      stopAnimation = animateCount(
+        count,
+        (value) => {
+          element.textContent = formatter.format(value);
+          element.dataset.counterValue = String(value);
+        },
+        {
+          now: () => performance.now(),
+          request: (callback) => requestAnimationFrame(callback),
+          cancel: (id) => cancelAnimationFrame(id),
+        },
+      );
+    };
+    // Let the first frame paint the SSR zero before advancing the number.
+    if (startsAtZero) pendingStart = requestAnimationFrame(start);
+    else start();
+    const stop = () => {
+      if (pendingStart !== undefined) cancelAnimationFrame(pendingStart);
+      stopAnimation?.();
+    };
     const reduceMotion = (event: MediaQueryListEvent) => {
       if (!event.matches) return;
       stop();
@@ -81,10 +93,14 @@ export function CountUpValue({
         >
           {startsAtZero ? formatter.format(0) : finalNumber}
         </span>
-        {startsAtZero && <span className={styles.staticValue}>{finalNumber}</span>}
+        {startsAtZero && <span className={styles.staticValue} hidden>{finalNumber}</span>}
         {count !== null && suffix && <span className={suffixClassName}>{suffix}</span>}
       </strong>
-      <span className="sr-only">
+      <span
+        className="sr-only"
+        // Keep the spoken final value off screen even before site styles arrive.
+        style={startsAtZero ? { position: 'absolute', clipPath: 'inset(50%)' } : undefined}
+      >
         {finalNumber}{count === null ? '' : suffix}
       </span>
     </>

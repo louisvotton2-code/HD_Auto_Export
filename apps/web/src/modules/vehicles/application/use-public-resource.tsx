@@ -39,7 +39,7 @@ export function PublicFreshnessBoundary({
 
 /** SSR supplies the first body. Explicit queries/history/retries replace this resource; activation never fetches. */
 export function usePublicResource<T>(
-  url: string,
+  url: string | null,
   initial: T | null,
   schema: { parse(value: unknown): T },
   {
@@ -58,12 +58,13 @@ export function usePublicResource<T>(
     () => 0,
   );
   const [state, setState] = useState<{
-    url: string;
+    url: string | null;
     data: T | null;
     phase: PublicFreshness;
     missing: boolean;
     navigation: number;
   }>({ url, data: initial, phase: initial ? 'fresh' : 'error', missing: false, navigation: 0 });
+  const [loadingUrl, setLoadingUrl] = useState<string | null>(null);
   const active = useRef({ url, schema, navigationPath });
   active.current = { url, schema, navigationPath };
   const request = useRef<{
@@ -83,6 +84,7 @@ export function usePublicResource<T>(
   );
   const load = useCallback(async () => {
     const target = active.current.url;
+    if (target === null) return;
     const checkedNavigation = active.current.navigationPath
       ? publicNavigationVersion(active.current.navigationPath)
       : 0;
@@ -110,7 +112,9 @@ export function usePublicResource<T>(
     request.current.controller = controller;
     request.current.url = target;
     request.current.navigation = checkedNavigation;
-    setState((previous) => ({ ...previous, phase: 'checking', missing: false }));
+    const isCurrent = () => id === request.current.id && active.current.url === target;
+    // Preserve the last settled result while a different selection is pending.
+    setLoadingUrl(target);
     try {
       const response = await fetch(target, {
         cache: 'no-store',
@@ -121,7 +125,7 @@ export function usePublicResource<T>(
       });
       if (response.status === 429) {
         await response.body?.cancel();
-        if (id !== request.current.id) return;
+        if (!isCurrent()) return;
         const seconds = retryAfterSeconds(response.headers.get('retry-after'));
         retryAt.current = Math.max(retryAt.current, Date.now() + seconds * 1000);
         setRetryAfter(seconds);
@@ -135,7 +139,7 @@ export function usePublicResource<T>(
         return;
       }
       if (response.status === 404) {
-        if (id === request.current.id)
+        if (isCurrent())
           setState({
             url: target,
             data: null,
@@ -148,7 +152,7 @@ export function usePublicResource<T>(
       if (!response.ok || !response.headers.get('content-type')?.includes('application/json'))
         throw new Error('Public resource unavailable');
       const next = active.current.schema.parse(await response.json());
-      if (id === request.current.id) {
+      if (isCurrent()) {
         if (!cooldown) retryAt.current = 0;
         setRetryAfter(Math.max(0, Math.ceil((retryAt.current - Date.now()) / 1000)));
         setState({
@@ -160,7 +164,7 @@ export function usePublicResource<T>(
         });
       }
     } catch {
-      if (controller.signal.aborted || id !== request.current.id) return;
+      if (controller.signal.aborted || !isCurrent()) return;
       setState((previous) => ({
         ...previous,
         url: target,
@@ -169,7 +173,10 @@ export function usePublicResource<T>(
         navigation: checkedNavigation,
       }));
     } finally {
-      if (id === request.current.id) request.current.controller = undefined;
+      if (id === request.current.id) {
+        request.current.controller = undefined;
+        setLoadingUrl(null);
+      }
     }
   }, []);
   const waiting = retryAfter > 0;
@@ -182,7 +189,12 @@ export function usePublicResource<T>(
     return () => clearInterval(timer);
   }, [waiting]);
   useEffect(() => {
-    if (state.url !== url) void load();
+    if (request.current.controller && request.current.url !== url) {
+      request.current.controller?.abort();
+      request.current = { id: request.current.id + 1 };
+      setLoadingUrl(null);
+    }
+    if (url !== null && state.url !== url) void load();
   }, [url, load, state.url]);
   useEffect(() => {
     if (initial !== initialRef.current || initialRetryAfter !== initialRateRef.current) {
@@ -190,6 +202,7 @@ export function usePublicResource<T>(
       initialRateRef.current = initialRetryAfter;
       request.current.controller?.abort();
       request.current.id++;
+      setLoadingUrl(null);
       if (initialRetryAfter > 0)
         retryAt.current = Math.max(retryAt.current, Date.now() + initialRetryAfter * 1000);
       else if (!cooldown) retryAt.current = 0;
@@ -223,17 +236,20 @@ export function usePublicResource<T>(
     request.current.id++;
     request.current.controller?.abort();
     request.current.controller = undefined;
+    setLoadingUrl(null);
     setState({ url: active.current.url, data: null, phase: 'fresh', missing: true,
       navigation: active.current.navigationPath ? publicNavigationVersion(active.current.navigationPath) : 0 });
   }, []);
+  const checking = url !== null && loadingUrl === url;
   return {
     ...state,
+    missing: state.url === url && !checking && state.missing,
     // A rate limit on another request does not invalidate an already loaded dictionary.
-    dataCurrent: state.url === url && state.phase === 'fresh',
+    dataCurrent: state.url === url && !checking && state.phase === 'fresh',
     retryAfter,
     phase: waiting
       ? ('error' as PublicFreshness)
-      : state.url === url && state.navigation >= navigation
+      : !checking && state.url === url && state.navigation >= navigation
         ? state.phase
         : ('checking' as PublicFreshness),
     reload: load,
