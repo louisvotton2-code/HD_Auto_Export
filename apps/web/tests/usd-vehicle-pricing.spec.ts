@@ -99,7 +99,7 @@ test('USD boundaries are inclusive on the projected cents, while original reques
   }
   const facetRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
-    return url.pathname === '/api/v1/vehicle-filters/' &&
+    return url.pathname.replace(/\/$/, '') === '/catalog-facets.json' &&
       url.searchParams.get('priceView') === 'usd' &&
       url.searchParams.get('priceCurrency') === 'USD' &&
       url.searchParams.get('priceMin') === '999.50' &&
