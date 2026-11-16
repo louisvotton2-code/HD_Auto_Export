@@ -8,10 +8,11 @@ import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, p
 import {
   getPublicCatalog,
   getPublicFilters,
+  projectCatalogFacetOverview,
+  projectCatalogFacetScope,
   publicRetryAfter,
 } from '@/modules/vehicles/server';
 import { localizedAlternates } from '@/shared/config/site';
-import { projectCatalogFacetOverview, projectCatalogFacetScope } from '@/modules/vehicles/catalog-facets';
 
 type Props = {
   params: Promise<{ locale: string }>;
