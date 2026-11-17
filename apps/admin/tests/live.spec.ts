@@ -482,11 +482,11 @@ test('demo pending content publishes honestly; dictionary/search/home/bulk use r
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/admin/home-sections');
   await page.getByLabel('区块 1中文标题').fill('隔离展示推荐');
-  await page.getByRole('button', { name: /选择车辆$/ }).first().click();
+  await page.getByRole('button', { name: /添加精品车辆$/ }).first().click();
   await page.getByRole('dialog').getByRole('row').filter({ hasText: demo.stockCode }).getByRole('button', { name: '加入此区块' }).click();
   await page.getByRole('button', { name: /完成选择$/ }).click();
   await page.getByLabel('区块 2中文标题').fill('隔离新车展示');
-  await page.getByRole('button', { name: /选择车辆$/ }).nth(1).click();
+  await page.getByRole('button', { name: /添加精品车辆$/ }).nth(1).click();
   await page.getByRole('dialog').getByRole('row').filter({ hasText: demo.stockCode }).getByRole('button', { name: '加入此区块' }).click();
   await page.getByRole('button', { name: /完成选择$/ }).click();
   const savedHome = page.waitForResponse(r => r.url().endsWith('/api/v1/admin/home/vehicle-sections') && r.request().method() === 'PUT');
@@ -652,7 +652,7 @@ test('external eight-image real API lifecycle preserves source honesty, removes 
   await waitForServerWindow(rateCooldownMs(publishedRateWindow!.deadline, Date.now()), 'external-published-to-deletion');
   // Select through the real home editor so deletion must remove an actual persisted reference.
   await page.goto('/admin/home-sections');
-  await page.getByRole('button', { name: /选择车辆$/ }).first().click();
+  await page.getByRole('button', { name: /添加精品车辆$/ }).first().click();
   await page.getByRole('dialog').getByRole('row').filter({ hasText: initial.stockCode }).getByRole('button', { name: '加入此区块' }).click();
   await page.getByRole('button', { name: /完成选择$/ }).click();
   const saveHome = page.waitForResponse(response => response.url().endsWith('/api/v1/admin/home/vehicle-sections') && response.request().method() === 'PUT');
