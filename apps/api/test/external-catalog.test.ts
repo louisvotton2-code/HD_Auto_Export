@@ -752,3 +752,94 @@ test('a confirmed source make or model identity change suspends manual copy unti
     assert.equal((await list(`q=${encodeURIComponent('Upgrade Human Title')}`)).meta.total, 1);
   }
 });
+
+test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn and nonprimary suppliers', async () => {
+  const { data: { id: fixtureBatch } } = admin.ExternalBatchResponseSchema.parse(
+    (await importBatch({ provider: 'synthetic-feed', records: [301, 302, 303, 304, 305].flatMap(index => one(makeExternalCandidateFixture(index)).records) })).json(),
+  );
+  const [primary, hidden, withdrawn, alias, noPublicTitle] = (await readRecords(fixtureBatch)).map(row => row.listingId!);
+  const original = await runtime.inventory.getHome();
+  const route = '/api/v1/admin/home/vehicle-sections';
+  const payload = { ...original, sections: [
+    { ...original.sections[0]!, vehicleIds: [primary!, manualId.toUpperCase(), hidden!, withdrawn!, alias!] },
+    { ...original.sections[1]!, vehicleIds: [primary!] },
+  ] };
+  const saveHome = (input: admin.AdminHomeSections, auth: Record<string,string> = headers(editorCookie)) =>
+    call({ method:'PUT',url:route,headers:auth,payload:input });
+  const home = async (locale='zh', view?:'localized'|'legacy') => {
+    const response = await call({ url:`/api/v1/home/vehicles?locale=${locale}${view?`&view=${view}`:''}` });
+    assert.equal(response.statusCode,200,response.body);
+    assert.equal(response.headers['cache-control'],'no-store');
+    return publicApi.PublicHomeSectionsSchema.parse(response.json());
+  };
+  const ids = (result: publicApi.PublicHomeSections) => result.data.sections.map(section => section.vehicles.map(vehicle => vehicle.id));
+  const before = await home('zh','localized');
+  assert.equal((await saveHome(payload,{})).statusCode,401);
+  assert.equal((await saveHome(payload,{...headers(editorCookie),origin:'https://other.invalid'})).statusCode,403);
+  const saved = await saveHome(payload);
+  assert.equal(saved.statusCode,200,saved.body);
+  const selected = admin.AdminHomeSectionsResponseSchema.parse(saved.json()).data;
+  assert.equal(selected.version,original.version+1);
+  assert.equal((await saveHome(payload)).statusCode,409);
+  assert.deepEqual(selected.sections[0]!.vehicleIds,[primary,manualId,hidden,withdrawn,alias]);
+  for(const locale of ['zh','en','ru']) {
+    const result = await home(locale,'localized');
+    assert.deepEqual(ids(result),[[primary,manualId,hidden,withdrawn,alias],[primary]]);
+    assert.notEqual(result.meta.catalogCache?.version,before.meta.catalogCache?.version);
+    const vehicle=result.data.sections[0]!.vehicles[0]!;
+    assert.equal(vehicle.source.kind,'external');
+    if(vehicle.source.kind==='external') assert.equal(vehicle.source.listingUrl,null);
+    assert.equal(vehicle.identifiers?.sourceId,null);
+    assert.equal(vehicle.identifiers?.source,null);
+    assert.match(vehicle.stockCode,/^HX[1-9]\d*$/);
+    assert.equal(vehicle.content.title.requestedLocale,locale);
+    assert.equal(vehicle.content.description,null);
+    assert.equal(vehicle.availability,'unknown');
+    assert.equal(vehicle.external?.detail,undefined);
+    assert.equal(vehicle.report,undefined);
+    assert.equal(vehicle.configuration,undefined);
+    assert.equal(vehicle.images.length,1);
+    assert.equal(vehicle.images[0]?.remote?.revision,1);
+    assert.doesNotMatch(JSON.stringify(result),/listings\.example\.invalid|reports\.example\.invalid|"synthetic-0301"/);
+  }
+  assert.deepEqual(ids(await home()),[[manualId]]);
+  assert.deepEqual(ids(await home('ru','legacy')),[[manualId]]);
+
+  const stocked=await home('zh','localized');
+  const listing=await getListing(hidden!);
+  assert.equal((await revise(hidden!,{version:listing.version,overrides:{...listing.overrides,hidden:true}})).statusCode,200);
+  const hiddenResult=await home('zh','localized');
+  assert.notEqual(hiddenResult.meta.catalogCache?.version,stocked.meta.catalogCache?.version);
+  assert.deepEqual(ids(hiddenResult),[[primary,manualId,withdrawn,alias],[primary]]);
+  assert.equal((await importBatch(makeExternalWithdrawalFixture(303,2))).statusCode,201);
+  const withdrawnResult=await home('zh','localized');
+  assert.notEqual(withdrawnResult.meta.catalogCache?.version,hiddenResult.meta.catalogCache?.version);
+  assert.deepEqual(ids(withdrawnResult),[[primary,manualId,alias],[primary]]);
+
+  // Deliberately leave a stale projection to verify the authoritative fallback guard.
+  await runtime.db.transaction(async tx => {
+    await tx.query("UPDATE external_listings SET formal_canonical_id='fixture-home-canonical',formal_primary=false WHERE id=$1",[alias!.slice(4)]);
+    await tx.query("UPDATE external_listings SET formal_canonical_id='fixture-home-canonical' WHERE id=$1",[primary!.slice(4)]);
+    await tx.query('DELETE FROM external_catalog WHERE listing_id=$1',[noPublicTitle!.slice(4)]);
+  });
+  // Normal representative switches also update the catalogue projection and its version.
+  const afterChanges=await home('zh','localized');
+  assert.notEqual(afterChanges.meta.catalogCache?.version,withdrawnResult.meta.catalogCache?.version);
+  assert.deepEqual(ids(afterChanges),[[primary,manualId],[primary]]);
+  const invalid={...selected,sections:selected.sections.map((section,index)=>index===0
+    ? {...section,vehicleIds:[...section.vehicleIds,noPublicTitle!,`ext-${randomUUID()}`]} : section)};
+  const failure=await saveHome(invalid);
+  assert.equal(failure.statusCode,422,failure.body);
+  const issue=publicApi.ApiErrorSchema.parse(failure.json()).error;
+  assert.equal(issue.code,'PUBLISH_VALIDATION_FAILED');
+  assert.deepEqual(issue.fields?.map(({path,code})=>[path,code]),[2,3,4,5,6].map(index=>[`sections.0.vehicleIds.${index}`,'HOME_VEHICLE_NOT_ELIGIBLE']));
+  assert.equal((await saveHome({...selected,sections:[{...selected.sections[0]!,vehicleIds:['invalid-id']},selected.sections[1]!]})).statusCode,400);
+  assert.equal((await saveHome({...selected,sections:[{...selected.sections[0]!,vehicleIds:Array.from({length:31},()=>`ext-${randomUUID()}`)},selected.sections[1]!]})).statusCode,400);
+  assert.deepEqual(await runtime.inventory.getHome(),selected);
+
+  // A stale historical token must not poison either public read path.
+  await runtime.db.pool.query("UPDATE home_config SET sections=jsonb_set(sections,'{0,vehicleIds,0}','\"old-bad-id\"') WHERE id=1");
+  assert.deepEqual(ids(await home('zh','localized')),[[manualId],[primary]]);
+  assert.deepEqual(ids(await home('zh','legacy')),[[manualId]]);
+  await runtime.db.pool.query('UPDATE home_config SET sections=$1,version=version+1 WHERE id=1',[JSON.stringify(original.sections)]);
+});

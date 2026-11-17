@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AdminActivitySummarySchema } from './activity.js';
 export * from './activity.js';
 import { AdminReportSchema } from './external-admin.js';
+import { ExternalListingIdSchema } from './external-public.js';
 import { VehicleConfigurationSchema, parseVehicleConfigurationJson } from './configuration.js';
 import { LocalizationDataSchema, VehicleLocalizationSchema } from './localization.js';
 import { TranslationPlanRefSchema } from './translation-plan.js';
@@ -295,7 +296,13 @@ export type AdminHomeSection = z.infer<typeof AdminHomeSectionSchema>;
 export const AdminHomeSectionsSchema = z.strictObject({ version: VersionSchema, sections: z.array(AdminHomeSectionSchema).length(2) }).superRefine((value, ctx) => {
   if (new Set(value.sections.map((section) => section.id)).size !== value.sections.length) ctx.addIssue({ code: 'custom', path: ['sections'], message: 'Duplicate section IDs' });
 });
-export const SaveHomeSectionsRequestSchema = AdminHomeSectionsSchema;
+export const HomeVehicleIdSchema = z.union([z.uuid(), ExternalListingIdSchema]);
+export const SaveHomeSectionsRequestSchema = AdminHomeSectionsSchema.safeExtend({
+  sections: z.array(AdminHomeSectionSchema.extend({
+    vehicleIds: z.array(HomeVehicleIdSchema).max(30).refine(
+      ids => new Set(ids.map(id => id.toLowerCase())).size === ids.length, 'Duplicate vehicles in section'),
+  })).length(2),
+});
 export const AdminHomeSectionsResponseSchema = responseSchema(AdminHomeSectionsSchema);
 export type AdminHomeSections = z.infer<typeof AdminHomeSectionsSchema>;
 export type SaveHomeSectionsRequest = z.infer<typeof SaveHomeSectionsRequestSchema>;
