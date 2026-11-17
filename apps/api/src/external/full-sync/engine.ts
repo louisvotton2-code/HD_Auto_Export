@@ -287,7 +287,8 @@ export class FullSyncWorker{
      await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString(),stagedAlias);
     }
     m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
-    const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd'].includes(key)));const rowHash=jsonHash(stableRow);
+    // Export image URLs are retained as evidence but detail photos are refreshed separately.
+    const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd','image'].includes(key)));const rowHash=jsonHash(stableRow);
     if(m.csv_hash===rowHash&&m.last_detail_at){await tx.query('UPDATE external_full_members SET last_snapshot=$3,verification_pending=false WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);continue;}
     if(new Date(snap.generated_at).getTime()>=new Date(m.business_at).getTime()){
      const docs:SourceDocument[]=[{identity:identity(entry.source,entry.external_id),kind:'csv',locale:'und',observedAt:new Date(snap.generated_at).toISOString(),sourceUpdatedAt:null,payload:row}];

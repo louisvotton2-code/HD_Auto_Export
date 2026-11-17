@@ -308,5 +308,35 @@ test('formal full synchronization has durable independent receipt/application an
    await worker!.recover();await worker!.recover();await assert.rejects(worker!.recover(),/SYNC_RECOVERY_LIMIT/);
    assert.deepEqual(await retained(),before);
   });
+  await t.test('CSV image evidence does not invalidate previously imported detail',async()=>{
+   const externalId='812344';
+   // Keep earlier cases' queued fixture work out of this promotion batch.
+   await database.pool.query("UPDATE external_full_work SET due_at='infinity' WHERE kind='detail'");
+   await database.pool.query('UPDATE external_full_members SET sampled=false WHERE sampled');
+   async function applySnapshot(price:string,image?:string){
+    const id=randomUUID(),file=path.join(directory,`${id}.csv`);
+    const row={source:'che168',id:externalId,price_cny:price} as Record<string,string>;
+    const columns=image===undefined?catalogColumns:[...catalogColumns,'image'];
+    if(image!==undefined)row.image=image;
+    const csv=Buffer.from(columns.join(',')+'\n'+columns.map(column=>row[column]??'').join(',')+'\n');
+    await writeFile(file,csv);
+    await database.pool.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,sha256,bytes) VALUES($1,$2,'staging',$3,$4,$5)",[id,at,file,createHash('sha256').update(csv).digest('hex'),csv.length]);
+    await worker!.snapshot();
+    assert.equal((await database.pool.query('SELECT state FROM external_full_snapshots WHERE id=$1',[id])).rows[0].state,'complete');
+    return id;
+   }
+   await applySnapshot('70000');
+   await database.pool.query("UPDATE external_full_members SET state='active',last_detail_at=now(),locales=ARRAY['zh','en','ru'],sampled=false WHERE source='che168' AND external_id=$1",[externalId]);
+   await database.pool.query("DELETE FROM external_full_work WHERE source='che168' AND external_id=$1 AND kind='detail'",[externalId]);
+   const image='https://example.invalid/photo.jpg';
+   const id=await applySnapshot('70000',image);
+   const unchanged=(await database.pool.query(`SELECT state,last_snapshot,locales,
+     EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND w.kind='detail') AS queued
+     FROM external_full_members m WHERE source='che168' AND external_id=$1`,[externalId])).rows[0];
+   assert.deepEqual(unchanged,{state:'active',last_snapshot:id,locales:['zh','en','ru'],queued:false});
+   assert.equal((await database.pool.query("SELECT payload->>'image' AS image FROM external_full_stage WHERE snapshot_id=$1",[id])).rows[0].image,image);
+   await applySnapshot('71000',image);
+   assert.equal((await database.pool.query("SELECT count(*)::integer AS jobs FROM external_full_work WHERE source='che168' AND external_id=$1 AND kind='detail'",[externalId])).rows[0].jobs,1);
+  });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });
