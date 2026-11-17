@@ -166,21 +166,28 @@ test('calculating and navigating use local assets without calling an API or runt
   expect(requests.filter((url) => new URL(url).pathname.startsWith('/_next/image'))).toEqual([]);
 });
 
-test('browser initialization and reset use the Shanghai calendar date after the build day while preserving a chosen draft date', async ({
+test('browser initialization and reset use the Shanghai calendar date and ignore an obsolete stored date', async ({
   page,
 }) => {
   await page.clock.setFixedTime(new Date('2026-12-10T20:30:00Z'));
+  await page.addInitScript(() => {
+    sessionStorage.setItem('hd-auto.calculator.draft.v2', JSON.stringify({
+      input: { customsDate: '2025-09-30' },
+    }));
+  });
+  const effectiveDate = () => page.evaluate(() =>
+    JSON.parse(sessionStorage.getItem('hd-auto.calculator.draft.v2') ?? '{}').input?.customsDate);
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('#customsDate')).toHaveValue('2026-12-11');
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect.poll(effectiveDate).toBe('2026-12-11');
   await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
-  await fillNumericDate(page, 'customsDate', '2026-09-30');
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('#customsDate')).toHaveValue('2026-09-30');
+  await expect.poll(effectiveDate).toBe('2026-12-11');
   await page.clock.setFixedTime(new Date('2026-12-20T20:30:00Z'));
   await page.locator('.reset-button').click();
-  await expect(page.locator('#customsDate')).toHaveValue('2026-12-21');
+  await expect.poll(effectiveDate).toBe('2026-12-21');
   await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 });
 
@@ -190,7 +197,7 @@ test('a future browser year remains explicit instead of silently applying expire
   await page.clock.setFixedTime(new Date('2027-01-01T04:00:00Z'));
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('#customsDate')).toHaveValue('2027-01-01');
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
   await expect(page.getByTestId('manufacture-range-total')).toHaveCount(0);
   await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toHaveCount(0);

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VehiclePhoto } from './vehicle-photo';
+import { VehiclePhotoStamps } from './vehicle-photo-stamps';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import type { PublicVehicle } from '@hd/contracts/public';
@@ -15,10 +16,7 @@ import {
 import { useVehicleFavorites } from '../application/use-vehicle-favorites';
 import { favoritesContent } from '../favorites-content';
 import { publicVehicleMessages } from '../public-messages';
-import {
-  publicVehicleCover,
-  publicAvailabilityLabel,
-} from '../public-presentation';
+import { publicVehicleCover } from '../public-presentation';
 import { PublicCatalogLink } from './public-catalog-link';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { VehiclePriceValues } from './vehicle-price-values';
@@ -53,22 +51,14 @@ function SavedCar({
   const cover = publicVehicleCover(vehicle);
   const copy = publicVehicleMessages(locale);
   const title = publicVehicleTitle(vehicle, locale);
-  const status =
-    vehicle.availability === 'sold' || vehicle.availability === 'reserved'
-      ? publicAvailabilityLabel(vehicle, locale)
-      : '';
   return (
     <>
-      <PublicCatalogLink
-        locale={locale}
-        href={vehicle.detailPath}
-        className={styles.photo}
-        tabIndex={-1}
-        aria-hidden="true"
-        onClick={close}
-      >
-        <VehiclePhoto image={cover} locale={locale} alt="" compact />
-      </PublicCatalogLink>
+      <div className={styles.photo}>
+        <PublicCatalogLink locale={locale} href={vehicle.detailPath} tabIndex={-1} aria-hidden="true" onClick={close}>
+          <VehiclePhoto image={cover} locale={locale} alt="" compact />
+        </PublicCatalogLink>
+        <VehiclePhotoStamps vehicle={vehicle} locale={locale} placement="compact" />
+      </div>
       <div className={styles.info}>
         <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close} lang={title.lang}>
           {title.text}
@@ -77,11 +67,6 @@ function SavedCar({
           {publicVehicleReference(vehicle).code}
           {vehicle.facts.modelYear !== null ? ` · ${vehicle.facts.modelYear}` : ''}
         </small>
-        {status && (
-          <span className={styles.availability} data-availability={vehicle.availability}>
-            {status}
-          </span>
-        )}
         {vehicle.price.kind !== 'on_request' && (
           <span className={styles.priceKind}>{copy.priceLabels[vehicle.price.kind]}</span>
         )}

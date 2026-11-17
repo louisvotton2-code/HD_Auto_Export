@@ -4,7 +4,8 @@ import { fillNumericDate } from './helpers/numeric-date';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Requires isolated public data fixtures.');
-test.beforeEach(async ({ request }) => {
+test.beforeEach(async ({ page, request }) => {
+  await page.clock.setFixedTime(new Date('2026-11-14T04:00:00Z'));
   await resetPublicFixture(request);
 });
 test.afterEach(async ({ request }) => {
@@ -12,7 +13,7 @@ test.afterEach(async ({ request }) => {
 });
 const compact = (text: string) => text.replace(/\s+/g, '');
 async function fillIfVisible(scope: Locator, name: string, value: string) {
-  if (name === 'manufactureDate' || name === 'customsDate') {
+  if (name === 'manufactureDate') {
     if (await scope.locator(`[data-numeric-date="${name}"]`).isVisible()) await fillNumericDate(scope, name, value);
     return;
   }
@@ -27,7 +28,6 @@ async function complete(scope: Locator, code: string) {
     displacementCc: '1998',
     powerHp: '150',
     manufactureDate: '2021-01',
-    customsDate: '2026-10-22',
     freight: '1000',
     insurance: '100',
   }))
@@ -50,6 +50,7 @@ for (const locale of ['zh', 'en', 'ru']) {
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`/${locale}/cars/fixture_car_1/`);
     const budget = page.getByTestId('vehicle-import-estimate');
+    await expect(budget.locator('[name^="customsDate"]')).toHaveCount(0);
     const manufacture = budget.locator('[name="manufactureDate"]');
     await expect(manufacture).toHaveValue('');
     await expect(manufacture).not.toHaveAttribute('aria-describedby');
@@ -105,7 +106,7 @@ for (const [code, slug] of Object.entries({
     await expect(page).toHaveURL(new RegExp(`/en/calculator/${slug}/$`));
     await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
     expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
-    await expect(page.locator('#customsDate')).toHaveValue('2026-10-22');
+    await expect(page.locator('#customsDate')).toHaveCount(0);
     await page.reload();
     await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
     expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
@@ -131,11 +132,25 @@ test('unknown choices stay empty through the explicit seed, storage and reload',
   }
 });
 
+test('a quote link opened after Shanghai midnight keeps vehicle facts and uses the new visit date', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-12-31T15:59:59Z'));
+  await page.goto('/en/cars/fixture_car_1/');
+  const budget = page.getByTestId('vehicle-import-estimate');
+  await complete(budget, 'RU');
+  const href = await budget.getByTestId('vehicle-full-calculator').getAttribute('href');
+  expect(href).toContain('#hd-estimate=');
+  await page.clock.setFixedTime(new Date('2026-12-31T16:00:00Z'));
+  await page.goto(href!);
+  await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.getByTestId('result-status')).toContainText('2026');
+  await expect(page.getByTestId('total')).toHaveCount(0);
+});
+
 test('a supplier range uses six January dates in both calculators, on reload and in the copied quote', async ({ page, context, request }) => {
   await setPublicFixtureState(request, { estimateDateRange: true });
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
-  await fillNumericDate(budget, 'customsDate', '2026-11-14');
   const bounds = budget.getByTestId('manufacture-range-total');
   await expect(bounds).toBeVisible();
   const before = compact(await bounds.innerText());

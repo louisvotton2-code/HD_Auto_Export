@@ -26,6 +26,12 @@ describe('pure calculator draft restoration', () => {
     const raw = current({ ...defaults, manufactureDate: '2021-01' });
     expect(restoreCalculatorDraft(raw, ru, date, rates).input.manufactureDate).toBe('2021-01');
   });
+  it.each(['', '2025-10-23', '2027-01-01'])('uses the supplied calculation date instead of a stored date %s', (storedDate) => {
+    const draft = { ...defaults, customsDate: storedDate, manufactureDate: '2021-03' };
+    for (const raw of [current(draft), { current: null, legacy: JSON.stringify(draft) }])
+      expect(restoreCalculatorDraft(raw, ru, date, rates).input)
+        .toMatchObject({ customsDate: date, manufactureDate: '2021-03' });
+  });
   it('preserves explicit missing vehicle enums only in the current UI format', () => {
     const unknown = { ...defaults, powertrain: '', condition: '', steering: '' };
     expect(restoreCalculatorDraft(current(unknown), ru, date, rates).input)

@@ -29,9 +29,11 @@ export function formatPublicVehicleUsdApproximation(vehicle: PublicVehicleSummar
   return `≈ ${formatDisplayAmount(quote.money.amount, locale, 0, 0)} USD`;
 }
 
-export function publicAvailabilityLabel(vehicle: PublicVehicleSummary, locale: Locale): string {
-  // An unknown state has no public badge; it is never converted into an available claim.
-  return publicVehicleMessages(locale).availability[vehicle.availability];
+export function publicAvailabilityLabel(vehicle: Pick<PublicVehicleSummary, 'availability'>, locale: Locale): string {
+  const { availability } = vehicle;
+  if (availability === 'reserved' || availability === 'sold')
+    return publicVehicleMessages(locale).availability[availability];
+  return '';
 }
 
 export function publicVehicleCover(vehicle: PublicVehicleSummary): PublicMedia | null {

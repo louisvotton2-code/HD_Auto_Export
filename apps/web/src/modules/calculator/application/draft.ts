@@ -59,7 +59,6 @@ export function restoreCalculatorDraft(
       'displacementCc',
       'powerHp',
       'manufactureDate',
-      'customsDate',
       'freight',
       'insurance',
     ] as const) {

@@ -147,11 +147,17 @@
   border-bottom: 1px solid #ffffff12;
 }
 .photo {
+  position: relative;
   flex: 0 0 86px;
   width: 86px;
   aspect-ratio: 4/3;
   overflow: hidden;
   border-radius: 8px;
+}
+.photo > a {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .photo img {
   width: 100%;
@@ -280,12 +286,4 @@
   color: #aaa;
   font-size: 10px;
   line-height: 1.5;
-}
-.availability {
-  color: #e7b78f;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.availability[data-availability='sold'] {
-  color: #aaa;
 }

@@ -146,7 +146,7 @@ async function openAdvanced(page: Page) {
   const advanced = page.locator('.advanced-settings');
   await expect(page.locator('.reset-button')).toBeEnabled();
   if ((await advanced.getAttribute('open')) === null) await advanced.locator('summary').click();
-  await expect(page.locator('#customsDate-year')).toBeVisible();
+  await expect(page.locator('#powertrainDetail')).toBeVisible();
 }
 
 async function fillRussianReference(page: Page) {
@@ -158,7 +158,6 @@ async function fillRussianReference(page: Page) {
   await page.locator('#transactionRate').fill('');
   await page.locator('#transactionRate').fill(ruSample.transactionRate);
   await page.locator('#euroRate').fill(ruSample.euroRate);
-  await fillNumericDate(page, 'customsDate', ruSample.customsDate);
   await fillNumericDate(page, 'manufactureDate', ruSample.manufactureDate);
 }
 
@@ -174,7 +173,6 @@ async function fillCountryReference(page: Page, fixture: CountryFixture, powertr
     await page.locator('#euroRate').fill(fixture.euroRate);
   if (await page.locator('#manufactureDate').count())
     await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await fillNumericDate(page, 'customsDate', ruSample.customsDate);
   await page.locator('#displacementCc').fill('1998');
   if (await page.locator('#powerHp').count()) await page.locator('#powerHp').fill('150');
   if (await page.locator('#freight').count()) {
@@ -206,7 +204,7 @@ test('defaults calculate immediately with settings expanded and still allow manu
   await expect(page.getByTestId('manufacture-range-result')).toContainText('最近六年');
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
   await expect(page.locator('#importerType')).toHaveCount(0);
-  await expect(page.locator('#customsDate-year')).toBeVisible();
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
   await expect(page.locator('#transactionRate')).toBeVisible();
   await expect(page.getByRole('button', { name: '载入示例', exact: true })).toHaveCount(0);
   await expect(page.locator('.simple-powertrain button')).toHaveCount(3);
@@ -331,7 +329,6 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expectReferenceAmount(page);
-  await fillNumericDate(page, 'customsDate', '2026-10-22');
   await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectAmount(page, '3605');
 
@@ -423,7 +420,6 @@ test('Georgia defaults need no price or FX and the three fuel groups update the 
   await expect(page.locator('#steering')).toBeVisible();
   await openAdvanced(page);
   await expect(page.locator('#steering')).toHaveValue('left');
-  await fillNumericDate(page, 'customsDate', '2026-10-22');
   await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectAmount(page, '3605');
   await expect(page.getByTestId('total')).toContainText('GEL');
@@ -444,7 +440,6 @@ test('Georgia policy notes follow age, steering and powertrain without retaining
   page,
 }) => {
   await openCalculator(page, 'georgia');
-  await fillNumericDate(page, 'customsDate', '2026-10-22');
   await fillNumericDate(page, 'manufactureDate', '2020-01');
   await page.getByRole('button', { name: '混合动力', exact: true }).click();
   const notes = page.getByTestId('country-policy-notes');
@@ -502,7 +497,7 @@ test('switching language preserves destination, entered values and manually over
   await page.locator('#transactionRate').focus();
   await expect(page.locator('#transactionRate')).toHaveValue('81.969182');
   await page.locator('#transactionRate').blur();
-  await expect(page.locator('#customsDate')).toHaveValue('2026-10-22');
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
 });
 
 test('changing currency converts the price and preserves its value with the automatic FX snapshot', async ({
@@ -539,9 +534,6 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
 }) => {
   await openCalculator(page);
   await openAdvanced(page);
-  const defaultDate = await page.locator('#customsDate').inputValue();
-  const today = '2026-10-24'; // Matches the fixed browser clock in beforeEach.
-  expect(defaultDate).toBe(today);
   const defaultRate = await page.locator('#transactionRate').inputValue();
   const defaultEuroRate = await page.locator('#euroRate').inputValue();
   await fillRussianReference(page);
@@ -564,7 +556,6 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await openAdvanced(page);
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expect(page.locator('#powertrainDetail')).toHaveValue('petrol');
-  await expect(page.locator('#customsDate')).toHaveValue(defaultDate);
   await expect(page.locator('#transactionRate')).toHaveValue(defaultRate);
   await expect(page.locator('#euroRate')).toHaveValue(defaultEuroRate);
 });
@@ -686,7 +677,6 @@ test('UZ registration condition and separate CNY/USD rates change tax for the sa
   await page.locator('#usdRate').fill('1000');
   await page.locator('#displacementCc').fill('1000');
   await fillNumericDate(page, 'manufactureDate', '2026-01');
-  await fillNumericDate(page, 'customsDate', '2026-10-22');
   await page.locator('#freight').fill('0');
   await page.locator('#insurance').fill('0');
   await expect(page.locator('#condition')).toHaveValue('used');

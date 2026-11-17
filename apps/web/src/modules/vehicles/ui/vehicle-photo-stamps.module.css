@@ -1,0 +1,89 @@
+.stamps {
+  position: absolute;
+  right: 13px;
+  bottom: 11px;
+  z-index: 2;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  max-width: calc(100% - 26px);
+  pointer-events: none;
+}
+
+.stamp {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 2px solid currentColor;
+  border-radius: 5px;
+  background: #231912f5;
+  color: #ffdf9d;
+  box-shadow: 0 1px 6px #0009;
+  font-size: clamp(10px, 1.05vw, 12px);
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  rotate: -4deg;
+}
+
+.stamp::before {
+  position: absolute;
+  inset: 1px;
+  border: 1px dashed currentColor;
+  border-radius: 2px;
+  opacity: 0.58;
+  content: '';
+}
+
+.stamp[data-vehicle-stamp='featured'] {
+  margin-right: 6px;
+}
+
+.stamp[data-availability='reserved'] {
+  background: #122935f5;
+  color: #aee2f5;
+}
+
+.stamp[data-availability='sold'] {
+  background: #331818f5;
+  color: #ffb7b1;
+}
+
+.stamps[data-vehicle-stamps='compact'] {
+  right: 5px;
+  bottom: 4px;
+  gap: 4px;
+  max-width: calc(100% - 10px);
+}
+
+.stamps[data-vehicle-stamps='compact'] .stamp {
+  margin-right: 0;
+  padding: 3px 4px;
+  border-width: 1px;
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+  rotate: -3deg;
+}
+
+.stamps[data-vehicle-stamps='compact'] svg {
+  display: none;
+}
+
+@media (max-width: 420px) {
+  .stamps[data-vehicle-stamps='gallery'] {
+    right: 10px;
+    bottom: 8px;
+    gap: 5px;
+  }
+
+  .stamps[data-vehicle-stamps='gallery'] .stamp {
+    padding-block: 3px;
+    font-size: 10px;
+    rotate: -2deg;
+  }
+}

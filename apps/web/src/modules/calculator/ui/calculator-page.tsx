@@ -51,7 +51,6 @@ type InputField =
   | 'displacementCc'
   | 'powerHp'
   | 'manufactureDate'
-  | 'customsDate'
   | 'freight'
   | 'insurance'
   | 'transactionRate'
@@ -117,7 +116,7 @@ export function CalculatorPage({
       /* Optional draft: unavailable storage keeps the current route's defaults. */
     }
     // The exported HTML contains the build date; fresh browser defaults use the visit date.
-    // Explicit saved dates remain editable facts and must not be silently overwritten.
+    // The hidden calculation date always follows the current visit, including older drafts and links.
     // Keep the consumed seed until its state is persisted; React development effects may replay.
     const fragment = readVehicleEstimateFragment(window.location.hash, country.code)
       ?? (pendingSeedRef.current?.seed.input.country === country.code ? pendingSeedRef.current : null);
@@ -127,7 +126,7 @@ export function CalculatorPage({
     setReferenceYear(Number(visitDate.slice(0, 4)));
     const restored = restoreCalculatorDraft(raw, country, visitDate, rates);
     setActiveRates(rates);
-    setInput(fragment ? vehicleEstimateInput(fragment.seed.input) : restored.input);
+    setInput(fragment ? { ...vehicleEstimateInput(fragment.seed.input), customsDate: visitDate } : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
     if (fragment) {
       // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
@@ -357,7 +356,7 @@ export function CalculatorPage({
     setTouched(new Set(result.missingFields));
     if (
       result.missingFields.some((key) =>
-        ['transactionRate', 'euroRate', 'usdRate', 'customsDate'].includes(key),
+        ['transactionRate', 'euroRate', 'usdRate'].includes(key),
       )
     )
       setAdvanced(true);
@@ -371,7 +370,7 @@ export function CalculatorPage({
   function field(
     key: InputField,
     label: string,
-    options: { type?: string; unit?: string; children?: ReactNode; note?: ReactNode } = {},
+    options: { type?: 'month'; unit?: string; children?: ReactNode; note?: ReactNode } = {},
   ) {
     const code = result.fieldErrors[key];
     const error = code
@@ -382,8 +381,8 @@ export function CalculatorPage({
     const describedBy = [error && `${key}-error`, options.note && `${key}-note`].filter(Boolean).join(' ');
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
-        {options.type === 'month' || options.type === 'date' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
-          limitToCurrentYear={key === 'manufactureDate'}
+        {options.type === 'month' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
+          limitToCurrentYear
           precision={options.type} referenceYear={referenceYear} label={label} locale={locale as Locale} onChange={value => update(key, value)}
           onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
           <label htmlFor={key}>{label}</label>
@@ -392,8 +391,8 @@ export function CalculatorPage({
             precision={fieldDisplayPrecision[key]}
             id={key}
             name={key}
-            type={options.type || 'text'}
-            inputMode={options.type ? undefined : 'decimal'}
+            type="text"
+            inputMode="decimal"
             value={input[key] ?? ''}
             onChange={(event) => update(key, event.target.value)}
             onBlur={() => setTouched((old) => new Set(old).add(key))}
@@ -599,7 +598,6 @@ export function CalculatorPage({
                         </select>
                       </div>
                     </div>
-                    {field('customsDate', t('customsDate'), { type: 'date' })}
                     {country.needsSteering && (
                       <div className="form-field">
                         <label htmlFor="steering">{t('steering')}</label>

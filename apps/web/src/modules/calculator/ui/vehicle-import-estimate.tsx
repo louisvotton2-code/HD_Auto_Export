@@ -15,6 +15,7 @@ import { CALCULATOR_POWERTRAINS } from '../application/draft';
 import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
+import { getClearanceDate } from '../application/current-date';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
 import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
 import { manufactureRangeCopy } from '../application/manufacture-range-copy';
@@ -31,7 +32,7 @@ import { DecimalDisplayInput } from './decimal-display-input';
 import { NumericDateInput } from './numeric-date-input';
 import styles from './vehicle-import-estimate.module.css';
 
-type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate' | 'customsDate'
+type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate'
   | 'freight' | 'insurance' | 'transactionRate' | 'euroRate' | 'usdRate';
 const errors: Record<string, string> = {
   invalid_option: 'invalid_number', invalid_decimal: 'invalid_number',
@@ -60,21 +61,24 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const copy = vehicleEstimateCopy[locale];
   const preference = useDestinationCountry(undefined, vehicle.id);
   const prefix = useId();
-  const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), initialDate, initialRates]);
+  const [visitDate, setVisitDate] = useState<string | null>(null);
+  useEffect(() => setVisitDate(getClearanceDate(new Date())), []);
+  const calculationDate = visitDate ?? initialDate;
+  const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), calculationDate, initialRates]);
   const [state, setState] = useState(() => ({
     identity,
-    input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates),
+    input: createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates),
   }));
   const [ready, setReady] = useState(false);
   const [manualRates, setManualRates] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // A changed DTO never renders an old result/seed, including before this effect runs.
   const current = state.identity === identity;
-  const input = current ? state.input : createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates);
+  const input = current ? state.input : createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates);
   const country = getCountryByCode(input.country)!;
-  const active = ready && preference.ready && !disabled && current && input.country === preference.country;
+  const active = visitDate !== null && ready && preference.ready && !disabled && current && input.country === preference.country;
   const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
-  const referenceYear = Number(initialDate.slice(0, 4));
+  const referenceYear = Number(calculationDate.slice(0, 4));
   const dateIsBlank = country.needsManufactureDate && current && normalized.manufactureDate === '';
   const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
     [dateIsBlank, normalized, referenceYear]);
@@ -91,7 +95,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ? previous.input.country === preference.country ? previous : {
         ...previous, input: { ...previous.input, country: preference.country, importerType: 'individual', ...deriveRates(initialRates, preference.country, previous.input.currency) },
       }
-      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, initialDate, initialRates) });
+      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates) });
     setExpanded(new Set());
     setManualRates(false);
     setReady(true);
@@ -128,17 +132,17 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ...deriveRates(initialRates, previous.input.country, currency),
     } }));
   }
-  function field(key: Field, label: string, options: { type?: 'month' | 'date'; unit?: string; note?: string } = {}) {
+  function field(key: Field, label: string, options: { type?: 'month'; unit?: string; note?: string } = {}) {
     const { type, unit, note } = options;
     const error = result.fieldErrors[key];
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={referenceYear} limitToCurrentYear={key === 'manufactureDate'} label={label} locale={locale}
+      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={referenceYear} limitToCurrentYear label={label} locale={locale}
         onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
         <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
         <DecimalDisplayInput precision={fieldDisplayPrecision[key]} id={id} name={key} value={input[key] ?? ''} type="text"
-        inputMode={type ? undefined : 'decimal'} autoComplete="off" spellCheck={false}
+        inputMode="decimal" autoComplete="off" spellCheck={false}
         aria-invalid={Boolean(error)} aria-describedby={describedBy || undefined}
         onChange={(event) => update(key, event.target.value)} />
       </>}
@@ -169,7 +173,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     displacementCc: t('displacement'),
     powerHp: t(input.powertrain === 'bev' ? 'electricPower' : 'power'),
     manufactureDate: t('manufactureDate'),
-    customsDate: t('customsDate'),
     condition: t('condition'),
     steering: t('steering'),
     transactionRate: t('transactionRate'),
@@ -253,7 +256,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       <details className={styles.settings} open>
         <summary>{t('advanced')}<Icon name="chevron" size={14} /></summary>
         <div className={styles.settingsFields}>
-          {field('customsDate', t('customsDate'), { type: 'date' })}
           {country.needsPrice && field('transactionRate', t('transactionRate'), { unit: `${country.currency}/${input.currency}` })}
           {country.needsEuroRate && field('euroRate', t('euroRate'), { unit: `${country.currency}/EUR` })}
           {country.code === 'UZ' && input.currency !== 'USD' && field('usdRate', t('usdRate'), { unit: `${country.currency}/USD` })}

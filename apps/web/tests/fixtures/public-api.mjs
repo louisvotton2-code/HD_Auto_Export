@@ -196,6 +196,7 @@ function vehicle(id, locale, overrides = {}) {
 const resetState = () => ({
   mode: 'normal',
   sectionCount: 1,
+  homeStampSamples: false,
   futurePublished: false,
   futureAvailability: 'available',
   futureArchived: false,
@@ -701,6 +702,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         const validators = {
           mode: (v) => ['normal', 'empty', 'unavailable', 'malformed'].includes(v),
           sectionCount: (v) => [0, 1, 2].includes(v),
+          homeStampSamples: (v) => typeof v === 'boolean',
           futurePublished: (v) => typeof v === 'boolean',
           futureAvailability: (v) => ['available', 'reserved', 'sold', 'unknown'].includes(v),
           futureArchived: (v) => typeof v === 'boolean',
@@ -1014,15 +1016,16 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, payload);
       }
       if (url.pathname === '/api/v1/home/vehicles') {
+        const featured = state.homeStampSamples
+          ? ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)))
+          : staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
         const sections =
-          state.sectionCount > 0 && staff.length
+          state.sectionCount > 0 && featured.length
             ? [
                 {
                   id: 'featured',
                   title: localized[locale].first,
-                  vehicles: staff
-                    .filter((v) => v.source.kind === 'demo' || v.availability === 'available')
-                    .slice(0, 3),
+                  vehicles: featured,
                 },
               ]
             : [];

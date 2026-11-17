@@ -3,7 +3,6 @@
 export { publicVehicleMessages } from './public-messages';
 export {
   formatPublicVehiclePrice,
-  publicAvailabilityLabel,
   publicVehicleCover,
   publicVehicleFacts,
   publicCatalogHref,
@@ -29,3 +28,4 @@ export { VehiclePhoto } from './ui/vehicle-photo';
 export { publicUsdFilterQuery, publicUsdView, publicQueryString, parseCatalogPageRequest } from './public-query';
 export { VehicleRateAttribution } from './ui/vehicle-rate-attribution';
 export { VehiclePriceValues } from './ui/vehicle-price-values';
+export { VehiclePhotoStamps } from './ui/vehicle-photo-stamps';
