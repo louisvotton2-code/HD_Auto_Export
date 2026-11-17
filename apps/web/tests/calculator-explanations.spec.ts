@@ -4,9 +4,9 @@ import { fillNumericDate } from './helpers/numeric-date';
 // These checks exercise the public page. Financial fixtures remain in calculator.spec.ts;
 // this file verifies that the explanation, substituted formula and receipt stay in sync.
 async function openCalculator(page: Page, country: string, locale = 'zh') {
+  await page.clock.setFixedTime(new Date('2026-10-22T04:00:00Z'));
   await page.goto(`/${locale}/calculator/${country}`);
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await fillNumericDate(page, 'customsDate', '2026-10-22');
   if (await page.locator('#manufactureDate').count()) await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toBeVisible();
   // Explanations are intentionally collapsed in the initial quote. These checks

@@ -111,6 +111,10 @@
   backdrop-filter: blur(4px);
   pointer-events: none;
 }
+.counter:has(+ [data-vehicle-stamps]) {
+  right: auto;
+  left: 12px;
+}
 .loading {
   position: absolute;
   left: 50%;

@@ -173,16 +173,6 @@
   }
 }
 
-.calculator-reference.calculator-simple .advanced-content {
-  container: calculator-settings / inline-size;
-}
-
-@container calculator-settings (max-width: 560px) {
-  .calculator-reference.calculator-simple .field-grid > .form-field:has(> [data-numeric-date='customsDate']) {
-    grid-column: 1 / -1;
-  }
-}
-
 .calculator-reference.calculator-simple .input-wrap {
   min-height: 44px;
   border: 1px solid rgba(74, 74, 74, 0.4);

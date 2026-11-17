@@ -5,15 +5,12 @@ import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import type { PointerTiltHandlers } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
-import { usePublicFreshness } from '../application/use-public-resource';
 import { publicVehicleMessages } from '../public-messages';
-import {
-  publicAvailabilityLabel,
-  publicVehicleCover,
-} from '../public-presentation';
+import { publicVehicleCover } from '../public-presentation';
 import { PublicCatalogLink } from './public-catalog-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehiclePhoto } from './vehicle-photo';
+import { VehiclePhotoStamps } from './vehicle-photo-stamps';
 import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import { VehiclePriceValues } from './vehicle-price-values';
 import styles from './public-vehicles.module.css';
@@ -29,9 +26,7 @@ export function PublicVehicleCard({
 }) {
   const t = publicVehicleMessages(locale),
     cover = publicVehicleCover(vehicle);
-  const trusted = usePublicFreshness() === 'fresh';
   const title = publicVehicleTitle(vehicle, locale);
-  const availability = trusted ? publicAvailabilityLabel(vehicle, locale) : '';
   return (
     <div className={styles.cardSlot}>
       <article
@@ -41,18 +36,15 @@ export function PublicVehicleCard({
         {...pointerTilt}
       >
         <div className={styles.cardLight} aria-hidden="true" />
-        <PublicCatalogLink
-          locale={locale}
-          href={vehicle.detailPath}
-          className={styles.cardImage}
-          tabIndex={-1}
-          aria-hidden="true"
-        >
-          <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} />
-          {vehicle.facts.modelYear !== null && (
-            <span className={styles.year}>{vehicle.facts.modelYear}</span>
-          )}
-        </PublicCatalogLink>
+        <div className={styles.cardImage}>
+          <PublicCatalogLink locale={locale} href={vehicle.detailPath} tabIndex={-1} aria-hidden="true">
+            <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} />
+            {vehicle.facts.modelYear !== null && (
+              <span className={styles.year}>{vehicle.facts.modelYear}</span>
+            )}
+          </PublicCatalogLink>
+          <VehiclePhotoStamps vehicle={vehicle} locale={locale} />
+        </div>
         <FavoriteVehicleButton
           vehicleId={vehicle.id}
           title={title.text}
@@ -69,11 +61,6 @@ export function PublicVehicleCard({
           <p className={styles.stockCode}>
             {t.stockCodeLabel}: <bdi>{publicVehicleReference(vehicle).code}</bdi>
           </p>
-          {availability && (
-            <p className={styles.status} data-availability={vehicle.availability}>
-              {availability}
-            </p>
-          )}
           <div className={styles.specLine}>
             <span>
               {t.mileageLabel}:{' '}

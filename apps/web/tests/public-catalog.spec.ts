@@ -347,7 +347,8 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
   }) => {
     await fixture(request, 'put', 'state', { futurePublished: true });
     await page.goto('/en/cars/fixture_future/');
-    await expect(page.locator('[data-availability="available"]')).toBeVisible();
+    await expect(page.locator('[data-vehicle-stamp="featured"]')).toBeVisible();
+    await expect(page.locator('[data-availability="available"]')).toHaveCount(0);
     await page.getByRole('link', { name: /Back to selected vehicles/ }).click();
     await expect(page).toHaveURL(/\/en\/cars\/$/);
     await fixture(request, 'put', 'state', { futureAvailability: 'sold' });

@@ -7,7 +7,7 @@ import {test} from 'node:test';
 import {migrate} from 'drizzle-orm/node-postgres/migrator';
 import {createDatabase,type Database} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
-import {admitFormalListing,formalAdmissionInstalled,FORMAL_LISTING_LIMIT} from '../src/external/formal-admission.js';
+import {admitFormalListing,formalAdmissionInstalled,DEFAULT_FORMAL_LISTING_LIMIT} from '../src/external/formal-admission.js';
 import {bindAlias} from '../src/external/full-sync/apply.js';
 import {verifiedSnapshotTarget} from '../src/external/full-sync/capacity.js';
 import type {FullSyncClient} from '../src/external/full-sync/client.js';
@@ -71,7 +71,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    await assert.rejects(migrateDatabase(database));
    const oldDefinition=(await database.pool.query("SELECT pg_get_functiondef('reserve_external_formal_listing(text,text)'::regprocedure) AS definition")).rows[0].definition;
    assert.match(oldDefinition,/admitted_count<100000/);
-   await database.pool.query('UPDATE external_formal_admission_state SET admitted_count=$1 WHERE id=1',[FORMAL_LISTING_LIMIT-1]);
+   await database.pool.query('UPDATE external_formal_admission_state SET admitted_count=$1 WHERE id=1',[DEFAULT_FORMAL_LISTING_LIMIT-1]);
    const oldWorker=await database.pool.connect();
    try{
     await oldWorker.query('SELECT pg_advisory_lock(78291333)');
@@ -83,7 +83,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    await migrateDatabase(database);
    const state=(await database.pool.query(`SELECT s.state,s.apply_cursor,s.target_rows,s.completed_at,f.capacity_pending
     FROM external_full_snapshots s CROSS JOIN external_full_sync f WHERE s.id=$1 AND f.id=1`,[id])).rows[0];
-   assert.deepEqual(state,{state:'verified',apply_cursor:'0',target_rows:String(FORMAL_LISTING_LIMIT),completed_at:null,capacity_pending:true});
+   assert.deepEqual(state,{state:'verified',apply_cursor:'0',target_rows:String(DEFAULT_FORMAL_LISTING_LIMIT),completed_at:null,capacity_pending:true});
    assert.equal(await database.transaction(tx=>admitFormalListing(tx,'che168','104')),false);
    await database.pool.query('DELETE FROM external_full_stage WHERE snapshot_id=$1',[id]);
    await database.pool.query('DELETE FROM external_full_snapshots WHERE id=$1',[id]);
@@ -111,19 +111,19 @@ test('formal listing admissions persist across CSV and delta runs, including exi
   ]);
 
   await database.transaction(async tx=>{
-   await tx.query("INSERT INTO external_formal_admissions SELECT 'che168',(5000000+g)::text FROM generate_series(1,$1::int) g",[FORMAL_LISTING_LIMIT-4]);
-   await tx.query('UPDATE external_formal_admission_state SET admitted_count=$1 WHERE id=1',[FORMAL_LISTING_LIMIT-2]);
+   await tx.query("INSERT INTO external_formal_admissions SELECT 'che168',(5000000+g)::text FROM generate_series(1,$1::int) g",[DEFAULT_FORMAL_LISTING_LIMIT-4]);
+   await tx.query('UPDATE external_formal_admission_state SET admitted_count=$1 WHERE id=1',[DEFAULT_FORMAL_LISTING_LIMIT-2]);
   });
   await t.test('rollback does not consume a slot and concurrent reservations for one identity count once',async()=>{
    await assert.rejects(database.transaction(async tx=>{
     assert.equal(await admitFormalListing(tx,'che168','111'),true);
     throw new Error('mock transaction failure');
    }),/mock transaction failure/);
-   assert.equal(await count(),FORMAL_LISTING_LIMIT-2);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT-2);
    assert.equal(await exists('che168','111'),false);
    const reserve=(externalId:string)=>database.transaction(tx=>admitFormalListing(tx,'che168',externalId));
    assert.deepEqual(await Promise.all([reserve('112'),reserve('112')]),[true,true]);
-   assert.equal(await count(),FORMAL_LISTING_LIMIT-1);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT-1);
   });
 
   await configureFullSync(database,actor,'full');
@@ -132,7 +132,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
   const fakeClient={} as FullSyncClient;
   worker=new FullSyncWorker(database,fakeClient,directory,apply);
   assert.equal(await worker.acquire(),true);
-  const stage=async(entries:Array<{source:Source;id:string}>,expectedTarget=FORMAL_LISTING_LIMIT)=>{
+  const stage=async(entries:Array<{source:Source;id:string}>,expectedTarget=DEFAULT_FORMAL_LISTING_LIMIT)=>{
    const id=randomUUID();
    await database.transaction(async tx=>{
     await tx.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,bytes) VALUES($1,$2,'staging',$3,$4,$4,1)",
@@ -152,7 +152,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
     VALUES($1,'fixture',$2,$3,$4,$5,'[]')`,[order,source,id,operation,businessAt]);
   };
   const assertNotAdmitted=async(id:string)=>{
-   assert.equal(await count(),FORMAL_LISTING_LIMIT-1);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT-1);
    assert.equal(await exists('che168',id),false);
    const rows=(await database.pool.query(`SELECT
     EXISTS(SELECT 1 FROM external_full_members WHERE source='che168' AND external_id=$1) AS member,
@@ -177,16 +177,16 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.deepEqual(applied,[]);
    await assertNotAdmitted(id);
 
-   const staleSnapshot=await stage([{source:'che168',id}],FORMAL_LISTING_LIMIT-1);
+   const staleSnapshot=await stage([{source:'che168',id}],DEFAULT_FORMAL_LISTING_LIMIT-1);
    await worker!.promoteSnapshot(staleSnapshot);
    await assertNotAdmitted(id);
    const verified=(await database.pool.query('SELECT state,target_rows FROM external_full_snapshots WHERE id=$1',[staleSnapshot])).rows[0];
-   assert.deepEqual(verified,{state:'complete',target_rows:String(FORMAL_LISTING_LIMIT-1)});
+   assert.deepEqual(verified,{state:'complete',target_rows:String(DEFAULT_FORMAL_LISTING_LIMIT-1)});
   });
 
   await t.test('CSV replay cannot reactivate a known withdrawal at the same business time',async()=>{
    await database.pool.query("UPDATE external_full_members SET business_at=$1 WHERE source='dongchedi' AND external_id='101'",[at]);
-   const snapshot=await stage([{source:'dongchedi',id:'101'}],FORMAL_LISTING_LIMIT-1);
+   const snapshot=await stage([{source:'dongchedi',id:'101'}],DEFAULT_FORMAL_LISTING_LIMIT-1);
    await worker!.promoteSnapshot(snapshot);
    const state=(await database.pool.query(`SELECT state,EXISTS(SELECT 1 FROM external_full_work w
     WHERE w.source=m.source AND w.external_id=m.external_id) AS queued
@@ -264,14 +264,14 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    const outcomes=await Promise.all([exists('che168','120'),exists('che168','122')]);
    assert.equal(outcomes.filter(Boolean).length,1);
    assert.equal(await exists('che168','121'),false);
-   assert.equal(await count(),FORMAL_LISTING_LIMIT);
-   assert.equal(await admitted(),FORMAL_LISTING_LIMIT);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT);
+   assert.equal(await admitted(),DEFAULT_FORMAL_LISTING_LIMIT);
    assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_work WHERE source='che168' AND external_id='101'")).rows[0].n,1);
 
    const second=await stage([{source:'che168',id:'130'},{source:'dongchedi',id:'131'},{source:'dongchedi',id:'101'},{source:'che168',id:'132'}]);
    assert.equal(await worker!.promoteSnapshot(second),1);
    const completed=(await database.pool.query('SELECT state,apply_cursor,rows,target_rows FROM external_full_snapshots WHERE id=$1',[second])).rows[0];
-   assert.deepEqual(completed,{state:'complete',apply_cursor:'4',rows:'4',target_rows:String(FORMAL_LISTING_LIMIT)});
+   assert.deepEqual(completed,{state:'complete',apply_cursor:'4',rows:'4',target_rows:String(DEFAULT_FORMAL_LISTING_LIMIT)});
    assert.equal((await database.pool.query("SELECT last_snapshot FROM external_full_members WHERE source='dongchedi' AND external_id='101'")).rows[0].last_snapshot,second);
   });
 
@@ -291,8 +291,8 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    await assert.rejects(insertListing('chinacarapi','142'),{code:'23514',constraint:'external_formal_listing_limit'});
    await insertListing('synthetic','142');
    assert.equal(await exists('che168','142'),false);
-   assert.equal(await count(),FORMAL_LISTING_LIMIT);
-   assert.equal(await admitted(),FORMAL_LISTING_LIMIT);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT);
+   assert.equal(await admitted(),DEFAULT_FORMAL_LISTING_LIMIT);
   });
 
   await t.test('fixed-scope delta does not hydrate excluded identities and completes known withdrawals',async()=>{
@@ -315,7 +315,7 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.deepEqual((await database.pool.query('SELECT outcome FROM external_ingestion_events WHERE job_id=$1 ORDER BY seq',[job])).rows,
     [{outcome:'excluded_limit'},{outcome:'applied'}]);
    assert.equal(await exists('che168','143'),false);
-   assert.equal(await count(),FORMAL_LISTING_LIMIT);
+   assert.equal(await count(),DEFAULT_FORMAL_LISTING_LIMIT);
   });
 
   await t.test('legacy CSV metadata remains raw while capacity binds the admission target',async()=>{
@@ -325,9 +325,71 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    await assert.rejects(worker!.estimateCapacity(legacy,0),/SYNC_CAPACITY_INSUFFICIENT_SAMPLE/);
    const estimate=(await worker!.state()).capacity_estimate;
    assert.equal(estimate.csvRows,476416);
-   assert.equal(estimate.targetRows,FORMAL_LISTING_LIMIT);
-   assert.equal(estimate.estimatedRows,FORMAL_LISTING_LIMIT);
+   assert.equal(estimate.targetRows,DEFAULT_FORMAL_LISTING_LIMIT);
+   assert.equal(estimate.estimatedRows,DEFAULT_FORMAL_LISTING_LIMIT);
    assert.equal(estimate.allowed,false);
+  });
+
+  await t.test('expanded capacity binds a retained export, defers new deltas, and shares the finite ceiling',async()=>{
+   const limit=DEFAULT_FORMAL_LISTING_LIMIT+3;
+   const snapshot=await stage(['151','152','153','155'].map(id=>({source:'che168',id})));
+   await database.pool.query(`UPDATE external_full_stage SET payload=jsonb_set(payload,'{duplicate_of}','"dongchedi:999"')
+    WHERE snapshot_id=$1 AND row_number=1`,[snapshot]);
+   await database.pool.query('UPDATE external_full_snapshots SET sha256=$2 WHERE id=$1',[snapshot,'a'.repeat(64)]);
+   await database.pool.query("UPDATE external_full_sync SET last_capacity_sample=10000,receive_cursor='200',capacity_pending=false WHERE id=1");
+   await database.pool.query(`INSERT INTO external_ingestion_identity_state(provider,source,external_id,business_order,withdrawn,observed_at,business_at)
+    VALUES('chinacarapi','che168','153',200,true,$1,$1)`,[at]);
+   const prepare=(target:number)=>database.pool.query('SELECT prepare_external_formal_expansion($1,$2) AS limit',[snapshot,target]);
+   await assert.rejects(prepare(limit),/worker must stop/);
+   await worker!.close();
+   await database.pool.query("INSERT INTO backup_gc_leases(reference) VALUES('backup:fixture')");
+   await assert.rejects(prepare(limit),/backup lease/);
+   await database.pool.query("DELETE FROM backup_gc_leases WHERE reference='backup:fixture'");
+   await assert.rejects(prepare(limit+1),/Complete staged rows/);
+   await database.pool.query('DELETE FROM external_full_stage WHERE snapshot_id=$1 AND row_number=4',[snapshot]);
+   await assert.rejects(prepare(limit),/Complete staged rows/);
+   await database.pool.query("INSERT INTO external_full_stage VALUES($1,4,'che168','155','{}')",[snapshot]);
+   assert.equal(Number((await prepare(limit)).rows[0].limit),limit);
+   await assert.rejects(prepare(limit),/exceed the current ceiling/);
+   assert.deepEqual((await database.pool.query(`SELECT s.state,s.apply_cursor,s.target_rows,f.capacity_pending,f.receive_cursor
+    FROM external_full_snapshots s CROSS JOIN external_full_sync f WHERE s.id=$1 AND f.id=1`,[snapshot])).rows[0],
+    {state:'verified',apply_cursor:'0',target_rows:String(limit),capacity_pending:true,receive_cursor:'200'});
+   assert.equal(await database.transaction(tx=>admitFormalListing(tx,'che168','151')),false);
+   assert.equal(await database.transaction(tx=>admitFormalListing(tx,'che168','101')),true);
+   worker=new FullSyncWorker(database,fakeClient,directory,apply);
+   assert.equal(await worker.acquire(),true);
+   await event(201,'che168','154','upsert');
+   assert.equal(await worker.applyEvents(),0);
+   await assert.rejects(worker.promoteSnapshot(snapshot),/SYNC_CAPACITY_PENDING/);
+   // An active CSV identity can withdraw after the target is bound. The freed planned slot
+   // is available to the delta only after the CSV has applied.
+   await event(202,'che168','155','withdraw');
+   assert.equal(await worker.applyEvents(true),1);
+
+   // Isolate post-approval admission sequencing. Live capacity decision validation is tested separately.
+   const originalHeavy=worker.heavy.bind(worker);
+   worker.heavy=async()=>{};
+   try{
+    await database.pool.query('UPDATE external_full_sync SET capacity_pending=false WHERE id=1');
+    assert.equal(await worker.applyEvents(),0);
+    assert.equal(await database.transaction(tx=>admitFormalListing(tx,'che168','154')),false);
+    assert.equal(await worker.promoteSnapshot(snapshot),4);
+    assert.equal(await count(),limit-1);
+    assert.equal(await exists('che168','151'),true);
+    assert.equal(await exists('che168','152'),true);
+    assert.equal(await exists('che168','153'),false);
+    assert.equal(await exists('che168','154'),false);
+    assert.equal(await exists('che168','155'),false);
+    assert.equal(await exists('dongchedi','999'),false);
+    assert.equal(await worker.applyEvents(),1);
+    assert.equal(await exists('che168','154'),true);
+    assert.equal(await count(),limit);
+    assert.equal(await admitted(),limit);
+    await event(203,'che168','156','upsert');
+    assert.equal(await worker.applyEvents(),1);
+    assert.equal((await database.pool.query('SELECT error_code FROM external_full_events WHERE event_id=203')).rows[0].error_code,'SYNC_LISTING_LIMIT');
+    await stage([{source:'che168',id:'151'}],limit);
+   }finally{worker.heavy=originalHeavy;}
   });
  }finally{
   await worker?.close();

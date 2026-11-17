@@ -458,15 +458,6 @@
   line-height: 1.6;
   margin: 12px 0;
 }
-.status {
-  font-size: 12px;
-  line-height: 1.6;
-  margin-top: 12px;
-  color: #c0c0c0;
-}
-.status[data-availability='sold'] {
-  color: #e3b87e;
-}
 .soldNotice {
   margin-top: 12px;
   color: #b67749;

@@ -5,13 +5,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '@/i18n/routing';
 import type { PublicHomeSection, PublicVehicleFilters } from '@hd/contracts/public';
 import {
-  publicAvailabilityLabel,
   PublicCatalogLink,
   publicVehicleCover,
   publicVehicleMessages,
   usePublicFreshness,
   FavoriteVehicleButton,
   VehiclePhoto,
+  VehiclePhotoStamps,
   VehicleRateAttribution,
   VehiclePriceValues,
 } from '@/modules/vehicles';
@@ -140,6 +140,7 @@ function VehicleRail({
                       {vehicleCopy.yearLabel} {v.facts.modelYear}
                     </span>
                   )}
+                  <VehiclePhotoStamps vehicle={v} locale={locale} />
                 </div>
                 <div className={styles.vehicleBody}>
                   <h3 lang={lang} title={name}>{name}</h3>
@@ -147,11 +148,6 @@ function VehicleRail({
                   <p className={styles.stockCode}>
                     {vehicleCopy.stockCodeLabel}: {publicVehicleReference(v).code}
                   </p>
-                  {trusted && v.availability !== 'unknown' && (
-                    <p className={styles.availability} data-availability={v.availability}>
-                      {publicAvailabilityLabel(v, locale)}
-                    </p>
-                  )}
                   <div className={styles.specs}>
                     <span>
                       {vehicleCopy.mileageLabel}:{' '}

@@ -712,6 +712,9 @@ test('admin search filters before pagination, combines categories and treats spe
 });
 test('one vehicle lifecycle, public whitelist, draft snapshot, availability, home and archive',async()=>{
   let vehicle=await ready();const mediaId=vehicle.draft.media[0]!.id;
+  const draftSelection=await runtime.inventory.getHome();
+  draftSelection.sections[0]!.vehicleIds=[vehicle.id];
+  assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:draftSelection})).statusCode,422);
   assert.equal((await call({method:'GET',url:`/api/v1/media/${mediaId}`})).statusCode,404);
   assert.equal((await call({method:'GET',url:`/api/v1/admin/media/${mediaId}/preview`})).statusCode,401);
   assert.equal((await call({method:'GET',url:`/api/v1/admin/media/${mediaId}/preview`,headers:headers()})).statusCode,200);
@@ -727,11 +730,27 @@ test('one vehicle lifecycle, public whitelist, draft snapshot, availability, hom
   const oldText=(await runtime.inventory.getPublic(vehicle.id,'en')).content.title.text;
   vehicle.draft.content.title.translations.en!.text='Edited draft title';vehicle=await save(vehicle);
   assert.equal((await runtime.inventory.getPublic(vehicle.id,'en')).content.title.text,oldText);
-  vehicle=await runtime.inventory.availability(vehicle.id,{version:vehicle.version,availability:'sold',checkedAt:new Date().toISOString()},{id:editorId,requestId:randomUUID()});
-  assert.equal((await call({method:'GET',url:'/api/v1/home/vehicles?locale=en'})).json().data.sections.length,0);
+  const homeUrl='/api/v1/home/vehicles?locale=en';
+  let stamp=(await call({url:homeUrl})).json().meta.catalogCache.version;
+  for(const availability of ['reserved','sold'] as const){
+    vehicle=await runtime.inventory.availability(vehicle.id,{version:vehicle.version,availability,checkedAt:new Date().toISOString()},{id:editorId,requestId:randomUUID()});
+    const next=(await call({url:homeUrl})).json();
+    assert.notEqual(next.meta.catalogCache.version,stamp);stamp=next.meta.catalogCache.version;
+    assert.equal(next.data.sections[0].vehicles[0].id,vehicle.id);
+    assert.equal(next.data.sections[0].vehicles[0].availability,availability);
+    assert.equal(next.data.sections[0].vehicles[0].content.title.text,oldText);
+    const selection=await runtime.inventory.getHome();
+    assert.deepEqual(selection.sections[0]!.vehicleIds,[vehicle.id]);
+    const saved=await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:selection});
+    assert.equal(saved.statusCode,200,saved.body);
+    assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',payload:selection})).statusCode,401);
+  }
   const list=await call({method:'GET',url:'/api/v1/vehicles?locale=en&page=1&pageSize=48'});PublicVehicleListSchema.parse(list.json());assert.ok(!list.json().data.items.some((v:{id:string})=>v.id===vehicle.id));
   vehicle=await publish(vehicle);assert.equal((await runtime.inventory.getPublic(vehicle.id,'en')).availability,'sold');
   await runtime.inventory.archive(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()});
+  assert.equal((await call({url:homeUrl})).json().data.sections.length,0);
+  const archivedHome=await runtime.inventory.getHome();
+  assert.equal((await call({method:'PUT',url:'/api/v1/admin/home/vehicle-sections',headers:headers(),payload:archivedHome})).statusCode,422);
   assert.equal((await call({method:'GET',url:`/api/v1/vehicles/${vehicle.id}`})).statusCode,404);
   assert.equal((await call({method:'GET',url:`/api/v1/media/${mediaId}`})).statusCode,404);
   const media=await runtime.media.get(mediaId);assert.equal((await call({method:'DELETE',url:`/api/v1/admin/media/${mediaId}`,headers:headers(),payload:{version:media.version}})).statusCode,409);

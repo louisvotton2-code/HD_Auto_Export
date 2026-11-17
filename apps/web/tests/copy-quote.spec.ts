@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 test('copied quotes preserve effective inputs and exclude inactive fields carried across destinations', async ({
   page,
 }) => {
+  await page.clock.setFixedTime(new Date('2026-10-23T04:00:00Z'));
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -25,7 +26,7 @@ test('copied quotes preserve effective inputs and exclude inactive fields carrie
           displacementCc: '3000',
           powerHp: '987',
           manufactureDate: '1994-12',
-          customsDate: '2026-10-23',
+          customsDate: '2027-01-01',
           freight: '1200.50',
           insurance: '',
           steering: 'right',
@@ -51,7 +52,7 @@ test('copied quotes preserve effective inputs and exclude inactive fields carrie
   );
   const albaniaInputs = albania.split('\n费用明细\n')[0];
   expect(albaniaInputs).toContain('车辆价格: 23456.78 USD');
-  expect(albaniaInputs).toContain('预计清关日期: 2026-10-23');
+  expect(albaniaInputs).not.toContain('预计清关日期');
   expect(albaniaInputs).toContain('运费: 1200.50 USD');
   expect(albaniaInputs).toContain('保险费: 未填写，尚未加入计税基础');
   expect(albaniaInputs).toContain('交易币种兑目的国货币: 80.12567 ALL/USD');
@@ -68,7 +69,7 @@ test('copied quotes preserve effective inputs and exclude inactive fields carrie
   );
   const georgiaInputs = georgia.split('\nCost breakdown\n')[0];
   expect(georgiaInputs).toContain('Manufacture date: 1994-12');
-  expect(georgiaInputs).toContain('Expected clearance date: 2026-10-23');
+  expect(georgiaInputs).not.toContain('Expected clearance date');
   expect(georgiaInputs).toContain('Steering position: Right-hand drive');
   expect(georgiaInputs).toContain('Destination currency per US dollar:');
   expect(georgiaInputs).toContain('Reference rule version: ge-personal-reference-2026.10.22-v1');

@@ -5,7 +5,7 @@ import {z} from 'zod';
 import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
 import {jsonHash} from '../normalize.js';
-import {FORMAL_LISTING_LIMIT} from '../formal-admission.js';
+import {DEFAULT_FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 
 const bytes=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const token=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -77,7 +77,8 @@ export function capacityBinding(snapshotId:string,targetRows:number,sample:Capac
 
 /** One verified target includes admitted identities absent from the current CSV. */
 export async function verifiedSnapshotTarget(tx:PoolClient,snapshotId:string) {
- const result=await tx.query<{target_rows:string}>(`SELECT a.admitted_count+(
+ // An expanded policy reserves headroom for CSV and delta admissions at the same measured ceiling.
+ const result=await tx.query<{target_rows:string}>(`SELECT CASE WHEN a.admission_limit>$2 THEN a.admission_limit ELSE a.admitted_count+(
    SELECT count(*) FROM (
     SELECT 1 FROM external_full_stage s
     WHERE s.snapshot_id=snapshot.id
@@ -85,18 +86,18 @@ export async function verifiedSnapshotTarget(tx:PoolClient,snapshotId:string) {
       AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state i
        WHERE i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id
          AND i.withdrawn AND i.business_at>=snapshot.generated_at)
-    ORDER BY s.row_number LIMIT greatest(0,$2-a.admitted_count)
+    ORDER BY s.row_number LIMIT greatest(0,a.admission_limit-a.admitted_count)
    ) eligible
-  ) AS target_rows FROM external_formal_admission_state a
-  CROSS JOIN external_full_snapshots snapshot WHERE a.id=1 AND snapshot.id=$1`,[snapshotId,FORMAL_LISTING_LIMIT]);
+  ) END AS target_rows FROM external_formal_admission_state a
+  CROSS JOIN external_full_snapshots snapshot WHERE a.id=1 AND snapshot.id=$1`,[snapshotId,DEFAULT_FORMAL_LISTING_LIMIT]);
  return result.rows[0]!.target_rows;
 }
 
-export function capacityTarget(snapshot:{rows:string|number;target_rows:string|number|null;admitted_count:string|number}) {
+export function capacityTarget(snapshot:{rows:string|number;target_rows:string|number|null;admitted_count:string|number;admission_limit:string|number}) {
  // Older snapshots have only the raw CSV count. Preserve the format and use a
  // capped interpretation until a fresh verified snapshot supplies a bound.
  const admitted=Number(snapshot.admitted_count);
- const fallback=Math.min(FORMAL_LISTING_LIMIT, Number(snapshot.rows));
+ const fallback=Math.min(Number(snapshot.admission_limit), Number(snapshot.rows));
  return Math.max(admitted, snapshot.target_rows===null ? fallback : Number(snapshot.target_rows));
 }
 

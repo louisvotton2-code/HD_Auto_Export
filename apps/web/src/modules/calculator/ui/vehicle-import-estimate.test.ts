@@ -33,7 +33,7 @@ describe('detail calculator server enhancement boundary', () => {
     expect(html).toContain('data-country-ready="false"');
     expect(html).toContain('data-numeric-date="manufactureDate"');
     expect(html).toContain('name="manufactureDateYear"');
-    expect(html).toContain('name="customsDateDay"');
+    expect(html).not.toContain('customsDate');
     expect(html).not.toContain('type="month"');
     expect(html).not.toContain('type="date"');
     expect(html).toMatch(/name="powertrain"[^>]*><option value="" selected="">/);

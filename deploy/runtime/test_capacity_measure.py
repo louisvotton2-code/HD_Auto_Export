@@ -39,6 +39,18 @@ class Peak(unittest.TestCase):
         with self.assertRaises(ValueError):self.calculate(e)
 
 class BoundedAdmission(unittest.TestCase):
+    def test_host_config_accepts_finite_expansion_only_within_database_ceiling(self):
+        for value in (150_000, 459_009, m.MAX_ADMISSION_TARGET_ROWS):
+            with self.subTest(value=value), patch.object(m, 'private_json', return_value={
+                'database': 'hd_release_'+'a'*16, 'admissionTargetRows': value, 'filesystemUuid': 'fixture'}), \
+                 patch.object(m.subprocess, 'check_output', return_value='fixture\n'):
+                self.assertEqual(m.config()['admissionTargetRows'], value)
+        for value in (True, 0, m.MAX_ADMISSION_TARGET_ROWS+1):
+            with self.subTest(value=value), patch.object(m, 'private_json', return_value={
+                'database': 'hd_release_'+'a'*16, 'admissionTargetRows': value}):
+                with self.assertRaisesRegex(ValueError, 'Invalid bounded admission target'):
+                    m.config()
+
     def test_full_csv_binding_is_rejected_before_probe(self):
         c = {'admissionTargetRows': 100_000}
         with patch.object(m, 'config', return_value=c), \

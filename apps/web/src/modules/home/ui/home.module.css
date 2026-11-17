@@ -420,18 +420,6 @@
   line-height: 17px;
   overflow-wrap: anywhere;
 }
-.availability {
-  margin-top: 12px;
-  color: #e7b78f;
-  font-size: 12px;
-  line-height: 18px;
-}
-.availability[data-availability='available'] {
-  color: #79dca1;
-}
-.availability[data-availability='sold'] {
-  color: #aaa;
-}
 .catalogState {
   display: flex;
   flex-direction: column;

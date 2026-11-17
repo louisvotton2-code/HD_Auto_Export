@@ -11,7 +11,8 @@ test.afterEach(async ({ request }) => {
   if (process.env.PUBLIC_FIXTURE_API_URL) await resetPublicFixture(request);
 });
 
-test('numeric date dropdowns retain empty values, valid month choices, leap days and a cleared impossible day', async ({ page }) => {
+test('manufacture dropdowns retain month choices while the calculation date stays hidden', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-10-22T04:00:00Z'));
   await page.goto('/en/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('input[type="date"],input[type="month"]')).toHaveCount(0);
@@ -22,40 +23,14 @@ test('numeric date dropdowns retain empty values, valid month choices, leap days
   await expect(assumption).toContainText('January of each of the last six years');
   await expect(assumption).toHaveCSS('color', 'rgb(255, 141, 141)');
   await expect(assumption).toHaveCSS('font-weight', '700');
-  await expect(page.locator('[data-numeric-date="customsDate"] select')).toHaveCount(3);
+  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.getByText('Expected clearance date', { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-numeric-date] input:not([type="hidden"])')).toHaveCount(0);
-  for (const name of ['manufactureDate', 'customsDate']) {
-    const monthOptions = await page.locator(`#${name}-month option:not([value=""])`).evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
-    expect(monthOptions).toEqual(Array.from({ length: 12 }, (_, index) => String(index + 1)));
-    await expect(page.locator(`#${name}-year option[value="0000"],#${name}-year option[value="0"]`)).toHaveCount(0);
-    await expect(page.locator(`#${name}-year option[value="1886"]`)).toHaveCount(1);
-  }
-  await fillNumericDate(page, 'customsDate', '2024-02-29');
-  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(29);
-  await page.locator('#customsDate-year').selectOption('2023');
-  await expect(page.locator('#customsDate-day')).toHaveValue('');
-  await expect(page.locator('#customsDate')).toHaveValue('');
-  await expect(page.locator('#customsDate-date-feedback')).toContainText('Day was cleared');
-  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(28);
-  await expect(page.locator('#customsDate-day option[value="29"]')).toHaveCount(0);
-  await page.locator('#customsDate-day').selectOption('28');
-  await expect(page.locator('#customsDate')).toHaveValue('2023-02-28');
-  await fillNumericDate(page, 'customsDate', '2000-02-29');
-  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(29);
-  await page.locator('#customsDate-year').selectOption('1900');
-  await expect(page.locator('#customsDate-day')).toHaveValue('');
-  await expect(page.locator('#customsDate')).toHaveValue('');
-  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(28);
-  await fillNumericDate(page, 'customsDate', '2024-01-31');
-  await page.locator('#customsDate-month').selectOption('4');
-  await expect(page.locator('#customsDate-day')).toHaveValue('');
-  await expect(page.locator('#customsDate')).toHaveValue('');
-  await expect(page.locator('#customsDate-day option:not([value=""])')).toHaveCount(30);
-  await expect(page.locator('#customsDate-date-feedback')).toContainText('Day was cleared');
-  await fillNumericDate(page, 'customsDate', '');
-  await expect(page.locator('#customsDate-day')).toBeDisabled();
-  await expect(page.locator('#customsDate-year')).toHaveValue('');
-  await expect(page.locator('#customsDate-month')).toHaveValue('');
+  const months = await manufacture.locator('select[name="manufactureDateMonth"] option:not([value=""])')
+    .evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
+  expect(months).toEqual(Array.from({ length: 12 }, (_, index) => String(index + 1)));
+  await expect(page.locator('#manufactureDate-year option[value="0000"],#manufactureDate-year option[value="0"]')).toHaveCount(0);
+  await expect(page.locator('#manufactureDate-year option[value="1886"]')).toHaveCount(1);
   await page.locator('#manufactureDate-year').selectOption('');
   await expect(page.locator('#manufactureDate')).toHaveValue('');
   await expect(page.locator('#manufactureDate-year')).toHaveValue('');

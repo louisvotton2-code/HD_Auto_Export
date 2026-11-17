@@ -41,6 +41,7 @@ export function VehicleGallery({
   onActiveImageStatus,
   onOpen,
   imagePosition,
+  photoOverlay,
   viewerFooter,
 }: {
   images: VehicleGalleryImage[];
@@ -49,6 +50,7 @@ export function VehicleGallery({
   onActiveImageStatus?: (status: VehicleGalleryImageStatus) => void;
   onOpen?: () => void;
   imagePosition?: (position: number, loaded: number) => string;
+  photoOverlay?: ReactNode;
   viewerFooter?: ReactNode;
 }) {
   const t = detailContent[locale];
@@ -295,6 +297,7 @@ export function VehicleGallery({
       <div className={styles.root}>
         <div className={styles.viewport} ref={emptyPhoto} tabIndex={-1} role="group" aria-label={t.gallery}>
           <VehiclePhotoFallback locale={locale} />
+          {photoOverlay}
         </div>
       </div>
     );
@@ -378,6 +381,7 @@ export function VehicleGallery({
         <span className={styles.counter} aria-label={positionLabel}>
           {imagePosition ? positionLabel : `${index + 1} / ${ordered.length}`}
         </span>
+        {photoOverlay}
         {loadingId === selectedKey && (
           <span className={styles.loading} role="status">
             {t.imageLoading}

@@ -75,10 +75,10 @@ describe('public vehicle presentation', () => {
 
   it('keeps reserved and sold statuses distinct from available', () => {
     const vehicle = makePublicVehicleFixture();
-    for (const state of ['reserved', 'sold', 'unknown'] as const) {
+    for (const state of ['available', 'reserved', 'sold', 'unknown'] as const) {
       vehicle.availability = state;
       expect(publicAvailabilityLabel(vehicle, 'en')).toBe(
-        publicVehicleMessages('en').availability[state],
+        state === 'reserved' || state === 'sold' ? publicVehicleMessages('en').availability[state] : '',
       );
     }
   });

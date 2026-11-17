@@ -360,8 +360,9 @@ test.describe('explicit public queries, stable activation and media regression',
   });
 
   test('real Back and Forward check current sold and removed records with one local JSON request', async ({ page, request }) => {
-    await patchFixture(request, { futurePublished: true });
+    await patchFixture(request, { futurePublished: true, futureAvailability: 'reserved' });
     await page.goto('/en/cars/fixture_future/');
+    await expect(page.locator('main [data-vehicle-stamp="reserved"]')).toBeVisible();
     await expectDetailContactRegions(page.locator('main'), 'fixture_future');
     await page.getByRole('link', { name: /Back to selected vehicles/ }).click();
     await expect(page).toHaveURL(/\/en\/cars\/$/);
@@ -375,6 +376,7 @@ test.describe('explicit public queries, stable activation and media regression',
       await page.goBack();
       const current = await resource(page, '/api/v1/vehicles/fixture_future');
       await expect(current).toHaveAttribute('data-freshness', 'checking');
+      await expect(current.locator('[data-vehicle-stamp="reserved"],[data-vehicle-stamp="sold"]')).toHaveCount(0);
       await expect(contactLinks(current)).toHaveCount(0);
       const consultation = vehicleConsultation(current, 'fixture_future');
       await expect(consultation.locator('[data-vehicle-contacts] a')).toHaveCount(2);

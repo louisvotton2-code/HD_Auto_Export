@@ -20,7 +20,7 @@ function facts(input: CalculationInput, manual = false) {
 }
 
 describe('copied quote input facts', () => {
-  it('keeps exact price, power, dates, currencies, exchange rates and rule version for reproduction', () => {
+  it('keeps exact price, power, manufacture date, currencies, exchange rates and rule version', () => {
     const input = {
       ...createDefaultInput('RU', '2026-10-23', rates),
       price: '25001.25',
@@ -34,7 +34,6 @@ describe('copied quote input facts', () => {
       displacement: '1998',
       power: '150',
       manufactureDate: '2021-01',
-      customsDate: '2026-10-23',
       transactionRate: '81.969182 RUB/USD',
       euroRate: '94.7 RUB/EUR',
       fxStatus: 'manualFx',
@@ -49,7 +48,6 @@ describe('copied quote input facts', () => {
       powertrain: 'petrol',
       displacement: '1998',
       manufactureDate: '2021-01',
-      customsDate: '2026-10-23',
       steering: 'right',
       usdRate: `${rates.rates.GEL} GEL/USD`,
       fxStatus: 'fallbackFx',

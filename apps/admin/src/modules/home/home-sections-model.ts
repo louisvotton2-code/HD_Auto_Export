@@ -1,7 +1,10 @@
 import type { AdminVehicle } from '@hd/contracts/admin';
 
-/** External listings and demos remain unknown inventory; deleted records never enter a section. */
-export const isHomeEligible = (vehicle: AdminVehicle) => !vehicle.deletedAt && vehicle.publicationState === 'published' && (vehicle.draft.source.kind === 'manual' ? vehicle.availability === 'available' : vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null);
+export function isHomeEligible(vehicle: AdminVehicle): boolean {
+  if (vehicle.deletedAt || vehicle.publicationState !== 'published') return false;
+  if (vehicle.draft.source.kind === 'manual') return vehicle.availability !== 'unknown';
+  return vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null;
+}
 
 export function addHomeVehicleId(ids: readonly string[], vehicle: AdminVehicle, placement: 'start' | 'end' = 'end'): string[] {
   if (!isHomeEligible(vehicle) || ids.includes(vehicle.id) || ids.length >= 30) return [...ids];

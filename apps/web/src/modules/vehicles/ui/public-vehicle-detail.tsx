@@ -10,7 +10,6 @@ import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
 import { usePublicFreshness } from '../application/use-public-resource';
 import {
-  publicAvailabilityLabel,
   publicVehicleFacts,
 } from '../public-presentation';
 import { ExternalVehicleInformation } from './external-vehicle-information';
@@ -50,7 +49,6 @@ export function PublicVehicleDetail({
   const reference = publicVehicleReference(vehicle);
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
-  const availability = fresh ? publicAvailabilityLabel(vehicle, locale) : '';
   const make = vehicle.facts.make?.name;
   const { text: title, lang } = detailTitle ?? publicVehicleTitle(vehicle, locale);
   const titleRemainder =
@@ -203,11 +201,6 @@ export function PublicVehicleDetail({
                 locale={locale}
                 className={styles.desktopRateNote}
               />
-              {availability && (
-                <p className={styles.status} data-availability={vehicle.availability}>
-                  {availability}
-                </p>
-              )}
               {sold && <p className={styles.soldNotice}>{t.similar}</p>}
               {vehicle.price.includes.length > 0 && (
                 <details className={styles.priceIncludes}>

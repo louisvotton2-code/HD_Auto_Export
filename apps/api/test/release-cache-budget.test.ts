@@ -66,7 +66,13 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       await db.pool.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);
       const changed=(await version()).data.version;assert.notEqual(changed,before);
       const list=await call('/api/v1/vehicles?locale=zh');assert.equal(list.meta.total,0);assert.equal(list.meta.accessibleTotal,0);
-      assert.equal(list.meta.catalogCache.version,changed);assert.equal((await call('/api/v1/home/vehicles?locale=zh')).data.sections.length,0);
+      assert.equal(list.meta.catalogCache.version,changed);
+      for(const prefix of ['/api/v1','/internal/public-catalog']){
+        const home=await call(`${prefix}/home/vehicles?locale=zh`,prefix.startsWith('/internal'));
+        assert.equal(home.meta.catalogCache.version,changed);
+        assert.deepEqual(home.data.sections.flatMap((section:{vehicles:Array<{id:string;availability:string}>})=>
+          section.vehicles.map(vehicle=>[vehicle.id,vehicle.availability])),[[id,'sold']]);
+      }
       assert.equal((await call('/api/v1/vehicles/'+id+'?locale=zh')).data.availability,'sold');
     });
     await t.test('offset guard precedes SQL and actual totals stay exact; cached DB loss fails closed',async()=>{

@@ -5,6 +5,7 @@ import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { usePublicVehicleSegment } from '../application/use-public-vehicle-segment';
 import { VehicleGallery } from './vehicle-gallery';
+import { VehiclePhotoStamps } from './vehicle-photo-stamps';
 import { withImageAltText } from '../vehicle-image-text';
 import styles from './public-vehicle-gallery.module.css';
 
@@ -102,6 +103,7 @@ export function PublicVehicleGallery({ vehicle, title, locale }: { vehicle: Publ
     <section data-public-vehicle-gallery={vehicle.id}>
       <VehicleGallery images={images} title={title} locale={locale} onOpen={open}
         imagePosition={(position, loaded) => total === null ? t.position(number(position), number(loaded)) : `${number(position)} / ${number(total)}`}
+        photoOverlay={<VehiclePhotoStamps vehicle={vehicle} locale={locale} placement="gallery" />}
         viewerFooter={controls('viewer')} />
       {controls('inline')}
     </section>

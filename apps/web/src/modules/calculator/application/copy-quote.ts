@@ -11,7 +11,7 @@ export interface CopyQuoteFact {
 }
 
 /**
- * Selects the effective, reproducible input facts for a copied reference estimate.
+ * Selects the public input facts for a copied reference estimate.
  * It neither computes taxes nor reads browser state. Inactive fields carried in a
  * cross-country draft are omitted so they cannot be mistaken for calculation facts.
  */
@@ -45,7 +45,6 @@ export function getCopyQuoteFacts(
     literal('displacement', input.displacementCc);
   if (country.needsPower) literal(electric ? 'electricPower' : 'power', input.powerHp);
   if (country.needsManufactureDate) literal('manufactureDate', input.manufactureDate);
-  literal('customsDate', input.customsDate);
   if (country.code === 'UZ')
     translated('condition', input.condition === 'new' ? 'newVehicle' : 'usedVehicle');
   if (country.needsSteering) translated('steering', input.steering);

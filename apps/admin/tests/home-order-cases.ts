@@ -1,6 +1,7 @@
 /** UI contract tests: synthetic vehicles and intercepted API responses, never operational data. */
 import { expect, test, type Page } from '@playwright/test';
-import type { AdminHomeSections } from '@hd/contracts/admin';
+import type { AdminHomeSections, AdminVehicle } from '@hd/contracts/admin';
+import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 
 const ids = [1, 2, 3, 4].map(value => `20000000-0000-4000-8000-${String(value).padStart(12, '0')}`);
@@ -12,14 +13,14 @@ const adjust = (page: Page, number: number) => page.getByRole('button', { name: 
 const saveButton = (page: Page) => page.getByRole('button', { name: /保存首页配置$/ });
 
 async function setup(page: Page) {
-  const items = ids.map((id, index) => ({ ...vehicle(), id, stockCode: `ORDER-${index + 1}`, publicationState: 'published' as const, availability: 'available' as const }));
+  const items: AdminVehicle[] = ids.map((id, index) => ({ ...vehicle(), id, stockCode: `ORDER-${index + 1}`, publicationState: 'published', availability: 'available' }));
   await installApi(page, { items });
   const state = {
     home: { version: 3, sections: [
       { id: 'featured', title: { zh: '排序推荐', en: 'Featured', ru: 'Избранное' }, vehicleIds: ids.slice(0, 3) },
       { id: 'recent', title: { zh: '另一独立区块', en: 'Recent', ru: 'Новое' }, vehicleIds: [ids[0]!] },
     ] } as AdminHomeSections,
-    puts: [] as AdminHomeSections[], mode: 'ok' as 'ok' | 'fail' | 'conflict',
+    items, puts: [] as AdminHomeSections[], mode: 'ok' as 'ok' | 'fail' | 'conflict',
   };
   await page.route('**/api/v1/admin/home/vehicle-sections', route => {
     if (route.request().method() === 'PUT') {
@@ -123,6 +124,60 @@ test('home ordering newly selected vehicle can join at the top without duplicate
   await saveButton(page).click();
   await expect.poll(() => api.puts.length).toBe(1);
   expect(api.puts[0]!.sections[0]!.vehicleIds).toEqual([ids[3], ...ids.slice(0, 3)]);
+});
+
+test('home featured inventory can add and retain published reserved and sold vehicles', async ({ page }) => {
+  const api = await setup(page);
+  api.items[1]!.availability = 'reserved';
+  api.items[2]!.availability = 'sold';
+  await page.getByRole('button', { name: /选择车辆$/ }).nth(1).click();
+  const candidates = page.getByRole('dialog', { name: '选择首页推荐车辆' });
+  const reserved = candidates.getByRole('row').filter({ hasText: 'ORDER-2' });
+  const sold = candidates.getByRole('row').filter({ hasText: 'ORDER-3' });
+  await expect(reserved.getByText('已预订', { exact: true })).toBeVisible();
+  await expect(sold.getByText('已售', { exact: true })).toBeVisible();
+  await reserved.getByRole('button', { name: /加入顶部$/ }).click();
+  await sold.getByRole('button', { name: /加入此区块$/ }).click();
+  await candidates.getByRole('button', { name: /完成选择$/ }).click();
+  const selection = [ids[1], ids[0], ids[2]];
+  await expect.poll(() => order(page, 2)).toEqual(selection);
+  await saveButton(page).click();
+  await expect(page.getByText('当前配置版本 4', { exact: true })).toBeVisible();
+  expect(api.puts[0]?.sections[1]?.vehicleIds).toEqual(selection);
+
+  api.items[0]!.availability = 'reserved';
+  api.items[1]!.availability = 'sold';
+  await page.reload();
+  await expect(region(page, 2).locator(`[data-home-order-row="${ids[0]}"]`)).toContainText('已预订');
+  await expect(region(page, 2).locator(`[data-home-order-row="${ids[1]}"]`)).toContainText('已售');
+  await expect(page.getByText('不符合推荐条件，请移除', { exact: true })).toHaveCount(0);
+  await page.getByLabel('区块 2中文标题').fill('更新后的合成区块');
+  await saveButton(page).click();
+  await expect(page.getByText('当前配置版本 5', { exact: true })).toBeVisible();
+  expect(api.puts[1]).toMatchObject({ version: 4, sections: [{ vehicleIds: ids.slice(0, 3) }, { vehicleIds: selection }] });
+
+  await page.route('**/api/v1/home/vehicles?*', route => reply(route, envelope({
+    sections: [{ id: 'recent', title: '公开核对的合成区块', vehicles: [0, 1].map(index => ({
+      ...makePublicVehicleFixture(), id: api.items[index]!.id, stockCode: `PUBLIC-ORDER-${index + 1}`, availability: api.items[index]!.availability,
+    })) }],
+  })));
+  await page.getByRole('button', { name: /读取公开首页$/ }).click();
+  await expect(page.getByText('公开核对的合成区块', { exact: true })).toBeVisible();
+  const publicRow = (number: number) => page.locator('.ant-space')
+    .filter({ has: page.getByText(`PUBLIC-ORDER-${number}`, { exact: true }) }).last();
+  await expect(publicRow(1).getByText('已预订', { exact: true })).toBeVisible();
+  await expect(publicRow(2).getByText('已售', { exact: true })).toBeVisible();
+});
+
+test('home featured inventory blocks saving a selected vehicle that was archived', async ({ page }) => {
+  const api = await setup(page);
+  api.items[0]!.publicationState = 'archived';
+  api.items[0]!.availability = 'sold';
+  await page.getByLabel('区块 1中文标题').fill('未保存的合成标题');
+  await saveButton(page).click();
+  await expect(page.getByText('部分已选车辆已下架、删除或不符合公开展示条件，请先移除标记项。')).toBeVisible();
+  await expect(region(page).locator(`[data-home-order-row="${ids[0]}"]`)).toContainText('请移除');
+  expect(api.puts).toHaveLength(0);
 });
 
 test('home ordering keeps the chosen order after a failed save and version conflict', async ({ page }) => {
