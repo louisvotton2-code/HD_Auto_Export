@@ -56,7 +56,7 @@ const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.publishe
 const publicSelect = `SELECT v.*,p.data AS publication_data,${localizationDataSql('pl')} AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
 const catalogVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved')) OR ${unverifiedVisible})`;
-const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability='available') OR ${unverifiedVisible})`;
+const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved','sold')) OR ${unverifiedVisible})`;
 export function toAdmin(row: Row): AdminVehicle {
   return AdminVehicleSchema.parse({ activity:row.activity,id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`, version:row.version,
     publicationState:row.publication_state, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
@@ -807,7 +807,7 @@ export class InventoryService {
       const sections=input.sections.map(section=>({...section,vehicleIds:section.vehicleIds.map(id=>id.toLowerCase())}));
       const ids=[...new Set(sections.flatMap(s=>s.vehicleIds))].sort();
       const valid=await tx.query(`SELECT v.id FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} ORDER BY v.id FOR UPDATE OF v`,[ids]);
-      if(valid.rowCount!==ids.length) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Home sections require published available vehicles.');
+      if(valid.rowCount!==ids.length) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Home sections require published vehicles eligible for display.');
       await tx.query('UPDATE home_config SET sections=$1,version=version+1 WHERE id=1',[JSON.stringify(sections)]);
       await audit(tx,actor,'home.save',null,input.version,input.version+1);
       return {version:input.version+1,sections};

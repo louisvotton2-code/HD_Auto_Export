@@ -17,6 +17,7 @@ ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
 MODEL = 'hd-ext09-daily-two-v1'
+MAX_ADMISSION_TARGET_ROWS = 1_000_000  # Same bound as the database admission policy.
 # Exact host controls used by the release/backup configuration. Do not admit
 # arbitrary /etc or /usr trees merely because the private config names them.
 SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
@@ -38,7 +39,7 @@ def config():
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', c['database']):
         raise ValueError('Invalid database')
     target = c.get('admissionTargetRows')
-    if target is not None and (type(target) is not int or not 1 <= target <= 150_000):
+    if target is not None and (type(target) is not int or not 1 <= target <= MAX_ADMISSION_TARGET_ROWS):
         raise ValueError('Invalid bounded admission target')
     if subprocess.check_output(['findmnt','--mountpoint',str(ROOT/'data'),'-no','UUID'],text=True).strip() != c['filesystemUuid']:
         raise ValueError('Unexpected filesystem')

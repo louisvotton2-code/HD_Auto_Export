@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 
-export const FORMAL_LISTING_LIMIT = 150_000;
+export const DEFAULT_FORMAL_LISTING_LIMIT = 150_000;
 export const FORMAL_LISTING_LIMIT_CODE = 'SYNC_LISTING_LIMIT';
 
 export async function admitFormalListing(tx: PoolClient, source: string, externalId: string): Promise<boolean> {
@@ -8,6 +8,11 @@ export async function admitFormalListing(tx: PoolClient, source: string, externa
     'SELECT reserve_external_formal_listing($1,$2) AS admitted', [source, externalId],
   );
   return result.rows[0]!.admitted;
+}
+
+/** Only the full worker reaches this after its live disk and capacity checks. */
+export async function permitFullSyncAdmission(tx: PoolClient) {
+  await tx.query("SET LOCAL hd.external_full_sync_admission = 'on'");
 }
 
 export async function isFormalListingAdmitted(tx: PoolClient, source: string, externalId: string): Promise<boolean> {
@@ -40,6 +45,9 @@ export async function formalAdmissionInstalled(client: Pool | PoolClient): Promi
     to_regclass('external_formal_admissions') IS NOT NULL
     AND to_regclass('external_formal_admission_state') IS NOT NULL
     AND to_regprocedure('reserve_external_formal_listing(text,text)') IS NOT NULL
+    AND to_regprocedure('prepare_external_formal_expansion(uuid,bigint)') IS NOT NULL
+    AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('external_formal_admission_state')
+      AND attname='admission_limit' AND NOT attisdropped)
     AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=to_regclass('external_full_snapshots')
       AND attname='target_rows' AND NOT attisdropped) AS installed`);
   return result.rows[0]!.installed;

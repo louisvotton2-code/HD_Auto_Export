@@ -10,7 +10,7 @@ import type {Database} from '../../db/index.js';
 import {verifyCatalogCsv,persistSourceResponse,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {jsonHash} from '../normalize.js';
-import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formalWithdrawal,isFormalListingAdmitted,rememberFormalWithdrawal,FORMAL_LISTING_LIMIT,FORMAL_LISTING_LIMIT_CODE} from '../formal-admission.js';
+import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formalWithdrawal,isFormalListingAdmitted,permitFullSyncAdmission,rememberFormalWithdrawal,DEFAULT_FORMAL_LISTING_LIMIT,FORMAL_LISTING_LIMIT_CODE} from '../formal-admission.js';
 import {runSourceMaintenance} from './maintenance.js';
 import {syncAccount} from './quota.js';
 import {capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk} from './capacity.js';
@@ -68,7 +68,7 @@ export class FullSyncWorker{
   if(!sampleRepair){if(s.capacity_pending)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(Number(s.last_capacity_sample)>0)await this.checkCapacityDecision(s,disk);}
  }
  private async checkCapacityDecision(state:Record<string,any>,disk:CapacityDisk){
-  const snap=(await this.db.pool.query("SELECT s.id,s.rows,s.target_rows,a.admitted_count FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE a.id=1 AND s.state IN('verified','applying','complete') ORDER BY s.created_at DESC LIMIT 1")).rows[0];
+  const snap=(await this.db.pool.query("SELECT s.id,s.rows,s.target_rows,a.admitted_count,a.admission_limit FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE a.id=1 AND s.state IN('verified','applying','complete') ORDER BY s.created_at DESC,s.id DESC LIMIT 1")).rows[0];
   const target=snap?capacityTarget(snap):0;
   const sample=await capacitySample(this.db),prior=state.capacity_baseline?.detailSample;
   const enough=snap&&target>0&&sample.details>0&&sample.details<=10000&&sample.details>=capacitySampleTarget(snap)&&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details&&validMeasuredCohort(prior,sample);
@@ -101,11 +101,11 @@ export class FullSyncWorker{
  async applyEvents(withdrawOnly=false){
   await this.alive();
   const events=(await this.db.pool.query(`SELECT e.*,a.external_id IS NOT NULL AS admitted,
-   admission.admitted_count >= $2 AS at_limit FROM external_full_events e
+   admission.admitted_count >= admission.admission_limit AS at_limit FROM external_full_events e
    CROSS JOIN external_formal_admission_state admission
    LEFT JOIN external_formal_admissions a USING(source,external_id)
    WHERE admission.id=1 AND e.applied_at IS NULL AND ($1=false OR e.operation='withdraw')
-   ORDER BY (e.operation='withdraw') DESC,admitted DESC,e.event_id LIMIT 100`,[withdrawOnly,FORMAL_LISTING_LIMIT])).rows;
+   ORDER BY (e.operation='withdraw') DESC,admitted DESC,e.event_id LIMIT 100`,[withdrawOnly])).rows;
   let expansionAllowed:boolean|undefined,completed=0;
   for(const event of events){
    const withdraw=event.operation==='withdraw';
@@ -125,11 +125,16 @@ export class FullSyncWorker{
     let admitted=known,excluded=false;
     if(!known&&withdraw)await rememberFormalWithdrawal(tx,event.source,event.external_id,event.event_id,at);
     if(!known&&!withdraw&&!blockedByWithdrawal){
-     const gates=(await tx.query(`SELECT admitted_count >= $1 AS at_limit,
+     const gates=(await tx.query(`SELECT admitted_count >= admission_limit AS at_limit,
+        admission_limit>$1 AND EXISTS (SELECT 1 FROM external_full_snapshots WHERE state IN ('downloading','staging','verified','applying')) AS snapshot_first,
         enabled AND NOT paused AND NOT disk_paused AND NOT capacity_pending AS can_expand
-        FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`,[FORMAL_LISTING_LIMIT])).rows[0]!;
-     if(!gates.at_limit&&(!expansionAllowed||!gates.can_expand))return false;
-     if(!gates.at_limit)admitted=await admitFormalListing(tx,event.source,event.external_id);
+        FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`,[DEFAULT_FORMAL_LISTING_LIMIT])).rows[0]!;
+     if(!gates.at_limit&&(!expansionAllowed||!gates.can_expand||gates.snapshot_first))return false;
+     if(!gates.at_limit){
+      await permitFullSyncAdmission(tx);
+      admitted=await admitFormalListing(tx,event.source,event.external_id);
+      if(!admitted)return false;
+     }
      excluded=!admitted;
     }
     if(admitted){
@@ -204,7 +209,7 @@ export class FullSyncWorker{
   const wal=(await this.db.pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes',[state.capacity_baseline?.walLsn??'0/0'])).rows[0]!.bytes;
   const sample=await capacitySample(this.db),details=sample.details;
   const processed=Number((await this.db.pool.query('SELECT count(*) AS n FROM external_full_members WHERE last_detail_at IS NOT NULL')).rows[0].n);
-  const completedSnapshot=(await this.db.pool.query('SELECT s.rows,s.target_rows,a.admitted_count FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE s.id=$1 AND a.id=1',[snapshotId])).rows[0];
+  const completedSnapshot=(await this.db.pool.query('SELECT s.rows,s.target_rows,a.admitted_count,a.admission_limit FROM external_full_snapshots s CROSS JOIN external_formal_admission_state a WHERE s.id=$1 AND a.id=1',[snapshotId])).rows[0];
   const compressed=(await this.db.pool.query('SELECT sum(octet_length(compressed))::text AS bytes,count(*) FILTER(WHERE compressed IS NULL)::integer AS uncompacted FROM external_source_blobs')).rows[0]!;
   let archiveBytes=0;for(const entry of await readdir(this.directory,{withFileTypes:true})){if(entry.isFile())archiveBytes+=(await stat(path.join(this.directory,entry.name))).size;}
   const rows=completedSnapshot?capacityTarget(completedSnapshot):0;
@@ -249,7 +254,9 @@ export class FullSyncWorker{
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
    const snap=(await tx.query("SELECT * FROM external_full_snapshots WHERE id=$1 AND state IN('verified','applying') FOR UPDATE",[id])).rows[0];if(!snap)return 0;
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
-   const atLimit=(await tx.query<{reached:boolean}>('SELECT admitted_count >= $1 AS reached FROM external_formal_admission_state WHERE id=1',[FORMAL_LISTING_LIMIT])).rows[0]!.reached;
+   const {reached:atLimit,expanded}=(await tx.query<{reached:boolean;expanded:boolean}>(`SELECT
+    admitted_count >= admission_limit AS reached, admission_limit > $1 AS expanded
+    FROM external_formal_admission_state WHERE id=1`,[DEFAULT_FORMAL_LISTING_LIMIT])).rows[0]!;
    // When full, jump over unadmitted rows but still refresh every admitted
    // member in the export, including those after the initial CSV rows.
    const eligible=atLimit?'AND EXISTS(SELECT 1 FROM external_formal_admissions a WHERE a.source=s.source AND a.external_id=s.external_id)':'';
@@ -257,15 +264,28 @@ export class FullSyncWorker{
      LEFT JOIN external_ingestion_identity_state i ON i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id AND i.withdrawn
      WHERE snapshot_id=$1 AND row_number>$2 ${eligible}
      ORDER BY row_number LIMIT 100`,[id,snap.apply_cursor])).rows;
+   if(!atLimit&&rows.length)await permitFullSyncAdmission(tx);
+   let last=snap.apply_cursor,processed=0,ceilingReached=atLimit;
    for(const entry of rows){
-    if(entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at))continue;
-    if(!await admitFormalListing(tx,entry.source,entry.external_id))continue;
+    const withdrawn=entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at);
+    const admitted=!withdrawn&&await admitFormalListing(tx,entry.source,entry.external_id);
+    if(!withdrawn&&!admitted&&!ceilingReached){
+     ceilingReached=(await tx.query<{reached:boolean}>('SELECT admitted_count >= admission_limit AS reached FROM external_formal_admission_state WHERE id=1')).rows[0]!.reached;
+     if(!ceilingReached)break; // Retry this row when the temporary capacity gate reopens.
+    }
+    last=entry.row_number;processed++;
+    if(!admitted)continue;
     let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
     if(m.state==='withdrawn'&&new Date(snap.generated_at)<=new Date(m.business_at)){
      await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
      continue;
     }
-    const alias=parseAlias(row.duplicate_of);if(alias)await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString());
+    const alias=parseAlias(row.duplicate_of);
+    if(alias){
+     const stagedAlias=!expanded||(await tx.query(`SELECT 1 FROM external_full_stage
+      WHERE snapshot_id=$1 AND source=$2 AND external_id=$3`,[id,alias.source,alias.id])).rowCount===1;
+     await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString(),stagedAlias);
+    }
     m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
     const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd'].includes(key)));const rowHash=jsonHash(stableRow);
     if(m.csv_hash===rowHash&&m.last_detail_at){await tx.query('UPDATE external_full_members SET last_snapshot=$3,verification_pending=false WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);continue;}
@@ -279,11 +299,11 @@ export class FullSyncWorker{
      await tx.query('UPDATE external_full_work SET document_refs=$3 WHERE source=$1 AND external_id=$2 AND kind=\'detail\'',[entry.source,entry.external_id,JSON.stringify(refs)]);
     }else await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
    }
-   const last=atLimit&&rows.length<100?snap.rows:rows.at(-1)?.row_number??snap.apply_cursor;
+   if(atLimit&&rows.length<100)last=snap.rows;
    const complete=BigInt(last)>=BigInt(snap.rows);
    await tx.query("UPDATE external_full_snapshots SET state=$2,apply_cursor=$3,completed_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1",[id,complete?'complete':'applying',last,complete]);
    if(complete)await tx.query("UPDATE external_full_sync SET next_snapshot_at=now()+interval '1 day' WHERE id=1");
-   return rows.length;
+   return processed;
   });
  }
  async details(sampleOnly=false){
@@ -381,7 +401,7 @@ export class FullSyncWorker{
  }
  async sampleRemaining(){
   const row=(await this.db.pool.query(`SELECT fs.last_capacity_sample,(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL) AS sampled,
-   s.rows,s.target_rows,a.admitted_count FROM external_full_sync fs CROSS JOIN external_formal_admission_state a
+   s.rows,s.target_rows,a.admitted_count,a.admission_limit FROM external_full_sync fs CROSS JOIN external_formal_admission_state a
    LEFT JOIN LATERAL (SELECT rows,target_rows FROM external_full_snapshots WHERE rows>0 ORDER BY created_at DESC LIMIT 1) s ON true
    WHERE fs.id=1 AND a.id=1`)).rows[0]!;
   if(Number(row.last_capacity_sample)>0)return 500;
@@ -391,7 +411,7 @@ export class FullSyncWorker{
  async sampleSaturated(){return await this.sampleRemaining()===0;}
  async capacityGate(){
   if(!Number((await this.state()).last_capacity_sample)&&!await this.sampleSaturated())return;
-  const snap=(await this.db.pool.query("SELECT id,bytes FROM external_full_snapshots WHERE state IN('verified','applying','complete') ORDER BY created_at DESC LIMIT 1")).rows[0];
+  const snap=(await this.db.pool.query("SELECT id,bytes FROM external_full_snapshots WHERE state IN('verified','applying','complete') ORDER BY created_at DESC,id DESC LIMIT 1")).rows[0];
   if(!snap)return;await this.estimateCapacity(snap.id,Number(snap.bytes));
   await this.db.pool.query("UPDATE external_full_sync SET last_capacity_sample=(SELECT count(*) FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL),capacity_pending=false WHERE id=1");
  }
