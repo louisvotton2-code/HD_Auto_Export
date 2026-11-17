@@ -8,11 +8,14 @@ function vehicle(publicationState: AdminVehicle['publicationState'], availabilit
 }
 
 describe('homepage recommendations', () => {
-  it('only admits published available real vehicles, while keeping draft/reserved/sold records out', () => {
-    expect(isHomeEligible(vehicle('published', 'available'))).toBe(true);
-    for (const availability of ['reserved', 'sold', 'unknown'] as const) expect(isHomeEligible(vehicle('published', availability))).toBe(false);
-    expect(isHomeEligible(vehicle('draft', 'available'))).toBe(false);
-    expect(isHomeEligible(vehicle('archived', 'available'))).toBe(false);
+  it('admits published manual stock with a known status and excludes drafts, archives and deleted rows', () => {
+    for (const availability of ['available', 'reserved', 'sold'] as const) {
+      expect(isHomeEligible(vehicle('published', availability))).toBe(true);
+      expect(isHomeEligible(vehicle('draft', availability))).toBe(false);
+      expect(isHomeEligible(vehicle('archived', availability))).toBe(false);
+      expect(isHomeEligible({ ...vehicle('published', availability), deletedAt: '2026-11-17T10:00:00Z' })).toBe(false);
+    }
+    expect(isHomeEligible(vehicle('published', 'unknown'))).toBe(false);
   });
   it('allows a published demo without inventing available inventory', () => {
     const demo = vehicle('published', 'unknown');
@@ -37,7 +40,8 @@ describe('homepage recommendations', () => {
     const ready = vehicle('published', 'available');
     expect(addHomeVehicleId([], ready)).toEqual([ready.id]);
     expect(addHomeVehicleId([ready.id], ready)).toEqual([ready.id]);
-    expect(addHomeVehicleId([], vehicle('published', 'sold'))).toEqual([]);
+    expect(addHomeVehicleId([], vehicle('published', 'sold'))).toEqual([ready.id]);
+    expect(addHomeVehicleId([], vehicle('archived', 'sold'))).toEqual([]);
     const full = Array.from({ length: 30 }, (_, index) => `existing_${index}`);
     expect(addHomeVehicleId(full, ready)).toEqual(full);
   });
@@ -53,7 +57,8 @@ describe('homepage recommendations', () => {
     const ready = vehicle('published', 'available');
     expect(addHomeVehicleId(['a', 'b'], ready, 'start')).toEqual([ready.id, 'a', 'b']);
     expect(addHomeVehicleId(['a', ready.id], ready, 'start')).toEqual(['a', ready.id]);
-    expect(addHomeVehicleId(['a'], vehicle('published', 'sold'), 'start')).toEqual(['a']);
+    expect(addHomeVehicleId(['a'], vehicle('published', 'reserved'), 'start')).toEqual([ready.id, 'a']);
+    expect(addHomeVehicleId(['a'], vehicle('published', 'unknown'), 'start')).toEqual(['a']);
     const full = Array.from({ length: 30 }, (_, index) => `existing_${index}`);
     expect(addHomeVehicleId(full, ready, 'start')).toEqual(full);
   });

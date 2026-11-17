@@ -162,7 +162,7 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
       }
     } else if (operation === 'archive') {
       if (!await confirmAction('下架这辆车？', '下架后公开详情返回不存在，车辆退出公开列表；后台草稿和历史记录保留。', true)) return;
-    } else if (!await confirmAction('确认库存核验结果', `你已实际核验库存为“${availabilityLabels[availability]}”，将记录当前核验时间。已售车辆会立即退出公开在售列表，恢复可售也会立即生效。`, availability === 'sold')) return;
+    } else if (!await confirmAction('确认库存核验结果', `你已实际核验库存为“${availabilityLabels[availability]}”，将记录当前核验时间。已售车辆会退出在售列表，符合公开条件的首页精选可继续展示实际库存状态。`, availability === 'sold')) return;
 
     if (!mounted.current) return;
     const body = operation === 'publish' ? publishIntent.current!.body

@@ -8,6 +8,7 @@ import {
 } from '@hd/contracts/admin';
 import { PublicHomeSectionsSchema, type Locale, type PublicHomeSections } from '@hd/contracts/public';
 import { ApiClientError, request } from '../../shared/api/client';
+import { availabilityLabels } from '../vehicles/draft-form';
 import styles from './home-sections.module.css';
 import { addHomeVehicleId, isHomeEligible, reorderHomeVehicleId } from './home-sections-model';
 import { HomeVehicleOrder } from './home-vehicle-order';
@@ -16,6 +17,9 @@ const { Title, Text, Paragraph } = Typography;
 const localeLabels = { zh: '中文', en: '英文', ru: '俄文' };
 const isDemo = (vehicle: AdminVehicle) => String(vehicle.draft.source.kind) === 'demo';
 const vehicleName = (vehicle: AdminVehicle) => [vehicle.draft.facts.make?.name, vehicle.draft.facts.model?.name].filter(Boolean).join(' ') || vehicle.draft.content.title.sourceText || '车辆资料待补充';
+function inventoryTag(availability: AdminVehicle['availability']) {
+  return <Tag color={availability === 'available' ? 'success' : availability === 'reserved' ? 'warning' : 'default'}>{availabilityLabels[availability]}</Tag>;
+}
 const thumbnail = (vehicle: AdminVehicle) => {
   const image = vehicle.draft.media.find(item => item.isCover) ?? vehicle.draft.media[0];
   return image ? `/api/v1/admin/media/${encodeURIComponent(image.id)}/preview` : undefined;
@@ -163,7 +167,7 @@ export function HomeSectionsPage() {
       if (!mounted.current) return;
       setVehicleCache(current => ({ ...current, ...Object.fromEntries(ids.map((id, index) => [id, currentVehicles[index] ?? null])) }));
       if (currentVehicles.some(vehicle => !vehicle || !isHomeEligible(vehicle))) {
-        setError('部分已选车辆已下架、已售或不符合推荐条件，请先从区块移除标记项。'); return;
+        setError('部分已选车辆已下架、删除或不符合公开展示条件，请先移除标记项。'); return;
       }
       const response = await request('/api/v1/admin/home/vehicle-sections', AdminHomeSectionsResponseSchema, { method: 'PUT', body: JSON.stringify(parsed.data) });
       if (!mounted.current) return;
@@ -207,18 +211,18 @@ export function HomeSectionsPage() {
     } catch (failure) { if (mounted.current && sequence === publicSequence.current) setPublicError(failure instanceof Error ? failure.message : '公开首页读取失败。'); }
     finally { if (mounted.current && sequence === publicSequence.current) setPublicLoading(false); }
   }
-  function vehicleCell(id: string) {
+  function vehicleCell(id: string, showInventory = true) {
     const vehicle = vehicleCache[id];
     if (!vehicle) return <Space orientation="vertical" size={2}><Text strong>{id in vehicleCache ? '车辆不存在，请移除' : referenceErrors[id] ? '车辆状态读取失败，请重试' : '正在读取车辆资料…'}</Text><Text type="secondary">保留的配置记录</Text></Space>;
     const image = thumbnail(vehicle);
-    return <Space align="start"><div className={styles.thumbnail}>{image ? <Image src={image} alt="车辆封面" width={68} height={48} preview={false} /> : <span>暂无图片</span>}</div><Space orientation="vertical" size={2}><Text strong>{vehicleName(vehicle)}</Text><Text type="secondary">{vehicle.stockCode}</Text>{isDemo(vehicle) && <Tag color="gold">展示样例，非实际库存</Tag>}{!isHomeEligible(vehicle) && <Tag color="error">不符合推荐条件，请移除</Tag>}</Space></Space>;
+    return <Space align="start"><div className={styles.thumbnail}>{image ? <Image src={image} alt="车辆封面" width={68} height={48} preview={false} /> : <span>暂无图片</span>}</div><Space orientation="vertical" size={2}><Text strong>{vehicleName(vehicle)}</Text><Text type="secondary">{vehicle.stockCode}</Text>{isDemo(vehicle) && <Tag color="gold">展示样例，非实际库存</Tag>}{showInventory && vehicle.draft.source.kind === 'manual' && inventoryTag(vehicle.availability)}{!isHomeEligible(vehicle) && <Tag color="error">不符合推荐条件，请移除</Tag>}</Space></Space>;
   }
 
   if (loading) return <Card><Spin tip="正在读取首页配置…"><div style={{ minHeight: 160 }} /></Spin></Card>;
   if (!draft) return <Alert type="error" title="首页配置读取失败" description={error} action={<Button onClick={() => setReloadVersion(value => value + 1)}>重试</Button>} />;
   return <div className={styles.page}>
     <div className={styles.pageHeader}><div><Text className={styles.eyebrow}>CONTENT / HOME</Text><Title level={2}>首页车源配置</Title><Paragraph type="secondary">设置两个车源区块的标题、车辆与顺序。保存后，再读取公开首页数据核对。</Paragraph></div><Tag color={dirty ? 'processing' : 'default'}>{dirty ? '有未保存的修改' : `当前配置版本 ${draft.version}`}</Tag></div>
-    <Alert type="info" showIcon title="推荐范围" description="可选择已发布且可售的真实车辆，或明确标注的展示样例、外部挂牌。已售、下架等不再符合条件的记录会保留在编辑区供移除，不能继续作为现货推荐。" />
+    <Alert type="info" showIcon title="推荐范围" description="已发布的可售、已预订及已售自有车均可入选。展示样例和外部挂牌也可在符合公开条件时加入。已下架等不符合展示条件的记录会标记供移除。" />
     {error && <Alert type="error" showIcon title={error} description={fieldErrors.length ? <ul>{fieldErrors.map(field => <li key={field}>{field}</li>)}</ul> : undefined} action={latest ? <Button onClick={() => void reloadLatest()}>比较后载入最新配置</Button> : undefined} />}
     {latest && <Alert type="warning" showIcon title={`服务端已有配置版本 ${latest.version}，当前编辑已保留`} description={<Space orientation="vertical" size={6}>{latest.sections.map((section, index) => <Text key={section.id}>最新区块 {index + 1}：{section.title.zh} / {section.title.en} / {section.title.ru} · {section.vehicleIds.length} 辆</Text>)}</Space>} action={<Button onClick={() => void reloadLatest()}>放弃本地修改并载入最新</Button>} />}
     {Object.keys(referenceErrors).length > 0 && <Alert type="warning" title="部分车辆资料未能读取" action={<Button onClick={() => setReferenceRefresh(value => value + 1)} loading={referencesLoading}>重新核对</Button>} />}
@@ -236,15 +240,16 @@ export function HomeSectionsPage() {
     <Card title="核对公开首页数据" extra={<Space wrap><Select aria-label="首页公开语言" value={publicLocale} style={{ width: 100 }} onChange={setPublicLocale} options={Object.entries(localeLabels).map(([value, label]) => ({ value, label }))} /><Button icon={<ReloadOutlined />} loading={publicLoading} onClick={() => void readPublic()}>读取公开首页</Button></Space>}>
       <Paragraph type="secondary">这里显示公共接口的实际返回。空区块不会出现在公开数据中。</Paragraph>
       {publicError && <Alert type="error" title={publicError} />}
-      {publicResult && (publicResult.sections.length ? <div className={styles.publicSections}>{publicResult.sections.map(section => <Card size="small" key={section.id} title={section.title}><Space orientation="vertical">{section.vehicles.map(vehicle => <Space key={vehicle.id} wrap><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text>{String(vehicle.source.kind) === 'demo' && <Tag color="gold">展示样例，非实际库存</Tag>}{vehicle.source.kind === 'external' && <Tag color="blue">外部挂牌 · {vehicle.source.platform.name}</Tag>}</Space>)}</Space></Card>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可公开的首页区块" />)}
+      {publicResult && (publicResult.sections.length ? <div className={styles.publicSections}>{publicResult.sections.map(section => <Card size="small" key={section.id} title={section.title}><Space orientation="vertical">{section.vehicles.map(vehicle => <Space key={vehicle.id} wrap><Text strong>{vehicle.content.title.text}</Text><Text type="secondary">{vehicle.stockCode}</Text>{String(vehicle.source.kind) === 'demo' && <Tag color="gold">展示样例，非实际库存</Tag>}{vehicle.source.kind === 'external' && <Tag color="blue">外部挂牌 · {vehicle.source.platform.name}</Tag>}{vehicle.source.kind === 'manual' && inventoryTag(vehicle.availability)}</Space>)}</Space></Card>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可公开的首页区块" />)}
     </Card>
     <Modal title="选择首页推荐车辆" open={selecting !== null} width={900} footer={<Button onClick={() => setSelecting(null)}>完成选择</Button>} onCancel={() => setSelecting(null)} destroyOnHidden>
       <Paragraph type="secondary">搜索全部已发布车辆，按页查看。“加入顶部”让新车排在第一位，“加入此区块”追加到末尾；选择后仍可调整顺序并统一保存。</Paragraph>
       <Input.Search aria-label="查找推荐车辆" placeholder="搜索车号、品牌、车型或标题" maxLength={100} value={searchText} onChange={event => setSearchText(event.target.value)} onSearch={value => { setCandidateQuery(value.trim()); setCandidatePage(1); }} enterButton="搜索" allowClear />
       {candidateError && <Alert type="error" title={candidateError} />}
       <Table<AdminVehicle> rowKey="id" size="small" loading={candidateLoading} pagination={false} scroll={{ x: 610 }} dataSource={candidates?.items ?? []} locale={{ emptyText: candidateError ? '读取失败，请重新搜索' : '此页没有已发布车辆' }} columns={[
-        { title: '车辆', render: (_, vehicle) => vehicleCell(vehicle.id) },
-        { title: '推荐条件', width: 130, render: (_, vehicle) => <Tag color={isHomeEligible(vehicle) ? 'success' : 'default'}>{isDemo(vehicle) ? '展示样例' : vehicle.draft.source.kind === 'external' ? '外部挂牌 · 库存未知' : vehicle.availability === 'available' ? '可售' : '库存不符合'}</Tag> },
+        { title: '车辆', render: (_, vehicle) => vehicleCell(vehicle.id, false) },
+        { title: '库存状态', width: 130, render: (_, vehicle) => isDemo(vehicle) ? <Tag color="gold">展示样例</Tag>
+          : vehicle.draft.source.kind === 'external' ? <Tag color="blue">外部挂牌 · 库存未知</Tag> : inventoryTag(vehicle.availability) },
         { title: '选择', width: 130, render: (_, vehicle) => {
           const chosen = selecting !== null && draft.sections[selecting]?.vehicleIds.includes(vehicle.id);
           const cannotAdd = Boolean(chosen) || editingLocked || !isHomeEligible(vehicle) || (selecting !== null && draft.sections[selecting]!.vehicleIds.length >= 30);
