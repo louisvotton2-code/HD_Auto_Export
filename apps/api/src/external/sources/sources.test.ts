@@ -13,7 +13,20 @@ function document(payload:unknown,locale:SourceDocument['locale']='en',kind:Sour
 function detail(id='1001'){return {source:'che168',id,status:'active',updatedAt:observedAt,url:`https://www.che168.com/dealer/1/${id}.html`,title:'Synthetic vehicle',make:{id:'1',name:'Example',nameZh:'示例'},model:{id:'2',name:'Model',nameZh:'车型'},trim:{id:'3',name:'Variant',nameZh:'配置'},modelYear:2022,fuel:'Petrol',specs:{displacementCc:1998,emissionStandard:'China VI',ev:{rangeKm:100}},image:'https://erscglobal2.autoimg.cn/photo/0.jpg',photos:Array.from({length:45},(_,i)=>`https://erscglobal2.autoimg.cn/photo/${i}.jpg`),equipment:[{items:Array.from({length:601},(_,i)=>({name:`ABS`,value:'Standard',nameZh:`防抱死系统`,valueZh:'标配'}))}],unknownFuture:{private:true}};}
 test('CSV stream validates full header, UTF8 chunks, quotes and multiline cells before complete',async()=>{
  const data=csv(),rows:Record<string,string>[]=[];const result=await verifyCatalogCsv(chunks(data),proof(data),row=>{rows.push(row);});
- assert.equal(result.rows,1);assert.equal(result.complete,true);assert.equal(rows[0]!.make_zh,'中文 "品牌"\n名称');
+ assert.equal(result.rows,1);assert.equal(result.complete,true);assert.equal(rows[0]!.make_zh,'中文 "品牌"\n名称');assert.equal(rows[0]!.image,undefined);
+});
+test('CSV accepts exactly the trailing image extension and retains the image value',async()=>{
+ const [header,record]=csv().slice(0,-2).split('\r\n');
+ const image='https://example.invalid/a,b.jpg';
+ const columns=header+',image';
+ const data=columns+'\r\n'+record+',"'+image+'"\r\n'+record!.replace('"1001"','"1002"')+',\r\n';
+ const images:(string|undefined)[]=[];
+ const result=await verifyCatalogCsv(chunks(data),proof(data),row=>{images.push(row.image);});
+ assert.equal(result.rows,2);
+ assert.deepEqual(images,[image,'']);
+ for(const bad of [data.replace(',image\r\n',',other\r\n'),columns+'\r\n'+record+'\r\n',header+'\r\n'+record+',"'+image+'"\r\n']){
+  await assert.rejects(verifyCatalogCsv(chunks(bad),proof(bad),()=>{}));
+ }
 });
 test('truncation, header drift, invalid source, digest mismatch and incomplete download fail closed',async()=>{
  const good=csv();for(const bad of [good.slice(0,-4),good.replace('source,id','source,unknown'),csv('unknown'),good.replace('1001','1002')])await assert.rejects(verifyCatalogCsv(chunks(bad),proof(good),()=>{}));
