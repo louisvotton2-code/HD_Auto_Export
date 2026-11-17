@@ -9,3 +9,5 @@ OPS provision `/srv/hd-auto/data/full-sync-capacity` root-owned, group equal to 
 Configured measurement roots may be real paths inside `/srv/hd-auto`, or these exact host controls: `/etc/hd-auto`, `/etc/letsencrypt`, `/etc/fstab`, `/etc/systemd/system/docker.service.d/hd-auto-storage.conf`, `/usr/local/sbin/hd-auto-storage-check`. Parent-link aliases and traversal are rejected; directory size measurement does not follow nested links. Keep the live host controls in the cost model rather than substituting an old backup or omitting their size.
 
 Candidate was edited only on the workstation. Server checks required: `python3 -m unittest test_capacity_decision.py` from `deploy/runtime`, plus existing Compose test extended for this read-only mount. Full measurement/decision/BE integration remains OPS responsibility; this file does not claim deployment or test success.
+
+同步裁决与日备份预检复用同一套备份大小算法。正常备份完成清理后，以匹配数据库、最近 48 小时的实际压缩转储记录估算。只有备份时数据库至少达到当前数据库一半的记录参与压缩比例，以其中较高值加 25% 估算余量。缺少可比记录时使用物理数据库大小。业务表包含原始资料，压缩备份包含暂存表，两处均不再重复叠加。判断容量时保留两份已有备份及新备份临时组件与密文并存，并计算系统保留块。每日备份写入数据库转储、压缩包和密文时也复查实盘 70% 上限，未完成点进入既有恢复流程。容量服务不会为满足本模型额外运行压缩采样。

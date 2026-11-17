@@ -13,6 +13,8 @@ import subprocess
 import time
 import uuid
 
+from backup_space import projected_dump_bytes, recovery_point_bytes, recovery_samples
+
 ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
 CONFIG = Path('/etc/hd-auto/capacity.json')
@@ -87,30 +89,34 @@ def stream_size(argv, timeout=600, maximum=2*1024**3):
             except subprocess.TimeoutExpired: os.killpg(p.pid,signal.SIGKILL); p.wait()
 
 
-def project(e, probe, *, used, total, media, controls, daily, raw, wal_on_disk, wal_configured):
+def project(e, *, used, total, available_reserve, media, controls, daily, database, wal_on_disk, wal_configured, samples):
     n=e['distinctProcessed']; target=e['targetRows']
-    if not e.get('sampleEvidenceSufficient') or n<=0 or target<=0: raise ValueError('Insufficient sample')
-    for value in (used,total,media,controls,daily,raw,wal_on_disk,wal_configured,n,target,e['businessBytes'],e['sqlStagingBytes'],e['archiveDirectoryBytes']):
-        if type(value) is not int or value<0: raise ValueError('Invalid byte measurement')
-    business=max(e['businessBytes'],math.ceil(e['projectedBytesPerDetail']*target))
-    history=math.ceil(raw*max(n,target)/n)
+    if not e.get('sampleEvidenceSufficient') or n<=0 or target<=0:
+        raise ValueError('Insufficient sample')
     stage=e['sqlStagingBytes']; csv=e['archiveDirectoryBytes']
-    # The worker's LSN difference counts all WAL generated since its baseline.
-    # Only resident WAL can be subtracted from observed filesystem usage.
+    for value in (used,total,available_reserve,media,controls,daily,database,wal_on_disk,wal_configured,n,target,e['businessBytes'],stage,csv):
+        if type(value) is not int or value<0:
+            raise ValueError('Invalid byte measurement')
+    # Business relations already include source history. The live database also
+    # includes indexes and non-supplier state, which we keep as a fixed baseline.
+    other_db=max(0,database-stage-e['businessBytes'])
+    business=max(e['businessBytes'],math.ceil(e['projectedBytesPerDetail']*target))+other_db
+    stage_peak=3*stage
+    csv_peak=3*csv
     wal=max(wal_on_disk,wal_configured,2*1024**3)
-    # Archive directory is conservatively all fixed CSV, never scaled by details.
-    full_dump=math.ceil((probe['businessDumpBytes']+probe['rawDumpBytes'])*max(n,target,probe['processedRows'])/probe['processedRows'])
-    point=full_dump+3*stage+3*csv+media+controls
-    protected=max(0,used-e['businessBytes']-stage-csv-media-wal_on_disk-daily)
-    # Existing fixed baseline is already in protectedBytes. Two successful
-    # encrypted daily points remain while the next point's compressed components
-    # and ciphertext coexist. No per-release clone/restore reservation.
-    recovery=point*4
-    components=dict(protectedBytes=protected,businessBytes=business,historyBytes=history,
-                    sqlSnapshotsBytes=3*stage,csvSnapshotsBytes=3*csv,mediaBytes=media,
-                    controlsBytes=controls,walBytes=wal,recoveryPeakBytes=recovery,
-                    recoveryPointBytes=point)
-    peak=max(used,sum(v for k,v in components.items() if k!='recoveryPointBytes'))
+    protected=max(0,used-database-csv-media-wal_on_disk-daily)
+    dump=projected_dump_bytes(business+stage_peak,database,samples)
+    point=recovery_point_bytes(dump,csv_peak+media+controls)
+    retained=max(daily,2*point)
+    # Two existing ciphertexts plus the next point's compressed components
+    # and streaming ciphertext. The latter contain the same dump exactly once each.
+    reserve=retained+2*point
+    components=dict(protectedBytes=protected,businessBytes=business,sqlSnapshotsBytes=stage_peak,
+                    csvSnapshotsBytes=csv_peak,mediaBytes=media,controlsBytes=controls,walBytes=wal,
+                    filesystemReservedBytes=available_reserve,recoveryPeakBytes=reserve,
+                    recoveryPointBytes=point,recoveryDumpBytes=dump)
+    peak=max(used+available_reserve,sum(v for k,v in components.items()
+                                  if k not in ('recoveryPointBytes','recoveryDumpBytes')))
     return dict(projectedPeakBytes=peak,diskTotalBytes=total,currentUsedBytes=used,components=components)
 
 
@@ -137,29 +143,11 @@ def bounded_evidence(c, e):
     return type(target) is int and 0 < target <= cap
 
 
-def physical_backup_basis(e, database, raw):
-    """Reserve as if current database components offered no dump compression."""
-    business = max(e['businessBytes'], database - e['sqlStagingBytes'])
-    return dict(processedRows=e['distinctProcessed'], businessDumpBytes=business, rawDumpBytes=raw)
-
-
 def measure():
     c = config()
     e = evidence(c)
     if not bounded_evidence(c, e):
         return None
-    bounded = c.get('admissionTargetRows') is not None
-    if not bounded:
-        try:
-            cached = private_json(STATE/'probe.json')
-        except (OSError, ValueError):
-            cached = {}
-        if (cached.get('model') not in ('hd-ext07-peak-v1', MODEL)
-                or cached.get('evidenceHash') != e['evidenceHash']
-                or cached.get('snapshotId') != e['snapshotId']
-                or time.time() - cached.get('measuredEpoch', 0) > 86400):
-            subprocess.run(['systemctl','start','--no-block','hd-auto-ext07-capacity-probe.service'],check=True,timeout=5)
-            return None
     fs = os.statvfs(ROOT/'data')
     total = fs.f_blocks * fs.f_frsize
     used = (fs.f_blocks-fs.f_bfree) * fs.f_frsize
@@ -167,21 +155,13 @@ def measure():
         'database', pg_database_size(current_database()),
         'walOnDisk', (SELECT coalesce(sum(size),0) FROM pg_ls_waldir()),
         'walConfigured', pg_size_bytes(current_setting('max_wal_size'))
-                         + pg_size_bytes(current_setting('wal_keep_size')),
-        'raw', coalesce(sum(pg_total_relation_size(c.oid)),0))
-        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-        WHERE n.nspname='public' AND c.relkind='r'
-          AND c.relname IN ('external_source_blobs','external_source_documents')""")
-    if bounded:
-        # Reserve from live allocated DB size (including indexes) so a new
-        # sample hash can be evaluated without rerunning a compressed dump.
-        # The model still reserves raw history and fixed staging separately.
-        cached = physical_backup_basis(e, sizes['database'], sizes['raw'])
-    result = project(e, cached, used=used, total=total,
+                         + pg_size_bytes(current_setting('wal_keep_size')))""")
+    result = project(e, used=used, total=total, available_reserve=(fs.f_bfree-fs.f_bavail)*fs.f_frsize,
                      media=sum(allocated(p) for p in c['mediaRoots']),
                      controls=sum(allocated(p) for p in c['controlRoots']),
-                     daily=daily_bytes(), raw=sizes['raw'],
-                     wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'])
+                     daily=daily_bytes(), database=sizes['database'],
+                     wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'],
+                     samples=recovery_samples(ROOT/'backups/ext07',c['database']))
     latest = evidence(c)
     if not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash']:
         return None
