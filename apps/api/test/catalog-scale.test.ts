@@ -64,6 +64,37 @@ test('SQL facets agree with exact totals and preserve unknown and original-curre
   assert.equal(legacy.total,undefined);assert.equal(legacy.makes[0]!.name,'Z newest staff');assert.equal(legacy.makes[0]!.count,3);
 });
 
+test('scoped filter views preserve exact three-language facets and leave the full response intact',async()=>{
+  for(const locale of ['zh','en','ru']){
+    const scope={locale,priceView:'usd',priceCurrency:'USD',q:'fixture'};
+    const full=await inventory.filters(filters(scope));
+    const overview=await inventory.filters(filters({...scope,projection:'overview'}));
+    for(const key of ['total','makes','powertrains','drivetrains','modelYears'] as const)
+      assert.deepEqual(overview[key],full[key],`${locale}: ${key}`);
+    assert.deepEqual(overview.models,[]);
+    assert.equal(overview.hasTrims,!!full.trims?.length);
+    assert.equal(overview.hasGenerations,!!full.generations?.length);
+    assert.equal(overview.trims,undefined);
+    assert.equal(overview.generations,undefined);
+    assert.equal(full.hasTrims,undefined);
+    assert.equal(full.hasGenerations,undefined);
+    const legacyBookmark=await inventory.filters(filters({...scope,projection:'overview-models'}));
+    assert.deepEqual(legacyBookmark,{...overview,models:full.models});
+    const make='fixture_make';
+    const fullBrand=await inventory.filters(filters({locale,make}));
+    const models=await inventory.filters(filters({locale,make,projection:'models'}));
+    assert.deepEqual(models,{catalog:'curated',makes:[],models:fullBrand.models,powertrains:[]});
+  }
+  const empty=await inventory.filters(filters({q:'absent vehicles',projection:'overview'}));
+  assert.equal(empty.total,0);
+  assert.equal(empty.hasTrims,false);
+  assert.equal(empty.hasGenerations,false);
+  assert.equal(PublicFilterQuerySchema.safeParse({projection:'overview'}).success,false);
+  assert.equal(PublicFilterQuerySchema.safeParse({view:'localized',projection:'models'}).success,false);
+  assert.equal(PublicFilterQuerySchema.safeParse({view:'localized',projection:'variants',make:'fixture_make'}).success,false);
+  assert.equal(PublicVehicleQuerySchema.safeParse({view:'localized',projection:'overview'}).success,false);
+});
+
 test('ordinary list shapes stay unchanged and microsecond keysets cross employee/external boundary once',async()=>{
   const regular=await inventory.listPublic(query(),'regular');assert.equal(Object.hasOwn(regular.data,'nextCursor'),false);
   const legacy=await inventory.listPublic(query({view:'legacy'}),'legacy');assert.equal(legacy.meta.total,3);assert.equal(Object.hasOwn(legacy.data,'nextCursor'),false);
@@ -133,6 +164,13 @@ test('nested facet counts preserve the latest nonnull label when the newest hist
     }
     assert.equal(rows.find(row=>row.kind==='total')?.count,8);
     assert.equal(rows.find(row=>row.kind==='currency')?.count,7);
+    const variants=await externalFacets(tx,filters({make:'fixture_make',model:'fixture_model',projection:'variants'}));
+    assert.deepEqual(variants.filter(row=>row.kind!=='total').sort((a,b)=>a.kind.localeCompare(b.kind)),
+      rows.filter(row=>row.kind==='trim'||row.kind==='generation').sort((a,b)=>a.kind.localeCompare(b.kind)));
+    const overview=await externalFacets(tx,filters({projection:'overview'}));
+    assert.equal(overview.find(row=>row.kind==='hasTrims')?.count,1);
+    assert.equal(overview.find(row=>row.kind==='hasGenerations')?.count,1);
+    assert.equal(overview.some(row=>['model','trim','generation'].includes(row.kind)),false);
     const empty=await externalFacets(tx,filters({make:'missing_make'}));
     assert.deepEqual(empty,[{kind:'total',id:null,name:null,make_id:null,model_id:null,count:0}]);
   } finally {await tx.query('ROLLBACK');tx.release();}

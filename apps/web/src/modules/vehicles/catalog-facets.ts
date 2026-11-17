@@ -2,28 +2,33 @@ import { PublicVehicleFiltersSchema, type PublicVehicleFilters } from '@hd/contr
 import type { Locale } from '@/i18n/routing';
 import { publicQueryString, publicUsdFilterQuery, type UsdFilterScope } from './public-query';
 
+type FacetSelection = { make?: string; model?: string; selectedModel?: string };
+
 export function catalogFacetUrl(
   locale: Locale,
   scope: UsdFilterScope,
-  parents: { make?: string; model?: string; selectedModel?: string } = {},
+  parents: FacetSelection = {},
 ) {
   return `/catalog-facets.json?${publicQueryString({ ...publicUsdFilterQuery(locale, scope), ...parents })}`;
 }
 
-/** The website's overview keeps the filter controls visible without sending every option. */
-export function projectCatalogFacetOverview(filters: PublicVehicleFilters, selectedModel?: string) {
-  const { catalog, total, makes, models, powertrains, drivetrains, modelYears, trims, generations } =
-    filters.data;
+export function catalogFacetProjection({ make, model, selectedModel }: FacetSelection) {
+  if (make) return { projection: model ? 'variants' as const : 'models' as const, make, model };
+  // Model-only bookmarks still need the model picker when no brand is selected.
+  return { projection: selectedModel ? 'overview-models' as const : 'overview' as const };
+}
+
+/** Keep the browser's existing overview envelope. */
+export function projectCatalogFacetOverview(filters: PublicVehicleFilters) {
+  const {
+    catalog, total, makes, models, powertrains, drivetrains, modelYears,
+    hasTrims = false, hasGenerations = false,
+  } = filters.data;
   return {
-    data: {
-      catalog, total, makes,
-      // Existing model-only bookmarks permit switching models without picking a brand first.
-      models: selectedModel ? models : [],
-      powertrains, drivetrains, modelYears,
-    },
+    data: { catalog, total, makes, models, powertrains, drivetrains, modelYears },
     meta: filters.meta,
-    hasTrims: Boolean(trims?.length),
-    hasGenerations: Boolean(generations?.length),
+    hasTrims,
+    hasGenerations,
   };
 }
 
@@ -31,7 +36,7 @@ export type CatalogFacetOverview = ReturnType<typeof projectCatalogFacetOverview
 
 const overviewResponse = PublicVehicleFiltersSchema.extend({
   data: PublicVehicleFiltersSchema.shape.data.omit({
-    trims: true, generations: true, priceCurrencies: true,
+    trims: true, generations: true, priceCurrencies: true, hasTrims: true, hasGenerations: true,
   }),
 });
 

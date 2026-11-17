@@ -1,8 +1,10 @@
 """Exercise the actual domain config over private Unix TLS, never a public listener."""
-import http.client, http.server, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
+import gzip, http.client, http.server, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
 from concurrent.futures import ThreadPoolExecutor
 HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
+CATALOG_QUERY='locale=zh&view=localized'
+CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     def do_GET(self):
@@ -11,6 +13,8 @@ class Origin(http.server.BaseHTTPRequestHandler):
         status=known.get(self.path,404 if self.path.startswith('/_next/static/') else 200)
         body=json.dumps({'headers':dict(self.headers.items()),'path':self.path}).encode() if not self.path.startswith('/_next/static/') else b'code'
         content_type='application/json'
+        if self.path.endswith('?'+CATALOG_QUERY):
+            body=CATALOG_JSON
         if '/cars/missing/' in self.path:
             status=404;content_type='text/x-component' if self.headers.get('RSC') else 'text/html';body=b'original missing response'
         elif '/cars/unavailable/' in self.path:status=503;body=b'original unavailable'
@@ -97,6 +101,37 @@ class DomainCacheHeaders(unittest.TestCase):
         for path in ['/api/v1/vehicles','/zh/cars/']:
             status,headers,body=self.request('cars.hongdingauto.com',path,{'X-HD-SSR-Key':'synthetic-forgery','X-Forwarded-For':'203.0.113.55'});self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');origin=json.loads(body)['headers'];self.assertFalse(any(k.lower()=='x-hd-ssr-key' for k in origin));self.assertNotEqual(origin.get('X-Forwarded-For'),'203.0.113.55')
         self.assertEqual(self.request('cars.hongdingauto.com','/zh/guide/')[1]['cache-control'],'public, max-age=600')
+    def test_public_catalog_json_negotiates_gzip_without_changing_body_or_cache_policy(self):
+        paths=[('/api/v1/vehicles/', '/api/v1/vehicles'), ('/api/v1/vehicle-filters/', '/api/v1/vehicle-filters'),
+               ('/catalog-facets.json', '/catalog-facets.json')]
+        for path,upstream in paths:
+            with self.subTest(path=path):
+                query='?'+CATALOG_QUERY
+                for accept in ['gzip','gzip;q=0',None]:
+                    request_headers={'Via':'1.1 synthetic-proxy'}
+                    if accept is not None:request_headers['Accept-Encoding']=accept
+                    Origin.calls.clear()
+                    status,headers,body=self.request('cars.hongdingauto.com',path+query,request_headers)
+                    self.assertEqual(status,200)
+                    self.assertEqual(Origin.calls,[upstream+query])
+                    self.assertEqual(headers['cache-control'],'no-store')
+                    self.assertIn('accept-encoding',headers.get('vary','').lower().split(', '))
+                    if accept=='gzip':
+                        self.assertEqual(headers.get('content-encoding'),'gzip')
+                        self.assertLess(len(body),len(CATALOG_JSON))
+                        body=gzip.decompress(body)
+                    else:self.assertNotIn('content-encoding',headers)
+                    self.assertEqual(body,CATALOG_JSON)
+    def test_catalog_gzip_does_not_extend_to_admin_media_or_other_web_routes(self):
+        routes=[('admin.hongdingauto.com','/api/v1/vehicles'),
+                ('cars.hongdingauto.com','/api/v1/media/example'),
+                ('cars.hongdingauto.com','/zh/cars/')]
+        for host,path in routes:
+            with self.subTest(host=host,path=path):
+                status,headers,body=self.request(host,path+'?'+CATALOG_QUERY,{'Accept-Encoding':'gzip'})
+                self.assertEqual(status,200)
+                self.assertNotIn('content-encoding',headers)
+                self.assertEqual(body,CATALOG_JSON)
     def test_only_bounded_public_segments_are_added_to_the_public_allowlist(self):
         vehicle='11111111-1111-4111-8111-111111111111'
         for kind in ['gallery','configuration','inspection','price-history']:

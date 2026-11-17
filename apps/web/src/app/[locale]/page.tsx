@@ -42,7 +42,7 @@ export default async function Home({ params }: Props) {
   await connection();
   const [home, filters] = await Promise.allSettled([
     getPublicHome(locale),
-    getPublicFilters(locale),
+    getPublicFilters(locale, {}, { projection: 'overview-models' }),
   ]);
   // The brand and model sections only use the basic facets.
   const facets = filters.status === 'fulfilled' ? filters.value.data : null;

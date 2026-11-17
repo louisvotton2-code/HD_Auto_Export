@@ -17,7 +17,7 @@ import {
 import type { Locale } from '@/i18n/routing';
 import { parseVehicleSegment, type VehicleSegmentKind } from '../public-segments';
 import { catalogQueryKeys, parseFilterQuery } from '../public-query';
-import { projectCatalogFacetOverview, projectCatalogFacetScope } from '../catalog-facets';
+import { catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from '../catalog-facets';
 import {
   publicFiltersSchema,
   legacyHomeSchema,
@@ -94,8 +94,8 @@ export async function proxyPublicRequest(
     : path === 'vehicles'
       ? catalogQueryKeys
       : path === 'vehicle-filters'
-        ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize' && key !== 'projection')
-        : isDetail ? ['locale', 'view', 'priceView', 'projection'] : ['locale', 'view', 'priceView'];
+        ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize')
+        : isDetail ? ['locale', 'view', 'priceView', 'projection', 'technicalView'] : ['locale', 'view', 'priceView'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
@@ -131,21 +131,23 @@ export async function proxyPublicRequest(
         query.view as 'legacy' | 'localized' | undefined,
         query.priceView as 'usd' | undefined,
         query.projection as 'detail-inline-v1' | undefined,
+        query.technicalView as 'verified' | undefined,
       );
       return vehicle
         ? Response.json({ data: vehicle, meta: { requestId: crypto.randomUUID() } }, { headers })
         : failure(404);
     }
-    const upstream = `/api/v1/${path}${Object.keys(query).length ? `?${queryString(query)}` : ''}`;
     if (websiteFacets) {
       const { make, model } = query as { make?: string; model?: string };
       if ((model && !make) || (make && selectedModels.length)) return failure(400);
-      const filters = await readPublicJson(upstream, publicFiltersSchema, request.headers);
+      const scoped = { ...query, view: 'localized', ...catalogFacetProjection({ make, model, selectedModel: selectedModels[0] }) };
+      const filters = await readPublicJson(`/api/v1/vehicle-filters?${queryString(scoped)}`, publicFiltersSchema, request.headers);
       return Response.json(
-        make ? projectCatalogFacetScope(filters, make, model) : projectCatalogFacetOverview(filters, selectedModels[0]),
+        make ? projectCatalogFacetScope(filters, make, model) : projectCatalogFacetOverview(filters),
         { headers },
       );
     }
+    const upstream = `/api/v1/${path}${Object.keys(query).length ? `?${queryString(query)}` : ''}`;
     if (isMedia) {
       const response = await requestPublicApi(upstream, fetch, request.headers);
       const type = response.headers.get('content-type')?.split(';')[0].trim();

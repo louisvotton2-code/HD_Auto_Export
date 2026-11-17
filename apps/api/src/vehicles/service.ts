@@ -258,7 +258,7 @@ function localeVisible(locale:Locale,params:unknown[]):string {
   params.push(locale);
   return textPresent(`p.data->'content'->'title'->'translations'->$${params.length}::text->>'text'`);
 }
-function publicConditions(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null):string {
+function publicConditions(query:Omit<PublicFilterQuery,'projection'>,params:unknown[],quote:FxQuote|null=null):string {
   const where=[catalogVisible,localeVisible(query.locale,params)];
   for(const [key,jsonPath] of [['make',"p.data->'facts'->'make'->>'id'"],['model',"p.data->'facts'->'model'->>'id'"],['trim',"p.data->'facts'->'trim'->>'id'"],['powertrain',"p.data->'facts'->>'powertrain'"],['generation',"pl.data->'facts'->'generation'->>'id'"],['drivetrain',"pl.data->'facts'->>'drivetrain'"]] as const){
     if(query[key]){params.push(query[key]);where.push(`${jsonPath}=$${params.length}`);}
@@ -298,11 +298,14 @@ function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQu
     (${fact}->>'modelYear')::integer AS model_year,${currency} AS currency
     ${publicFrom} WHERE ${where}`;
 }
-function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],localized:boolean,includeTotal:boolean) {
-  const groups=new Map<string,CatalogFacetRow>();let total=0;
+function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:PublicFilterQuery,includeExternal:boolean) {
+  const groups=new Map<string,CatalogFacetRow>();
+  let total=0,hasTrims=false,hasGenerations=false;
   // Employee labels win. Each stream retains its newest publication / ascending UUID label.
   for(const row of [...staff,...external]) {
     if(row.kind==='total'){total+=row.count;continue;}
+    if(row.kind==='hasTrims'){hasTrims ||= row.count > 0;continue;}
+    if(row.kind==='hasGenerations'){hasGenerations ||= row.count > 0;continue;}
     const key=JSON.stringify([row.kind,row.make_id,row.model_id,row.id]);const old=groups.get(key);
     if(old)old.count+=row.count;else groups.set(key,{...row});
   }
@@ -311,8 +314,16 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],localized:
   const named=(kind:string)=>rows(kind).map(row=>({id:row.id!,name:row.name!,count:row.count,
     ...(row.make_id?{makeId:row.make_id}:{}),...(row.model_id?{modelId:row.model_id}:{})})).sort(order);
   const enums=(kind:string)=>rows(kind).map(row=>({id:row.id!,count:row.count})).sort(order);
-  return PublicVehicleFiltersSchema.shape.data.parse({catalog:'curated',...(includeTotal?{total}:{}),makes:named('make'),models:named('model'),powertrains:enums('powertrain'),
-    ...(localized?{trims:named('trim'),generations:named('generation'),drivetrains:enums('drivetrain'),priceCurrencies:enums('currency'),
+  const {projection,view}=query;
+  const overview=projection==='overview'||projection==='overview-models';
+  const localizedFull=view==='localized'&&!projection;
+  const variants=localizedFull||projection==='variants';
+  return PublicVehicleFiltersSchema.shape.data.parse({catalog:'curated',...((overview||(!projection&&includeExternal))?{total}:{}),
+    makes:named('make'),models:named('model'),powertrains:enums('powertrain'),
+    ...(overview?{hasTrims,hasGenerations}:{}),
+    ...(variants?{trims:named('trim'),generations:named('generation')}:{}),
+    ...(localizedFull?{priceCurrencies:enums('currency')}:{}),
+    ...(overview||localizedFull?{drivetrains:enums('drivetrain'),
       modelYears:rows('year').map(row=>({year:Number(row.id),count:row.count})).sort((a,b)=>b.year-a.year)}:{})});
 }
 type CatalogVersion={epoch:string;revision:string};
@@ -701,14 +712,14 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1') {
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified') {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       if(id.startsWith('ext-')) {
         const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote);
-        if(!item)throw notFound();return projection?inlineDetail(tx,item,locale):item;
+        if(!item)throw notFound();return projection?inlineDetail(tx,item,locale,technicalView):item;
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
       const result=await tx.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
@@ -780,10 +791,10 @@ export class InventoryService {
       await tx.query(catalogReadTransaction);
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
       const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote);
-      const staff=await aggregateCatalogFacets(tx,selection,params);
+      const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
       const includeExternal=this.externalCatalog&&query.view==='localized';
       const external=includeExternal?await externalFacets(tx,query,quote):[];
-      return facetData(staff,external,query.view==='localized',includeExternal);
+      return facetData(staff,external,query,includeExternal);
     });
   }
   async getHome():Promise<AdminHomeSections> {

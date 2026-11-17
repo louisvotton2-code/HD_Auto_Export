@@ -6,6 +6,7 @@ import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
 import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
 import {
+  catalogFacetProjection,
   getPublicCatalog,
   getPublicFilters,
   projectCatalogFacetOverview,
@@ -38,25 +39,29 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!request) notFound();
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
+  const { make, model } = query;
   // Native GET and script-free clients need the form and results in the initial HTML.
-  const [result, filters] = await Promise.allSettled([
+  const [result, filters, brandFilters, modelFilters] = await Promise.allSettled([
     getPublicCatalog(query),
-    getPublicFilters(locale, query),
+    getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model })),
+    make ? getPublicFilters(locale, query, catalogFacetProjection({ make })) : null,
+    make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model })) : null,
   ]);
-  const dictionary = filters.status === 'fulfilled' ? filters.value : null;
   return (
     <PublicVehicleList
       key={locale}
       locale={locale}
       query={query}
       result={result.status === 'fulfilled' ? result.value : null}
-      filters={dictionary ? projectCatalogFacetOverview(dictionary, query.make ? undefined : query.model) : null}
-      initialBrandFilters={dictionary && query.make ? projectCatalogFacetScope(dictionary, query.make) : null}
-      initialModelFilters={dictionary && query.make && query.model
-        ? projectCatalogFacetScope(dictionary, query.make, query.model)
+      filters={filters.status === 'fulfilled' ? projectCatalogFacetOverview(filters.value) : null}
+      initialBrandFilters={brandFilters.status === 'fulfilled' && brandFilters.value && make
+        ? projectCatalogFacetScope(brandFilters.value, make)
+        : null}
+      initialModelFilters={modelFilters.status === 'fulfilled' && modelFilters.value && make && model
+        ? projectCatalogFacetScope(modelFilters.value, make, model)
         : null}
       error={result.status === 'rejected'}
-      initialRetryAfter={publicRetryAfter(result, filters)}
+      initialRetryAfter={publicRetryAfter(result, filters, brandFilters, modelFilters)}
     />
   );
 }

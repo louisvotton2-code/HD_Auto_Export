@@ -127,7 +127,8 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
 
 /** Escape LIKE metacharacters; query text always means a literal substring. */
 export const literalPattern = (text: string) => `%${text.replace(/[\\%_]/g, value => `\\${value}`)}%`;
-function matches(query: PublicFilterQuery,quote:FxQuote|null=null) {
+type CatalogMatchQuery = Omit<PublicFilterQuery,'projection'>;
+function matches(query: CatalogMatchQuery,quote:FxQuote|null=null) {
   const values: unknown[] = [query.locale];
   const param = (value: unknown) => { values.push(value); return `$${values.length}`; };
   const where: string[] = [];
@@ -165,24 +166,47 @@ function matches(query: PublicFilterQuery,quote:FxQuote|null=null) {
 // 18 digits cover the API's complete year 0001..9999 timestamp domain.
 export const facetLabelOrder = (timestamp:string,id:string) => `lpad((253402300799999999-floor(extract(epoch from ${timestamp})*1000000))::text,18,'0')||${id}::text`;
 export type CatalogFacetRow = {kind:string;id:string|null;name:string|null;make_id:string|null;model_id:string|null;count:number};
+type FacetProjection = PublicFilterQuery['projection'];
+const fullFacetKinds = ['make','model','trim','generation','powertrain','drivetrain','year','currency'] as const;
+const overviewFacetKinds = ['make','powertrain','drivetrain','year'] as const;
+const projectedFacetKinds = {
+  overview: overviewFacetKinds,
+  'overview-models': [...overviewFacetKinds,'model'],
+  models: ['model'],
+  variants: ['trim','generation'],
+} as const;
+const isFacetOverview = (projection: FacetProjection) => projection==='overview'||projection==='overview-models';
+const staffFacetValues = {
+  make: "('make',m.make_id,m.make_name,NULL::text,NULL::text)",
+  model: "('model',m.model_id,m.model_name,m.make_id,NULL::text)",
+  trim: "('trim',m.trim_id,m.trim_name,m.make_id,m.model_id)",
+  generation: "('generation',m.generation_id,m.generation_name,m.make_id,m.model_id)",
+  powertrain: "('powertrain',m.powertrain,NULL::text,NULL::text,NULL::text)",
+  drivetrain: "('drivetrain',m.drivetrain,NULL::text,NULL::text,NULL::text)",
+  year: "('year',m.model_year::text,NULL::text,NULL::text,NULL::text)",
+  currency: "('currency',m.currency,NULL::text,NULL::text,NULL::text)",
+};
+const facetAvailability = `bool_or(make_id IS NOT NULL AND model_id IS NOT NULL AND trim_id IS NOT NULL) AS has_trims,
+      bool_or(make_id IS NOT NULL AND model_id IS NOT NULL AND generation_id IS NOT NULL) AS has_generations`;
+const facetOverviewRows = `UNION ALL SELECT 'hasTrims',NULL,NULL,NULL,coalesce(has_trims,false)::int,NULL FROM summary
+    UNION ALL SELECT 'hasGenerations',NULL,NULL,NULL,coalesce(has_generations,false)::int,NULL FROM summary`;
 /** Only grouped dictionaries leave PostgreSQL, regardless of matched catalogue size. */
-export async function aggregateCatalogFacets(tx: Queryable, selection: string, values: unknown[]): Promise<CatalogFacetRow[]> {
-  const result = await tx.query<CatalogFacetRow>(`WITH matched AS MATERIALIZED (${selection}), groups AS (
-    SELECT d.kind,d.id,d.make_id,d.model_id,substring(min((m.label_order||d.name) COLLATE "C") FROM 55) AS name,count(*)::int AS count
+export async function aggregateCatalogFacets(tx: Queryable, selection: string, values: unknown[], projection?: FacetProjection): Promise<CatalogFacetRow[]> {
+  const kinds = projection ? projectedFacetKinds[projection] : fullFacetKinds;
+  const overview = isFacetOverview(projection);
+  const includeTotal = overview || projection===undefined;
+  const result = await tx.query<CatalogFacetRow>(`WITH matched AS MATERIALIZED (${selection})
+    ${includeTotal?`, summary AS (SELECT count(*)::int AS total${overview?`,${facetAvailability}`:''} FROM matched)`:''}, groups AS (
+    SELECT d.kind,d.id,d.make_id,d.model_id,count(*)::int AS count,substring(min((m.label_order||d.name) COLLATE "C") FROM 55) AS name
     FROM matched m CROSS JOIN LATERAL (VALUES
-      ('make',m.make_id,m.make_name,NULL::text,NULL::text),
-      ('model',m.model_id,m.model_name,m.make_id,NULL::text),
-      ('trim',m.trim_id,m.trim_name,m.make_id,m.model_id),
-      ('generation',m.generation_id,m.generation_name,m.make_id,m.model_id),
-      ('powertrain',m.powertrain,NULL::text,NULL::text,NULL::text),
-      ('drivetrain',m.drivetrain,NULL::text,NULL::text,NULL::text),
-      ('year',m.model_year::text,NULL::text,NULL::text,NULL::text),
-      ('currency',m.currency,NULL::text,NULL::text,NULL::text)
+      ${kinds.map(kind => staffFacetValues[kind]).join(',\n      ')}
     ) d(kind,id,name,make_id,model_id)
     WHERE d.id IS NOT NULL AND (d.kind NOT IN ('model','trim','generation') OR d.make_id IS NOT NULL)
       AND (d.kind NOT IN ('trim','generation') OR d.model_id IS NOT NULL)
     GROUP BY d.kind,d.id,d.make_id,d.model_id
-  ) SELECT * FROM groups UNION ALL SELECT 'total',NULL,NULL,NULL,NULL,count(*)::int FROM matched`, values);
+  ) SELECT * FROM groups
+    ${includeTotal?"UNION ALL SELECT 'total',NULL,NULL,NULL,total,NULL FROM summary":''}
+    ${overview?facetOverviewRows:''}`, values);
   return result.rows;
 }
 const columns = `c.listing_id,c.published_at,c.facts,c.price_cny,c.issues,
@@ -232,13 +256,13 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
-const filterFrom = (query: PublicFilterQuery) => 'FROM external_catalog_filter f' +
+const filterFrom = (query: CatalogMatchQuery) => 'FROM external_catalog_filter f' +
   (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND (f.locale_mask & CASE $1::text WHEN 'zh' THEN 1 WHEN 'en' THEN 2 WHEN 'ru' THEN 4 ELSE 0 END)<>0`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 
-export async function countExternal(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null): Promise<number> {
+export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null): Promise<number> {
   const { where, values } = matches(query,quote);
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
   return result.rows[0]!.total;
@@ -275,45 +299,64 @@ export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery,
   return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote,query.projection==='card'),
     anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}))};
 }
+const externalFacetValues = {
+  make: "('make',a.make_id,NULL::text,NULL::text)",
+  model: "('model',a.model_id,a.make_id,NULL::text)",
+  trim: "('trim',a.trim_id,a.make_id,a.model_id)",
+  generation: "('generation',a.generation_id,a.make_id,a.model_id)",
+  powertrain: "('powertrain',nullif(a.powertrain,'unknown'),NULL::text,NULL::text)",
+  drivetrain: "('drivetrain',a.drivetrain,NULL::text,NULL::text)",
+  year: "('year',a.model_year::text,NULL::text,NULL::text)",
+};
+const fullFacetDimensions = ['make_id','model_id','trim_id','generation_id','powertrain','drivetrain','model_year','price_available'];
+const projectedFacetDimensions = {
+  overview: ['make_id','powertrain','drivetrain','model_year'],
+  'overview-models': ['make_id','model_id','powertrain','drivetrain','model_year'],
+  models: ['make_id','model_id'],
+  variants: ['make_id','model_id','trim_id','generation_id'],
+};
+
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null) {
   const { where, values } = matches(query,quote);
   const matchingValues=[...values];
+  const {projection}=query;
+  const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;
+  const dimensions=projection?projectedFacetDimensions[projection]:fullFacetDimensions;
+  const overview=isFacetOverview(projection);
+  const includeTotal=overview||projection===undefined;
   const currency=query.priceView==='usd'?'USD':'CNY';
   let priceAvailable='f.price_cny IS NOT NULL';
-  if(query.priceView==='usd') {
+  if(projection===undefined && query.priceView==='usd') {
     const range=usdSourceRange('CNY',quote);priceAvailable='false';
     if(range){values.push(range.minimum,range.maximum);priceAvailable=`coalesce(f.price_cny>=$${values.length-1}::numeric AND f.price_cny<=$${values.length}::numeric,false)`;}
   }
+  const inputColumns=overview?[...new Set([...dimensions,'model_id','trim_id','generation_id'])]:dimensions;
+  const matchedDimensions=inputColumns.map(column=>column==='price_available'?`${priceAvailable} AS price_available`:`f.${column}`);
+  const groupBy=dimensions.join(',');
+  const facets=kinds.map(kind=>kind==='currency'?
+    `('currency',CASE WHEN a.price_available THEN '${currency}'::text END,NULL::text,NULL::text)`:externalFacetValues[kind]);
   // First coalesce identical complete facet tuples. Counts and minimum winner
   // keys are distributive, so expanding these atoms preserves exact per-facet
-  // counts while avoiding repeated sorts of the entire matching vehicle set.
-  // Only atoms are materialized; no localized/wide JSON is read. Raw enum values
-  // and a boolean price flag retain low-cardinality keys for planner estimates.
+  // counts. Overview keeps only overview dimensions in the grouping; variant
+  // IDs contribute to availability without producing per-variant dictionaries.
   const result=await tx.query<CatalogFacetRow>(`WITH matched AS NOT MATERIALIZED (
-    SELECT f.make_id,f.model_id,f.trim_id,f.generation_id,f.powertrain,
-      f.drivetrain,f.model_year,${priceAvailable} AS price_available,f.label_order
+    SELECT ${matchedDimensions.join(',')},f.label_order
     ${filterFrom(query)} ${filterVisible}${where}
   ), atoms AS MATERIALIZED (
-    SELECT make_id,model_id,trim_id,generation_id,powertrain,drivetrain,model_year,price_available,
+    SELECT ${groupBy},${overview?`${facetAvailability},`:''}
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count
-    FROM matched GROUP BY make_id,model_id,trim_id,generation_id,powertrain,drivetrain,model_year,price_available
-  ), facets AS (
+    FROM matched GROUP BY ${groupBy}
+  )${includeTotal?`, summary AS (SELECT coalesce(sum(row_count),0)::int AS total${overview?',bool_or(has_trims) AS has_trims,bool_or(has_generations) AS has_generations':''} FROM atoms)`:''}, facets AS (
     SELECT d.kind,d.id,d.make_id,d.model_id,sum(a.row_count)::int AS count,
       min(a.label_order COLLATE "C") FILTER (WHERE d.kind IN ('make','model','trim','generation')) AS label_order
     FROM atoms a CROSS JOIN LATERAL (VALUES
-      ('make',a.make_id,NULL::text,NULL::text),
-      ('model',a.model_id,a.make_id,NULL::text),
-      ('trim',a.trim_id,a.make_id,a.model_id),
-      ('generation',a.generation_id,a.make_id,a.model_id),
-      ('powertrain',nullif(a.powertrain,'unknown'),NULL::text,NULL::text),
-      ('drivetrain',a.drivetrain,NULL::text,NULL::text),
-      ('year',a.model_year::text,NULL::text,NULL::text),
-      ('currency',CASE WHEN a.price_available THEN '${currency}'::text END,NULL::text,NULL::text)
+      ${facets.join(',\n      ')}
     ) d(kind,id,make_id,model_id)
     WHERE d.id IS NOT NULL AND (d.kind NOT IN ('model','trim','generation') OR d.make_id IS NOT NULL)
       AND (d.kind NOT IN ('trim','generation') OR d.model_id IS NOT NULL)
     GROUP BY d.kind,d.id,d.make_id,d.model_id
-    UNION ALL SELECT 'total',NULL,NULL,NULL,coalesce(sum(row_count),0)::int,NULL FROM atoms
+    ${includeTotal?"UNION ALL SELECT 'total',NULL,NULL,NULL,total,NULL FROM summary":''}
+    ${overview?facetOverviewRows:''}
   ) SELECT g.kind,g.id,
       CASE g.kind WHEN 'make' THEN winner.make_label WHEN 'model' THEN winner.model_label
         WHEN 'trim' THEN winner.trim_label WHEN 'generation' THEN winner.generation_label END AS name,

@@ -8,7 +8,11 @@ import type { Locale } from '@/i18n/routing';
 import { moneyCents } from '@/shared/lib/public-vehicle-price';
 
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
-export const publicInlineDetailView = { ...publicUsdView, projection: 'detail-inline-v1' } as const;
+const publicInlineDetailView = { ...publicUsdView, projection: 'detail-inline-v1' } as const;
+
+export function publicInlineVehicleView(id: string) {
+  return id.startsWith('ext-') ? { ...publicInlineDetailView, technicalView: 'verified' as const } : publicInlineDetailView;
+}
 
 export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;
 
@@ -136,10 +140,11 @@ export function parseFilterQuery(
   params: Record<string, string | string[] | undefined>,
   locale: Locale,
 ) {
-  const query = parseCatalogQuery(params, locale);
+  const { projection, ...criteria } = params;
+  const query = parseCatalogQuery(criteria, locale);
   if (!query) return null;
   const { page: _page, pageSize: _size, projection: _projection, ...filters } = query;
-  const parsed = PublicFilterQuerySchema.safeParse(filters);
+  const parsed = PublicFilterQuerySchema.safeParse({ ...filters, projection });
   return parsed.success ? parsed.data : null;
 }
 export function publicQueryString(query: Record<string, string | number | undefined>) {

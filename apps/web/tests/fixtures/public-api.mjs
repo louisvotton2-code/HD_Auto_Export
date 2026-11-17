@@ -1074,6 +1074,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       }
       if (url.pathname === '/api/v1/vehicle-filters') {
         const searched = all.filter((v) => queryMatches(v, filterQuery));
+        const { projection } = filterQuery;
+        const overview = projection === 'overview' || projection === 'overview-models';
+        const localizedFull = !projection && filterQuery.view === 'localized';
         const makes = new Map(), models = new Map(), powertrains = new Map();
         const includeSyntheticTrims = state.largeFacetDictionary && !filterQuery.make && !filterQuery.model
           && !filterQuery.q && filterQuery.priceMin === undefined && filterQuery.priceMax === undefined;
@@ -1093,11 +1096,17 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           PublicVehicleFiltersSchema.parse({
             data: {
               catalog: 'curated',
-              ...(state.importedPublished && filterQuery.view === 'localized' ? { total: searched.length } : {}),
-              makes: [...makes.values()].sort((a,b)=>a.id.localeCompare(b.id)),
-              models: [...models.values()].sort((a,b)=>a.makeId.localeCompare(b.makeId)||a.id.localeCompare(b.id)),
-              powertrains: [...powertrains].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})),
-              ...(url.searchParams.get('view') === 'localized'
+              ...(overview || (state.importedPublished && localizedFull) ? { total: searched.length } : {}),
+              makes: !projection || overview ? [...makes.values()].sort((a,b)=>a.id.localeCompare(b.id)) : [],
+              models: !projection || projection === 'overview-models' || projection === 'models'
+                ? [...models.values()].sort((a,b)=>a.makeId.localeCompare(b.makeId)||a.id.localeCompare(b.id)) : [],
+              powertrains: !projection || overview
+                ? [...powertrains].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})) : [],
+              ...(overview ? {
+                hasTrims: includeSyntheticTrims || searched.some((v) => v.facts.trim),
+                hasGenerations: searched.some((v) => v.facts.generation),
+              } : {}),
+              ...(localizedFull || projection === 'variants'
                 ? {
                     trims: [
                       ...new Map(
@@ -1134,6 +1143,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                           ]),
                       ).values(),
                     ],
+                  }
+                : {}),
+              ...(localizedFull || overview
+                ? {
                     drivetrains: [
                       ...new Set(searched.map((v) => v.facts.drivetrain).filter(Boolean)),
                     ].map((id) => ({
@@ -1146,6 +1159,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
                       year,
                       count: searched.filter((v) => v.facts.modelYear === year).length,
                     })),
+                  }
+                : {}),
+              ...(localizedFull
+                ? {
                     priceCurrencies: [
                       ...new Set(searched.map((v) => queryMoney(v, filterQuery)?.currency).filter(Boolean)),
                     ].map((id) => ({
