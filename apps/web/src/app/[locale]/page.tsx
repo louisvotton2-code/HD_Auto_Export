@@ -6,7 +6,7 @@ import { connection } from 'next/server';
 import { routing, type Locale } from '@/i18n/routing';
 import { localizedAlternates } from '@/shared/config/site';
 import { PublicHome } from '@/modules/home';
-import { getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
+import { getPublicCatalog, getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
 
 const metadataByLocale = {
   zh: {
@@ -44,8 +44,14 @@ export default async function Home({ params }: Props) {
     getPublicHome(locale),
     getPublicFilters(locale, {}, { projection: 'overview-models' }),
   ]);
-  // The brand and model sections only use the basic facets.
   const facets = filters.status === 'fulfilled' ? filters.value.data : null;
+  const initialRetryAfter = publicRetryAfter(home, filters);
+  let catalogTotal = facets?.total;
+  // Staff-only API responses omit the facet total. Read exact list metadata only then.
+  if (facets && catalogTotal === undefined && initialRetryAfter === 0) {
+    const catalog = await getPublicCatalog({ catalog: 'curated', locale, page: 1, pageSize: 1 }).catch(() => null);
+    if (catalog?.meta.totalKind === 'exact') catalogTotal = catalog.meta.total ?? undefined;
+  }
   return (
     <PublicHome
       key={locale}
@@ -53,11 +59,12 @@ export default async function Home({ params }: Props) {
       home={home.status === 'fulfilled' ? home.value : null}
       filters={facets ? {
         catalog: facets.catalog,
+        total: catalogTotal,
         makes: facets.makes,
         models: facets.models,
         powertrains: facets.powertrains,
       } : null}
-      initialRetryAfter={publicRetryAfter(home, filters)}
+      initialRetryAfter={initialRetryAfter}
     />
   );
 }

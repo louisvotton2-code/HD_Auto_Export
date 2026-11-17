@@ -1,5 +1,4 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
-import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 const fixtureOrigin = process.env.PUBLIC_FIXTURE_API_URL;
@@ -43,7 +42,6 @@ async function expectExistingCars(page: Page, home: boolean) {
   if (home) {
     const total = page.getByTestId('hero-stat-catalog').locator('strong');
     await expect(total).toBeVisible();
-    await expect(total).toHaveText(new Intl.NumberFormat('en').format(approximateCatalogVehicleCount));
   }
 }
 
@@ -68,7 +66,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
       page,
       request,
     }) => {
-      await setPublicFixtureState(request, { filtersRateLimited: true });
+      await setPublicFixtureState(request, { filtersRateLimited: true, importedPublished: entry.home });
       const limited = await request.get('/api/v1/vehicle-filters/?locale=en');
       expect(limited.status()).toBe(429);
       expect(limited.headers()['retry-after']).toBe('2');
@@ -76,6 +74,8 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
       const requests = collectBusiness(page); // Includes hydration: no blind spot after goto.
       await page.goto(entry.route);
       await expectExistingCars(page, entry.home);
+      const homeTotal = page.getByTestId('hero-stat-catalog').locator('strong');
+      if (entry.home) await expect(homeTotal).toHaveText('—');
       const status = page.getByTestId('public-resource-status');
       await expect(status).toContainText('Too many requests');
       await expect(status.getByRole('button')).toBeDisabled();
@@ -110,6 +110,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         ).toHaveCount(2);
         await expect(status).not.toBeVisible();
         await expectExistingCars(page, true);
+        await expect(homeTotal).toHaveText('31');
       }
     });
   }
@@ -205,6 +206,8 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         const page = await context.newPage();
         await page.goto(entry.route);
         await expectExistingCars(page, entry.home);
+        const homeTotal = page.getByTestId('hero-stat-catalog').locator('strong');
+        if (entry.home) await expect(homeTotal).toHaveText('—');
         await expect(page.getByTestId('public-resource-status')).toContainText('Too many requests');
         const reload = page
           .locator('noscript a[href]')
@@ -224,6 +227,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         expect((await document).status()).toBe(200);
         await expect(page.getByTestId('public-resource-status')).not.toBeVisible();
         await expectExistingCars(page, entry.home);
+        if (entry.home) await expect(homeTotal).toHaveText('26');
         if (!entry.home)
           await expect(page.locator('select[name="make"] option[value="beta"]')).toHaveCount(1);
       } finally {

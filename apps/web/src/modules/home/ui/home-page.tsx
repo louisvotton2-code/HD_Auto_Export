@@ -269,7 +269,7 @@ export function HomePage({
               {siteConfig.contacts.phone.display}
             </a>
           </div>
-          <HeroStats locale={locale} />
+          <HeroStats locale={locale} catalogTotal={catalogFilters?.total ?? null} />
         </div>
         <a className={styles.scroll} href="#home-shortcuts">
           <span>{t.scroll}</span>

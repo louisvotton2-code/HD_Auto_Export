@@ -179,7 +179,7 @@ describe('item equipment icon semantics', () => {
 
   it.each([makePublicVehicleFixture, makePublicExternalVehicleFixture])('renders either source through the same bounded inline grid', (makeBase) => {
     const vehicle = inlineVehicle(makeBase(), [
-      { id: 'first', semanticKey: 'motorKw', name: text('电机功率（kW）'), value: text('0 kW') },
+      { id: 'first', semanticKey: 'motorTorqueNm', name: text('电机扭矩（N·m）'), value: text('0 N·m') },
       { id: 'second', semanticKey: null, name: text('<script>未知配置</script>'), value: text('false') },
     ]);
     vehicle.configuration = { version: 1, items: [{ id: 'cfg-0061', name: text('旧路径配置'), value: text('不要重复显示') }] };
@@ -188,7 +188,7 @@ describe('item equipment icon semantics', () => {
     expect([...markup.matchAll(/data-configuration-item="([^"]+)"/g)].map((match) => match[1])).toEqual(['first', 'second']);
     expect(markup).toContain('data-equipment-icon="motor"');
     expect(markup).toContain('data-equipment-icon="neutral"');
-    expect(markup).toContain('0 kW');
+    expect(markup).toContain('0 N·m');
     expect(markup).toContain('false');
     expect(markup).toContain('&lt;script&gt;未知配置&lt;/script&gt;');
     expect(markup).not.toContain('<script>');

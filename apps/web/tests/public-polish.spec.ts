@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.beforeEach(async ({ request }) => {
@@ -86,7 +85,7 @@ for (const path of ['/en/', '/en/cars/', '/en/cars/fixture_car_2/']) {
     if (path === '/en/') {
       const total = page.getByTestId('hero-stat-catalog').locator('strong');
       await expect(total).toBeVisible();
-      await expect(total).toHaveText(new Intl.NumberFormat('en').format(approximateCatalogVehicleCount));
+      await expect(total).toHaveText('—');
     }
     await setPublicFixtureState(request, { publicRateLimited: false });
     await page.evaluate(() => {

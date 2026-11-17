@@ -3,7 +3,6 @@ import { expectInlineInspection } from './helpers/inline-inspection';
 import { expect, test } from '@playwright/test';
 import { externalFixtureId, makeImportedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
-import { approximateCatalogVehicleCount } from '../src/modules/home/content/company-metrics';
 
 test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Uses shared synthetic external records only.');
 test.beforeEach(async ({ request }) => {
@@ -36,7 +35,7 @@ test('localized catalog pages preserve API priority, original currency and safe 
   await page.goto('/en/');
   const total = page.getByTestId('hero-stat-catalog').locator('strong');
   await expect(total).toBeVisible();
-  await expect(total).toHaveText(new Intl.NumberFormat('en').format(approximateCatalogVehicleCount));
+  await expect(total).toHaveText('31');
 });
 
 test('a direct photo error is reported once and detail shows only a report summary', async ({ page, request }) => {

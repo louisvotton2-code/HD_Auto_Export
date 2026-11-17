@@ -106,13 +106,17 @@ export function PublicationPreviewDetail({ preview, onActiveImageStatus }: {
               <details className={detailStyles.information} open>
                 <summary>{detail.basicInformation}<span aria-hidden="true"><Icon name="chevron" size={18} /></span></summary>
                 <dl className={`${detailStyles.specifications} ${styles.facts}`}>
-                  {facts.map(({ id, label, value, field, lang }) => (
+                  {facts.map(({ id, label, value, field, lang, ...row }) => (
                     <div key={id} data-vehicle-fact={id}>
                       <dt>{label}</dt>
                       <dd>
                         <span lang={lang} dir="auto">{value}</span>
                         {field && <PreviewTextState field={field} locale={locale} />}
-                        {id === 'vehicleClass' && vehicle.vehicleClass &&
+                        {'configuration' in row && row.configuration && <>
+                          <ConfigurationDisplayMetadata field={row.configuration.name} kind="name" locale={locale} />
+                          <ConfigurationDisplayMetadata field={row.configuration.field} kind="value" locale={locale} />
+                        </>}
+                        {id === 'vehicleClass' && vehicle.vehicleClass && !('configuration' in row && row.configuration) &&
                           <ConfigurationDisplayMetadata field={vehicle.vehicleClass} kind="value" locale={locale} />}
                       </dd>
                     </div>

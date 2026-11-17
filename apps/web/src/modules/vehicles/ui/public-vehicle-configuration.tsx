@@ -28,7 +28,9 @@ export function PublicVehicleConfiguration({
       name.status === 'ready' && name.text.trim() !== '' &&
       value.status === 'ready' && value.text.trim() !== '',
     );
-    return <VehicleConfiguration configuration={{ ...vehicle.configuration, items }} locale={locale} />;
+    return <VehicleConfiguration configuration={{
+      ...vehicle.configuration, items: configurationWithoutShownFacts(items, facts),
+    }} locale={locale} />;
   }
   return <VehicleEquipment
     specifications={vehicle.external?.detail?.specifications ?? []}
