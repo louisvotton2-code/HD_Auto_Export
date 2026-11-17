@@ -86,7 +86,7 @@ export function Workspace() {
     : pathname.startsWith('/recycle-bin') ? '/recycle-bin' : '/vehicles';
   const pageName = current === '/external-sources' ? '三方 API 状态' : current === '/home-sections' ? '首页展示配置' : current === '/public-catalog' ? '三方车源管理' : current === '/recycle-bin' ? '车辆回收站' : '车辆工作台';
   const menuItems = [
-    { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">车辆管理</Link> },
+    { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">精品车辆管理</Link> },
     { key: '/recycle-bin', icon: <DeleteOutlined />, label: <Link to="/recycle-bin">车辆回收站</Link> },
     ...(staff.permissions.includes('home:write') ? [{ key: '/home-sections', icon: <HomeOutlined />, label: <Link to="/home-sections">首页展示配置</Link> }] : []),
     ...(staff.permissions.includes('vehicles:read') ? [

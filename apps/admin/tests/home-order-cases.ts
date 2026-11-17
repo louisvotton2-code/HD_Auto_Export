@@ -1,7 +1,7 @@
 /** UI contract tests: synthetic vehicles and intercepted API responses, never operational data. */
 import { expect, test, type Page } from '@playwright/test';
 import type { AdminHomeSections, AdminVehicle } from '@hd/contracts/admin';
-import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
+import { makeExternalAdminFixture, makeImportedPublicVehicleFixture, makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 
 const ids = [1, 2, 3, 4].map(value => `20000000-0000-4000-8000-${String(value).padStart(12, '0')}`);
@@ -49,12 +49,12 @@ test('home ordering keyboard move stays local, guards navigation and saves the o
   const api = await setup(page);
   await handle(page, 1).focus(); await page.keyboard.press('Space'); await page.keyboard.press('End');
   await expect(page.getByLabel('区块 1中文标题')).toBeDisabled();
-  await expect(page.getByRole('button', { name: /选择车辆$/ }).first()).toBeDisabled();
+  await expect(page.getByRole('button', { name: /添加精品车辆$/ }).first()).toBeDisabled();
   await page.keyboard.press('Enter');
   await expect.poll(() => order(page)).toEqual([ids[1], ids[2], ids[0]]);
   await expect(handle(page, 1)).toBeFocused();
   expect(api.puts).toHaveLength(0);
-  await page.getByRole('link', { name: '车辆管理', exact: true }).click();
+  await page.getByRole('link', { name: '精品车辆管理', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('离开首页配置');
   await page.getByRole('button', { name: /继续编辑$/ }).click();
   await saveButton(page).click();
@@ -113,8 +113,8 @@ test('home ordering exact position and top/bottom actions are usable at 320px', 
 
 test('home ordering newly selected vehicle can join at the top without duplicate selection', async ({ page }) => {
   const api = await setup(page);
-  await page.getByRole('button', { name: /选择车辆$/ }).first().click();
-  const modal = page.getByRole('dialog', { name: '选择首页推荐车辆' });
+  await page.getByRole('button', { name: /添加精品车辆$/ }).first().click();
+  const modal = page.getByRole('dialog', { name: '添加精品车辆' });
   const candidate = modal.getByRole('row').filter({ hasText: 'ORDER-4' });
   await candidate.getByRole('button', { name: /加入顶部$/ }).click();
   await expect(candidate.getByRole('button', { name: /已加入区块$/ })).toBeDisabled();
@@ -130,8 +130,8 @@ test('home featured inventory can add and retain published reserved and sold veh
   const api = await setup(page);
   api.items[1]!.availability = 'reserved';
   api.items[2]!.availability = 'sold';
-  await page.getByRole('button', { name: /选择车辆$/ }).nth(1).click();
-  const candidates = page.getByRole('dialog', { name: '选择首页推荐车辆' });
+  await page.getByRole('button', { name: /添加精品车辆$/ }).nth(1).click();
+  const candidates = page.getByRole('dialog', { name: '添加精品车辆' });
   const reserved = candidates.getByRole('row').filter({ hasText: 'ORDER-2' });
   const sold = candidates.getByRole('row').filter({ hasText: 'ORDER-3' });
   await expect(reserved.getByText('已预订', { exact: true })).toBeVisible();
@@ -178,6 +178,112 @@ test('home featured inventory blocks saving a selected vehicle that was archived
   await expect(page.getByText('部分已选车辆已下架、删除或不符合公开展示条件，请先移除标记项。')).toBeVisible();
   await expect(region(page).locator(`[data-home-order-row="${ids[0]}"]`)).toContainText('请移除');
   expect(api.puts).toHaveLength(0);
+});
+
+test('home source picker searches supplier ID and name, then saves and reloads mixed vehicle order', async ({ page }) => {
+  const api = await setup(page);
+  const { listing } = makeExternalAdminFixture();
+  const publicVehicle = makeImportedPublicVehicleFixture('zh');
+  const title = publicVehicle.content.title.text;
+  const searchQueries: string[] = [];
+  let detailReads = 0;
+  let rejectedSaves = 0;
+  let hidden = false;
+  let publiclyVisible = true;
+  await page.route('**/api/v1/admin/external/listings?*', route => {
+    const query = new URL(route.request().url()).searchParams;
+    expect(query.get('state')).toBe('published');
+    expect(query.get('page')).toBe('1');
+    expect(query.get('pageSize')).toBe('12');
+    const keyword = query.get('q') ?? '';
+    searchQueries.push(keyword);
+    const items = !hidden && (!keyword || keyword === title || keyword === listing.id) ? [{
+      ...listing.identity, id: listing.id, version: listing.version, title,
+      listingUrl: listing.source!.listingUrl, state: 'published', fetchedAt: listing.fetchedAt,
+      sourceUpdatedAt: listing.sourceUpdatedAt, publishedAt: listing.fetchedAt, hasOverrides: false,
+    }] : [];
+    return reply(route, envelope({ items, page: 1, pageSize: 12, total: items.length }));
+  });
+  await page.route(`**/api/v1/admin/external/listings/${listing.id}?*`, route => {
+    detailReads++;
+    return reply(route, envelope({ ...listing, state: hidden ? 'hidden' : 'published', vehicle: !hidden && publiclyVisible ? listing.vehicle : null }));
+  });
+  await page.route('**/api/v1/home/vehicles?*', route => {
+    expect(new URL(route.request().url()).searchParams.get('view')).toBe('localized');
+    return reply(route, envelope({ sections: [{ id: 'featured', title: '公开核对的三方区块', vehicles: [publicVehicle] }] }));
+  });
+
+  await expect(page.getByRole('navigation', { name: '后台导航' }).getByRole('link').first()).toHaveText('精品车辆管理');
+  await page.getByRole('button', { name: /添加精品车辆$/ }).first().click();
+  const staffPicker = page.getByRole('dialog', { name: '添加精品车辆' });
+  await expect(staffPicker.getByText('ORDER-1', { exact: true })).toBeVisible();
+  expect(searchQueries).toEqual([]);
+  await staffPicker.getByRole('button', { name: /完成选择$/ }).click();
+
+  await page.getByRole('button', { name: /添加三方车辆$/ }).first().click();
+  const supplierPicker = page.getByRole('dialog', { name: '添加三方车辆' });
+  const search = supplierPicker.getByRole('searchbox', { name: '搜索三方车辆' });
+  await expect(supplierPicker.getByText(title, { exact: true })).toBeVisible();
+  await expect(supplierPicker.getByText('ORDER-1', { exact: true })).toHaveCount(0);
+  publiclyVisible = false;
+  const row = supplierPicker.getByRole('row').filter({ hasText: title });
+  await row.getByRole('button', { name: /加入顶部$/ }).click();
+  await expect(row.getByText('暂不能公开展示', { exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: /加入此区块$/ })).toBeDisabled();
+  expect(await order(page)).toEqual(ids.slice(0, 3));
+  publiclyVisible = true;
+  for (const query of [listing.id, title]) {
+    const results = page.waitForResponse(response => new URL(response.url()).searchParams.get('q') === query);
+    await search.fill(query);
+    await search.press('Enter');
+    await results;
+    await expect(supplierPicker.getByText(title, { exact: true })).toBeVisible();
+  }
+  expect(searchQueries).toEqual(['', listing.id, title]);
+  await supplierPicker.getByRole('row').filter({ hasText: title }).getByRole('button', { name: /加入顶部$/ }).click();
+  await expect(supplierPicker.getByRole('button', { name: /已加入区块$/ })).toBeDisabled();
+  await supplierPicker.getByRole('button', { name: /完成选择$/ }).click();
+  const mixedOrder = [listing.id, ...ids.slice(0, 3)];
+  await expect.poll(() => order(page)).toEqual(mixedOrder);
+  expect(api.puts).toHaveLength(0);
+  await saveButton(page).click();
+  await expect(page.getByText('当前配置版本 4', { exact: true })).toBeVisible();
+  expect(api.puts[0]?.sections[0]?.vehicleIds).toEqual(mixedOrder);
+  expect(detailReads).toBe(3);
+
+  await page.reload();
+  await expect(region(page).getByText(title, { exact: true })).toBeVisible();
+  await expect.poll(() => order(page)).toEqual(mixedOrder);
+  await page.getByRole('button', { name: /读取公开首页$/ }).click();
+  await expect(page.getByText('公开核对的三方区块', { exact: true })).toBeVisible();
+  const savePath = '**/api/v1/admin/home/vehicle-sections';
+  const rejectStaleSelection = async (route: import('@playwright/test').Route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    expect((route.request().postDataJSON() as AdminHomeSections).sections[0]?.vehicleIds).toEqual(mixedOrder);
+    rejectedSaves++;
+    const failure = error('PUBLISH_VALIDATION_FAILED');
+    return reply(route, { ...failure, error: { ...failure.error, fields: [
+      { path: 'sections.0.vehicleIds.0', code: 'HOME_VEHICLE_NOT_ELIGIBLE', message: 'Vehicle is no longer eligible.' },
+      { path: 'sections.1.vehicleIds.99', code: 'HOME_VEHICLE_NOT_ELIGIBLE', message: 'Out-of-bounds test field.' },
+    ] } }, 422);
+  };
+  await page.route(savePath, rejectStaleSelection);
+  await page.getByLabel('区块 1中文标题').fill('待保存的合成标题');
+  await saveButton(page).click();
+  await expect(page.getByText(`区块 1 第 1 辆（${listing.id}）`, { exact: true })).toBeVisible();
+  const selectedListing = region(page).locator(`[data-home-order-row="${listing.id}"]`);
+  await expect(selectedListing).toContainText('不符合推荐条件');
+  await expect(region(page).locator(`[data-home-order-row="${ids[0]}"]`)).not.toContainText('不符合推荐条件');
+  await expect(page.getByLabel('区块 1中文标题')).toHaveValue('待保存的合成标题');
+  await expect.poll(() => order(page)).toEqual(mixedOrder);
+  expect(rejectedSaves).toBe(1);
+  await page.unroute(savePath, rejectStaleSelection);
+
+  hidden = true;
+  await saveButton(page).click();
+  await expect(page.getByText('部分已选车辆已下架、删除或不符合公开展示条件，请先移除标记项。')).toBeVisible();
+  await expect(selectedListing).toContainText('不符合推荐条件');
+  expect(api.puts).toHaveLength(1);
 });
 
 test('home ordering keeps the chosen order after a failed save and version conflict', async ({ page }) => {

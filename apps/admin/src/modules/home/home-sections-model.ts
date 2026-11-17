@@ -1,12 +1,23 @@
 import type { AdminVehicle } from '@hd/contracts/admin';
 
-export function isHomeEligible(vehicle: AdminVehicle): boolean {
+export type HomeSupplierVehicle = {
+  id: string;
+  stockCode: string;
+  title: string;
+  platform: string;
+  eligible: boolean;
+};
+
+export type HomeVehicle = AdminVehicle | HomeSupplierVehicle;
+
+export function isHomeEligible(vehicle: HomeVehicle): boolean {
+  if (!('draft' in vehicle)) return vehicle.eligible;
   if (vehicle.deletedAt || vehicle.publicationState !== 'published') return false;
   if (vehicle.draft.source.kind === 'manual') return vehicle.availability !== 'unknown';
   return vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null;
 }
 
-export function addHomeVehicleId(ids: readonly string[], vehicle: AdminVehicle, placement: 'start' | 'end' = 'end'): string[] {
+export function addHomeVehicleId(ids: readonly string[], vehicle: HomeVehicle, placement: 'start' | 'end' = 'end'): string[] {
   if (!isHomeEligible(vehicle) || ids.includes(vehicle.id) || ids.length >= 30) return [...ids];
   return placement === 'start' ? [vehicle.id, ...ids] : [...ids, vehicle.id];
 }

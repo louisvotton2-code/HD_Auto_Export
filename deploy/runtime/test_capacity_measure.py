@@ -1,15 +1,19 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import sys
 import tempfile
 from unittest.mock import patch
+sys.path.insert(0,str(Path(__file__).parent/'production'))
 spec=importlib.util.spec_from_file_location('measure',Path(__file__).parent/'production/capacity-measure.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Peak(unittest.TestCase):
     def data(self):
         return dict(distinctProcessed=10000,targetRows=500000,sampleEvidenceSufficient=True,businessBytes=10000000,projectedBytesPerDetail=1000,sqlStagingBytes=20000000,archiveDirectoryBytes=1000000,walBytes=100000)
-    def calculate(self,e, *, wal_on_disk=100000, wal_configured=1024**3):
-        return m.project(e,dict(processedRows=10000,businessDumpBytes=1000000,rawDumpBytes=200000),used=50000000,total=400*1024**3,media=100000,controls=1000,daily=0,raw=2000000,wal_on_disk=wal_on_disk,wal_configured=wal_configured)
+    def calculate(self,e, *, wal_on_disk=100000, wal_configured=1024**3, samples=((30_000_000, 6_000_000),)):
+        return m.project(e,used=50_000_000,total=400*1024**3,available_reserve=0,media=100000,
+                         controls=1000,daily=0,database=30_000_000,wal_on_disk=wal_on_disk,
+                         wal_configured=wal_configured,samples=samples)
     def test_cumulative_wal_does_not_replace_disk_usage(self):
         e=self.data() | {'walBytes': 150*1024**3}
         result=self.calculate(e)
@@ -23,16 +27,20 @@ class Peak(unittest.TestCase):
                 self.assertEqual(result['components']['walBytes'],4*1024**3)
     def test_fixed_stage_not_scaled_by_details(self):
         e=self.data();r=self.calculate(e);self.assertEqual(r['components']['sqlSnapshotsBytes'],60000000)
-        self.assertEqual(r['components']['recoveryPointBytes'],123101000)
-    def test_history_and_compressed_backup_separate(self):
-        r=self.calculate(self.data());self.assertEqual(r['components']['historyBytes'],100000000)
-        self.assertEqual(r['components']['recoveryPeakBytes'],492404000)
+        self.assertEqual(r['components']['recoveryDumpBytes'],140_000_000)
+    def test_raw_history_is_counted_inside_database_once(self):
+        c=self.calculate(self.data())['components']
+        self.assertNotIn('historyBytes',c)
+        self.assertEqual(c['recoveryPeakBytes'],4*c['recoveryPointBytes'])
+        self.assertEqual(self.calculate(self.data(),samples=())['components']['recoveryDumpBytes'],560_000_000)
+    def test_small_backup_does_not_set_compression_for_a_much_larger_live_database(self):
+        c=self.calculate(self.data(),samples=((10_000_000,1_000_000),))['components']
+        self.assertEqual(c['recoveryDumpBytes'],560_000_000)
     def test_shrinking_catalog_never_shrinks_retained_data(self):
         e=self.data();e['targetRows']=5000
         r=self.calculate(e)
         self.assertGreaterEqual(r['components']['businessBytes'],e['businessBytes'])
-        self.assertEqual(r['components']['historyBytes'],2000000)
-        self.assertEqual(r['components']['recoveryPointBytes'],64301000)
+        self.assertEqual(r['components']['recoveryDumpBytes'],17_500_000)
         self.assertGreaterEqual(r['projectedPeakBytes'],r['currentUsedBytes'])
     def test_incomplete_fails_closed(self):
         e=self.data();e['sampleEvidenceSufficient']=False
@@ -59,47 +67,29 @@ class BoundedAdmission(unittest.TestCase):
             self.assertIsNone(m.measure())
             run.assert_not_called()
 
-    def test_bounded_batch_uses_live_database_cost_before_25000(self):
-        e = Peak().data() | {'distinctProcessed': 10_000, 'targetRows': 100_000,
-                             'evidenceHash': 'a'*64}
-        c = {'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
-        with patch.object(m, 'config', return_value=c), \
-             patch.object(m, 'evidence', return_value=e), \
-             patch.object(m, 'sql', return_value={'database': 500_000_000, 'raw': 200_000_000, 'walOnDisk': 100000, 'walConfigured': 1024**3}), \
-             patch.object(m, 'daily_bytes', return_value=0), \
-             patch.object(m.os, 'statvfs') as disk, \
-             patch.object(m.subprocess, 'run') as run:
-            disk.return_value.f_blocks = 400 * 1024**2
-            disk.return_value.f_bfree = 350 * 1024**2
-            disk.return_value.f_frsize = 1024
-            result = m.measure()
+    def test_bounded_target_reads_normal_backups_without_starting_probe(self):
+        e = Peak().data() | {'targetRows': 100_000, 'evidenceHash': 'a'*64}
+        c = {'database': 'hd_release_'+'a'*16, 'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
+        with patch.object(m,'config',return_value=c), patch.object(m,'evidence',return_value=e), \
+             patch.object(m,'sql',return_value={'database':30_000_000,'walOnDisk':100000,'walConfigured':1024**3}), \
+             patch.object(m,'daily_bytes',return_value=0), patch.object(m,'recovery_samples',return_value=[(30_000_000,6_000_000)]), \
+             patch.object(m.os,'statvfs') as disk, patch.object(m.subprocess,'run') as run:
+            disk.return_value.f_blocks=400*1024**2
+            disk.return_value.f_bfree=350*1024**2
+            disk.return_value.f_bavail=346*1024**2
+            disk.return_value.f_frsize=1024
+            result=m.measure()
             run.assert_not_called()
-        self.assertEqual(result['targetRows'], 100_000)
-        self.assertEqual(result['components']['sqlSnapshotsBytes'], 60_000_000)
-        self.assertEqual(result['components']['recoveryPointBytes'], 6_863_000_000)
+        self.assertEqual(result['targetRows'],100_000)
+        self.assertEqual(result['components']['filesystemReservedBytes'],4*1024**3)
+        self.assertEqual(result['components']['recoveryDumpBytes'],40_000_000)
 
     def test_bounded_target_waits_when_sample_is_insufficient(self):
-        c = {'admissionTargetRows': 100_000}
-        e = Peak().data() | {'targetRows': 100_000, 'sampleEvidenceSufficient': False}
-        with patch.object(m, 'config', return_value=c), \
-             patch.object(m, 'evidence', return_value=e), \
-             patch.object(m, 'physical_backup_basis') as physical, \
-             patch.object(m.subprocess, 'run') as run:
+        e=Peak().data() | {'sampleEvidenceSufficient': False}
+        with patch.object(m,'config',return_value={'admissionTargetRows':500_000}), \
+             patch.object(m,'evidence',return_value=e), patch.object(m,'recovery_samples') as backup:
             self.assertIsNone(m.measure())
-            physical.assert_not_called()
-            run.assert_not_called()
-
-    def test_unbounded_target_still_waits_for_matching_compressed_probe(self):
-        e = Peak().data() | {'evidenceHash': 'a'*64, 'snapshotId': 'snapshot'}
-        with patch.object(m, 'config', return_value={}), \
-             patch.object(m, 'evidence', return_value=e), \
-             patch.object(m, 'private_json', return_value={'model': m.MODEL, 'evidenceHash': 'b'*64}), \
-             patch.object(m, 'physical_backup_basis') as physical, \
-             patch.object(m.subprocess, 'run') as run:
-            self.assertIsNone(m.measure())
-            physical.assert_not_called()
-            run.assert_called_once_with(['systemctl', 'start', '--no-block', 'hd-auto-ext07-capacity-probe.service'],
-                                       check=True, timeout=5)
+            backup.assert_not_called()
 
 
 class DumpBoundary(unittest.TestCase):

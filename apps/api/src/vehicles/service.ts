@@ -5,7 +5,7 @@ import { activityChanges, draftChanges, localizationActivity, sameValue } from '
 import type { AdminActivitySummary } from '@hd/contracts/admin';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResult } from 'pg';
-import { AdminVehicleSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
+import { AdminVehicleSchema, HomeVehicleIdSchema, VehicleTranslationSuggestionsSchema, BulkVehicleMutationResponseSchema, type AdminVehicle, type AdminVehicleQuery, type VehicleDraftInput, type AdminHomeSections, type AvailabilityRequest,
   type BulkVehicleMutationRequest, type BulkVehicleMutationResult, type AdminVehicleFiltersQuery, type ConfirmPublicationPreviewRequest,
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
@@ -21,7 +21,7 @@ import type { TranslationPlanInput, TranslationPlanInputField } from './translat
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
+import { aggregateCatalogFacets, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -57,6 +57,16 @@ const publicSelect = `SELECT v.*,p.data AS publication_data,${localizationDataSq
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
 const catalogVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved')) OR ${unverifiedVisible})`;
 const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved','sold')) OR ${unverifiedVisible})`;
+
+function homeVehicleIds(sections: AdminHomeSections['sections']) {
+  const staff = new Set<string>(), supplier = new Set<string>();
+  for (const section of sections) for (const id of section.vehicleIds) {
+    if (!HomeVehicleIdSchema.safeParse(id).success) continue;
+    if (id.startsWith('ext-')) supplier.add(listingUuid(id));
+    else staff.add(id.toLowerCase());
+  }
+  return { staff: [...staff].sort(), supplier: [...supplier].sort() };
+}
 export function toAdmin(row: Row): AdminVehicle {
   return AdminVehicleSchema.parse({ activity:row.activity,id:row.id, stockCode:`HD-${String(row.stock_number).padStart(6,'0')}`, version:row.version,
     publicationState:row.publication_state, availability:row.availability, availabilityCheckedAt:iso(row.availability_checked_at),
@@ -805,9 +815,17 @@ export class InventoryService {
       const current=(await tx.query('SELECT version FROM home_config WHERE id=1 FOR UPDATE')).rows[0];
       if(current.version!==input.version) throw conflict();
       const sections=input.sections.map(section=>({...section,vehicleIds:section.vehicleIds.map(id=>id.toLowerCase())}));
-      const ids=[...new Set(sections.flatMap(s=>s.vehicleIds))].sort();
-      const valid=await tx.query(`SELECT v.id FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} ORDER BY v.id FOR UPDATE OF v`,[ids]);
-      if(valid.rowCount!==ids.length) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Home sections require published vehicles eligible for display.');
+      const {staff,supplier}=homeVehicleIds(sections);
+      // Lock vehicle rows before reading their published snapshots, which may have changed while waiting.
+      await tx.query('SELECT id FROM vehicles WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[staff]);
+      const visibleStaff=await tx.query<{id:string}>(`SELECT v.id FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id
+        WHERE v.id=ANY($1::uuid[]) AND ${homeVisible}`,[staff]);
+      const visibleSupplier=this.externalCatalog?await eligibleExternalHomeIds(tx,supplier):[];
+      const visibleIds=new Set([...visibleStaff.rows.map(({id})=>id),...visibleSupplier]);
+      const fields=sections.flatMap((section,sectionIndex)=>section.vehicleIds.flatMap((id,vehicleIndex)=>visibleIds.has(id)?[]:[{
+        path:`sections.${sectionIndex}.vehicleIds.${vehicleIndex}`,code:'HOME_VEHICLE_NOT_ELIGIBLE',message:'This vehicle is unavailable for homepage display.',
+      }]));
+      if(fields.length) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','Home sections require published vehicles eligible for display.',fields);
       await tx.query('UPDATE home_config SET sections=$1,version=version+1 WHERE id=1',[JSON.stringify(sections)]);
       await audit(tx,actor,'home.save',null,input.version,input.version+1);
       return {version:input.version+1,sections};
@@ -815,13 +833,17 @@ export class InventoryService {
   }
   async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd') {
     return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       const config=(await tx.query('SELECT sections FROM home_config WHERE id=1')).rows[0] as Pick<AdminHomeSections,'sections'>;
-      const ids=[...new Set(config.sections.flatMap(s=>s.vehicleIds).map(id=>id.toLowerCase()))];
-      const params:unknown[]=[ids];const visible=localeVisible(locale,params);
+      const {staff,supplier}=homeVehicleIds(config.sections);
+      const params:unknown[]=[staff];const visible=localeVisible(locale,params);
       const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
       const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view,priceView,quote)]));
+      if(view==='localized'&&this.externalCatalog) {
+        const external=await readExternalHomeVehicles(tx,supplier,locale,Date.now(),priceView,quote);
+        for(const vehicle of external)map.set(vehicle.id,vehicle);
+      }
       return {sections:config.sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
     });
   }

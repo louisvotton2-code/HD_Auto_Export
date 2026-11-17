@@ -1,9 +1,13 @@
 import importlib.util
 import os
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
 
+sys.path.insert(0,str(Path(__file__).parent/'production'))
 spec = importlib.util.spec_from_file_location('routine', Path(__file__).parent/'production/routine-backup.py')
 routine = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(routine)
@@ -11,13 +15,48 @@ spec.loader.exec_module(routine)
 
 class RoutineBackupTests(unittest.TestCase):
     def test_transient_peak_includes_components_container_and_cipher(self):
-        self.assertEqual(routine.reserve_bytes(1000, 1000), 6600+128*1024**2)
+        self.assertEqual(routine.reserve_bytes(1000, 1000), 4000+256*1024**2)
         for invalid in [-1, True, '100']:
             with self.assertRaises(ValueError): routine.reserve_bytes(invalid, 0)
         with self.assertRaises(ValueError): routine.control_root(Path('/'))
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/data'))
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/secrets/../../../../etc/passwd'))
         self.assertEqual(routine.control_root(Path('/etc/fstab')), Path('/etc/fstab'))
+
+    def test_projected_backup_counts_new_dump_and_cipher_once_each(self):
+        self.assertEqual(routine.reserve_bytes(2000,100,[(1500,300)]),1200+256*1024**2)
+
+    def test_output_guard_fails_before_reaching_seventy_percent(self):
+        import io
+        stream=io.BytesIO()
+        with patch.object(routine.os,'statvfs',return_value=SimpleNamespace(f_blocks=1000,f_bavail=310,f_frsize=1)):
+            writer=routine.BudgetWriter(stream,Path('/fixture'))
+            self.assertEqual(writer.write(b'1'*9),9)
+            with self.assertRaises(ValueError):
+                writer.write(b'1'*10)
+        self.assertEqual(stream.getvalue(),b'1'*9)
+
+    @unittest.skipUnless(os.getuid()==0,'recovery evidence must be root-owned')
+    def test_backup_evidence_requires_finalized_matching_point_and_cipher(self):
+        import json
+        from datetime import datetime, timezone
+        now=datetime(2026,11,17,tzinfo=timezone.utc)
+        database='hd_release_'+'a'*16
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            point=root/'daily-20261116T120000Z'
+            point.mkdir()
+            proof=dict(kind='daily',name=point.name,complete=True,phase='finalized',format=2,
+                       createdAt='2026-11-16T12:00:00+00:00',completedAt='2026-11-16T12:05:00+00:00',
+                       preflight={'databaseBytes':2000},ciphertextBytes=500,ciphertextSha256='a'*64)
+            (point/'routine.json').write_text(json.dumps(proof))
+            (point/'manifest.json').write_text(json.dumps(dict(format=2,sourceDatabase=database,
+                createdAt=proof['createdAt'],files={'database.dump':{'bytes':400}})))
+            (point/'recovery.cms').write_bytes(b'x'*500)
+            self.assertEqual(routine.recovery_samples(root,database,now),[(2000,400)])
+            self.assertEqual(routine.recovery_samples(root,database+'1',now),[])
+            (point/'recovery.cms').write_bytes(b'x'*499)
+            self.assertEqual(routine.recovery_samples(root,database,now),[])
 
     def test_retention_only_two_successful_daily_points(self):
         points = [dict(name=str(i), kind='daily', complete=True, createdAt=str(i)) for i in range(4)]

@@ -12,11 +12,15 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
+import selectors
 import shutil
 import stat
 import subprocess
 import tarfile
 import time
+
+from backup_space import (OVERHEAD, check_disk_budget, projected_dump_bytes, recovery_point_bytes, recovery_samples)
 
 ROOT = Path('/srv/hd-auto')
 
@@ -203,11 +207,52 @@ def regular_files(roots, profile='controls', selected=None):
     return files
 
 
-def pack_roots(output, roots, profile='controls', selected=None):
+class BudgetWriter:
+    def __init__(self, stream, filesystem):
+        self.stream = stream
+        self.filesystem = filesystem
+
+    def write(self, block):
+        if self.filesystem is not None:
+            check_disk_budget(self.filesystem, len(block))
+        return self.stream.write(block)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+def copy_dump(argv, output, log, filesystem, timeout=1800):
+    deadline = time.monotonic()+timeout
+    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log) as process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                writer = BudgetWriter(output, filesystem)
+                while True:
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(argv, timeout)
+                    if not selector.select(min(remaining, 1)):
+                        check_disk_budget(filesystem)
+                        continue
+                    block = os.read(process.stdout.fileno(), 1024**2)
+                    if not block:
+                        break
+                    writer.write(block)
+            if process.wait(timeout=max(0,deadline-time.monotonic())):
+                raise subprocess.CalledProcessError(process.returncode, argv)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def pack_roots(output, roots, profile='controls', selected=None, filesystem=None):
     files = regular_files(roots, profile, selected)
-    with tarfile.open(output, 'x:gz', compresslevel=6) as archive:
-        for name in sorted(files):
-            archive.add('/'+name, arcname=name, recursive=False)
+    with output.open('xb') as stream:
+        with tarfile.open(fileobj=BudgetWriter(stream, filesystem), mode='w:gz', compresslevel=6) as archive:
+            for name in sorted(files):
+                archive.add('/'+name, arcname=name, recursive=False)
     # Verify the produced compressed archive, without extracting secrets.
     with tarfile.open(output, 'r:gz') as archive:
         seen = set()
@@ -235,12 +280,10 @@ def pack_roots(output, roots, profile='controls', selected=None):
     return files
 
 
-def reserve_bytes(database, files):
-    if any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in (database, files)):
-        raise ValueError('Invalid backup size measurement')
-    # Compressed components plus streaming ciphertext coexist. Conservative
-    # current-size headroom also covers WAL/growth; never use full-catalog demand.
-    return (database + files) * 33 // 10 + 128 * 1024**2
+def reserve_bytes(database, files, samples=()):
+    dump = projected_dump_bytes(database, database, samples)
+    # Existing retention is already in the live filesystem measurement.
+    return 2 * recovery_point_bytes(dump, files)
 
 
 def control_root(path):
@@ -321,13 +364,9 @@ def main():
                 raise ValueError('Media must use an existing stable data directory')
             measured_roots.append(path)
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
-        fs = os.statvfs(backup_root)
-        total, used = fs.f_blocks*fs.f_frsize, (fs.f_blocks-fs.f_bfree)*fs.f_frsize
-        # Backup protects data that exists now. A future full-catalog budget
-        # must never prevent a current daily recovery point from being created.
-        reserve = reserve_bytes(database_bytes, file_bytes)
-        if used + reserve >= total * .70:
-            raise ValueError('Recovery point transient peak would exceed 70% disk budget')
+        samples=recovery_samples(backup_root,config['database'])
+        reserve=reserve_bytes(database_bytes,file_bytes,samples)
+        total, used=check_disk_budget(backup_root,reserve)
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
         # The BE lease serializes acquisition with ALL physical media purges.
         # Persisted until explicit release: a killed backup remains protective.
@@ -348,19 +387,19 @@ def main():
             # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
             # comparison. The archive manifest belongs to this dump, not later SQL.
             with (point/'database.dump').open('xb') as dump:
-                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
+                copy_dump(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
                     '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
-                    '--lock-wait-timeout=5000'], check=True, stdout=dump, stderr=log, timeout=1800)
+                    '--lock-wait-timeout=5000'],dump,log,backup_root)
             with (point/'database.dump').open('rb') as dump:
                 subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
                     check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
-            media = pack_roots(point/'media.tar.gz', media_roots, 'media')
+            media = pack_roots(point/'media.tar.gz', media_roots, 'media', filesystem=backup_root)
             paths = json.loads(subprocess.check_output(compose+['exec', '-T', 'postgres', 'psql', '-X',
                 '-U', 'postgres', '-d', config['database'], '-Atq', '-v', 'ON_ERROR_STOP=1', '-c',
                 "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
             selected = archive_selection(paths, archive_root)
-            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected)
-            controls_manifest = pack_roots(point/'controls.tar.gz', controls)
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected, filesystem=backup_root)
+            controls_manifest = pack_roots(point/'controls.tar.gz', controls, filesystem=backup_root)
             manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
                 createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
                 files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
@@ -372,11 +411,17 @@ def main():
             state['phase'] = 'encrypting'
             atomic_json(point/'routine.json', state)
             cipher = point/'recovery.cms'
+            total, used = check_disk_budget(backup_root, OVERHEAD)
+            cipher_limit = (7*total-10*(used+OVERHEAD)-1)//10
+
+            def constrain_cipher():
+                resource.setrlimit(resource.RLIMIT_FSIZE, (cipher_limit, cipher_limit))
+
             encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
                 '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
-                stdout=log, stderr=log)
+                stdout=log, stderr=log, preexec_fn=constrain_cipher)
             try:
-                with tarfile.open(fileobj=encryption.stdin, mode='w|') as tar:
+                with tarfile.open(fileobj=BudgetWriter(encryption.stdin,backup_root), mode='w|') as tar:
                     for name in [*manifest['files'], 'manifest.json']:
                         tar.add(point/name, arcname=name, recursive=False)
                 encryption.stdin.close()

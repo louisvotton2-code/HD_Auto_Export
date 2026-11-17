@@ -219,18 +219,48 @@ const from = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing
 // Catalogue rows only exist for visible listings. This second predicate is also useful when repairing projections.
 const visible = "WHERE l.upstream_state='active'";
 const ordered = 'ORDER BY c.published_at DESC,c.listing_id';
+// Homepage checks combine this with a published projection and its locale index.
+const homeExternalVisible = "l.upstream_state='active' AND l.formal_primary AND (o.data->'hidden') IS DISTINCT FROM 'true'::jsonb";
+
+export async function eligibleExternalHomeIds(tx: PoolClient, ids: string[]) {
+  if (!ids.length) return [];
+  // Serialize with supplier publication, hide, withdrawal and representative changes.
+  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+  const result = await tx.query<{id:string}>(`SELECT l.id FROM external_listings l
+    JOIN external_catalog c ON c.listing_id=l.id LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
+    WHERE l.id=ANY($1::uuid[]) AND ${homeExternalVisible}
+      AND EXISTS (SELECT 1 FROM external_catalog_search s WHERE s.listing_id=l.id)`, [ids]);
+  return result.rows.map(({id}) => publicListingId(id));
+}
+
+async function coverPhotos(tx: Queryable, ids: string[], time: number) {
+  const result = await tx.query<ImageRow>(`SELECT m.* FROM unnest($1::uuid[]) AS picked(listing_id) CROSS JOIN LATERAL (
+    SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at FROM external_media
+    WHERE active AND listing_id=picked.listing_id AND (expires_at IS NULL OR expires_at>$2::timestamptz)
+    ORDER BY position,id LIMIT 1) m`, [ids, new Date(time).toISOString()]);
+  return new Map(result.rows.map(photo => [photo.listing_id, [photo]]));
+}
+
+export async function readExternalHomeVehicles(tx: PoolClient, ids: string[], locale: Locale, time: number,
+  priceView?: 'usd', quote: FxQuote | null = null): Promise<PublicVehicle[]> {
+  if (!ids.length) return [];
+  const result = await tx.query<CatalogRow>(`SELECT ${cardColumns},c.issues ${from}
+    WHERE c.listing_id=ANY($2::uuid[]) AND ${homeExternalVisible}`, [locale, ids]);
+  if (!result.rows.length) return [];
+  const covers = await coverPhotos(tx, result.rows.map(row => row.listing_id), time);
+  return result.rows.map(row => {
+    const card = toCard(row, covers.get(row.listing_id) ?? [], locale, priceView, quote);
+    return PublicVehicleSchema.parse({ ...card, content: { ...card.content, description: null }, external: { issues: row.issues } });
+  });
+}
 
 async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, time: number,priceView?:'usd',quote:FxQuote|null=null,card=false):Promise<Array<PublicVehicle|PublicVehicleCard>> {
   if (!rows.length) return [];
   const ids=rows.map(row=>row.listing_id);
   // One indexed cover probe per picked listing; no full gallery travels to Node for card requests.
   if(card) {
-    const photos=await tx.query<ImageRow>(`SELECT m.* FROM unnest($1::uuid[]) AS picked(listing_id) CROSS JOIN LATERAL (
-      SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at FROM external_media
-      WHERE active AND listing_id=picked.listing_id AND (expires_at IS NULL OR expires_at>$2::timestamptz)
-      ORDER BY position,id LIMIT 1) m`,[ids,new Date(time).toISOString()]);
-    const covers=new Map(photos.rows.map(photo=>[photo.listing_id,photo]));
-    return rows.map(row=>toCard(row,covers.has(row.listing_id)?[covers.get(row.listing_id)!]:[],locale,priceView,quote));
+    const covers=await coverPhotos(tx,ids,time);
+    return rows.map(row=>toCard(row,covers.get(row.listing_id)??[],locale,priceView,quote));
   }
   const photos = await tx.query<ImageRow>(`SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at
     FROM external_media WHERE active AND listing_id=ANY($1::uuid[]) ORDER BY listing_id,position,id`, [ids]);
