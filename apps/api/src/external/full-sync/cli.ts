@@ -18,7 +18,10 @@ async function main(){
  const db=createDatabase(env.DATABASE_URL,2);let worker:FullSyncWorker|undefined;
  try{
   if(command==='archive-pin'||command==='archive-release'){const reference=need('--reference');if(!/^[a-zA-Z0-9._:-]{1,160}$/.test(reference))throw new FullSyncError('SYNC_REFERENCE_INVALID');
-   const result=await db.transaction(async tx=>{await tx.query('SELECT pg_advisory_xact_lock(78291334)');
+   const result=await db.transaction(async tx=>{
+    await tx.query('SELECT pg_advisory_xact_lock(78291334)');
+    // Backup protection covers the full source archive, which exceeds the online query budget.
+    await tx.query("SET LOCAL statement_timeout = '5min'");
     if(command==='archive-pin'){const blobs=await protectSourceBackup(tx,reference);const snapshots=(await tx.query('INSERT INTO external_full_archive_pins SELECT id,$1 FROM external_full_snapshots WHERE archive_pruned_at IS NULL ON CONFLICT DO NOTHING',[reference])).rowCount;return {reference,blobs,snapshots};}
     await releaseSourceReferences(tx,'backup',reference);const snapshots=(await tx.query('DELETE FROM external_full_archive_pins WHERE reference=$1',[reference])).rowCount;return {reference,snapshots,released:true};
    });console.log(JSON.stringify(result));return;
