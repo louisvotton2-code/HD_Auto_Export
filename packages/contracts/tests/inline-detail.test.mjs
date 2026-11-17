@@ -12,4 +12,7 @@ test('inline detail is explicit and never widens old strict consumers',()=>{
  assert.equal(PublicVehicleDetailQuerySchema.safeParse({projection:'detail-inline-v1'}).success,false);
  assert.equal(PublicVehicleDetailQuerySchema.safeParse({projection:'detail-inline-v1',view:'localized'}).success,true);
  assert.equal(PublicVehicleDetailQuerySchema.safeParse({projection:'unknown',view:'localized'}).success,false);
+ assert.equal(PublicVehicleDetailQuerySchema.safeParse({technicalView:'verified',view:'localized'}).success,false);
+ assert.equal(PublicVehicleDetailQuerySchema.safeParse({technicalView:'verified',projection:'detail-inline-v1'}).success,false);
+ assert.equal(PublicVehicleDetailQuerySchema.safeParse({technicalView:'verified',projection:'detail-inline-v1',view:'localized'}).success,true);
 });

@@ -10,6 +10,51 @@ test.afterEach(async ({ request }) => {
   await resetPublicFixture(request);
 });
 
+test('SSR and browser facet requests use scoped API projections', async ({ request }) => {
+  await setPublicFixtureState(request, { largeFacetDictionary: true });
+  const read = async (path: string) => {
+    const response = await request.get(path);
+    expect(response.status()).toBe(200);
+    return response;
+  };
+  const condition = 'q=Beta&priceMin=0&priceMax=100000&priceCurrency=USD';
+  const modelOnly = await read(`/en/cars/?model=beta_model&${condition}`);
+  expect(await modelOnly.text()).toContain('value="beta_model"');
+  const both = await read(`/en/cars/?make=beta&model=beta_model&${condition}`);
+  expect(await both.text()).toContain('value="beta_model_trim"');
+  await read('/en/');
+
+  const facets = '/catalog-facets.json?locale=en&view=localized&priceView=usd';
+  const overview = await (await read(facets)).json();
+  expect(overview).toMatchObject({ hasTrims: true, hasGenerations: true, data: { models: [] } });
+  expect(overview.data).not.toHaveProperty('trims');
+  expect((await (await read(`${facets}&selectedModel=beta_model`)).json()).data.models)
+    .toContainEqual(expect.objectContaining({ id: 'beta_model' }));
+  const modelOptions = await (await read(`${facets}&make=beta`)).json();
+  expect(modelOptions.data.models).toEqual([expect.objectContaining({ id: 'beta_model', makeId: 'beta' })]);
+  expect(modelOptions.data).not.toHaveProperty('trims');
+  const variants = await (await read(`${facets}&make=beta&model=beta_model`)).json();
+  expect(variants.data.trims).toEqual([expect.objectContaining({ id: 'beta_model_trim', modelId: 'beta_model' })]);
+
+  const fixture = await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`);
+  expect(fixture.status()).toBe(200);
+  const rows: { path: string; query: Record<string, string> }[] = (await fixture.json()).requests;
+  const ssr = rows.filter(row => row.path === '/internal/public-catalog/vehicle-filters').map(row => row.query);
+  const dynamic = rows.filter(row => row.path === '/api/v1/vehicle-filters').map(row => row.query);
+  const bounds = { q: 'Beta', priceMin: '0', priceMax: '100000.49', priceCurrency: 'USD' };
+  expect(ssr).toEqual(expect.arrayContaining([
+    { catalog: 'curated', locale: 'en', view: 'localized', priceView: 'usd', projection: 'overview-models' },
+    expect.objectContaining({ ...bounds, projection: 'overview-models' }),
+    expect.objectContaining({ ...bounds, projection: 'overview' }),
+    expect.objectContaining({ ...bounds, projection: 'models', make: 'beta' }),
+    expect.objectContaining({ ...bounds, projection: 'variants', make: 'beta', model: 'beta_model' }),
+  ]));
+  expect(ssr.every(query => query.projection)).toBe(true);
+  expect(dynamic.map(query => query.projection)).toEqual(['overview', 'overview-models', 'models', 'variants']);
+  expect(dynamic[1]).not.toHaveProperty('selectedModel');
+  expect(dynamic[1]).not.toHaveProperty('model');
+});
+
 for (const locale of ['zh', 'en', 'ru']) {
   test(`${locale}: reference filter groups use real options, render before JS and fit the screen`, async ({
     page,

@@ -48,17 +48,106 @@ test('publication unchanged state survives refresh and internal or inventory cha
   await page.getByRole('button', { name: /核验并更新库存$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-message-success').filter({ hasText: '库存状态和核验时间已更新' })).toBeVisible();
+  await expect(page.locator('.ant-alert-success').filter({ hasText: '官网库存已同步，无需再次保存或发布。' })).toBeVisible();
   expect(record.hasUnpublishedChanges).toBe(false); await expect(publishButton(page)).toBeDisabled();
 });
 
-test('publication saving a public field sets unpublished changes and allows an explicit new publication', async ({ page }) => {
+test('publication recovers verified inventory when a newer readiness read arrives before a lost stock receipt', async ({ page }) => {
+  const record = { ...publishedVehicle(), hasUnpublishedChanges: true };
+  const api = await installApi(page, { items: [record], publicationDefaultConfirmed: false });
+  let stockCalls = 0;
+  let publishCalls = 0;
+  let releaseStock!: () => void;
+  const stockReceipt = new Promise<void>(resolve => { releaseStock = resolve; });
+  await page.route(`**/api/v1/admin/vehicles/${id}/availability`, async route => {
+    stockCalls++;
+    const input = route.request().postDataJSON();
+    expect(input.version).toBe(record.version);
+    Object.assign(record, { version: record.version + 1, availability: input.availability, availabilityCheckedAt: input.checkedAt });
+    await stockReceipt;
+    return route.abort('failed');
+  });
+  await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => {
+    publishCalls++;
+    expect(route.request().postDataJSON()).toEqual({ version: record.version });
+    Object.assign(record, { version: record.version + 1, hasUnpublishedChanges: false, publishedRevisionId: 'fixture_revision_2' });
+    return reply(route, envelope(record));
+  });
+  await openPreview(page, record);
+  await expect(publishButton(page)).toBeEnabled();
+  await select(page, '核验后的库存状态', '已预订');
+  await page.getByRole('button', { name: '核验并更新库存' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '确认操作' }).click();
+  try {
+    await expect.poll(() => stockCalls).toBe(1);
+    const readiness = page.waitForResponse(response => response.url().includes('/publish-readiness?'));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect((await (await readiness).json()).data.vehicleVersion).toBe(record.version);
+    await expect(page.getByText('服务端车辆版本已变化，当前发布检查未采用。请核对最新车辆资料。')).toBeVisible();
+  } finally {
+    releaseStock();
+  }
+  const readCurrent = page.getByRole('button', { name: /读取当前状态$/ });
+  await expect(readCurrent).toBeEnabled();
+  await expect(publishButton(page)).toBeDisabled();
+  expect(api.previewConfirmations).toEqual([]);
+  await readCurrent.click({ timeout: 4000 });
+  await page.getByRole('button', { name: '采用核对到的版本，结束本次重试' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '确认操作' }).click();
+  await expect(page.getByText('车辆已被其他操作更新', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/当前：已预订/)).toBeVisible();
+  expect(stockCalls).toBe(1);
+  expect(publishCalls).toBe(0);
+
+  const stockVersion = record.version;
+  await tab(page, '基础资料');
+  await chooseYear(page, '年款', 2025);
+  await page.getByRole('button', { name: '保存草稿' }).click();
+  await expect.poll(() => api.saves.length).toBe(1);
+  expect(api.saves[0]).toMatchObject({ version: stockVersion });
+  await waitForPublicationPreview(page);
+  await publishButton(page).click();
+  await expect(publishButton(page)).toHaveText('已发布，暂无待发布修改');
+  expect(api.previewConfirmations).toHaveLength(1);
+  expect(publishCalls).toBe(1);
+});
+
+test('publication inventory mutation still reports a definitive version conflict', async ({ page }) => {
+  const record = { ...publishedVehicle(), hasUnpublishedChanges: true };
+  const api = await installApi(page, { items: [record] });
+  await page.route(`**/api/v1/admin/vehicles/${id}/availability`, route => {
+    record.version++;
+    return reply(route, error('VERSION_CONFLICT'), 409);
+  });
+  await openPreview(page, record);
+  await select(page, '核验后的库存状态', '已预订');
+  await page.getByRole('button', { name: /核验并更新库存$/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
+  await expect(page.getByText('车辆已被其他操作更新', { exact: true })).toBeVisible();
+  await expect(publishButton(page)).toBeDisabled();
+  await expect(page.getByText('库存核验结果尚未确认', { exact: true })).toHaveCount(0);
+  expect(api.previewConfirmations).toEqual([]);
+});
+
+test('publication saved public changes remain publishable after a successful inventory update', async ({ page }) => {
   const record = publishedVehicle(); const api = await installApi(page, { items: [record] });
+  await page.route(`**/api/v1/admin/vehicles/${id}/availability`, route => {
+    const input = route.request().postDataJSON();
+    expect(input.version).toBe(record.version);
+    Object.assign(record, { version: record.version + 1, availability: input.availability, availabilityCheckedAt: input.checkedAt });
+    return reply(route, envelope(record));
+  });
   await page.goto(`/admin/vehicles/${id}`);
   await chooseYear(page, '年款', 2025);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(record.hasUnpublishedChanges).toBe(true);
   await waitForPublicationPreview(page);
-  await expect(publishButton(page)).toHaveText('确认并发布');
+  await select(page, '核验后的库存状态', '已预订');
+  await page.getByRole('button', { name: /核验并更新库存$/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
+  await expect(page.locator('.ant-alert-success').filter({ hasText: '资料发布请继续核对当前草稿。' })).toBeVisible();
+  await expect(publishButton(page)).toBeEnabled();
+  expect(record.hasUnpublishedChanges).toBe(true);
   expect(api.previewConfirmations).toEqual([]);
 });
 

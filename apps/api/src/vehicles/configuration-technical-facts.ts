@@ -182,6 +182,15 @@ export function configurationTechnicalValue(key: VehicleDetailMatchKey, name: st
   return measurementValue(key, name, value, false);
 }
 
+/** Supplier field identity is already proved by the canonical segment ID. */
+export function supplierTechnicalMeasurement(key: VehicleDetailMatchKey, name: string, value: string) {
+  return measurementValue(key, name, value, false);
+}
+
+export function supplierTechnicalEnum(key: VehicleDetailMatchKey, value: string, locale: Locale) {
+  return isEnumKey(key) ? enumValue(key, value, locale) : null;
+}
+
 export function configurationTechnicalCandidates(items: readonly ConfigurationImportItem[]): {
   candidates: Candidate[]; invalid: UnusableCandidate[];
 } {

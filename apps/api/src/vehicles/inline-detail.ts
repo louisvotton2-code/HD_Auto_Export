@@ -1,9 +1,13 @@
 import type {PoolClient} from 'pg';
-import {CONFIGURATION_SEMANTIC_ALIASES,type ConfigurationSemanticKey,type VehicleDetailMatchKey} from '@hd/contracts/public';
+import {CONFIGURATION_SEMANTIC_ALIASES,SUPPLIER_TECHNICAL_CONFIGURATION_KEYS,type ConfigurationSemanticKey,type VehicleDetailMatchKey,type VehicleTechnicalDetails} from '@hd/contracts/public';
 import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,PublicInspectionConclusionSchema,type PublicVehicle,type Locale} from '@hd/contracts/public';
 import {emptyInspectionSummary} from '../external/sources/inspection-projection.js';
 import {sourceDisplay} from '../external/sources/display.js';
 import {configurationTechnicalKey} from './configuration-technical-facts.js';
+import {projectSupplierTechnicalDetails} from './supplier-technical-detail.js';
+
+const supplierTechnicalIds=Object.keys(SUPPLIER_TECHNICAL_CONFIGURATION_KEYS);
+const supplierTechnicalRowLimit=supplierTechnicalIds.length*3+1;
 
 const normalized=(s:string)=>s.normalize('NFKC').toLowerCase().replace(/[\s_()（）·³/.-]/g,'');
 const names=new Map(Object.entries(CONFIGURATION_SEMANTIC_ALIASES).flatMap(([key,values])=>[key,...values].map(value=>[normalized(value),key as ConfigurationSemanticKey] as const)));
@@ -18,10 +22,11 @@ export function configurationSemanticKey(id:string,label:string|null):Configurat
 }
 
 /** Called inside the same visibility-checked REPEATABLE READ transaction as the ordinary detail. No stored DTO changes. */
-export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle,locale:Locale){
+export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle,locale:Locale,technicalView?:'verified'){
  const inspectionSummary=vehicle.inspectionSummary??emptyInspectionSummary(vehicle.report?.hasReport?'unavailable':'unknown');
  let conclusions:unknown[]=[],defects:unknown[]=[],normalItemCount=0;
  let items:Array<{id:string;name:ReturnType<typeof sourceDisplay>;value:ReturnType<typeof sourceDisplay>}>=vehicle.configuration?.items??[];
+ let technicalDetails:VehicleTechnicalDetails|undefined;
  if(vehicle.id.startsWith('ext-')){
   const id=vehicle.id.slice(4);
   if(inspectionSummary.status==='available'){
@@ -43,10 +48,23 @@ export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle,locale:Lo
    ({conclusions,defects,normal:normalItemCount}=result.rows[0]!);
   }
   const config=await tx.query<{data:typeof items[number]}>("SELECT data FROM external_source_segments WHERE listing_id=$1 AND locale=$2 AND kind='configuration' ORDER BY position LIMIT 200",[id,locale]);
-  if(config.rows.length)items=config.rows.map(row=>row.data);
-  else items=(vehicle.external?.detail?.specifications??[]).slice(0,200).map((entry,index)=>({id:`legacy.${index}`,name:sourceDisplay(entry.name.text,locale),value:sourceDisplay(entry.value.text,locale)}));
+  if(config.rows.length){
+   items=config.rows.map(row=>row.data);
+   const disputedSpecifications=vehicle.external?.issues.some(issue=>
+    (issue.field==='specifications'&&(issue.code==='conflict'||issue.code==='invalid'))
+    ||(issue.code==='conflict'&&(issue.field==='powertrain'||issue.field==='trim'||issue.field==='modelYear')));
+   if(technicalView==='verified'&&!disputedSpecifications){
+    // Check the documented keys across all locales, including rows beyond the inline configuration limit.
+    const technical=await tx.query<{locale:Locale;data:typeof items[number]}>(`SELECT locale,data FROM external_source_segments
+     WHERE listing_id=$1 AND kind='configuration' AND locale IN ('zh','en','ru') AND data->>'id'=ANY($2::text[])
+     ORDER BY locale,position LIMIT $3`,[id,supplierTechnicalIds,supplierTechnicalRowLimit]);
+    if(technical.rows.length<supplierTechnicalRowLimit){
+     technicalDetails=projectSupplierTechnicalDetails(vehicle.facts,technical.rows,new Set(items.map(item=>item.id)));
+    }
+   }
+  }else items=(vehicle.external?.detail?.specifications??[]).slice(0,200).map((entry,index)=>({id:`legacy.${index}`,name:sourceDisplay(entry.name.text,locale),value:sourceDisplay(entry.value.text,locale)}));
  }
- return PublicVehicleInlineSchema.parse({...vehicle,projection:'detail-inline-v1',inspectionSummary,
+ return PublicVehicleInlineSchema.parse({...vehicle,...(technicalDetails?{technicalDetails}:{}),projection:'detail-inline-v1',inspectionSummary,
   inspectionInline:{conclusions:conclusions.slice(0,3).map(v=>PublicInspectionConclusionSchema.parse(v)),defects:defects.slice(0,8).map(v=>PublicInspectionEntrySchema.parse(v)),normalItemCount,hasMoreConclusions:conclusions.length>3,hasMoreDefects:defects.length>8},
   configurationInline:items.slice(0,200).map(item=>PublicConfigurationInlineItemSchema.parse({...item,semanticKey:configurationSemanticKey(item.id,item.name.text)}))});
 }

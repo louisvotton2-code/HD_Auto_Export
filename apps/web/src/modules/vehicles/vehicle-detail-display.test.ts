@@ -58,7 +58,8 @@ describe('staff preview and public vehicle detail', () => {
     const copy = publicVehicleMessages(locale);
     expect(staff).toMatch(new RegExp(`<dt>${copy.mileageLabel}</dt><dd><span[^>]*>0 ${copy.km}</span>`));
     expect(staff).toMatch(new RegExp(`<dt>${copy.engineLabel}</dt><dd><span[^>]*>0 cm³</span>`));
-    for (const unknown of [copy.powertrain, copy.powerLabel, copy.bodyLabel, copy.transmissionLabel, copy.locationLabel]) {
+    expect(staff).not.toContain('data-vehicle-fact="powerHp"');
+    for (const unknown of [copy.powertrain, copy.bodyLabel, copy.transmissionLabel, copy.locationLabel]) {
       expect(staff).not.toContain(`<dt>${unknown}</dt>`);
     }
     const units = { zh: { hp: '马力', kw: 'kW' }, en: { hp: 'hp', kw: 'kW' }, ru: { hp: 'л. с.', kw: 'кВт' } }[locale];
@@ -70,16 +71,18 @@ describe('staff preview and public vehicle detail', () => {
     expect(publicFacts.find((row) => row.id === 'vehicleClass'))
       .toMatchObject({ value: 'Compact car', lang: 'en' });
     for (const html of [staff, publicConfig]) {
-      expect(configurationIds(html)).toEqual(configurationInline.slice(1).map((item) => item.id));
+      expect(configurationIds(html)).toEqual(configurationInline.slice(1, 3).map((item) => item.id));
       expect(html).toContain('1998 cc');
       expect(html).toContain('120 kW');
-      expect(html).toContain('150 kW');
     }
+    expect(publicFacts.find((row) => row.id === 'motorKw')?.configuration?.itemIds)
+      .toEqual([configurationInline[3]!.id]);
+    expect(staff).toContain('data-vehicle-fact="motorKw"');
     delete preview.vehicle.technicalDetails;
     delete vehicle.technicalDetails;
     expect(configurationIds(renderToStaticMarkup(createElement(PublicationPreviewDetail, { preview }))))
-      .toEqual(configurationInline.map((item) => item.id));
+      .toEqual(configurationInline.slice(0, 2).map((item) => item.id));
     expect(configurationIds(renderToStaticMarkup(createElement(PublicVehicleConfiguration, { vehicle, locale }))))
-      .toEqual(configurationInline.map((item) => item.id));
+      .toEqual(configurationInline.slice(0, 2).map((item) => item.id));
   });
 });

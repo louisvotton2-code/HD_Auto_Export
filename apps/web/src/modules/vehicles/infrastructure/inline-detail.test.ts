@@ -3,6 +3,7 @@ import { makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import type { DisplayText, PublicVehicleInline } from '@hd/contracts/public';
 import { getPublicVehicle } from './public-api';
 import { proxyPublicRequest } from './public-proxy';
+import { publicInlineVehicleView } from '../public-query';
 
 function inlineFixture(): PublicVehicleInline {
   const text = (value: string): DisplayText => ({
@@ -58,6 +59,25 @@ describe('explicit inline detail HTTP projection', () => {
     expect(query.get('view')).toBe('localized');
   });
 
+  it('opts supplier details into verified technical facts and forwards the scope through the proxy', async () => {
+    const staff = inlineFixture();
+    const id = 'ext-91d8ad9a-4ede-4ef0-a68e-17c40fdc7006';
+    const data = { ...staff, id, detailPath: `/ru/cars/${id}/`, technicalDetails: {
+      power: { motorKw: 0 }, configurationMatches: [{ id: 'specs.motorKw', semanticKey: 'motorKw', source: 'configuration' }],
+    } };
+    const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope(data)));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(publicInlineVehicleView(staff.id)).not.toHaveProperty('technicalView');
+    expect(publicInlineVehicleView(id)).toEqual({ view: 'localized', priceView: 'usd', projection: 'detail-inline-v1', technicalView: 'verified' });
+    const response = await proxyPublicRequest(new Request(
+      `https://website.test/api/v1/vehicles/${id}?locale=ru&view=localized&projection=detail-inline-v1&technicalView=verified`,
+    ), ['vehicles', id]);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.technicalDetails).toEqual(data.technicalDetails);
+    expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('technicalView')).toBe('verified');
+  });
+
   it('keeps a request without projection on the strict old localized response', async () => {
     const data = makeLocalizedPublicVehicleFixture('ru');
     const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope(data)));
@@ -97,6 +117,7 @@ describe('explicit inline detail HTTP projection', () => {
     'projection=detail-inline-v1&view=invalid',
     'projection=detail-inline-v2&view=localized',
     'projection=card&view=localized',
+    'technicalView=verified&view=localized',
     'projection=detail-inline-v1&projection=detail-inline-v1&view=localized',
   ])('rejects an invalid projection/view query before upstream IO: %s', async query => {
     const fetcher = vi.fn();

@@ -28,7 +28,7 @@ async function expandPublicConfiguration(configuration: Locator) {
 }
 
 for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const) {
-  test(`${locale}: public detail and private preview share configuration, retaining units and language at ${width}px`, async ({ page, context, request, baseURL }) => {
+  test(`${locale}: supplier configuration stays below while staff preview can promote an explicit value at ${width}px`, async ({ page, context, request, baseURL }) => {
     await page.setViewportSize({ width, height: 1000 });
     await setPublicFixtureState(request, { importedPublished: true, configurationMode: 'ready', historyScenario: 'structured-zero', inspectionMode: 'structured', reportPresenceMode: 'known' });
     const image = await (await request.get('/api/v1/media/media_fixture_car_2/')).body();
@@ -40,6 +40,8 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await expect(configuration.getByText(configurationTitles[locale], { exact: true })).toBeVisible();
     await expandPublicConfiguration(configuration);
     const fixture = makeConfigurationDisplayFixture(locale);
+    const displacement = `${new Intl.NumberFormat(locale).format(1989)} cm³`;
+    await expect(page.locator('[data-vehicle-fact="displacementCc"]')).toHaveCount(0);
     const publicFields = await configurationFields(configuration);
     expect(publicFields).toEqual(fixture.items.flatMap((item) => [
       { field: 'name', text: item.name.text, lang: item.name.contentLocale },
@@ -68,7 +70,10 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
     await expect(privateConfiguration.getByText(configurationTitles[locale], { exact: true })).toBeVisible();
     await expect(privateConfiguration.locator(':scope > details')).toHaveAttribute('open', '');
     await expect(privateConfiguration.locator('[data-configuration-field="value"]').first()).toBeVisible();
-    expect(await configurationFields(privateConfiguration)).toEqual(publicFields);
+    expect(await configurationFields(privateConfiguration)).toEqual(publicFields.slice(2));
+    const privateFact = frame.locator('[data-vehicle-fact="displacementCc"]');
+    await expect(privateFact.locator('dd > span').first()).toHaveText(displacement);
+    await expect(privateFact.locator('[data-configuration-metadata]')).toHaveCount(2);
     const ready = await waitForPreviewEvent(page, 'ready');
     expect(ready.bodyRendered).toBe(true);
     expect(transport.publicReads).toEqual([]);
@@ -185,6 +190,7 @@ for (const [locale, width] of [['zh', 1440], ['en', 390], ['ru', 320]] as const)
       await page.goto(`/${locale}/cars/${externalFixtureId(1)}/`);
       const configuration = page.locator('[data-vehicle-parameters]');
       await expandPublicConfiguration(configuration);
+      await expect(page.locator('[data-vehicle-fact="displacementCc"]')).toHaveCount(0);
       await expect(configuration.locator('[data-configuration-field="value"][lang="und"]').first()).toHaveText('1989');
       const inspection = page.getByRole('region', { name: inspectionTitles[locale], exact: true });
       await expect(inspection).toBeVisible();

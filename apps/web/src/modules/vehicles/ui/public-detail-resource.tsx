@@ -11,7 +11,7 @@ import { publicVehicleMessages } from '../public-messages';
 import { PublicVehicleDetail } from './public-vehicle-detail';
 import { PublicResourceStatus } from './public-resource-status';
 import { localizedInlineVehicleSchema } from '../localized-projection';
-import { publicQueryString, publicInlineDetailView } from '../public-query';
+import { publicQueryString, publicInlineVehicleView } from '../public-query';
 import { PublicCatalogLink } from './public-catalog-link';
 import type { VehicleDestination } from './vehicle-gallery';
 
@@ -36,7 +36,7 @@ export function PublicDetailResource({
     () => (vehicle ? { data: vehicle, meta: { requestId: 'server-rendered' } } : null),
     [vehicle],
   );
-  const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicInlineDetailView })}`;
+  const url = `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...publicInlineVehicleView(id) })}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const resource = usePublicResource(url, initial, localizedInlineVehicleSchema(locale, 'usd'), {
     navigationPath: `/${locale}/cars/${id}/`,

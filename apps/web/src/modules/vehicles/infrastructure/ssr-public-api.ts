@@ -1,8 +1,8 @@
-import { PublicVehicleQuerySchema, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
+import { PublicVehicleQuerySchema, type PublicFilterQuery, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { getServerReleaseIdentity } from '@/shared/config/server-runtime';
 import { localizedHomeSchema, publicFiltersSchema, localizedCardListSchema, localizedInlineVehicleSchema } from '../localized-projection';
-import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicInlineDetailView, type UsdFilterScope } from '../public-query';
+import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicInlineVehicleView, type UsdFilterScope } from '../public-query';
 import { publicApiOrigin, PublicApiError } from './public-http';
 import { publicRequestHeaders } from './public-request-context';
 import { SsrDtoCache } from './ssr-dto-cache';
@@ -35,8 +35,12 @@ export function getSsrPublicHome(locale: Locale) {
   return readSsr({ path: canonicalPublicPath('/api/v1/home/vehicles', { locale, ...publicUsdView }),
     priceView: 'usd', schema: localizedHomeSchema(locale, 'usd'), media: value => media(value.data.sections.flatMap(section => section.vehicles)) });
 }
-export function getSsrPublicFilters(locale: Locale, scope?: UsdFilterScope) {
-  return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', publicUsdFilterQuery(locale, scope)),
+export function getSsrPublicFilters(
+  locale: Locale,
+  scope: UsdFilterScope,
+  projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
+) {
+  return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', { ...publicUsdFilterQuery(locale, scope), ...projection }),
     priceView: 'usd', schema: publicFiltersSchema });
 }
 export function getSsrPublicCatalog(query: PublicVehicleQuery) {
@@ -48,7 +52,7 @@ export async function getSsrPublicVehicle(id: string, locale: Locale) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const localized = localizedInlineVehicleSchema(locale, 'usd');
-    const result = await readSsr({ path: canonicalPublicPath(`/api/v1/vehicles/${id}`, { locale, ...publicInlineDetailView }),
+    const result = await readSsr({ path: canonicalPublicPath(`/api/v1/vehicles/${id}`, { locale, ...publicInlineVehicleView(id) }),
       priceView: 'usd', schema: { parse(value) {
         const parsed = localized.parse(value);
         if (parsed.data.id !== id || parsed.data.detailPath !== `/${locale}/cars/${id}/`) throw new PublicApiError(503);

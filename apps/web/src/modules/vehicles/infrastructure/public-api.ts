@@ -117,11 +117,12 @@ export async function getPublicVehicle(
   view?: 'legacy' | 'localized',
   priceView?: 'usd',
   projection?: 'detail-inline-v1',
+  technicalView?: 'verified',
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const result = await readPublicJson(
-      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView, projection })}`,
+      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView, projection, technicalView })}`,
       projection === 'detail-inline-v1' ? localizedInlineVehicleSchema(locale, priceView)
         : view === 'localized' ? localizedVehicleSchema(locale, priceView) : legacyVehicleSchema,
       incoming,

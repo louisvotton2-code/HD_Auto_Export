@@ -5,7 +5,7 @@ import type { PublicVehicleInline } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicDetailTitleRevision, publicEnglishDetailTitle, type publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { localizedInlineVehicleSchema } from '../localized-projection';
-import { publicInlineDetailView, publicQueryString } from '../public-query';
+import { publicInlineVehicleView, publicQueryString } from '../public-query';
 
 type Title = ReturnType<typeof publicVehicleTitle>;
 
@@ -25,7 +25,7 @@ export function usePublicDetailTitle(
     if (!canRead || locale === 'en' || !id || !revision || useInitial || hasFreshTitle) return;
     const controller = new AbortController();
     // A manual retry or history navigation may have recovered a new public snapshot.
-    const path = `/api/v1/vehicles/${id}/?${publicQueryString({ locale: 'en', ...publicInlineDetailView })}`;
+    const path = `/api/v1/vehicles/${id}/?${publicQueryString({ locale: 'en', ...publicInlineVehicleView(id) })}`;
     void (async () => {
       try {
         const response = await fetch(path, {

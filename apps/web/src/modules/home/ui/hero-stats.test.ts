@@ -1,7 +1,6 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { approximateCatalogVehicleCount } from '../content/company-metrics';
 import { HeroStats } from './hero-stats';
 
 function metricHtml(html: string, metric: string): string {
@@ -10,20 +9,27 @@ function metricHtml(html: string, metric: string): string {
 
 describe('hero statistics server content', () => {
   for (const [locale, catalogLabel, years] of [
-    ['zh', '目录中的汽车<wbr/>（约）', '23年'],
-    ['en', 'Cars in catalog<wbr/> (approx.)', '23 years'],
-    ['ru', 'Автомобили в каталоге<wbr/> (прибл.)', '23 года'],
+    ['zh', '目录中的汽车', '23年'],
+    ['en', 'Cars in catalog', '23 years'],
+    ['ru', 'Автомобили в каталоге', '23 года'],
   ] as const) {
-    it(`${locale}: renders the catalog estimate immediately and starts the client count at zero`, () => {
-      const html = renderToStaticMarkup(createElement(HeroStats, { locale }));
-      const catalog = new Intl.NumberFormat(locale).format(approximateCatalogVehicleCount);
-      expect(html).toContain(catalogLabel);
+    it(`${locale}: renders the exact total without animation and starts the company metrics at zero`, () => {
+      const catalogTotal = 108_481;
+      const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogTotal }));
+      const catalog = new Intl.NumberFormat(locale).format(catalogTotal);
+      expect(metricHtml(html, 'catalog')).toContain(`>${catalogLabel}</dt>`);
       expect(metricHtml(html, 'catalog')).toContain(`>${catalog}</strong>`);
       expect(metricHtml(html, 'catalog')).not.toContain('data-counter-value');
-      expect(metricHtml(html, 'clients')).toContain('data-counter-value="0">0</span>');
-      expect(metricHtml(html, 'clients')).toMatch(/class="sr-only"[^>]*>660\+<\/span>/);
-      expect(metricHtml(html, 'years')).toContain('data-counter-value="23">23</span>');
-      expect(metricHtml(html, 'years')).toContain(`class="sr-only">${years}</span>`);
+      for (const [metric, finalText] of [['clients', '660+'], ['years', years]]) {
+        const markup = metricHtml(html, metric);
+        expect(markup).toContain('data-counter-value="0">0</span>');
+        expect(markup).toContain(`>${finalText}</span>`);
+        expect(markup).toContain('class="sr-only"');
+      }
     });
   }
+  it.each([[0, '0'], [null, '—']] as const)('renders catalog total %s as %s', (catalogTotal, expected) => {
+    const html = renderToStaticMarkup(createElement(HeroStats, { locale: 'en', catalogTotal }));
+    expect(metricHtml(html, 'catalog')).toContain(`>${expected}</strong>`);
+  });
 });

@@ -25,7 +25,7 @@ import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
-import { createPublicCatalogCache, type PublicCacheRoute } from './external/public-cache.js';
+import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheRoute } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -191,7 +191,16 @@ export async function buildApp(config:Config=readConfig(), options:{
       try {options.onPublicFailure({route:route as PublicFailureDiagnostic['route'],status:problem.status,...classifyCapacityFailure(error)});}
       catch {/* capacity observer only */}
     }
-    if(problem.status>=500) app.log.error({requestId:request.id,errorCode:detail.code??detail.name},'Request failed');
+    if(problem.status>=500) {
+      const catalogError=error instanceof PublicCatalogUnavailableError?error:undefined;
+      const metrics=catalogError&&catalogCache.metrics();
+      app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,
+        ...(metrics&&catalogError?{catalogReason:catalogError.reason,
+          activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
+          timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,oversizedValues:metrics.oversizedValues,
+          poolWaiting:db.pool.waitingCount}:{}),
+      },'Request failed');
+    }
     // The limiter already supplies the rounded-up remaining window. Preserve it;
     // only an otherwise unspecified 429 falls back to our full 60-second window.
     if(problem.status===429 && !reply.hasHeader('Retry-After')) reply.header('Retry-After','60');
@@ -274,7 +283,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([pub.PublicVehicleResponseSchema,pub.PublicVehicleInlineResponseSchema]),...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
-      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection);
+      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView);
       if(p.id.startsWith('ext-')) {
         try{await serving.optionalEffect(()=>markFullSyncAccess(db,listingUuid(p.id)));}catch{request.log.debug('Full-sync access hint unavailable');}
       }

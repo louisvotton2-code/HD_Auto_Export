@@ -41,7 +41,7 @@ export function PublicHome({
     [filters],
   );
   const facets = usePublicResource(
-    `/api/v1/vehicle-filters/?${publicQueryString(publicUsdFilterQuery(locale))}`,
+    `/api/v1/vehicle-filters/?${publicQueryString({ ...publicUsdFilterQuery(locale), projection: 'overview-models' })}`,
     initialFilters,
     PublicVehicleFiltersSchema,
     { cooldown },

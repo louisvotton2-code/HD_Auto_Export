@@ -63,7 +63,7 @@ for (const fixture of countries) {
       );
       await expect(explanation.locator('.fee-method-description')).toHaveText(/.{20,}/);
       await expect(row.getByTestId('fee-formula').locator('code')).toHaveText(
-        /=.+(?:RUB|KZT|UZS|GEL|AMD|KGS|ALL)/,
+        fixture.country === 'KG' ? /[=≈].+KGS/ : /=.+(?:RUB|KZT|UZS|GEL|AMD|ALL)/,
       );
       await expect(explanation).not.toContainText(
         /\bround2?\(|clearance_band\(|FeeMethods\.|\{\w+\}/,

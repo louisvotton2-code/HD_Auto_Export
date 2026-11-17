@@ -43,7 +43,7 @@ test('every hit validates the live epoch/revision; database failure never serves
   revision = { epoch: '00000000-0000-4000-8000-000000000002', revision: '2' };
   assert.equal((await cache.get('home', {}, load)).value, 3);
   broken = true;
-  await assert.rejects(cache.get('home', {}, load), error => error instanceof ApiError && error.status === 503 && !error.message.includes('private'));
+  await assert.rejects(cache.get('home', {}, load), { status: 503, reason: 'revision-read', message: 'Public catalog is temporarily unavailable.' });
   assert.equal(loads, 3);
 });
 
@@ -56,7 +56,7 @@ test('a publication changing during source reads retries once and never tags old
   assert.deepEqual(value, { observed: '2' });
   assert.equal(loads, 2); assert.equal(cache.metrics().versionRetries, 1);
   const unstable = new PublicCatalogCache({ namespace: 'hd:test' }, { readRevision: async () => revision });
-  await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503 });
+  await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503, reason: 'revision-changed' });
 });
 
 test('Redis TTL ends before image expiry and an expired URL is never reused', async () => {
@@ -115,9 +115,9 @@ test('Redis failures allow only bounded live loads; unknown source errors are ne
 test('caller timeout retains the actual source concurrency slot until the source settles', async () => {
   const release = deferred<{ ok: boolean }>();
   const cache = new PublicCatalogCache({ namespace: 'hd:test', maxConcurrentLoads: 1, requestTimeoutMs: 15 }, { readRevision: async () => version() });
-  await assert.rejects(cache.get('list', {}, () => release.promise), { status: 503 });
+  await assert.rejects(cache.get('list', {}, () => release.promise), { status: 503, reason: 'deadline' });
   assert.equal(cache.metrics().activeLoads, 1);
-  await assert.rejects(cache.get('filters', {}, async () => ({})), { status: 503 });
+  await assert.rejects(cache.get('filters', {}, async () => ({})), { status: 503, reason: 'load-capacity' });
   release.resolve({ ok: true });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cache.metrics().activeLoads, 0);

@@ -46,13 +46,21 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   const [success, setSuccess] = useState('');
   const [latest, setLatest] = useState<AdminVehicle | null>(null);
   const inFlight = useRef(false);
+  const inventoryWriteVersion = useRef<number | null>(null);
   const actionGuard = useRef(false);
   const mounted = useRef(true);
   const publishIntent = useRef<PublishIntent | null>(null);
   const parentBusy = useRef(onBusyChange);
   parentBusy.current = onBusyChange;
   const confirmation = useRef<{ cancel(): void } | null>(null);
-  const readiness = usePublicationReadiness({ vehicleId: vehicle.id, version: vehicle.version, locale: previewLocale, onConflict });
+  const readiness = usePublicationReadiness({
+    vehicleId: vehicle.id, version: vehicle.version, locale: previewLocale,
+    onConflict: () => {
+      // A read can see our inventory write before its receipt arrives. The read
+      // still invalidates publication readiness, but must leave reconciliation available.
+      if (inventoryWriteVersion.current !== vehicle.version) onConflict?.();
+    },
+  });
   const receiptKey = previewReceipt ? JSON.stringify([vehicle.id, previewReceipt.version, previewReceipt.publicContentRevision, previewReceipt.fingerprint, previewReceipt.locale]) : null;
   const currentAction = useRef({ vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive, receiptKey });
   currentAction.current = { vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive, receiptKey };
@@ -97,6 +105,8 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   }
   function stop() { inFlight.current = false; if (mounted.current) { setBusy(false); setActiveOperation(null); } }
   function accept(next: AdminVehicle) {
+    // Keep guarding the old version until React adopts the newer record.
+    if (inventoryWriteVersion.current === next.version) inventoryWriteVersion.current = null;
     publishIntent.current = null; setUnconfirmed(null); setLatest(null); onUpdated(next);
   }
 
@@ -157,6 +167,7 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
     if (!mounted.current) return;
     const body = operation === 'publish' ? publishIntent.current!.body
       : JSON.stringify(operation === 'availability' ? { version: vehicle.version, availability, checkedAt: new Date().toISOString() } : { version: vehicle.version });
+    if (operation === 'availability') inventoryWriteVersion.current = vehicle.version;
     if (!inFlight.current) start(operation);
     let mutationAcknowledged = false;
     try {
@@ -168,8 +179,12 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
       const current = operation === 'publish' ? (await readVehicleLifecycle(vehicle.id)).vehicle : response.data;
       if (!mounted.current) return;
       accept(current);
+      const inventorySuccess = current.publicationState === 'published'
+        ? current.hasUnpublishedChanges === false ? '库存状态和核验时间已更新，官网库存已同步，无需再次保存或发布。'
+          : '库存状态和核验时间已更新，官网库存已同步。资料发布请继续核对当前草稿。'
+        : '库存状态和核验时间已更新，可继续核对草稿并发布。';
       const feedback = operation === 'publish' ? publicationFeedback(response.data, current)
-        : { tone: 'success' as const, text: operation === 'availability' ? '库存状态和核验时间已更新；草稿内容没有发布。' : '车辆已下架，公开详情不再可见。' };
+        : { tone: 'success' as const, text: operation === 'availability' ? inventorySuccess : '车辆已下架，公开详情不再可见。' };
       setSuccess(feedback.text);
       if (feedback.tone === 'success') void toast.success(feedback.text); else void toast.info(feedback.text);
     } catch (failure) {
@@ -179,7 +194,10 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
         setIssues([...new Set(failure.fields.map(field => publicationIssueLabel(field.path)))]);
         const uncertain = mutationAcknowledged || (operation === 'publish' ? keepPublishIntent(failure.status, wasUncertain) : failure.status === 0 || failure.status >= 500);
         if (uncertain) { setUnconfirmed(operation); void toast.warning(`${operationLabels[operation]}结果尚未确认，请保留页面并核对当前状态。`); }
-        else { publishIntent.current = null; setUnconfirmed(null); void toast.error(failure.message); }
+        else {
+          if (operation === 'availability') inventoryWriteVersion.current = null;
+          publishIntent.current = null; setUnconfirmed(null); void toast.error(failure.message);
+        }
         if (operation === 'publish' && !uncertain) {
           void readiness.reload();
         }

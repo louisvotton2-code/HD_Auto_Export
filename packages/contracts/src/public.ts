@@ -187,12 +187,27 @@ export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.def
   if(value.priceView&&value.view!=='localized')ctx.addIssue({code:'custom',path:['priceView'],message:'USD display requires localized view'});
 });
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
-export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({projection:z.literal('detail-inline-v1').optional()}).superRefine((value,ctx)=>{
+export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({
+  projection:z.literal('detail-inline-v1').optional(),technicalView:z.literal('verified').optional(),
+}).superRefine((value,ctx)=>{
   if(value.projection && value.view!=='localized')ctx.addIssue({code:'custom',path:['view'],message:'Inline detail requires localized view'});
+  if(value.technicalView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'Verified technical view requires inline detail'});
 });
 export type PublicVehicleDetailQuery=z.infer<typeof PublicVehicleDetailQuerySchema>;
 
-export const PublicFilterQuerySchema = z.strictObject(catalogQueryFields).superRefine(validateCatalogQuery);
+export const PublicFilterQuerySchema = z.strictObject({
+  ...catalogQueryFields, projection: z.enum(['overview', 'overview-models', 'models', 'variants']).optional(),
+}).superRefine((value, ctx) => {
+  validateCatalogQuery(value, ctx);
+  if (value.projection && value.view !== 'localized')
+    ctx.addIssue({code:'custom',path:['view'],message:'Facet projections require localized view'});
+  if ((value.projection === 'models' || value.projection === 'variants') && !value.make)
+    ctx.addIssue({code:'custom',path:['make'],message:'Model and variant facets require a make ID'});
+  if (value.projection === 'models' && value.model)
+    ctx.addIssue({code:'custom',path:['model'],message:'Model facets must not be restricted to one model'});
+  if (value.projection === 'variants' && !value.model)
+    ctx.addIssue({code:'custom',path:['model'],message:'Variant facets require a model ID'});
+});
 export type PublicFilterQuery = z.infer<typeof PublicFilterQuerySchema>;
 export const CatalogMetaSchema = PublicCatalogResponseMetaSchema.extend({
   catalog: z.literal('curated'),
@@ -245,6 +260,7 @@ export const PublicVehicleFiltersSchema = responseSchema(z.strictObject({
   makes: z.array(FilterOptionSchema),
   models: z.array(FilterOptionSchema.extend({ makeId: IdSchema })),
   powertrains: z.array(z.strictObject({ id: PowertrainSchema, count: z.number().int().nonnegative() })),
+  hasTrims: z.boolean().optional(), hasGenerations: z.boolean().optional(),
   trims:z.array(FilterOptionSchema.extend({makeId:IdSchema,modelId:IdSchema})).optional(),
   generations:z.array(FilterOptionSchema.extend({makeId:IdSchema,modelId:IdSchema})).optional(),
   drivetrains:z.array(z.strictObject({id:DrivetrainSchema,count:z.number().int().nonnegative()})).optional(),

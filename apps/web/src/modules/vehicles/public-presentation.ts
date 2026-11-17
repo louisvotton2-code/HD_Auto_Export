@@ -10,6 +10,7 @@ import { publicUsdQuote } from '@/shared/lib/public-vehicle-price';
 import { catalogFilterKeys } from './public-query';
 import { catalogFilterCopy } from './catalog-filter-copy';
 import { publicVehicleRecordsCopy } from './public-vehicle-records-copy';
+import { configurationFacts, type ConfigurationFact } from './vehicle-fact-configuration';
 
 export { formatDisplayAmount as formatPublicAmount };
 export function formatVehicleMoney(money: Money, locale: Locale, maximumDecimals = 2): string {
@@ -53,9 +54,11 @@ export type VehicleFactRow = {
   value: string;
   lang?: string;
   displayField?: DetailTextField;
+  configuration?: ConfigurationFact;
 };
 
 const kwLabel = { zh: '功率（kW）', en: 'Power (kW)', ru: 'Мощность (кВт)' };
+const originalHpLabel = { zh: '原始马力（hp）', en: 'Original horsepower (hp)', ru: 'Исходная мощность (л. с.)' };
 const kwUnit = { zh: 'kW', en: 'kW', ru: 'кВт' };
 const hpUnit = { zh: '马力', en: 'hp', ru: 'л. с.' };
 const specificPowerLabels = {
@@ -79,10 +82,14 @@ function readyText(field: DetailText | null | undefined, locale: Locale) {
 export function publicVehicleFacts(
   vehicle: {
     facts: PublicVehicle['facts'];
+    source?: Pick<PublicVehicle['source'], 'kind'>;
     manufacture?: PublicVehicle['manufacture'];
     display?: Partial<Record<DetailTextField, DetailText>>;
     vehicleClass?: DetailText | null;
     technicalDetails?: Pick<TechnicalDetails, 'power'>;
+    configuration?: PublicVehicle['configuration'];
+    configurationInline?: PublicVehicleInline['configurationInline'];
+    external?: Pick<NonNullable<PublicVehicle['external']>, 'issues'>;
   },
   locale: Locale,
 ): VehicleFactRow[] {
@@ -90,47 +97,58 @@ export function publicVehicleFacts(
   const count = new Intl.NumberFormat(locale);
   const precision = new Intl.NumberFormat(locale, { maximumFractionDigits: 20 });
   const rows: VehicleFactRow[] = [];
+  // Supplier detail facts require the API’s cross-language verification.
+  // An explicitly empty inline snapshot is authoritative over a legacy full configuration.
+  const supplierDetail = vehicle.source?.kind === 'external' && vehicle.external !== undefined;
+  const configured = supplierDetail ? null : configurationFacts(
+    vehicle.configurationInline ?? vehicle.configuration?.items ?? [], locale, vehicle.external?.issues,
+  );
   const addText = (id: VehicleFactId, label: string, value: string | null | undefined,
     lang?: string, displayField?: DetailTextField) => {
-    if (!value?.trim()) return;
-    rows.push({ id, label, value: value.trim(), lang, displayField });
+    if (value?.trim()) {
+      rows.push({ id, label, value: value.trim(), lang, displayField });
+      return;
+    }
+    const configuration = configured?.get(id);
+    if (configuration && typeof configuration.value === 'string')
+      rows.push({ id, label, value: configuration.value, lang: configuration.field.contentLocale ?? undefined, configuration });
   };
   const addNumber = (id: VehicleFactId, label: string, value: number | null | undefined,
     unit?: 'cc' | 'hp' | 'kw' | 'km', suffix = '') => {
-    if (value == null || !Number.isFinite(value)) return;
-    const text = unit ? `${(unit === 'hp' || unit === 'kw' ? precision : count).format(value)} ${suffix}` : String(value);
-    rows.push({ id, label, value: text });
+    const configuration = value == null ? configured?.get(id) ?? undefined : undefined;
+    const number = value ?? configuration?.value;
+    if (typeof number !== 'number' || !Number.isFinite(number)) return;
+    const text = unit ? `${(unit === 'hp' || unit === 'kw' ? precision : count).format(number)} ${suffix}` : String(number);
+    rows.push({ id, label, value: text, configuration });
   };
   const named = (field: 'trim' | 'generation', label: string) => {
     const fact = f[field];
-    if (!fact) return;
-    const text = readyText(vehicle.display?.[field], locale);
+    const text = fact ? readyText(vehicle.display?.[field], locale) : null;
     if (text) addText(field, label, text.text, text.lang, field);
-    else if (!vehicle.display?.[field]) addText(field, label, fact.name);
+    else addText(field, label, vehicle.display?.[field] ? null : fact?.name);
   };
   const range = vehicle.manufacture?.range;
   addNumber('modelYear', t.yearLabel, f.modelYear);
   addText('manufacturedAt', t.manufactureLabel, vehicle.manufacture?.date?.value ??
     (range ? `${range.earliest.value} – ${range.latest.value}` : f.manufacturedAt?.value));
-  addText('firstRegistration', t.registrationLabel, f.firstRegistration?.value);
+  if (f.firstRegistration || f.registrationStatus !== 'never_registered')
+    addText('firstRegistration', t.registrationLabel, f.firstRegistration?.value);
   addNumber('mileageKm', t.mileageLabel, f.mileageKm, 'km', t.km);
   const { powertrain, drivetrain, body, transmission } = f;
-  if (powertrain !== 'unknown') addText('powertrain', t.powertrain, t.powertrains[powertrain]);
+  addText('powertrain', t.powertrain, powertrain === 'unknown' ? null : t.powertrains[powertrain]);
   named('trim', c.trim);
   named('generation', c.generation);
-  if (drivetrain) addText('drivetrain', c.drive, c.drives[drivetrain]);
+  addText('drivetrain', c.drive, drivetrain ? c.drives[drivetrain] : null);
   addNumber('displacementCc', t.engineLabel, f.engineCc, 'cc', 'cm³');
   addNumber('powerKw', kwLabel[locale], f.powerKw, 'kw', kwUnit[locale]);
-  addNumber('powerHp', t.powerLabel, f.powerHp, 'hp', hpUnit[locale]);
-  if (vehicle.technicalDetails) {
-    for (const id of Object.keys(specificPowerLabels) as SpecificPower[]) {
-      const unit = id.endsWith('Hp') ? 'hp' : 'kw';
-      addNumber(id, specificPowerLabels[id][locale], vehicle.technicalDetails.power[id], unit,
-        unit === 'hp' ? hpUnit[locale] : kwUnit[locale]);
-    }
+  addNumber('powerHp', originalHpLabel[locale], f.powerHp, 'hp', hpUnit[locale]);
+  for (const id of Object.keys(specificPowerLabels) as SpecificPower[]) {
+    const unit = id.endsWith('Hp') ? 'hp' : 'kw';
+    addNumber(id, specificPowerLabels[id][locale], vehicle.technicalDetails?.power[id], unit,
+      unit === 'hp' ? hpUnit[locale] : kwUnit[locale]);
   }
-  if (body && body !== 'unknown') addText('body', t.bodyLabel, t.bodies[body]);
-  if (transmission && transmission !== 'unknown') addText('transmission', t.transmissionLabel, t.transmissions[transmission]);
+  addText('body', t.bodyLabel, body && body !== 'unknown' ? t.bodies[body] : null);
+  addText('transmission', t.transmissionLabel, transmission && transmission !== 'unknown' ? t.transmissions[transmission] : null);
   if (f.location) {
     const place = readyText(vehicle.display?.location, locale);
     const city = readyText(vehicle.display?.city, locale);
@@ -143,11 +161,10 @@ export function publicVehicleFacts(
     else if (f.location.country !== 'ZZ' && f.location.country !== 'XX') {
       const country = new Intl.DisplayNames(locale, { type: 'region', fallback: 'none' }).of(f.location.country);
       addText('location', t.locationLabel, country, locale);
-    }
-  }
+    } else addText('location', t.locationLabel, null);
+  } else addText('location', t.locationLabel, null);
   const vehicleClass = readyText(vehicle.vehicleClass, locale);
-  if (vehicleClass) addText('vehicleClass', publicVehicleRecordsCopy[locale].vehicleClass,
-    vehicleClass.text, vehicleClass.lang);
+  addText('vehicleClass', publicVehicleRecordsCopy[locale].vehicleClass, vehicleClass?.text, vehicleClass?.lang);
   return rows;
 }
 

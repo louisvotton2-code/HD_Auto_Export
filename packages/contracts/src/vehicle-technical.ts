@@ -15,10 +15,26 @@ export const VehicleDetailMatchKeySchema = z.enum([
   'displacementCc', 'powerKw', 'powerHp', ...VEHICLE_POWER_DETAIL_KEYS, 'bodyType', 'transmissionType', 'driveType', 'vehicleClass', 'energyType',
 ]);
 export type VehicleDetailMatchKey = z.infer<typeof VehicleDetailMatchKeySchema>;
+/** Supplier IDs come from the documented configuration projector, never label inference. */
+export const SUPPLIER_TECHNICAL_CONFIGURATION_KEYS = {
+  'specs.displacementCc': 'displacementCc',
+  'specs.powerKw': 'powerKw',
+  'specs.engineKw': 'engineKw',
+  'specs.motorKw': 'motorKw',
+  'specs.ev.motorPowerKw': 'motorKw',
+  'specs.systemKw': 'systemKw',
+  'specs.engineHp': 'engineHp',
+  'specs.motorHp': 'motorHp',
+  'specs.bodyType': 'bodyType',
+  'specs.transmissionType': 'transmissionType',
+  'specs.driveType': 'driveType',
+} as const satisfies Record<string, VehicleDetailMatchKey>;
+
+const supplierItemId = z.enum(Object.keys(SUPPLIER_TECHNICAL_CONFIGURATION_KEYS));
 export const VehicleTechnicalDetailsSchema = z.strictObject({
   power: VehicleTechnicalPowerSchema,
   configurationMatches: z.array(z.strictObject({
-    id: itemId, semanticKey: VehicleDetailMatchKeySchema, source: z.enum(['record', 'configuration']),
+    id: z.union([itemId,supplierItemId]), semanticKey: VehicleDetailMatchKeySchema, source: z.enum(['record', 'configuration']),
   })).max(200),
 });
 export type VehicleTechnicalDetails = z.infer<typeof VehicleTechnicalDetailsSchema>;

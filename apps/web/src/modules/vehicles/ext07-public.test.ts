@@ -37,11 +37,11 @@ describe('EXT07 public projections and records', () => {
     full.facts.manufacturedAt = null;
     full.facts.mileageKm = 0;
     const t = publicVehicleMessages('ru'), facts = publicVehicleFacts(full, 'ru');
-    expect(facts.find(row => row.label === t.powerLabel)?.value).toBe('0 л. с.');
+    expect(facts.find(row => row.id === 'powerHp')?.value).toBe('0 л. с.');
     expect(facts.find(row => row.label === t.mileageLabel)?.value).toBe(`0 ${t.km}`);
     expect(facts.find(row => row.label === t.manufactureLabel)).toBeUndefined();
     full.facts.powerHp = null;
-    expect(publicVehicleFacts(full, 'ru').find(row => row.label === t.powerLabel)).toBeUndefined();
+    expect(publicVehicleFacts(full, 'ru').find(row => row.id === 'powerHp')).toBeUndefined();
   });
   it('keeps the original detail URL while hiding legacy supplier identifiers from inquiries', () => {
     const full = vehicle();
