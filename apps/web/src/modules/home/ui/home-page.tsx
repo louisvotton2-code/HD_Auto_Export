@@ -203,6 +203,7 @@ export function HomePage({
   locale,
   sections,
   catalogFilters = null,
+  catalogTotal,
   unavailable = false,
   retryAfter = 0,
   onRetry,
@@ -210,6 +211,7 @@ export function HomePage({
   locale: Locale;
   sections: PublicHomeSection[];
   catalogFilters?: PublicVehicleFilters['data'] | null;
+  catalogTotal: number | null;
   unavailable?: boolean;
   retryAfter?: number;
   onRetry?: () => void;
@@ -265,7 +267,7 @@ export function HomePage({
               {siteConfig.contacts.phone.display}
             </a>
           </div>
-          <HeroStats locale={locale} catalogTotal={catalogFilters?.total ?? null} />
+          <HeroStats locale={locale} catalogTotal={catalogTotal} />
         </div>
         <a className={styles.scroll} href="#home-shortcuts">
           <span>{t.scroll}</span>

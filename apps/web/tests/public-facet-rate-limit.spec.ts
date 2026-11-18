@@ -75,7 +75,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
       await page.goto(entry.route);
       await expectExistingCars(page, entry.home);
       const homeTotal = page.getByTestId('hero-stat-catalog').locator('strong');
-      if (entry.home) await expect(homeTotal).toHaveText('—');
+      if (entry.home) await expect(homeTotal).toHaveText('470,000+');
       const status = page.getByTestId('public-resource-status');
       await expect(status).toContainText('Too many requests');
       await expect(status.getByRole('button')).toBeDisabled();
@@ -207,7 +207,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         await page.goto(entry.route);
         await expectExistingCars(page, entry.home);
         const homeTotal = page.getByTestId('hero-stat-catalog').locator('strong');
-        if (entry.home) await expect(homeTotal).toHaveText('—');
+        if (entry.home) await expect(homeTotal).toHaveText('470,000+');
         await expect(page.getByTestId('public-resource-status')).toContainText('Too many requests');
         const reload = page
           .locator('noscript a[href]')

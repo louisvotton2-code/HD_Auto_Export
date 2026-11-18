@@ -6,6 +6,8 @@ import { homeContent } from '../content/home-content';
 import { CountUpValue } from '@/shared/ui/count-up-value';
 import styles from './hero-stats.module.css';
 
+const presetCatalogCount = 470_000;
+
 export function HeroStats({
   locale,
   catalogTotal,
@@ -32,11 +34,16 @@ export function HeroStats({
           data-testid={`hero-stat-${metric.id}`}
           key={metric.id}
         >
-          <dt className={styles.label}>{t.stats[index]}</dt>
+          <dt className={styles.label}>
+            {metric.id === 'catalog' && metric.value === null ? t.catalogCountPresetLabel : t.stats[index]}
+          </dt>
           <dd className={styles.number}>
             {metric.id === 'catalog' ? (
-              <strong className={`${styles.value} ${styles.catalogValue}`}>
-                {metric.value === null ? '—' : new Intl.NumberFormat(locale).format(metric.value)}
+              <strong
+                className={`${styles.value} ${metric.value === null ? styles.catalogPreset : styles.catalogValue}`}
+              >
+                {new Intl.NumberFormat(locale).format(metric.value ?? presetCatalogCount)}
+                {metric.value === null && <span className={styles.suffix}>+</span>}
               </strong>
             ) : (
               <CountUpValue

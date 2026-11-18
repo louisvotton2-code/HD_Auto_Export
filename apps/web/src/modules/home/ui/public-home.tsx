@@ -21,11 +21,13 @@ export function PublicHome({
   locale,
   home,
   filters,
+  catalogTotal,
   initialRetryAfter = 0,
 }: {
   locale: Locale;
   home: PublicHomeSections | null;
   filters: PublicVehicleFilters['data'] | null;
+  catalogTotal: number | null;
   initialRetryAfter?: number;
 }) {
   const projection = { locale, ...publicUsdView };
@@ -62,6 +64,7 @@ export function PublicHome({
         locale={locale}
         sections={resource.data?.data.sections ?? []}
         catalogFilters={facets.data?.data ?? null}
+        catalogTotal={facets.data?.data.total ?? catalogTotal}
         unavailable={!resource.data}
         retryAfter={resource.retryAfter}
         onRetry={retry}

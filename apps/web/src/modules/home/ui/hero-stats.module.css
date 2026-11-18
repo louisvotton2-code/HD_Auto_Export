@@ -51,7 +51,7 @@
 }
 
 .label {
-  max-width: 190px;
+  max-width: min(100%, 190px);
   color: #c0c0c0;
   font-size: 10px;
   line-height: 1.5;
@@ -63,6 +63,12 @@
 @media (max-width: 374px) {
   .catalogValue {
     font-size: 20px;
+  }
+}
+
+@media (max-width: 639px) {
+  .catalogPreset {
+    font-size: clamp(16px, 5vw, 24px);
   }
 }
 

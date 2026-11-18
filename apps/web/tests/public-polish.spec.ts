@@ -85,7 +85,7 @@ for (const path of ['/en/', '/en/cars/', '/en/cars/fixture_car_2/']) {
     if (path === '/en/') {
       const total = page.getByTestId('hero-stat-catalog').locator('strong');
       await expect(total).toBeVisible();
-      await expect(total).toHaveText('—');
+      await expect(total).toHaveText('470,000+');
     }
     await setPublicFixtureState(request, { publicRateLimited: false });
     await page.evaluate(() => {

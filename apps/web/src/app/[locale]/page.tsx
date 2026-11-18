@@ -45,12 +45,17 @@ export default async function Home({ params }: Props) {
     getPublicFilters(locale, {}, { projection: 'overview-models' }),
   ]);
   const facets = filters.status === 'fulfilled' ? filters.value.data : null;
-  const initialRetryAfter = publicRetryAfter(home, filters);
-  let catalogTotal = facets?.total;
-  // Staff-only API responses omit the facet total. Read exact list metadata only then.
-  if (facets && catalogTotal === undefined && initialRetryAfter === 0) {
-    const catalog = await getPublicCatalog({ catalog: 'curated', locale, page: 1, pageSize: 1 }).catch(() => null);
-    if (catalog?.meta.totalKind === 'exact') catalogTotal = catalog.meta.total ?? undefined;
+  let initialRetryAfter = publicRetryAfter(home, filters);
+  let catalogTotal = facets?.total ?? null;
+  // The headline can still use exact list metadata if the larger facet response fails.
+  if (catalogTotal === null && initialRetryAfter === 0) {
+    const [catalog] = await Promise.allSettled([
+      getPublicCatalog({ catalog: 'curated', locale, page: 1, pageSize: 1 }),
+    ]);
+    if (catalog.status === 'fulfilled' && catalog.value.meta.totalKind === 'exact') {
+      catalogTotal = catalog.value.meta.total ?? null;
+    }
+    initialRetryAfter = publicRetryAfter(catalog);
   }
   return (
     <PublicHome
@@ -59,11 +64,12 @@ export default async function Home({ params }: Props) {
       home={home.status === 'fulfilled' ? home.value : null}
       filters={facets ? {
         catalog: facets.catalog,
-        total: catalogTotal,
+        total: facets.total,
         makes: facets.makes,
         models: facets.models,
         powertrains: facets.powertrains,
       } : null}
+      catalogTotal={catalogTotal}
       initialRetryAfter={initialRetryAfter}
     />
   );
