@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import { connection } from 'next/server';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
@@ -40,12 +41,16 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
   const { make, model } = query;
-  // Native GET and script-free clients need the form and results in the initial HTML.
+  // Next hides its internal routing headers. A same-origin navigation fetch can
+  // load dictionaries after the cards, while document requests keep the full GET form.
+  const incoming = await headers();
+  const deferFilters = incoming.get('sec-fetch-dest') === 'empty' &&
+    incoming.get('sec-fetch-site') === 'same-origin' && incoming.get('accept') === '*/*';
   const [result, filters, brandFilters, modelFilters] = await Promise.allSettled([
     getPublicCatalog(query),
-    getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model })),
-    make ? getPublicFilters(locale, query, catalogFacetProjection({ make })) : null,
-    make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model })) : null,
+    deferFilters ? null : getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model })),
+    !deferFilters && make ? getPublicFilters(locale, query, catalogFacetProjection({ make })) : null,
+    !deferFilters && make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model })) : null,
   ]);
   return (
     <PublicVehicleList
@@ -53,7 +58,7 @@ export default async function CarsPage({ params, searchParams }: Props) {
       locale={locale}
       query={query}
       result={result.status === 'fulfilled' ? result.value : null}
-      filters={filters.status === 'fulfilled' ? projectCatalogFacetOverview(filters.value) : null}
+      filters={filters.status === 'fulfilled' && filters.value ? projectCatalogFacetOverview(filters.value) : null}
       initialBrandFilters={brandFilters.status === 'fulfilled' && brandFilters.value && make
         ? projectCatalogFacetScope(brandFilters.value, make)
         : null}
@@ -62,6 +67,7 @@ export default async function CarsPage({ params, searchParams }: Props) {
         : null}
       error={result.status === 'rejected'}
       initialRetryAfter={publicRetryAfter(result, filters, brandFilters, modelFilters)}
+      deferFilters={deferFilters}
     />
   );
 }

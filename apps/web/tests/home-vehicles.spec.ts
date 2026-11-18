@@ -184,6 +184,7 @@ test('all locales fit the hero, three shortcuts and vehicle rails across viewpor
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
     [320, 568], [360, 800], [390, 844], [430, 932], [768, 1024], [1280, 900], [1440, 900],
+    [2560, 1080], [3440, 1440],
   ];
   for (const locale of ['zh', 'en', 'ru']) {
     for (const [width, height] of viewports) {
@@ -195,6 +196,12 @@ test('all locales fit the hero, three shortcuts and vehicle rails across viewpor
       const heading = await page.locator('main h1').boundingBox();
       expect(heading!.x).toBeGreaterThanOrEqual(0);
       expect(heading!.x + heading!.width).toBeLessThanOrEqual(width);
+      if (width > 760) {
+        const picture = page.locator('[data-home-section="hero"] img[src^="/media/home/dawn-convoy.webp"]');
+        const frame = (await picture.locator('..').boundingBox())!;
+        expect(frame.width).toBeLessThanOrEqual(980);
+        expect(width - frame.x - frame.width).toBeCloseTo(heading!.x, 0);
+      }
       const layout = await page.locator('[data-home-section="hero"]').evaluate((hero) => {
         const stats = hero.querySelector('[data-testid="hero-stats"]')!;
         const tiles = Array.from(hero.querySelectorAll('#home-shortcuts > a'), (link) =>

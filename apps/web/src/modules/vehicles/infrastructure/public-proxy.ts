@@ -95,7 +95,7 @@ export async function proxyPublicRequest(
       ? catalogQueryKeys
       : path === 'vehicle-filters'
         ? catalogQueryKeys.filter((key) => key !== 'page' && key !== 'pageSize')
-        : isDetail ? ['locale', 'view', 'priceView', 'projection', 'technicalView'] : ['locale', 'view', 'priceView'];
+        : isDetail ? ['locale', 'view', 'priceView', 'projection', 'technicalView', 'titleView'] : ['locale', 'view', 'priceView'];
   for (const key of params.keys())
     if (!allowed.includes(key) || params.getAll(key).length !== 1) return failure(400);
   try {
@@ -132,6 +132,7 @@ export async function proxyPublicRequest(
         query.priceView as 'usd' | undefined,
         query.projection as 'detail-inline-v1' | undefined,
         query.technicalView as 'verified' | undefined,
+        query.titleView as 'english' | undefined,
       );
       return vehicle
         ? Response.json({ data: vehicle, meta: { requestId: crypto.randomUUID() } }, { headers })

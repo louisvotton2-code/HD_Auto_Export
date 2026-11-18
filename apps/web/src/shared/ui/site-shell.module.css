@@ -553,7 +553,10 @@
   }
 }
 @media (max-width: 399px) {
-  .brandName > span {
+  .header:global(.hd-header) .brand {
+    min-height: 44px;
+  }
+  .brandName {
     display: none;
   }
 }

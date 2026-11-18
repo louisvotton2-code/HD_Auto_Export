@@ -117,6 +117,47 @@ test('the mobile light crosses a fixed frame in both directions and settles afte
 test.describe('touch scrolling on the homepage', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
+  test('the light is visible on the first large touch scroll step in either direction', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.goto('/en/');
+    const hero = page.locator('[data-home-section="hero"]');
+    const light = hero.getByTestId('hero-road-light');
+    await expect(hero).toHaveAttribute('style', /--drive-progress:\s*0\.000/);
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    const sampleScroll = (top: number) => light.evaluate((node, scrollTop) => new Promise<{
+      visibleHeight: number;
+      stripePosition: number;
+    }>((resolve) => {
+      window.addEventListener('scroll', () => {
+        const frame = node.parentElement!.getBoundingClientRect();
+        const headerBottom = document.querySelector('.site-header')!.getBoundingClientRect().bottom;
+        const from = Math.max(frame.top, headerBottom);
+        const to = Math.min(frame.bottom, innerHeight);
+        const offsetFromCenter = (from + to - frame.top - frame.bottom) / 2;
+        const transform = new DOMMatrixReadOnly(getComputedStyle(node).transform);
+        const stripe = getComputedStyle(node, '::before');
+        const skew = new DOMMatrixReadOnly(stripe.transform).c;
+        const stripeX = transform.m41 + parseFloat(stripe.width) + skew * offsetFromCenter;
+        resolve({ visibleHeight: to - from, stripePosition: stripeX / frame.width });
+      }, { once: true });
+      window.scrollTo({ top: scrollTop, behavior: 'instant' });
+    }), top);
+
+    const down = await sampleScroll(170);
+    await page.evaluate(() => window.scrollTo({ top: 340, behavior: 'instant' }));
+    await expect(hero).toHaveAttribute('style', /--drive-progress:\s*1\.000/);
+    const up = await sampleScroll(170);
+
+    for (const sample of [down, up]) {
+      expect(sample.visibleHeight).toBeGreaterThan(100);
+      expect(sample.stripePosition).toBeGreaterThan(0.05);
+      expect(sample.stripePosition).toBeLessThan(0.96);
+    }
+  });
+
   test('toolbar height changes cannot reverse the light during a swipe', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     await page.goto('/en/');

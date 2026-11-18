@@ -273,7 +273,10 @@ test('shared catalog selections hydrate without facet reads and draft requests s
     await expect(page).toHaveURL(/\/en\/cars\/$/);
     await expect(make).toHaveValue('');
     await expect(model).toBeDisabled();
-    expect(reads).toHaveLength(1);
+    await expect(make.locator('option[value=beta]')).toHaveCount(1);
+    expect(reads).toHaveLength(2);
+    expect(reads[1]?.searchParams.get('locale')).toBe('en');
+    expect(reads[1]?.searchParams.has('make')).toBe(false);
   } finally {
     release();
     await page.unroute(russianAlpha);
@@ -284,9 +287,9 @@ test('shared catalog selections hydrate without facet reads and draft requests s
   await model.selectOption('beta_model');
   await expect(form.locator('[name=trim] option[value=beta_model_trim]')).toHaveCount(1);
   await expect(page).toHaveURL(/\/en\/cars\/$/);
-  expect(reads).toHaveLength(3);
-  expect(isScope(reads[1]!, 'en', 'beta')).toBe(true);
-  expect(isScope(reads[2]!, 'en', 'beta', 'beta_model')).toBe(true);
+  expect(reads).toHaveLength(4);
+  expect(isScope(reads[2]!, 'en', 'beta')).toBe(true);
+  expect(isScope(reads[3]!, 'en', 'beta', 'beta_model')).toBe(true);
 });
 
 test('range validation blocks a reversed UI range; the BFF rejects malformed and repeated filters', async ({

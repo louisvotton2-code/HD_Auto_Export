@@ -63,7 +63,7 @@ export async function getSsrPublicVehicle(id: string, locale: Locale) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
     const localized = localizedInlineVehicleSchema(locale, 'usd');
-    const result = await readSsr({ path: canonicalPublicPath(`/api/v1/vehicles/${id}`, { locale, ...publicInlineVehicleView(id) }),
+    const result = await readSsr({ path: canonicalPublicPath(`/api/v1/vehicles/${id}`, { locale, ...publicInlineVehicleView(id, locale) }),
       priceView: 'usd', schema: { parse(value) {
         const parsed = localized.parse(value);
         if (parsed.data.id !== id || parsed.data.detailPath !== `/${locale}/cars/${id}/`) throw new PublicApiError(503);
