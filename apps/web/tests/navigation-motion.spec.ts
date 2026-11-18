@@ -381,7 +381,7 @@ for (const touch of [false, true]) {
       await expect(header.locator('.main-nav:visible [aria-current="page"]')).toHaveText(
         /Как купить/,
       );
-      await header.locator('.main-nav:visible a[href="/ru/calculator/"]').click();
+      await header.locator('.main-nav:visible a[href="/ru/calculator/russia/"]').click();
       await expect(page).toHaveURL(/\/ru\/calculator\/russia\/$/);
       await expect(page.locator('.reset-button')).toBeEnabled();
       await page.evaluate(() => window.scrollTo(0, 900));
