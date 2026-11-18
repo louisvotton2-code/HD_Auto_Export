@@ -4,7 +4,6 @@ const indexable = process.env.SITE_INDEXABLE === 'true';
 
 export const siteConfig = {
   name: 'HD Auto Export',
-  companyWebsite: 'https://hongdingauto.com/',
   isPlaceholderBrand: false,
   brand: {
     name: 'HD Auto Export',

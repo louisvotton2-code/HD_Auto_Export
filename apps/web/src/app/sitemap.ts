@@ -15,6 +15,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       changeFrequency: 'monthly' as const,
       priority: 0.7,
     },
+    {
+      url: `${siteConfig.origin}/${locale}/about/`,
+      changeFrequency: 'monthly' as const,
+      priority: 0.7,
+    },
     ...countries.map((country) => ({
       url: `${siteConfig.origin}/${locale}/calculator/${country.slug}/`,
       changeFrequency: 'monthly' as const,

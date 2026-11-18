@@ -31,6 +31,7 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
   const calculatorActive = pathname === '/calculator' || pathname.startsWith('/calculator/');
   const carsActive = pathname === '/cars' || pathname.startsWith('/cars/');
   const buyActive = pathname.replace(/\/$/, '') === '/buy';
+  const aboutActive = pathname.replace(/\/$/, '') === '/about';
   const partsActive = pathname === '/parts' || pathname.startsWith('/parts/');
 
   useEffect(() => {
@@ -91,9 +92,14 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
       >
         {t('BuyingGuide.navLabel')}
       </Link>
-      <a className="nav-utility" href={siteConfig.companyWebsite} onClick={closeMenu}>
+      <Link
+        className="nav-utility"
+        href="/about/"
+        aria-current={aboutActive ? 'page' : undefined}
+        onClick={closeMenu}
+      >
         {t('Nav.about')}
-      </a>
+      </Link>
       <a className="nav-utility" href="#contact" onClick={closeMenu}>
         {t('Nav.contact')}
       </a>
