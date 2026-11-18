@@ -17,6 +17,7 @@ const catalogLabels = {
   en: 'Cars in catalog',
   ru: 'Автомобили в каталоге',
 };
+const partsCatalogTotal = 48_689;
 
 for (const failedProjection of ['overview', 'home-models'] as const) {
   test(`home keeps the other facet data and retries only ${failedProjection}`, async ({ page, request }) => {
@@ -67,7 +68,10 @@ test('recovering the featured rail refreshes models after the featured selection
   });
 
   await page.goto('/en/');
-  await expect(page.getByTestId('home-catalog-error')).toBeVisible();
+  const vehicleSection = page.locator('#home-vehicles');
+  await expect(vehicleSection.getByTestId('home-catalog-error')).toBeVisible();
+  await page.getByRole('link', { name: 'Scroll down', exact: true }).click();
+  await expect(page).toHaveURL(/#home-vehicles$/);
   await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26', { useInnerText: true });
   expect(reads).toEqual([]);
 
@@ -154,12 +158,31 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     }, formatCount.format(479_000))).toBe(true);
     const cards = await page.locator('[data-home-section^="vehicles-"] article').count();
     expect(list.meta.total).toBeGreaterThan(cards);
-    const clients = page.getByTestId('hero-stat-clients').locator('strong');
-    await expect(clients).toBeVisible();
-    await expect(clients).toHaveText('660+', { useInnerText: true });
+    const partStat = page.getByTestId('hero-stat-parts');
+    const parts = partStat.locator('strong');
+    await expect(parts).toBeVisible();
+    const displayedPartsTotal = formatCount.format(partsCatalogTotal);
+    await expect(parts).toHaveText(displayedPartsTotal, { useInnerText: true });
+    expect(await partStat.evaluate((item) => item.scrollWidth <= item.clientWidth + 1)).toBe(true);
     await expect(page.getByTestId('hero-stat-years').locator('strong'))
       .toHaveText(/23/, { useInnerText: true });
+    const stats = page.getByTestId('hero-stats');
+    const shortcuts = page.locator('#home-shortcuts');
+    const cue = page.locator('a[href="#home-vehicles"]');
+    await expect(cue).toBeVisible();
+    const statsBox = (await stats.boundingBox())!;
+    const shortcutsBox = (await shortcuts.boundingBox())!;
+    const cueBox = (await cue.boundingBox())!;
+    expect(shortcutsBox.y).toBeGreaterThanOrEqual(statsBox.y + statsBox.height - 1);
+    expect(cueBox.y).toBeGreaterThanOrEqual(shortcutsBox.y + shortcutsBox.height - 1);
+    expect(cueBox.x + cueBox.width / 2).toBeCloseTo(statsBox.x + statsBox.width / 2, 0);
     expect(browserReads).toEqual([]);
+
+    await shortcuts.locator(`a[href="/${locale}/parts/"]`).click();
+    const partsPageTotal = page
+      .getByTestId('parts-catalog')
+      .locator(`[data-counter-target="${partsCatalogTotal}"] [data-counter-value]`);
+    await expect(partsPageTotal).toHaveText(displayedPartsTotal);
   });
 }
 
@@ -172,8 +195,8 @@ test('all hero counters grow from their server-rendered zero to the exact values
   const assets = /\/_next\/static\/.*\.(?:css|js)(?:\?|$)/;
   await page.route(assets, (route) => route.abort());
   await page.goto('/en/');
-  const metrics = ['catalog', 'clients', 'years'] as const;
-  const initialValues = { catalog: '0', clients: '0+', years: '0 years' };
+  const metrics = ['catalog', 'parts', 'years'] as const;
+  const initialValues = { catalog: '0', parts: '0', years: '0 years' };
   for (const id of metrics) {
     await expect(page.getByTestId(`hero-stat-${id}`).locator('strong'))
       .toHaveText(initialValues[id], { useInnerText: true });
@@ -202,7 +225,7 @@ test('all hero counters grow from their server-rendered zero to the exact values
   for (let i = 0; i < 2; i++) {
     if (i === 0) await page.goto('/en/');
     else await page.reload();
-    const expected = { catalog: 26, clients: 660, years: 23 };
+    const expected = { catalog: 26, parts: partsCatalogTotal, years: 23 };
     for (const id of metrics) {
       await expect(page.getByTestId(`hero-stat-${id}`).locator('[data-counter-value]'))
         .toHaveAttribute('data-counter-value', String(expected[id]));
@@ -218,7 +241,7 @@ test('all hero counters grow from their server-rendered zero to the exact values
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.reload();
-  const reducedValues = { catalog: '26', clients: '660+', years: '23 years' };
+  const reducedValues = { catalog: '26', parts: '48,689', years: '23 years' };
   for (const id of metrics) {
     const metric = page.getByTestId(`hero-stat-${id}`);
     await expect(metric.locator('strong')).toHaveText(reducedValues[id], { useInnerText: true });
@@ -230,9 +253,9 @@ test('all hero counters grow from their server-rendered zero to the exact values
   });
   const plain = await noScript.newPage();
   await plain.goto('/zh/');
-  const plainClients = plain.getByTestId('hero-stat-clients');
-  await expect(plainClients.locator('strong')).toHaveText('660+', { useInnerText: true });
-  await expect(plainClients.locator('[data-counter-value]')).toBeHidden();
+  const plainParts = plain.getByTestId('hero-stat-parts');
+  await expect(plainParts.locator('strong')).toHaveText('48,689', { useInnerText: true });
+  await expect(plainParts.locator('[data-counter-value]')).toBeHidden();
   const plainCatalog = plain.getByTestId('hero-stat-catalog').locator('strong');
   await expect(plainCatalog).toHaveText('26', { useInnerText: true });
   await expect(plainCatalog.locator('[data-counter-value]')).toBeHidden();

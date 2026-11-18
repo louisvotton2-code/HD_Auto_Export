@@ -5,22 +5,22 @@ test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Uses the isolated public catalog
 test.beforeEach(async ({ request }) => resetPublicFixture(request));
 test.afterEach(async ({ request }) => resetPublicFixture(request));
 
-async function decorativeControlIcon(control: Locator) {
-  await expect(control.locator('svg')).toHaveCount(1);
-  await expect(control.locator('svg')).toHaveAttribute('aria-hidden', 'true');
-  await expect(control.locator('svg')).toHaveAttribute('focusable', 'false');
+async function decorativeControlIcon(control: Locator, count = 1) {
+  const icons = control.locator('svg');
+  await expect(icons).toHaveCount(count);
+  for (const icon of await icons.all()) {
+    await expect(icon).toHaveAttribute('aria-hidden', 'true');
+    await expect(icon).toHaveAttribute('focusable', 'false');
+  }
 }
 
 test('SVG controls retain their labels, keyboard actions and state while flags use local assets', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/en/');
-  const pause = page.getByRole('button', { name: 'Pause autoplay', exact: true });
-  await decorativeControlIcon(pause);
-  await expect(pause).toHaveText('');
-  await pause.press('Enter');
-  const resume = page.getByRole('button', { name: 'Resume autoplay', exact: true });
-  await expect(resume).toHaveAttribute('aria-pressed', 'true');
-  await decorativeControlIcon(resume);
+  const explore = page.getByRole('link', { name: 'Scroll down', exact: true });
+  await decorativeControlIcon(explore, 2);
+  await explore.press('Enter');
+  await expect(page).toHaveURL(/#home-vehicles$/);
   const catalog = page.getByRole('link', { name: 'Full catalog', exact: true });
   await decorativeControlIcon(catalog);
   await expect(catalog).toHaveAttribute('href', '/en/cars/');

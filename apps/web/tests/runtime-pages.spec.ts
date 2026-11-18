@@ -57,13 +57,20 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
 
 test('root defaults to Russian home and calculator shortcuts still reach their destinations', async ({
   page,
+  request,
 }) => {
+  const entry = await request.get('/', { maxRedirects: 0 });
+  expect(entry.status()).toBe(307);
+  expect(entry.headers()['location']).toBe('/ru/');
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
   await page.goto('/');
   await expect(page).toHaveURL(/\/ru\/$/);
   await expect(page.getByTestId('home-page')).toBeVisible();
   for (const locale of ['zh', 'en', 'ru']) {
-    await page.goto(`/${locale}/`);
+    const home = await page.goto(`/${locale}/`);
+    expect(home?.status()).toBe(200);
+    await expect(page).toHaveURL(new RegExp(`/${locale}/$`));
+    await expect(page.locator('html')).toHaveAttribute('lang', locale === 'zh' ? 'zh-Hans' : locale);
     await expect(page.getByTestId('home-page')).toBeVisible();
     await page.goto(`/${locale}/calculator/`);
     await expect(page).toHaveURL(new RegExp(`/${locale}/calculator/russia/?$`));
@@ -79,10 +86,11 @@ test('home and calculator entries remain usable with JavaScript disabled', async
   const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await context.newPage();
   await page.goto('/');
-  const homeLink = page.getByRole('link', { name: 'На главную', exact: true });
-  await expect(homeLink).toHaveAttribute('href', '/ru/');
-  await homeLink.click();
+  await expect(page).toHaveURL(/\/ru\/$/);
   await expect(page.getByTestId('home-page')).toBeVisible();
+  await page.locator('#home-shortcuts a[href="/ru/calculator/russia/"]').click();
+  await expect(page).toHaveURL(/\/ru\/calculator\/russia\/$/);
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await page.goto('/zh/calculator/');
   const countryChoices = page.locator('main').getByRole('navigation');
   await expect(countryChoices.getByRole('link')).toHaveCount(7);

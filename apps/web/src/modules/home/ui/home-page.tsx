@@ -16,15 +16,14 @@ import {
   VehiclePriceValues,
 } from '@/modules/vehicles';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
-import { siteConfig } from '@/shared/config/site';
+import { DestinationCalculatorLink } from '@/shared/ui/destination-calculator-link';
 import { Icon } from '@/shared/ui/icon';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
 import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
-import { HeroCanvas } from './hero-canvas';
+import { HomeHero } from './home-hero';
 import { HomeSections } from './home-sections';
-import { HeroStats } from './hero-stats';
 import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import styles from './home.module.css';
 import type { HomeModel } from '../types';
@@ -33,11 +32,9 @@ import { homeContent } from '../content/home-content';
 function VehicleRail({
   section,
   locale,
-  paused,
 }: {
   section: PublicHomeSection;
   locale: Locale;
-  paused: boolean;
 }) {
   const rail = useRef<HTMLDivElement>(null);
   const [interacting, setInteracting] = useState(false);
@@ -59,7 +56,7 @@ function VehicleRail({
   };
   useEffect(() => {
     const node = rail.current;
-    if (!node || paused || interacting || matchMedia('(prefers-reduced-motion: reduce)').matches)
+    if (!node || interacting || matchMedia('(prefers-reduced-motion: reduce)').matches)
       return;
     let visible = false;
     const observer = new IntersectionObserver(
@@ -77,7 +74,7 @@ function VehicleRail({
       observer.disconnect();
       clearInterval(timer);
     };
-  }, [paused, interacting, vehicles.length]);
+  }, [interacting, vehicles.length]);
   return (
     <section className={styles.brandSection} data-home-section={`vehicles-${id}`}>
       <div className={styles.sectionHead}>
@@ -219,7 +216,20 @@ export function HomePage({
   onRetry?: () => void;
 }) {
   const t = homeContent[locale];
-  const [paused, setPaused] = useState(false);
+  const shortcuts = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const section = shortcuts.current;
+    if (!section || !('IntersectionObserver' in window)) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.intersectionRatio < .25) return;
+      section.dataset.homeRevealed = 'true';
+      observer.disconnect();
+    }, { threshold: .25 });
+    observer.observe(section);
+    return () => observer.disconnect();
+  }, []);
   const visibleSections = unavailable
     ? []
     : sections.filter((section) => section.vehicles.length > 0);
@@ -253,92 +263,63 @@ export function HomePage({
       ];
     });
   return (
-    <main id="main" className={styles.home} data-testid="home-page" data-motion-paused={paused}>
-      <section className={styles.hero} data-home-section="hero">
-        <HeroCanvas paused={paused} />
-        <div className={styles.heroContent}>
-          <h1>{t.title}</h1>
-          <p>{t.subtitle}</p>
-          <Link className={styles.catalogButton} href="/cars/">
-            <span className={styles.catalogButtonLabel}>{t.catalog}</span>
+    <main id="main" className={styles.home} data-testid="home-page">
+      <HomeHero locale={locale} catalogTotal={catalogTotal}>
+        <section ref={shortcuts} className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
+          <Link href="/cars/" className={`${styles.shortcut} ${styles.catalogShortcut}`}>
+            <Icon name="car" size={30} />
+            <strong>{t.shortcuts[0]}</strong>
+            <span className={styles.shortcutNote}>{t.shortcutNotes[0]}</span>
+            <Icon name="arrow" size={16} className={styles.shortcutArrow} />
           </Link>
-          <div className={styles.heroPhone}>
-            <a href={siteConfig.contacts.phone.href}>
-              <Icon name="phone" size={14} />
-              {siteConfig.contacts.phone.display}
-            </a>
-          </div>
-          <HeroStats locale={locale} catalogTotal={catalogTotal} />
-        </div>
-        <a className={styles.scroll} href="#home-shortcuts">
-          <span>{t.scroll}</span>
-          <span aria-hidden="true">
-            <Icon name="chevron" size={24} />
-            <Icon name="chevron" size={24} />
-          </span>
-        </a>
-        <button
-          className={styles.motionToggle}
-          type="button"
-          aria-label={paused ? t.resume : t.pause}
-          aria-pressed={paused}
-          onClick={() => setPaused((x) => !x)}
-        >
-          <Icon name={paused ? "play" : "pause"} size={20} />
-        </button>
-      </section>
-      <section className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
-        <Link href="/cars/" className={`${styles.shortcut} ${styles.catalogShortcut}`}>
-          <Icon name="car" size={30} />
-          <strong>{t.shortcuts[0]}</strong>
-          <span className={styles.shortcutNote}>{t.shortcutNotes[0]}</span>
-          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
-        </Link>
-        <Link href="/parts/" className={styles.shortcut}>
-          <Icon name="box" size={30} />
-          <strong>{t.shortcuts[1]}</strong>
-          <span className={styles.shortcutNote}>{t.shortcutNotes[1]}</span>
-          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
-        </Link>
-        <Link href="/calculator/" className={styles.shortcut}>
-          <Icon name="calculator" size={30} />
-          <strong>{t.shortcuts[2]}</strong>
-          <span className={styles.shortcutNote}>{t.shortcutNotes[2]}</span>
-          <Icon name="arrow" size={16} className={styles.shortcutArrow} />
-        </Link>
-      </section>
-      {visibleSections.map((section) => (
-        <VehicleRail key={section.id} section={section} locale={locale} paused={paused} />
-      ))}
-      {(unavailable || visibleSections.length === 0) && (
-        <section
-          className={styles.catalogState}
-          data-testid={unavailable ? 'home-catalog-error' : 'home-catalog-empty'}
-          aria-live="polite"
-        >
-          <Icon name={unavailable ? 'refresh' : 'car'} size={32} />
-          <h2>{unavailable ? t.catalogUnavailable : t.catalogEmpty}</h2>
-          <p>{unavailable ? t.catalogUnavailableBody : t.catalogEmptyBody}</p>
-          {unavailable ? (
-            <>
-              <a
-                href={retryAfter > 0 ? undefined : `/${locale}/`}
-                aria-disabled={retryAfter > 0 || undefined}
-                onClick={(event) => {
-                  if (retryAfter > 0 || onRetry) event.preventDefault();
-                  if (retryAfter <= 0) onRetry?.();
-                }}
-              >
-                {t.retry}
-              </a>
-            </>
-          ) : (
-            <Link href="/cars/">{t.catalog}</Link>
-          )}
+          <Link href="/parts/" className={styles.shortcut}>
+            <Icon name="box" size={30} />
+            <strong>{t.shortcuts[1]}</strong>
+            <span className={styles.shortcutNote}>{t.shortcutNotes[1]}</span>
+            <Icon name="arrow" size={16} className={styles.shortcutArrow} />
+          </Link>
+          <DestinationCalculatorLink className={styles.shortcut}>
+            <Icon name="calculator" size={30} />
+            <strong>{t.shortcuts[2]}</strong>
+            <span className={styles.shortcutNote}>{t.shortcutNotes[2]}</span>
+            <Icon name="arrow" size={16} className={styles.shortcutArrow} />
+          </DestinationCalculatorLink>
         </section>
-      )}
-      <BrandMarquee brands={brands} paused={paused} />
-      <HomeSections locale={locale} models={models} paused={paused} />
+      </HomeHero>
+      <div id="home-vehicles">
+        {visibleSections.map((section) => (
+          <VehicleRail key={section.id} section={section} locale={locale} />
+        ))}
+        {(unavailable || visibleSections.length === 0) && (
+          <section
+            className={styles.catalogState}
+            data-testid={unavailable ? 'home-catalog-error' : 'home-catalog-empty'}
+            aria-live="polite"
+          >
+            <Icon name={unavailable ? 'refresh' : 'car'} size={32} />
+            <h2>{unavailable ? t.catalogUnavailable : t.catalogEmpty}</h2>
+            <p>{unavailable ? t.catalogUnavailableBody : t.catalogEmptyBody}</p>
+            {unavailable ? (
+              <>
+                <a
+                  href={retryAfter > 0 ? undefined : `/${locale}/`}
+                  aria-disabled={retryAfter > 0 || undefined}
+                  onClick={(event) => {
+                    if (retryAfter > 0 || onRetry) event.preventDefault();
+                    if (retryAfter <= 0) onRetry?.();
+                  }}
+                >
+                  {t.retry}
+                </a>
+              </>
+            ) : (
+              <Link href="/cars/">{t.catalog}</Link>
+            )}
+          </section>
+        )}
+      </div>
+      <BrandMarquee brands={brands} />
+      <HomeSections locale={locale} models={models} />
     </main>
   );
 }

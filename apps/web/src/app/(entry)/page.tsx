@@ -1,5 +1,6 @@
-import { StaticRedirect } from '@/shared/ui/static-redirect';
+import { redirect } from 'next/navigation';
+import { routing } from '@/i18n/routing';
 
 export default function EntryPage() {
-  return <StaticRedirect href="/ru/" locale="ru" destination="home" />;
+  redirect(`/${routing.defaultLocale}/`);
 }

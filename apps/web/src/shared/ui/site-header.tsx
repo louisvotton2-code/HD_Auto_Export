@@ -8,6 +8,7 @@ import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { routing, type Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { CountryFlag, type FlagCountryCode } from './country-flag';
+import { DestinationCalculatorLink } from './destination-calculator-link';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
@@ -31,6 +32,7 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
   const calculatorActive = pathname === '/calculator' || pathname.startsWith('/calculator/');
   const carsActive = pathname === '/cars' || pathname.startsWith('/cars/');
   const buyActive = pathname.replace(/\/$/, '') === '/buy';
+  const aboutActive = pathname.replace(/\/$/, '') === '/about';
   const partsActive = pathname === '/parts' || pathname.startsWith('/parts/');
 
   useEffect(() => {
@@ -75,14 +77,13 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
       >
         {t('Nav.parts')}
       </Link>
-      <Link
-        href="/calculator/"
+      <DestinationCalculatorLink
         className={calculatorActive ? 'nav-active' : undefined}
         aria-current={calculatorActive ? 'page' : undefined}
         onClick={closeMenu}
       >
         {t('Nav.calculator')}
-      </Link>
+      </DestinationCalculatorLink>
       <Link
         href="/buy/"
         className={buyActive ? 'nav-active' : undefined}
@@ -91,9 +92,14 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
       >
         {t('BuyingGuide.navLabel')}
       </Link>
-      <a className="nav-utility" href={siteConfig.companyWebsite} onClick={closeMenu}>
+      <Link
+        className="nav-utility"
+        href="/about/"
+        aria-current={aboutActive ? 'page' : undefined}
+        onClick={closeMenu}
+      >
         {t('Nav.about')}
-      </a>
+      </Link>
       <a className="nav-utility" href="#contact" onClick={closeMenu}>
         {t('Nav.contact')}
       </a>

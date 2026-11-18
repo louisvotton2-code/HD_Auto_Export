@@ -6,7 +6,7 @@ import styles from './home.module.css';
 const SPEED_PX_PER_SECOND = 28;
 
 /** Measure one complete repeat, including its trailing gap, so inventory never changes the speed. */
-export function BrandMarquee({ brands, paused }: { brands: string[]; paused: boolean }) {
+export function BrandMarquee({ brands }: { brands: string[] }) {
   const track = useRef<HTMLDivElement>(null);
   const group = useRef<HTMLDivElement>(null);
   const identity = JSON.stringify(brands);
@@ -37,7 +37,7 @@ export function BrandMarquee({ brands, paused }: { brands: string[]; paused: boo
   }, [identity]);
   if (!brands.length) return null;
   return <div className={styles.brands} aria-label={brands.join(', ')} data-brand-marquee>
-    <div ref={track} className={styles.brandMarquee} data-paused={paused} data-brand-speed={SPEED_PX_PER_SECOND}>
+    <div ref={track} className={styles.brandMarquee} data-brand-speed={SPEED_PX_PER_SECOND}>
       {[false, true].map(duplicate => <div key={String(duplicate)} ref={duplicate ? undefined : group}
         className={styles.brandGroup} aria-hidden={duplicate || undefined} data-brand-group={duplicate ? 'copy' : 'original'}>
         {brands.map((brand, index) => <span key={`${brand}-${index}`}>{brand}</span>)}

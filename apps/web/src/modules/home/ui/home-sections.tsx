@@ -2,10 +2,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import type { Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
 import { Icon } from '@/shared/ui/icon';
+import { SocialIcon } from '@/shared/ui/social-icon';
 import { CountryFlag } from '@/shared/ui/country-flag';
+import { DestinationCalculatorLink } from '@/shared/ui/destination-calculator-link';
 import { VehiclePhoto } from '@/modules/vehicles';
 import { sectionContent } from '../content/section-content';
 import styles from './home-sections.module.css';
@@ -80,63 +83,78 @@ function ConsultationCard({
   );
 }
 
-/** Reference-layout sections. The route supplies model data through the vehicle module. */
+/** Editorial service sections backed by the public vehicle catalog. */
 export function HomeSections({
   locale,
   models,
-  paused: globallyPaused = false,
 }: {
   locale: Locale;
   models: HomeModel[];
-  paused?: boolean;
 }) {
   const t = sectionContent[locale];
+  const contacts = useTranslations('Contacts');
   const modelsRef = useRef<HTMLDivElement>(null);
+  const modelStops = useRef<number[]>([]);
+  const leadingModel = useRef(0);
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [activeModel, setActiveModel] = useState(0);
-  const [paused, setPaused] = useState(false);
-  const [interacting, setInteracting] = useState(false);
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const [modelPage, setModelPage] = useState({ index: 0, count: 0 });
   const [selectedChat, setSelectedChat] = useState(0);
-  const [phone, setPhone] = useState('');
-  const enquiryText = `${t.enquiryMessage}${phone.trim() ? `\n${t.enquiryPhoneLabel}: ${phone.trim()}` : ''}`;
 
   useEffect(() => {
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const update = () => setReducedMotion(media.matches);
-    update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
-
-  const goToModel = (index: number, manual = true) => {
     const track = modelsRef.current;
-    const item = track?.children[index] as HTMLElement | undefined;
-    if (!track || !item) return;
-    if (manual) setPaused(true);
-    setActiveModel(index);
+    if (!track) {
+      modelStops.current = [];
+      leadingModel.current = 0;
+      return;
+    }
+    let width = 0;
+
+    const updatePage = () => {
+      const stops = modelStops.current;
+      const nearest = stops.findIndex(
+        (left, position) => position === stops.length - 1 || track.scrollLeft <= (left + stops[position + 1]) / 2,
+      );
+      const index = Math.max(0, nearest);
+      leadingModel.current = index;
+      setModelPage((page) => page.index === index && page.count === stops.length
+        ? page
+        : { index, count: stops.length });
+    };
+
+    const measure = () => {
+      if (track.clientWidth === width) return;
+      width = track.clientWidth;
+      const max = Math.max(0, track.scrollWidth - width);
+      const first = track.firstElementChild?.getBoundingClientRect().left ?? 0;
+      // Several desktop cards can be visible at the last reachable scroll position.
+      const positions = Array.from(track.children, (card) =>
+        Math.min(max, card.getBoundingClientRect().left - first));
+      const stops = positions.filter((left, index) => index === 0 || left > positions[index - 1] + 1);
+      const position = stops[Math.min(leadingModel.current, stops.length - 1)] ?? 0;
+      modelStops.current = stops;
+      if (Math.abs(track.scrollLeft - position) > 1) track.scrollTo({ left: position, behavior: 'instant' });
+      updatePage();
+    };
+
+    measure();
+    track.addEventListener('scroll', updatePage, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(track);
+    return () => {
+      observer.disconnect();
+      track.removeEventListener('scroll', updatePage);
+    };
+  }, [models.length]);
+
+  const goToModel = (index: number) => {
+    const track = modelsRef.current;
+    const left = modelStops.current[index];
+    if (!track || left === undefined) return;
     track.scrollTo({
-      left: item.offsetLeft - track.offsetLeft,
-      behavior: reducedMotion ? 'auto' : 'smooth',
+      left,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
     });
   };
-
-  useEffect(() => {
-    const track = modelsRef.current;
-    if (!track || globallyPaused || paused || interacting || reducedMotion || models.length < 2)
-      return;
-    const timer = window.setInterval(() => {
-      const rect = track.getBoundingClientRect();
-      if (document.hidden || rect.bottom < 0 || rect.top > window.innerHeight) return;
-      const index = (activeModel + 1) % models.length;
-      const item = track.children[index] as HTMLElement | undefined;
-      if (item) {
-        setActiveModel(index);
-        track.scrollTo({ left: item.offsetLeft - track.offsetLeft, behavior: 'smooth' });
-      }
-    }, 3500);
-    return () => window.clearInterval(timer);
-  }, [activeModel, globallyPaused, paused, interacting, reducedMotion, models.length]);
 
   return (
     <div className={styles.sections}>
@@ -158,26 +176,10 @@ export function HomeSections({
             </div>
             <div
               ref={modelsRef}
+              id="popular-models-track"
               className={styles.modelsTrack}
               aria-label={t.popular}
               tabIndex={0}
-              onScroll={(event) => {
-                const node = event.currentTarget;
-                const child = node.firstElementChild;
-                if (child)
-                  setActiveModel(
-                    Math.round(node.scrollLeft / (child.getBoundingClientRect().width + 20)),
-                  );
-              }}
-              onMouseEnter={() => setInteracting(true)}
-              onMouseLeave={() => setInteracting(false)}
-              onFocus={() => setInteracting(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) setInteracting(false);
-              }}
-              onTouchStart={() => setPaused(true)}
-              onWheel={() => setPaused(true)}
-              onKeyDown={() => setPaused(true)}
             >
               {models.map((model, index) => (
                 <Link
@@ -203,24 +205,30 @@ export function HomeSections({
                 </Link>
               ))}
             </div>
-            {models.length > 1 && (
+            {modelPage.count > 1 && (
               <div className={styles.pagination}>
                 <button
                   type="button"
                   className={styles.modelPrevious}
                   aria-label={t.previous}
-                  onClick={() => goToModel((activeModel - 1 + models.length) % models.length)}
+                  aria-controls="popular-models-track"
+                  aria-disabled={modelPage.index === 0 || undefined}
+                  onClick={() => goToModel(modelPage.index - 1)}
                 >
                   <Icon name="chevron-left" size={20} />
                 </button>
+                <span className={styles.modelCount} aria-live="polite" aria-atomic="true" data-testid="home-model-count">
+                  <strong>{(modelPage.index + 1).toLocaleString(locale)}</strong>
+                  {' / '}{modelPage.count.toLocaleString(locale)}
+                </span>
                 <div className={styles.dots}>
-                  {models.map((model, index) => (
+                  {Array.from({ length: modelPage.count }, (_, index) => (
                     <button
-                      key={`${model.name}-${index}`}
+                      key={index}
                       className={styles.dot}
-                      data-active={activeModel === index}
-                      aria-label={`${t.slide} ${index + 1}`}
-                      aria-current={activeModel === index ? 'true' : undefined}
+                      aria-controls="popular-models-track"
+                      aria-label={`${t.slide} ${(index + 1).toLocaleString(locale)}`}
+                      aria-current={modelPage.index === index ? 'true' : undefined}
                       onClick={() => goToModel(index)}
                     />
                   ))}
@@ -229,23 +237,13 @@ export function HomeSections({
                   type="button"
                   className={styles.modelNext}
                   aria-label={t.next}
-                  onClick={() => goToModel((activeModel + 1) % models.length)}
+                  aria-controls="popular-models-track"
+                  aria-disabled={modelPage.index === modelPage.count - 1 || undefined}
+                  onClick={() => goToModel(modelPage.index + 1)}
                 >
                   <Icon name="chevron-right" size={20} />
                 </button>
               </div>
-            )}
-            {models.length > 1 && (
-              <button
-                type="button"
-                className={styles.pause}
-                disabled={reducedMotion}
-                onClick={() => setPaused(!paused)}
-                aria-label={paused ? t.play : t.pause}
-              >
-                <Icon name={paused ? "play" : "pause"} size={16} />
-                <span>{paused ? t.play : t.pause}</span>
-              </button>
             )}
             <Link className={styles.mobileCatalog} href={`/${locale}/cars/`}>
               {t.catalog}<Icon name="arrow" size={16} />
@@ -327,7 +325,7 @@ export function HomeSections({
                 <span className={styles.reviewImage}>
                   <ConsultationCard locale={locale} index={index} />
                   <span className={styles.enlarge} aria-hidden="true">
-                    ⤢
+                    <Icon name="diagonal" size={18} />
                   </span>
                 </span>
                 <span className={styles.reviewCaption}>{chat.title}</span>
@@ -368,10 +366,10 @@ export function HomeSections({
               <h2 id="home-calculator-title">{t.calculator}</h2>
               <p>{t.calculatorBody}</p>
             </div>
-            <Link className={styles.calculateButton} href={`/${locale}/calculator/`}>
+            <DestinationCalculatorLink className={styles.calculateButton}>
               <Icon name="calculator" size={16} />
               {t.calculate}
-            </Link>
+            </DestinationCalculatorLink>
             <ul className={styles.countries}>
               {t.countries.map((country) => (
                 <li key={country.slug}>
@@ -390,40 +388,16 @@ export function HomeSections({
         <div className={styles.ctaContent}>
           <h2 id="home-enquiry-title">{t.ready}</h2>
           <p>{t.readyBody}</p>
-          <form
-            className={styles.enquiryForm}
-            action={siteConfig.contacts.whatsapp.href}
-            method="get"
+          <a
+            className={styles.contactButton}
+            href={siteConfig.contacts.whatsapp.href}
             target="_blank"
             rel="noopener noreferrer"
           >
-            <input type="hidden" name="text" value={enquiryText} />
-            <label className={styles.srOnly} htmlFor="home-phone">
-              {t.phone}
-            </label>
-            <input
-              id="home-phone"
-              type="tel"
-              placeholder={t.phone}
-              autoComplete="tel"
-              maxLength={32}
-              pattern={String.raw`\+?[0-9][0-9 \(\)\-]{5,31}`}
-              value={phone}
-              onChange={(event) => setPhone(event.target.value)}
-              required
-              aria-describedby="home-form-hint"
-            />
-            <button type="submit">
-              {t.send}
-              <Icon name="arrow" size={18} />
-            </button>
-          </form>
-          <small className={styles.formHint} id="home-form-hint">
-            {t.formHint}
-          </small>
-          <noscript>
-            <p className={styles.formHint}>{t.phoneFallback}</p>
-          </noscript>
+            <SocialIcon platform="whatsapp" size={19} />
+            {contacts('title')}
+            <Icon name="arrow" size={18} />
+          </a>
         </div>
       </section>
     </div>

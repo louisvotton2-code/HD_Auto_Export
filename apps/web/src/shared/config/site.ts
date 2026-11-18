@@ -4,7 +4,6 @@ const indexable = process.env.SITE_INDEXABLE === 'true';
 
 export const siteConfig = {
   name: 'HD Auto Export',
-  companyWebsite: 'https://hongdingauto.com/',
   isPlaceholderBrand: false,
   brand: {
     name: 'HD Auto Export',
@@ -18,7 +17,10 @@ export const siteConfig = {
     instagram: { display: '@hongding_auto', href: 'https://www.instagram.com/hongding_auto/' },
     tiktok: { display: '@votton.louis', href: 'https://www.tiktok.com/@votton.louis?is_from_webapp=1&sender_device=pc' },
     telegram: { display: '@HD_Auto_CN', href: 'https://t.me/HD_Auto_CN' },
-    wechat: { display: '18215932610', copyValue: '18215932610' },
+    wechat: [
+      { display: '+86 182 1593 2610', copyValue: '+8618215932610' },
+      { display: '+86 199 3899 9916', copyValue: '+8619938999916' },
+    ],
   },
   origin: resolveSiteOrigin(process.env.NEXT_PUBLIC_SITE_URL, indexable),
   indexable,

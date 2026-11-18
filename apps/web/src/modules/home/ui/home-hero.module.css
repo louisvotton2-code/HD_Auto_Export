@@ -1,0 +1,225 @@
+.hero {
+  --drive-progress: 0;
+  --edge: clamp(22px, 5.6vw, 86px);
+  --gold: #efb783;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #0d0d0e;
+  color: #f9f2e9;
+}
+
+.wrap {
+  width: min(calc(100% - 2 * var(--edge)), 1340px);
+  margin-inline: auto;
+}
+
+.heroStage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: clamp(520px, calc(100svh - 346px), 800px);
+  padding-block: 156px 77px;
+}
+
+.roadFrame {
+  position: absolute;
+  inset: clamp(100px, 12svh, 138px) var(--edge) clamp(28px, 5svh, 52px) 30%;
+  overflow: hidden;
+  background: #231610;
+  border-radius: 8px;
+  clip-path: polygon(9% 0, 100% 0, 100% 100%, 0 100%, 0 21%);
+  pointer-events: none;
+}
+
+.roadFrame::after {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, #0d0d0efa, #0d0d0e5c 27%, transparent 48%),
+    linear-gradient(0deg, #0d0d0e8c, transparent 27%);
+  content: '';
+}
+
+.roadImage {
+  object-fit: cover;
+  object-position: 55% center;
+}
+
+.roadLight {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.roadLight::before {
+  position: absolute;
+  inset: -25% auto -25% 0;
+  width: 24%;
+  transform: skewX(-17deg);
+  border-right: 2px solid #ffd4a492;
+  background: linear-gradient(90deg, transparent, #ef9a5c12 68%, #ffc28c5c);
+  content: '';
+}
+
+.heroContent { position: relative; z-index: 2; }
+
+.origin {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--gold);
+  font-size: .76rem;
+  font-weight: 650;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+}
+
+.origin::before { width: 22px; height: 1px; background: currentColor; content: ''; }
+
+.heroContent h1 {
+  max-width: 63%;
+  margin-top: 20px;
+  font-size: clamp(3.65rem, 6.15vw, 7.3rem);
+  font-weight: 730;
+  letter-spacing: -.071em;
+  line-height: .99;
+  text-wrap: balance;
+}
+
+.heroContent h1 > * { display: block; }
+.heroContent h1 em { color: var(--gold); font-style: normal; }
+:global(html[lang="zh-Hans"]) .heroContent h1 {
+  font-size: clamp(2.9rem, 6.15vw, 6.65rem);
+  letter-spacing: -.065em;
+  line-height: 1.06;
+}
+:global(html[lang="ru"]) .heroContent h1 { font-size: clamp(3rem, 5.55vw, 6.55rem); }
+
+.subtitle {
+  max-width: min(29rem, 48%);
+  margin-top: 24px;
+  color: #e9dbcd;
+  font-size: clamp(.99rem, 1.5vw, 1.16rem);
+  line-height: 1.62;
+}
+
+.dock {
+  z-index: 2;
+  position: relative;
+  max-width: var(--home-shell);
+  margin-inline: auto;
+  padding-inline: var(--home-gutter);
+}
+
+.scroll {
+  display: flex;
+  width: fit-content;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0 auto clamp(10px, 1.5vw, 18px);
+  padding: 3px 12px 6px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 8px;
+  color: var(--gold);
+  transition: color .2s;
+}
+
+.scrollLabel {
+  color: #d9c9b9;
+  font-size: .75rem;
+  line-height: 1rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.scrollArrows {
+  display: flex;
+  flex-direction: column;
+}
+
+.scrollArrows svg { height: 14px; }
+.scrollArrows svg:last-child { opacity: .4; }
+
+@media (hover: hover) {
+  .scroll:hover { color: #fff4e6; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .roadImage {
+    transform: translate3d(calc(var(--drive-progress) * -2%), calc(var(--drive-progress) * 5%), 0)
+      scale(calc(1 + var(--drive-progress) * .16));
+  }
+  .roadLight {
+    opacity: .84;
+    transform: translate3d(calc(-52% + var(--drive-progress) * 202%), 0, 0);
+  }
+  .origin, .heroContent h1, .subtitle {
+    animation: drive-enter .76s cubic-bezier(.22, 1, .36, 1) backwards;
+  }
+  .heroContent h1 { animation-delay: .06s; }
+  .subtitle { animation-delay: .12s; }
+  .scroll[data-scroll-cue-active] .scrollLabel {
+    animation: scroll-label 2s ease-in-out infinite;
+  }
+  .scroll[data-scroll-cue-active] .scrollArrows {
+    animation: scroll-cue 1.65s linear infinite;
+  }
+}
+
+@keyframes scroll-label {
+  0%, 100% { opacity: .65; }
+  50% { opacity: 1; }
+}
+
+@keyframes scroll-cue {
+  0% { opacity: 0; transform: translateY(-4px); }
+  24% { opacity: 1; }
+  60% { opacity: .9; }
+  100% { opacity: 0; transform: translateY(6px); }
+}
+
+@keyframes drive-enter {
+  from { opacity: .3; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 1050px) {
+  .heroContent h1 { max-width: 72%; }
+  .roadFrame { left: 26%; }
+}
+
+@media (max-width: 760px) {
+  .hero { --edge: clamp(18px, 5.5vw, 35px); }
+  .heroStage { align-items: end; min-height: 0; padding-block: clamp(272px, 74vw, 448px) 20px; }
+  .roadFrame {
+    inset: 70px 0 auto;
+    height: clamp(240px, 74vw, 492px);
+    clip-path: none;
+    border-radius: 0;
+  }
+  .roadFrame::after {
+    background:
+      linear-gradient(0deg, #0d0d0e 0%, #0d0d0e67 27%, transparent 48%),
+      linear-gradient(180deg, #0d0d0e88 0%, transparent 19%);
+  }
+  .roadImage { object-position: 52% center; }
+  .heroContent h1,
+  :global(html[lang="zh-Hans"]) .heroContent h1,
+  :global(html[lang="ru"]) .heroContent h1 {
+    max-width: 100%;
+    margin-top: 12px;
+    font-size: clamp(2.4rem, 11vw, 5.1rem);
+    line-height: 1.01;
+  }
+  .subtitle { max-width: 31rem; margin-top: 12px; font-size: .91rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero *, .hero *::before { transition-duration: .01ms; }
+}
