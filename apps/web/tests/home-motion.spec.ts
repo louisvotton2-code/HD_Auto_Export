@@ -32,7 +32,7 @@ test('the mobile light crosses a fixed frame in both directions and settles afte
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/en/');
   const hero = page.locator('[data-home-section="hero"]');
-  const image = hero.locator('img[src="/media/home/dawn-convoy.webp"]');
+  const image = hero.locator('img[src^="/media/home/dawn-convoy.webp"]');
   const light = hero.getByTestId('hero-road-light');
   const frame = image.locator('..');
   const progress = () =>
