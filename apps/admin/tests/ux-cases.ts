@@ -128,7 +128,10 @@ test('published demo basics fit 320px after switching from the publication tab',
   const { tab } = await import('./ui-helpers');
   await tab(page, '发布预览');
   await page.setViewportSize({ width: 320, height: 844 });
-  await tab(page, '基础资料');
+  const basics = page.getByRole('tab', { name: /基础资料/ });
+  await basics.focus();
+  await basics.press('Enter');
+  await expect(basics).toHaveAttribute('aria-selected', 'true');
   const overflow = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth,
     nodes: [...document.querySelectorAll('main *')].filter(node => { const r=node.getBoundingClientRect(); return r.width>0 && r.right>innerWidth+1; }).map(node => ({ tag: node.tagName, cls: node.className, width: node.getBoundingClientRect().width, right: node.getBoundingClientRect().right, text: node.textContent?.slice(0,50) })).slice(0,20) }));
   expect(overflow.scroll, JSON.stringify(overflow)).toBeLessThanOrEqual(overflow.width);

@@ -99,12 +99,11 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         await expect(page.locator('[data-home-section="popular-models"]')).toHaveCount(0);
         await status.getByRole('button').click();
         await expect.poll(() => requests.length).toBe(2);
-        expect(
-          requests.filter((request) => pathOf(request.url()) === '/api/v1/home/vehicles'),
-        ).toHaveLength(1);
-        expect(
-          requests.filter((request) => pathOf(request.url()) === '/api/v1/vehicle-filters'),
-        ).toHaveLength(1);
+        expect(requests.map((request) => {
+          const url = new URL(request.url());
+          expect(pathOf(url.href)).toBe('/api/v1/vehicle-filters');
+          return url.searchParams.get('projection');
+        }).sort()).toEqual(['home-models', 'overview']);
         await expect(
           page.locator('[data-home-section="popular-models"] a[href*="model="]'),
         ).toHaveCount(2);

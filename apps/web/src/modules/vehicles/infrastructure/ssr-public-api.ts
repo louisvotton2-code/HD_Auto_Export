@@ -1,6 +1,8 @@
 import { PublicVehicleQuerySchema, type PublicFilterQuery, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
+import { headers } from 'next/headers';
 import type { Locale } from '@/i18n/routing';
 import { getServerReleaseIdentity } from '@/shared/config/server-runtime';
+import { invalidatePublicHtmlRender, publicHtmlRenderTicketHeader, recordPublicHtmlRenderStamp } from '@/shared/lib/public-html-render-proof';
 import { localizedHomeSchema, publicFiltersSchema, localizedCardListSchema, localizedInlineVehicleSchema } from '../localized-projection';
 import { publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicInlineVehicleView, type UsdFilterScope } from '../public-query';
 import { publicApiOrigin, PublicApiError } from './public-http';
@@ -15,15 +17,24 @@ const processStores = globalThis as typeof globalThis & { [cacheSymbol]?: SsrDto
 function store() { return processStores[cacheSymbol] ??= new SsrDtoCache(); }
 
 async function readSsr<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>) {
+  let ticket: string | null = null;
   try {
+    ticket = (await headers()).get(publicHtmlRenderTicketHeader);
     const identity = { ...getServerReleaseIdentity(), apiOrigin: publicApiOrigin() };
     const read = createSsrPublicReader({
       identity, cache: store(), readAnonymous: readAnonymousPublicResource,
       // This function runs per call, even if the DTO key is already warm.
-      readVersion: async priceView => readSsrServiceVersion(priceView, await publicRequestHeaders()),
+      readVersion: async (priceView, scope) => readSsrServiceVersion(priceView, await publicRequestHeaders(), scope),
+      onStamp: ticket ? (stamp, deadline) => {
+        if (stamp) recordPublicHtmlRenderStamp(ticket, descriptor.scope ?? 'catalog', stamp, deadline);
+        else invalidatePublicHtmlRender(ticket);
+      } : undefined,
     });
-    return await read(descriptor);
+    const resource = await read(descriptor);
+    const { catalogCache: _internalStamp, ...meta } = resource.meta;
+    return { ...resource, meta };
   } catch (error) {
+    invalidatePublicHtmlRender(ticket);
     if (error instanceof PublicApiError) throw error;
     throw new PublicApiError(503);
   }
@@ -41,7 +52,7 @@ export function getSsrPublicFilters(
   projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
 ) {
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', { ...publicUsdFilterQuery(locale, scope), ...projection }),
-    priceView: 'usd', schema: publicFiltersSchema });
+    priceView: 'usd', scope: 'filters', schema: publicFiltersSchema });
 }
 export function getSsrPublicCatalog(query: PublicVehicleQuery) {
   const effective = PublicVehicleQuerySchema.parse(publicUsdCatalogQuery(query));

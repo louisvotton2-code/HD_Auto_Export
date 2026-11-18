@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
+import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { connection } from 'next/server';
 import { routing, type Locale } from '@/i18n/routing';
 import { localizedAlternates } from '@/shared/config/site';
+import { markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 import { PublicHome } from '@/modules/home';
 import { getPublicCatalog, getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
 
@@ -40,14 +42,15 @@ export default async function Home({ params }: Props) {
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   await connection();
-  const [home, filters] = await Promise.allSettled([
+  const [home, overview, models] = await Promise.allSettled([
     getPublicHome(locale),
-    getPublicFilters(locale, {}, { projection: 'overview-models' }),
+    getPublicFilters(locale, {}, { projection: 'overview' }),
+    getPublicFilters(locale, {}, { projection: 'home-models' }),
   ]);
-  const facets = filters.status === 'fulfilled' ? filters.value.data : null;
-  let initialRetryAfter = publicRetryAfter(home, filters);
+  const facets = overview.status === 'fulfilled' ? overview.value.data : null;
+  let initialRetryAfter = publicRetryAfter(home, overview, models);
   let catalogTotal = facets?.total ?? null;
-  // The headline can still use exact list metadata if the larger facet response fails.
+  // The headline can still use exact list metadata if the overview fails.
   if (catalogTotal === null && initialRetryAfter === 0) {
     const [catalog] = await Promise.allSettled([
       getPublicCatalog({ catalog: 'curated', locale, page: 1, pageSize: 1 }),
@@ -57,18 +60,22 @@ export default async function Home({ params }: Props) {
     }
     initialRetryAfter = publicRetryAfter(catalog);
   }
+  if (home.status === 'fulfilled' && models.status === 'fulfilled' && facets?.total !== undefined) {
+    markPublicHtmlRenderComplete((await headers()).get(publicHtmlRenderTicketHeader));
+  }
   return (
     <PublicHome
       key={locale}
       locale={locale}
-      home={home.status === 'fulfilled' ? home.value : null}
+      home={home.status === 'fulfilled' ? {data:home.value.data,meta:{requestId:'server-rendered'}} : null}
       filters={facets ? {
         catalog: facets.catalog,
         total: facets.total,
         makes: facets.makes,
-        models: facets.models,
-        powertrains: facets.powertrains,
+        models: [],
+        powertrains: [],
       } : null}
+      modelFilters={models.status === 'fulfilled' ? models.value.data : null}
       catalogTotal={catalogTotal}
       initialRetryAfter={initialRetryAfter}
     />

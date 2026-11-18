@@ -59,6 +59,54 @@ test('a publication changing during source reads retries once and never tags old
   await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503, reason: 'revision-changed' });
 });
 
+test('filters return a coherent uncached snapshot during repeated directory commits, then cache a stable read', async () => {
+  let revision = version(), loads = 0;
+  const store = new Store();
+  const cache = new PublicCatalogCache({ namespace: 'hd:test' }, { readRevision: async () => revision, store });
+  const run = (commit: boolean) => cache.getFilterSnapshot({ locale:'zh' },async () => {
+    const snapshot = revision;
+    loads++;
+    if (commit) revision = version(String(Number(revision.revision) + 1));
+    return { value:{ total:Number(snapshot.revision) },revision:snapshot };
+  });
+  assert.deepEqual(await run(true),{value:{total:1},stamp:undefined});
+  assert.deepEqual(await run(true),{value:{total:2},stamp:undefined});
+  assert.equal(cache.metrics().uncachedFilterLoads,2);
+  assert.equal(cache.metrics().localHits,0);
+  assert.equal(store.values.size,0);
+  const steady = await run(false);
+  assert.equal(steady.value.total,3);
+  assert.ok(steady.stamp);
+  assert.equal(steady.stamp.version,(await cache.currentVersion(false,undefined,'filters')).version);
+  assert.notEqual(steady.stamp.version,(await cache.currentVersion()).version);
+  assert.equal((await run(true)).value.total,3);
+  assert.equal(loads,3);
+  assert.equal(store.values.size,1);
+});
+
+test('uncached filter snapshots still reject a changed FX quote, restore epoch or failed version read', async () => {
+  const now = Date.parse('2026-11-10T00:00:00Z');
+  let revision: PublicCatalogRevision = { ...version(),fx:{version:'first',expiresAt:now+1000} };
+  const cache = new PublicCatalogCache({ namespace:'hd:test' },{ now:()=>now,readRevision:async()=>revision });
+  for (const mode of ['fx','epoch','failed-read'] as const) {
+    let attempts = 0;
+    const reader = mode === 'failed-read' ? new PublicCatalogCache({namespace:'hd:test'},{now:()=>now,readRevision:async()=>{
+      if (attempts) throw new Error('unavailable');
+      return revision;
+    }}) : cache;
+    await assert.rejects(reader.getFilterSnapshot({},async()=>{
+      const snapshot=revision;
+      attempts++;
+      revision=mode==='fx' ? {...revision,fx:{version:String(attempts),expiresAt:now+1000}} :
+        {...revision,epoch:attempts===1?epoch.replace(/1$/,'2'):epoch};
+      return {value:{total:1},revision:snapshot};
+    },true),{status:503,reason:mode==='failed-read'?'revision-read':'revision-changed'});
+    assert.equal(attempts,mode==='failed-read'?1:2);
+    assert.equal(reader.metrics().uncachedFilterLoads,0);
+    revision={ ...version(),fx:{version:'first',expiresAt:now+1000} };
+  }
+});
+
 test('Redis TTL ends before image expiry and an expired URL is never reused', async () => {
   let now = Date.parse('2026-11-10T00:00:00Z'), loads = 0;
   const store = new Store();
@@ -71,6 +119,48 @@ test('Redis TTL ends before image expiry and an expired URL is never reused', as
   assert.deepEqual(await cache.get('detail', {}, load), { images: [] });
   assert.equal(loads, 2);
   await assert.rejects(cache.get('detail', { id: 'expired-origin' }, async () => ({ images: [{ remote: { expiresAt: expires } }] })), { status: 503 });
+});
+
+test('negotiated internal entries retain their absolute Redis lifetime without renewing or crossing into v1', async () => {
+  let now = Date.parse('2026-11-18T00:00:00Z'), loads = 0;
+  const store = new Store();
+  const options = { namespace:'hd:test',maxEntries:64 };
+  const origin = { readRevision:async()=>version(),store,now:()=>now };
+  const cache = new PublicCatalogCache(options,origin), replica = new PublicCatalogCache(options,origin);
+  const load = async () => ({ load:++loads });
+  const read = (reader:PublicCatalogCache, protocol:1|2) => reader.getVersioned('home',{},load,false,undefined,protocol);
+  const extended=await read(cache,2), legacy=await read(cache,1);
+  assert.equal(extended.stamp.version,legacy.stamp.version);
+  assert.deepEqual([extended.value.load,legacy.value.load],[1,2]);
+  assert.deepEqual(store.ttls,[300_000,15_000]);
+  now+=20_000;
+  const old=await read(cache,1);
+  assert.equal(old.value.load,3);
+  const cached=await read(replica,2);
+  assert.equal(cached.value.load,1);
+  assert.equal(cached.stamp.validUntil,extended.stamp.validUntil);
+  assert.equal(Date.parse(cached.stamp.validUntil)-Date.parse(cached.stamp.checkedAt),280_000);
+  assert.equal(replica.metrics().redisHits,1);
+  now+=280_000;
+  assert.equal((await read(cache,2)).value.load,4);
+});
+
+test('internal facet lifetime incorporates an omitted cover dependency and the active FX cutoff', async () => {
+  const now=Date.parse('2026-11-18T00:00:00Z');
+  const revision={...version(),fx:{version:'rate',expiresAt:now+70_000}};
+  const store=new Store();
+  const cache=new PublicCatalogCache({namespace:'hd:test'}, {readRevision:async()=>revision,store,now:()=>now});
+  const withCover=await cache.getFilterSnapshot({projection:'home-models'},async()=>({
+    value:{models:[]},revision,expiresAt:now+43_000,
+  }),true,undefined,2);
+  const withFx=await cache.getFilterSnapshot({projection:'overview'},async()=>({value:{total:20},revision}),true,undefined,2);
+  const unscoped=await cache.getBoundedVersioned('filters',{projection:'home-models'},async()=>({
+    value:{models:[]},expiresAt:now+32_000,
+  }),true,undefined,2);
+  assert.equal(Date.parse(withCover.stamp!.validUntil),now+43_000);
+  assert.equal(Date.parse(withFx.stamp!.validUntil),now+70_000);
+  assert.equal(Date.parse(unscoped.stamp.validUntil),now+32_000);
+  assert.deepEqual(store.ttls,[43_000,70_000,32_000]);
 });
 
 test('USD hits and in-flight loads validate FX age even when inventory revision is unchanged', async () => {

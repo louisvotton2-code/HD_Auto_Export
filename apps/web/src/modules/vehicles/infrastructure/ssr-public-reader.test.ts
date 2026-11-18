@@ -1,22 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleResponseSchema, PublicVehicleInlineResponseSchema,
+  InternalPublicCatalogCacheStampSchema, PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleFiltersSchema, PublicVehicleResponseSchema, PublicVehicleInlineResponseSchema,
   type PublicCatalogCacheStamp, type PublicHomeSections,
 } from '@hd/contracts/public';
 import { makeImportedPublicVehicleFixture, makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
 import { PublicApiError } from './public-http';
 import { SsrDtoCache } from './ssr-dto-cache';
-import { anonymousPublicEnvelope, canonicalPublicPath, createSsrPublicReader, type SsrPublicDescriptor, type SsrPublicEnvelope, type SsrAnonymousReader } from './ssr-public-reader';
+import { anonymousPublicEnvelope, canonicalPublicPath, createSsrPublicReader, type SsrPublicDescriptor, type SsrPublicEnvelope, type SsrAnonymousReader, type SsrCacheProtocol } from './ssr-public-reader';
 
 const checked = Date.parse('2030-01-01T00:00:00Z');
 function stamp(version = 'a'.repeat(64), remaining = 15_000, fx: PublicCatalogCacheStamp['fx'] = null) {
   return PublicCatalogCacheStampSchema.parse({ version, priceView: 'usd', fx,
     checkedAt: new Date(checked).toISOString(), validUntil: new Date(checked + remaining).toISOString() });
 }
+function dto<T extends SsrPublicEnvelope>(value: T, protocol: SsrCacheProtocol = 1) {
+  return { protocol, value: anonymousPublicEnvelope(value) };
+}
+function versionDto(value: PublicCatalogCacheStamp, requestId: string, protocol: SsrCacheProtocol = 1) {
+  return { protocol, value: { data: value, meta: { requestId } } };
+}
 const descriptor: SsrPublicDescriptor<PublicHomeSections> = {
   path: canonicalPublicPath('/api/v1/home/vehicles', { locale: 'en', view: 'localized', priceView: 'usd' }),
   priceView: 'usd', schema: PublicHomeSectionsSchema,
 };
+const filters = {
+  path: '/api/v1/vehicle-filters?locale=en&view=localized&priceView=usd&projection=overview',
+  priceView: 'usd' as const, scope: 'filters' as const, schema: PublicVehicleFiltersSchema,
+};
+const filterData = { catalog: 'curated', total: 7, makes: [], models: [], powertrains: [] };
 const identity = { deploymentEnv: 'test', releaseId: 'reader-fixture', apiOrigin: 'http://api.example.invalid' };
 class InspectableCache extends SsrDtoCache {
   readonly loaded: string[] = [];
@@ -34,13 +45,15 @@ function setup() {
   let versionReads = 0;
   const now = () => time;
   const cache = new InspectableCache({ now });
-  const readVersion = vi.fn(async () => ({ data: current, meta: { requestId: `current-${++versionReads}` } }));
+  const readVersion = vi.fn(async () => versionDto(current, `current-${++versionReads}`));
   const readAnonymous = vi.fn(async <T extends SsrPublicEnvelope>(request: SsrPublicDescriptor<T>) =>
-    anonymousPublicEnvelope(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'UPSTREAM_TRACE_SENTINEL', catalogCache: current } })));
+    dto(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'UPSTREAM_TRACE_SENTINEL', catalogCache: current } })));
   // Restore the handler's declared generic relation erased by Vitest's Mock call signature.
   const anonymousReader = readAnonymous as SsrAnonymousReader;
-  const read = createSsrPublicReader({ identity, cache, now, readVersion, readAnonymous: anonymousReader });
-  return { read, cache, now, readVersion, readAnonymous, anonymousReader,
+  const wallNow = () => checked + time - 100;
+  const onStamp = vi.fn();
+  const read = createSsrPublicReader({ identity, cache, now, wallNow, readVersion, readAnonymous: anonymousReader, onStamp });
+  return { read, cache, now, readVersion, readAnonymous, anonymousReader, onStamp,
     setTime: (value: number) => { time = value; }, setStamp: (value: PublicCatalogCacheStamp) => { current = value; } };
 }
 afterEach(() => vi.restoreAllMocks());
@@ -108,7 +121,7 @@ describe('SSR-only versioned anonymous data reader', () => {
     state.readAnonymous.mockImplementation(async request => {
       await pendingLoad;
       const data = request.path === inlineDetail.path ? inlineVehicle : vehicle;
-      return anonymousPublicEnvelope(request.schema.parse({ data, meta: { requestId: 'ignored', catalogCache: stamp() } }));
+      return dto(request.schema.parse({ data, meta: { requestId: 'ignored', catalogCache: stamp() } }));
     });
     const pending = [state.read(oldDetail), state.read(inlineDetail), state.read(oldDetail), state.read(inlineDetail)];
     try {
@@ -148,7 +161,7 @@ describe('SSR-only versioned anonymous data reader', () => {
     const newer = stamp('b'.repeat(64));
     state.readAnonymous.mockImplementation(async request => {
       state.setStamp(newer);
-      return anonymousPublicEnvelope(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: newer } }));
+      return dto(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: newer } }));
     });
     const result = await state.read(descriptor);
     expect(result.meta.catalogCache!.version).toBe(newer.version);
@@ -159,11 +172,52 @@ describe('SSR-only versioned anonymous data reader', () => {
 
   it('fails closed after the second mismatch and never writes the wrong key', async () => {
     const state = setup();
-    state.readAnonymous.mockImplementation(async request => anonymousPublicEnvelope(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: stamp('b'.repeat(64)) } })));
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: stamp('b'.repeat(64)) } })));
     await expect(state.read(descriptor)).rejects.toMatchObject({ status: 503 });
     expect(state.readVersion).toHaveBeenCalledTimes(2);
     expect(state.readAnonymous).toHaveBeenCalledTimes(2);
     expect(state.cache.stats.entries).toBe(0);
+  });
+
+  it.each([undefined, stamp('b'.repeat(64))])('returns a validated one-off facet during version churn without making it reusable', async catalogCache => {
+    const state = setup();
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({
+      data: filterData, meta: { requestId: 'ignored', ...(catalogCache ? { catalogCache } : {}) },
+    })));
+    const first = await state.read(filters);
+    const second = await state.read(filters);
+    expect(first.data.total).toBe(7);
+    expect(second.data).toEqual(first.data);
+    expect([first.meta.requestId, second.meta.requestId]).toEqual(['current-1', 'current-2']);
+    expect(state.readVersion.mock.calls).toEqual([['usd', 'filters'], ['usd', 'filters']]);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.cache.stats).toMatchObject({ entries: 0, inFlight: 0 });
+  });
+
+  it('reuses a matching scoped facet and never accepts an expired or wrong-currency scope response', async () => {
+    const state = setup();
+    const version = stamp();
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({
+      data: filterData, meta: { requestId: 'ignored', catalogCache: version },
+    })));
+    await state.read(filters);
+    await state.read(filters);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(1);
+    expect(state.cache.stats.entries).toBe(1);
+
+    state.setStamp(stamp('c'.repeat(64)));
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({
+      data: filterData, meta: { requestId: 'ignored', catalogCache: { ...version, priceView: 'original' } },
+    })));
+    await expect(state.read(filters)).rejects.toMatchObject({ status: 503 });
+    state.readAnonymous.mockImplementation(async request => {
+      state.setTime(300);
+      return dto(request.schema.parse({
+        data: filterData, meta: { requestId: 'ignored', catalogCache: stamp('d'.repeat(64), 100) },
+      }));
+    });
+    await expect(state.read(filters)).rejects.toMatchObject({ status: 503 });
+    expect(state.cache.stats.entries).toBe(1);
   });
 
   it.each([503, 429])('does not fall back to a warm value when the current version check returns %s', async status => {
@@ -188,7 +242,7 @@ describe('SSR-only versioned anonymous data reader', () => {
     const state = setup();
     state.readAnonymous.mockRejectedValueOnce(new PublicApiError(404));
     await expect(state.read(descriptor)).rejects.toMatchObject({ status: 404 });
-    state.readAnonymous.mockImplementation(async request => anonymousPublicEnvelope(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored' } })));
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored' } })));
     await expect(state.read(descriptor)).rejects.toMatchObject({ status: 503 });
     expect(state.cache.stats.entries).toBe(0);
   });
@@ -219,14 +273,14 @@ describe('SSR-only versioned anonymous data reader', () => {
     const version = setup();
     version.readVersion.mockImplementation(async () => {
       version.setTime(2100);
-      return { data: stamp('a'.repeat(64), 1000), meta: { requestId: 'current' } };
+      return versionDto(stamp('a'.repeat(64), 1000), 'current');
     });
     await expect(version.read(descriptor)).rejects.toMatchObject({ status: 503 });
     expect(version.readAnonymous).not.toHaveBeenCalled();
     const resource = setup();
     resource.readAnonymous.mockImplementation(async request => {
       resource.setTime(2100);
-      return anonymousPublicEnvelope(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: stamp('a'.repeat(64), 1000) } }));
+      return dto(request.schema.parse({ data: { sections: [] }, meta: { requestId: 'ignored', catalogCache: stamp('a'.repeat(64), 1000) } }));
     });
     await expect(resource.read(descriptor)).rejects.toMatchObject({ status: 503 });
     expect(resource.cache.stats.entries).toBe(0);
@@ -239,7 +293,7 @@ describe('SSR-only versioned anonymous data reader', () => {
     const mediaDescriptor: SsrPublicDescriptor<ReturnType<typeof PublicVehicleResponseSchema.parse>> = {
       path: `/api/v1/vehicles/${vehicle.id}?locale=en`, priceView: 'usd', schema: PublicVehicleResponseSchema, media: value => value.data.images,
     };
-    state.readAnonymous.mockImplementation(async request => anonymousPublicEnvelope(request.schema.parse({ data: vehicle, meta: { requestId: 'ignored', catalogCache: stamp() } })));
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({ data: vehicle, meta: { requestId: 'ignored', catalogCache: stamp() } })));
     await state.read(mediaDescriptor);
     state.setTime(599);
     await state.read(mediaDescriptor);
@@ -248,4 +302,107 @@ describe('SSR-only versioned anonymous data reader', () => {
     await state.read(mediaDescriptor);
     expect(state.readAnonymous).toHaveBeenCalledTimes(2);
   });
+
+  it('records the actual negotiated DTO stamp on cold and warm reads without extending its deadline', async () => {
+    const state = setup();
+    const live = InternalPublicCatalogCacheStampSchema.parse({ ...stamp(),
+      validUntil: new Date(checked + 300_000).toISOString() });
+    const actual = InternalPublicCatalogCacheStampSchema.parse({ ...live,
+      checkedAt: new Date(checked + 1000).toISOString(), validUntil: new Date(checked + 120_000).toISOString() });
+    state.readVersion.mockResolvedValue(versionDto(live, 'live', 2));
+    state.readAnonymous.mockImplementation(async request => {
+      state.setTime(state.now() + 250);
+      const payload = request.schema.parse({ data: { sections: [] }, meta: { requestId: 'data' } });
+      return dto({ ...payload, meta: { ...payload.meta, catalogCache: actual } }, 2);
+    });
+
+    await state.read(descriptor);
+    state.setTime(118_000);
+    await state.read(descriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(1);
+    expect(state.onStamp.mock.calls).toEqual([[actual, checked + 119_000], [actual, checked + 119_000]]);
+  });
+
+  it('reuses the initial v2 value up to its original five-minute deadline, not the latest version check', async () => {
+    const state = setup();
+    const fresh = () => {
+      const start = checked + state.now() - 100;
+      return InternalPublicCatalogCacheStampSchema.parse({ ...stamp(), checkedAt: new Date(start).toISOString(),
+        validUntil: new Date(start + 300_000).toISOString() });
+    };
+    state.readVersion.mockImplementation(async () => versionDto(fresh(), 'live', 2));
+    state.readAnonymous.mockImplementation(async request => {
+      const value = request.schema.parse({ data: { sections: [] }, meta: { requestId: 'data' } });
+      return dto({ ...value, meta: { ...value.meta, catalogCache: fresh() } }, 2);
+    });
+    await state.read(descriptor);
+    state.setTime(300_099);
+    await state.read(descriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(1);
+    expect(state.onStamp.mock.calls[1]?.[1]).toBe(checked + 300_000);
+    state.setTime(300_100);
+    await state.read(descriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.onStamp.mock.calls[2]?.[1]).toBe(checked + 600_000);
+  });
+
+  it.each([[1, 2], [2, 1]] as const)('caps mixed protocols %s/%s to 15 seconds and omits HTML proof', async (versionProtocol, resourceProtocol) => {
+    const state = setup();
+    const legacy = stamp();
+    const long = InternalPublicCatalogCacheStampSchema.parse({ ...legacy, validUntil: new Date(checked + 300_000).toISOString() });
+    state.readVersion.mockResolvedValue(versionDto(versionProtocol === 2 ? long : legacy, 'live', versionProtocol));
+    state.readAnonymous.mockImplementation(async request => {
+      const value = request.schema.parse({ data: { sections: [] }, meta: { requestId: 'data' } });
+      return dto({ ...value, meta: { ...value.meta, catalogCache: resourceProtocol === 2 ? long : legacy } }, resourceProtocol);
+    });
+    await state.read(descriptor);
+    state.setTime(15_100);
+    await state.read(descriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.onStamp.mock.calls).toEqual([[null, undefined], [null, undefined]]);
+  });
+
+  it('respects earlier absolute FX and media expiry in the actual v2 match', async () => {
+    const state = setup();
+    const live = InternalPublicCatalogCacheStampSchema.parse({ ...stamp(), validUntil: new Date(checked + 120_000).toISOString(),
+      fx: { version: '00000000-0000-4000-8000-000000000001', expiresAt: new Date(checked + 120_000).toISOString() } });
+    const vehicle = makeImportedPublicVehicleFixture('en', 'supplier', true);
+    vehicle.images[0]!.remote!.expiresAt = new Date(checked + 50_000).toISOString();
+    const mediaDescriptor: SsrPublicDescriptor<ReturnType<typeof PublicVehicleResponseSchema.parse>> = {
+      path: `/api/v1/vehicles/${vehicle.id}?locale=en`, priceView: 'usd', schema: PublicVehicleResponseSchema, media: value => value.data.images,
+    };
+    state.readVersion.mockResolvedValue(versionDto(live, 'live', 2));
+    state.readAnonymous.mockImplementation(async request => {
+      const value = request.schema.parse({ data: vehicle, meta: { requestId: 'data' } });
+      return dto({ ...value, meta: { ...value.meta, catalogCache: live } }, 2);
+    });
+    await state.read(mediaDescriptor);
+    state.setTime(50_099);
+    await state.read(mediaDescriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(1);
+    expect(state.onStamp.mock.calls).toEqual([[live, checked + 50_000], [live, checked + 50_000]]);
+    state.setTime(50_100);
+    await state.read(mediaDescriptor);
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.onStamp).toHaveBeenLastCalledWith(null, undefined);
+  });
+
+  it.each([undefined, stamp('b'.repeat(64))])('never supplies HTML proof for a one-off negotiated filter', async catalogCache => {
+    const state = setup();
+    state.readVersion.mockResolvedValue(versionDto(stamp(), 'live', 2));
+    state.readAnonymous.mockImplementation(async request => dto(request.schema.parse({
+      data: filterData, meta: { requestId: 'data', ...(catalogCache ? { catalogCache } : {}) },
+    }), 2));
+    await expect(state.read(filters)).resolves.toMatchObject({ data: filterData });
+    expect(state.onStamp).toHaveBeenCalledExactlyOnceWith(null, undefined);
+    expect(state.cache.stats.entries).toBe(0);
+  });
+
+  it('reports no proof if a required dependency fails', async () => {
+    const state = setup();
+    state.readVersion.mockRejectedValueOnce(new PublicApiError(503));
+    await expect(state.read(descriptor)).rejects.toMatchObject({ status: 503 });
+    expect(state.onStamp).toHaveBeenCalledExactlyOnceWith(null, undefined);
+  });
+
 });

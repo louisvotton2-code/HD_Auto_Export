@@ -166,12 +166,22 @@ function matches(query: CatalogMatchQuery,quote:FxQuote|null=null) {
 // 18 digits cover the API's complete year 0001..9999 timestamp domain.
 export const facetLabelOrder = (timestamp:string,id:string) => `lpad((253402300799999999-floor(extract(epoch from ${timestamp})*1000000))::text,18,'0')||${id}::text`;
 export type CatalogFacetRow = {kind:string;id:string|null;name:string|null;make_id:string|null;model_id:string|null;count:number};
+export type CatalogModelPair = { makeId: string; modelId: string };
+
+export function catalogModelScope(params: unknown[], pairs: readonly CatalogModelPair[], make: string, model: string) {
+  const makes = `$${params.push(pairs.map(pair => pair.makeId))}::text[]`;
+  const models = `$${params.push(pairs.map(pair => pair.modelId))}::text[]`;
+  // The make predicate permits an indexed scan. Match exact pairs because model IDs can repeat across brands.
+  return `${make}=ANY(${makes}) AND (${make},${model}) IN (SELECT * FROM unnest(${makes},${models}))`;
+}
+
 type FacetProjection = PublicFilterQuery['projection'];
 const fullFacetKinds = ['make','model','trim','generation','powertrain','drivetrain','year','currency'] as const;
 const overviewFacetKinds = ['make','powertrain','drivetrain','year'] as const;
 const projectedFacetKinds = {
   overview: overviewFacetKinds,
   'overview-models': [...overviewFacetKinds,'model'],
+  'home-models': ['model'],
   models: ['model'],
   variants: ['trim','generation'],
 } as const;
@@ -342,12 +352,14 @@ const fullFacetDimensions = ['make_id','model_id','trim_id','generation_id','pow
 const projectedFacetDimensions = {
   overview: ['make_id','powertrain','drivetrain','model_year'],
   'overview-models': ['make_id','model_id','powertrain','drivetrain','model_year'],
+  'home-models': ['make_id','model_id'],
   models: ['make_id','model_id'],
   variants: ['make_id','model_id','trim_id','generation_id'],
 };
 
-export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null) {
-  const { where, values } = matches(query,quote);
+export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[]) {
+  const { where: filters, values } = matches(query,quote);
+  const where = pairs ? `${filters} AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}` : filters;
   const matchingValues=[...values];
   const {projection}=query;
   const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;

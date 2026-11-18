@@ -21,12 +21,14 @@ export function PublicHome({
   locale,
   home,
   filters,
+  modelFilters,
   catalogTotal,
   initialRetryAfter = 0,
 }: {
   locale: Locale;
   home: PublicHomeSections | null;
   filters: PublicVehicleFilters['data'] | null;
+  modelFilters: PublicVehicleFilters['data'] | null;
   catalogTotal: number | null;
   initialRetryAfter?: number;
 }) {
@@ -42,21 +44,37 @@ export function PublicHome({
     () => (filters ? { data: filters, meta: { requestId: 'server-rendered' } } : null),
     [filters],
   );
+  const initialModels = useMemo(
+    () => (modelFilters ? { data: modelFilters, meta: { requestId: 'server-rendered' } } : null),
+    [modelFilters],
+  );
+  const filterQuery = publicUsdFilterQuery(locale);
   const facets = usePublicResource(
-    `/api/v1/vehicle-filters/?${publicQueryString({ ...publicUsdFilterQuery(locale), projection: 'overview-models' })}`,
+    `/api/v1/vehicle-filters/?${publicQueryString({ ...filterQuery, projection: 'overview' })}`,
     initialFilters,
     PublicVehicleFiltersSchema,
     { cooldown },
   );
+  const models = usePublicResource(
+    `/api/v1/vehicle-filters/?${publicQueryString({ ...filterQuery, projection: 'home-models' })}`,
+    initialModels,
+    PublicVehicleFiltersSchema,
+    { navigationPath: `/${locale}/`, cooldown },
+  );
+  const resources = [resource, facets, models];
+  const retryAfter = Math.max(...resources.map((entry) => entry.retryAfter));
   const statusPhase =
-    resource.phase === 'checking' || facets.phase === 'checking'
+    resources.some((entry) => entry.phase === 'checking')
       ? 'checking'
-      : resource.phase === 'error' || facets.phase === 'error'
+      : resources.some((entry) => entry.phase === 'error')
         ? 'error'
         : 'fresh';
   function retry() {
-    void resource.reload();
-    if (facets.phase === 'error' && resource.retryAfter <= 0) void facets.reload();
+    if (retryAfter > 0) return;
+    const retryFeatured = resource.phase === 'error';
+    if (retryFeatured) void resource.reload();
+    if (retryFeatured || models.phase === 'error') void models.reload();
+    if (facets.phase === 'error') void facets.reload();
   }
   return (
     <PublicFreshnessBoundary url={url} phase={resource.phase}>
@@ -64,16 +82,17 @@ export function PublicHome({
         locale={locale}
         sections={resource.data?.data.sections ?? []}
         catalogFilters={facets.data?.data ?? null}
+        catalogModels={models.data?.data.models}
         catalogTotal={facets.data?.data.total ?? catalogTotal}
         unavailable={!resource.data}
-        retryAfter={resource.retryAfter}
+        retryAfter={retryAfter}
         onRetry={retry}
       />
       <PublicResourceStatus
         locale={locale}
         phase={statusPhase}
         retry={retry}
-        retryAfter={resource.retryAfter}
+        retryAfter={retryAfter}
         fallbackHref={`/${locale}/`}
         floating
       />

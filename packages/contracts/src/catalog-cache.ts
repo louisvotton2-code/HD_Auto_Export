@@ -7,26 +7,38 @@ export function isPublicCatalogOffsetAllowed(page: number, pageSize: number): bo
     && (page - 1) * pageSize <= PUBLIC_CATALOG_MAX_OFFSET;
 }
 export const PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 15_000;
-export const PublicCatalogVersionQuerySchema = z.strictObject({ priceView: z.literal('usd').optional() });
-/** A DTO reuse bound, never permission to cache version checks or serve stale data. */
-export const PublicCatalogCacheStampSchema = z.strictObject({
-  version: z.string().regex(/^[a-f0-9]{64}$/),
-  priceView: z.enum(['original', 'usd']),
-  fx: z.strictObject({ version: z.uuid(), expiresAt: TimestampSchema }).nullable(),
-  checkedAt: TimestampSchema,
-  validUntil: TimestampSchema,
-}).superRefine((value, ctx) => {
-  const duration = Date.parse(value.validUntil) - Date.parse(value.checkedAt);
-  if (duration <= 0 || duration > PUBLIC_CATALOG_CACHE_MAX_TTL_MS)
-    ctx.addIssue({ code: 'custom', path: ['validUntil'], message: 'Cache lifetime must be positive and at most 15 seconds' });
-  if (value.priceView === 'original' && value.fx !== null)
-    ctx.addIssue({ code: 'custom', path: ['fx'], message: 'Original prices do not depend on an FX quote' });
-  if (value.fx && Date.parse(value.validUntil) > Date.parse(value.fx.expiresAt))
-    ctx.addIssue({ code: 'custom', path: ['validUntil'], message: 'Cache cannot outlive its FX quote' });
+export const INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 300_000;
+export const INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER = 'x-hd-cache-protocol';
+export const PublicCatalogVersionQuerySchema = z.strictObject({
+  priceView: z.literal('usd').optional(),
+  scope: z.literal('filters').optional(),
 });
+function catalogCacheStampSchema(maxLifetimeMs: number) {
+  return z.strictObject({
+    version: z.string().regex(/^[a-f0-9]{64}$/),
+    priceView: z.enum(['original', 'usd']),
+    fx: z.strictObject({ version: z.uuid(), expiresAt: TimestampSchema }).nullable(),
+    checkedAt: TimestampSchema,
+    validUntil: TimestampSchema,
+  }).superRefine((value, ctx) => {
+    const duration = Date.parse(value.validUntil) - Date.parse(value.checkedAt);
+    if (!Number.isFinite(duration) || duration <= 0 || duration > maxLifetimeMs)
+      ctx.addIssue({ code: 'custom', path: ['validUntil'], message: `Cache lifetime must be positive and at most ${maxLifetimeMs / 1000} seconds` });
+    if (value.priceView === 'original' && value.fx !== null)
+      ctx.addIssue({ code: 'custom', path: ['fx'], message: 'Original prices do not depend on an FX quote' });
+    if (value.fx && Date.parse(value.validUntil) > Date.parse(value.fx.expiresAt))
+      ctx.addIssue({ code: 'custom', path: ['validUntil'], message: 'Cache cannot outlive its FX quote' });
+  });
+}
+
+/** A DTO reuse bound that still requires a live version check. */
+export const PublicCatalogCacheStampSchema = catalogCacheStampSchema(PUBLIC_CATALOG_CACHE_MAX_TTL_MS);
 export type PublicCatalogCacheStamp = z.infer<typeof PublicCatalogCacheStampSchema>;
 export const PublicCatalogVersionResponseSchema = responseSchema(PublicCatalogCacheStampSchema);
 export type PublicCatalogVersionResponse = z.infer<typeof PublicCatalogVersionResponseSchema>;
+/** For authenticated service responses that explicitly negotiate protocol 2. */
+export const InternalPublicCatalogCacheStampSchema = catalogCacheStampSchema(INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS);
+export const InternalPublicCatalogVersionResponseSchema = responseSchema(InternalPublicCatalogCacheStampSchema);
 export const PublicCatalogResponseMetaSchema = RequestMetaSchema.extend({
   // Optional for older servers/fixtures. An absent stamp prohibits SSR reuse.
   catalogCache: PublicCatalogCacheStampSchema.optional(),

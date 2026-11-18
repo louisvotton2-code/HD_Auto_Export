@@ -79,7 +79,7 @@ export class SsrDtoCache {
     this.bytes = 0;
   }
 
-  async read<T>(key: string, load: () => Promise<{ value: T; expiresAt: number }>): Promise<T> {
+  async read<T>(key: string, load: () => Promise<{ value: T; expiresAt: number; reusable?: boolean }>): Promise<T> {
     const now = this.time();
     this.prune(now);
     const hit = this.ready.get(key);
@@ -100,14 +100,14 @@ export class SsrDtoCache {
     // Start loading in a microtask, after its identity is installed in the map.
     // That also turns synchronous loader failures into the shared rejection.
     let pending: PendingSnapshot;
-    const promise = Promise.resolve().then(load).then(({ value, expiresAt }) => {
+    const promise = Promise.resolve().then(load).then(({ value, expiresAt, reusable = true }) => {
       if (!Number.isFinite(expiresAt)) throw new SsrDtoCacheValueError();
       if (expiresAt <= this.time()) throw new SsrDtoCacheExpiredError();
       const snapshot = { body: encode(value), expiresAt };
       const finished = this.time();
       if (expiresAt <= finished) throw new SsrDtoCacheExpiredError();
       const bytes = keyBytes + snapshot.body.byteLength;
-      if (generation === this.generation && this.inFlight.get(key) === pending && bytes <= this.maxBytes) {
+      if (reusable && generation === this.generation && this.inFlight.get(key) === pending && bytes <= this.maxBytes) {
         this.prune(finished);
         while (this.ready.size >= this.maxEntries || this.bytes + bytes > this.maxBytes) {
           this.remove(this.ready.keys().next().value!);

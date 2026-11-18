@@ -19,5 +19,6 @@ export const getPublicVehicleById = cache((id: string, locale: Locale) =>
   getSsrPublicVehicle(id, locale),
 );
 export { proxyPublicRequest } from './infrastructure/public-proxy';
+export { getPublicHtmlCacheVersions } from './infrastructure/public-html-cache-version';
 export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';
 export { catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';

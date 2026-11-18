@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { makeVehicleDraftFixture,makePublicVehicleFixture } from '@hd/contracts/fixtures';
-import { PublicCatalogCacheStampSchema } from '@hd/contracts/public';
+import { InternalPublicCatalogCacheStampSchema, PublicCatalogCacheStampSchema } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/index.js';
@@ -34,12 +34,15 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),CATALOG_READ_MODE:'combined',PUBLIC_CATALOG_CACHE:'memory',TRUST_PROXY:'192.0.2.10/32'});
     const app=runtime=await buildApp({...config,databaseUrl:dbUrl,ssrService:{secret,peers:['192.0.2.10/32']}});await migrateDatabase(app.db);
     const {db}=app;let n=0;
-    const call=async(route:string,internal=false)=>{
+    const call=async(route:string,internal=false,scopedFilters=false,extended=false)=>{
       const r=await app.app.inject({url:route,remoteAddress:internal?'192.0.2.10':`198.51.100.${++n%240+1}`,
-        headers:internal?{'x-hd-ssr-key':secret,'x-forwarded-for':`198.51.100.${++n%240+1}`}:{}});
-      assert.equal(r.statusCode,200,r.body);assert.equal(r.headers['cache-control'],'no-store');return r.json();
+        headers:{...(internal?{'x-hd-ssr-key':secret,'x-forwarded-for':`198.51.100.${++n%240+1}`,
+          ...(scopedFilters?{'x-hd-catalog-scope':'filters'}:{})}:{}),...(extended?{'x-hd-cache-protocol':'2'}:{})}});
+      assert.equal(r.statusCode,200,r.body);assert.equal(r.headers['cache-control'],'no-store');
+      assert.equal(r.headers['x-hd-cache-protocol'],internal&&extended?'2':undefined);
+      return r.json();
     };
-    const version=()=>call('/internal/public-catalog/version',true);
+    const version=(filters=false)=>call('/internal/public-catalog/version'+(filters?'?scope=filters':''),true);
     const id=randomUUID(),publication=randomUUID(),draft=makeVehicleDraftFixture();
     const snapshot={source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,images:makePublicVehicleFixture().images};
     await db.transaction(async tx=>{
@@ -50,23 +53,77 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       await tx.query('UPDATE home_config SET sections=$1,version=version+1 WHERE id=1',[JSON.stringify([{id:'featured',title:{zh:'精选',en:'Featured',ru:'Избранное'},vehicleIds:[id]},{id:'recent',title:{zh:'新车',en:'Recent',ru:'Новое'},vehicleIds:[]}])]);
     });
     await t.test('all four public and protected aliases bind the same DTO version and preserve request IDs',async()=>{
-      const v=(await version()).data;PublicCatalogCacheStampSchema.parse(v);
-      for(const route of ['/vehicles?locale=zh','/vehicles/'+id+'?locale=zh','/vehicle-filters?locale=zh','/home/vehicles?locale=zh']){
-        const publicResult=await call('/api/v1'+route),internal=await call('/internal/public-catalog'+route,true);
+      const catalogVersion=(await version()).data, filterVersion=(await version(true)).data;
+      assert.notEqual(catalogVersion.version,filterVersion.version);
+      for(const route of ['/vehicles?locale=zh','/vehicles/'+id+'?locale=zh','/vehicle-filters?locale=zh',
+        '/vehicle-filters?locale=zh&view=localized&projection=home-models','/home/vehicles?locale=zh']){
+        const isFilter=route.startsWith('/vehicle-filters');
+        const v=PublicCatalogCacheStampSchema.parse(isFilter?filterVersion:catalogVersion);
+        const internalRoute='/internal/public-catalog'+route;
+        const publicResult=await call('/api/v1'+route),internal=await call(internalRoute,true,isFilter);
         assert.deepEqual(publicResult.data,internal.data);assert.equal(publicResult.meta.catalogCache.version,v.version);
         assert.equal(internal.meta.catalogCache.version,v.version);assert.notEqual(publicResult.meta.requestId,internal.meta.requestId);
         PublicCatalogCacheStampSchema.parse(internal.meta.catalogCache);
+        if (isFilter) {
+          const legacy=await call(internalRoute,true);
+          assert.deepEqual(legacy.data,internal.data);
+          assert.equal(legacy.meta.catalogCache.version,catalogVersion.version);
+          const unauthorized=await app.app.inject({url:internalRoute,headers:{'x-hd-catalog-scope':'filters'}});
+          assert.equal(unauthorized.statusCode,404);
+        }
       }
       const denied=await app.app.inject({method:'POST',url:'/api/v1/admin/external/batches',payload:{}});assert.equal(denied.statusCode,404);
     });
+    await t.test('only trusted v2 callers receive the longer stamp, preserving both live version scopes',async()=>{
+      const paths=['/vehicles?locale=zh','/vehicles?locale=zh&view=localized&projection=card',
+        '/vehicles/'+id+'?locale=zh','/vehicles/'+id+'?locale=zh&view=localized&projection=detail-inline-v1',
+        '/vehicle-filters?locale=zh&view=localized&projection=home-models','/home/vehicles?locale=zh'];
+      const control='/internal/public-catalog/version';
+      const global=(await call(control,true,false,true)).data;
+      const facets=(await call(control+'?scope=filters',true,false,true)).data;
+      for(const raw of [global,facets]) {
+        const stamp=InternalPublicCatalogCacheStampSchema.parse(raw);
+        assert.equal(Date.parse(stamp.validUntil)-Date.parse(stamp.checkedAt),300_000);
+      }
+      for(const path of paths) {
+        const scoped=path.startsWith('/vehicle-filters');
+        const expected=scoped?facets:global;
+        const internalPath='/internal/public-catalog'+path;
+        const long=await call(internalPath,true,scoped,true);
+        const old=await call(internalPath,true,scoped);
+        const publicResult=await call('/api/v1'+path,false,false,true);
+        const longStamp=InternalPublicCatalogCacheStampSchema.parse(long.meta.catalogCache);
+        assert.equal(longStamp.version,expected.version);
+        const duration=Date.parse(longStamp.validUntil)-Date.parse(longStamp.checkedAt);
+        assert.ok(duration>299_000&&duration<=300_000);
+        for (const result of [old,publicResult]) {
+          assert.equal(PublicCatalogCacheStampSchema.parse(result.meta.catalogCache).version,expected.version);
+          assert.deepEqual(result.data,long.data);
+        }
+      }
+      const denied=await app.app.inject({url:control,headers:{'x-hd-cache-protocol':'2'}});
+      assert.equal(denied.statusCode,404);
+      assert.equal(denied.headers['x-hd-cache-protocol'],undefined);
+    });
     await t.test('rollback does not invalidate; committed inventory changes immediately invalidate all cached projections',async()=>{
       const before=(await version()).data.version;
+      const beforeFilter=(await version(true)).data.version;
+      const homeModels='/api/v1/vehicle-filters?locale=zh&view=localized&projection=home-models';
+      const featured=await call(homeModels);
+      assert.equal(featured.meta.catalogCache.version,beforeFilter);
+      assert.equal(featured.data.models[0]?.count,1);
       await assert.rejects(db.transaction(async tx=>{await tx.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);throw new Error('rollback');}));
       assert.equal((await version()).data.version,before);
+      assert.equal((await version(true)).data.version,beforeFilter);
       await db.pool.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);
       const changed=(await version()).data.version;assert.notEqual(changed,before);
       const list=await call('/api/v1/vehicles?locale=zh');assert.equal(list.meta.total,0);assert.equal(list.meta.accessibleTotal,0);
       assert.equal(list.meta.catalogCache.version,changed);
+      const updatedModels=await call(homeModels);
+      const changedFilter=(await version(true)).data.version;
+      assert.notEqual(changedFilter,beforeFilter);
+      assert.equal(updatedModels.meta.catalogCache.version,changedFilter);
+      assert.deepEqual(updatedModels.data.models,[]);
       for(const prefix of ['/api/v1','/internal/public-catalog']){
         const home=await call(`${prefix}/home/vehicles?locale=zh`,prefix.startsWith('/internal'));
         assert.equal(home.meta.catalogCache.version,changed);
@@ -75,12 +132,38 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       }
       assert.equal((await call('/api/v1/vehicles/'+id+'?locale=zh')).data.availability,'sold');
     });
+    await t.test('an overlapping inventory commit returns the filter snapshot once and the following read sees the commit',async context=>{
+      await db.pool.query("UPDATE vehicles SET availability='available' WHERE id=$1",[id]);
+      const transaction=db.transaction;
+      let wrote=false;
+      const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+        const wrapped=Object.create(tx) as typeof tx;
+        wrapped.query=(async (text:string,values?:unknown[])=>{
+          const result=await tx.query(text,values);
+          if (!wrote && text.includes('s.filter_revision::text AS revision')) {
+            await db.pool.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);
+            wrote=true;
+          }
+          return result;
+        }) as typeof tx.query;
+        return work(wrapped);
+      }));
+      const route='/api/v1/vehicle-filters?locale=zh&view=localized&projection=overview-models';
+      const overlapped=await call(route);
+      hook.mock.restore();
+      assert.equal(wrote,true);
+      assert.equal(overlapped.data.total,1);
+      assert.equal(overlapped.meta.catalogCache,undefined);
+      const next=await call(route);
+      assert.equal(next.data.total,0);
+      assert.equal(next.meta.catalogCache.version,(await version(true)).data.version);
+    });
     await t.test('offset guard precedes SQL and actual totals stay exact; cached DB loss fails closed',async()=>{
       const beyond=await app.app.inject({url:'/api/v1/vehicles?page=10002&pageSize=1'});assert.equal(beyond.statusCode,400);
       const boundary=await call('/api/v1/vehicles?page=10001&pageSize=1');assert.equal(boundary.meta.total,0);
       await db.pool.query('ALTER TABLE public_catalog_state RENAME TO rel03_hidden_state');
       try {
-        for(const route of ['/api/v1/home/vehicles?locale=zh','/api/v1/vehicles?locale=zh']){
+        for(const route of ['/api/v1/home/vehicles?locale=zh','/api/v1/vehicles?locale=zh','/api/v1/vehicle-filters?locale=zh']){
           const r=await app.app.inject({url:route,remoteAddress:'198.51.100.241'});assert.equal(r.statusCode,503);assert.equal(r.json().meta.catalogCache,undefined);
         }
       } finally {await db.pool.query('ALTER TABLE rel03_hidden_state RENAME TO public_catalog_state');}
