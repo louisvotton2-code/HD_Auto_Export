@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
 import { ContactLinks } from './contact-links';
+import { DestinationCalculatorLink } from './destination-calculator-link';
 import { FooterPayment } from './footer-payment';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
@@ -54,7 +55,7 @@ export async function SiteFooter() {
               <Link href="/">{t('Nav.home')}</Link>
               <Link href="/cars/">{t('Nav.vehicles')}</Link>
               <Link href="/parts/">{t('Nav.parts')}</Link>
-              <Link href="/calculator/">{t('Nav.calculator')}</Link>
+              <DestinationCalculatorLink>{t('Nav.calculator')}</DestinationCalculatorLink>
               <Link href="/buy/">{t('BuyingGuide.navLabel')}</Link>
               <Link href="/about/">{t('Nav.about')}</Link>
               <a href="#contact">{t('Nav.contact')}</a>

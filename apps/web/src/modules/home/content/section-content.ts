@@ -18,8 +18,6 @@ type SectionCopy = {
   previous: string;
   next: string;
   slide: string;
-  pause: string;
-  play: string;
   why: string;
   benefits: { title: string; body: string }[];
   process: string;
@@ -40,12 +38,6 @@ type SectionCopy = {
   countries: { name: string; slug: string; countryCode: DestinationCountryCode }[];
   ready: string;
   readyBody: string;
-  phone: string;
-  send: string;
-  formHint: string;
-  enquiryMessage: string;
-  enquiryPhoneLabel: string;
-  phoneFallback: string;
 };
 
 /** Public service information and purchase questions, independent of customer records. */
@@ -60,8 +52,6 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     previous: '上一组车型',
     next: '下一组车型',
     slide: '查看车型',
-    pause: '暂停轮播',
-    play: '播放轮播',
     why: '为什么选择 HD Auto Export',
     benefits: [
       {
@@ -195,12 +185,6 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     countries: calculatorCountries('zh'),
     ready: '准备好寻找你的汽车了吗？',
     readyBody: '告诉我们你的预算与需求，一起了解中国车源和出口方案。',
-    phone: '你的电话号码',
-    send: '通过 WhatsApp 继续咨询',
-    formHint: '在 WhatsApp 中确认咨询信息后发送。',
-    enquiryMessage: '您好，我想咨询从中国购车出口。',
-    enquiryPhoneLabel: '联系电话',
-    phoneFallback: '打开 WhatsApp 后，请补充联系电话并发送咨询信息。',
   },
   en: {
     popular: 'Browse by Model',
@@ -212,8 +196,6 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     previous: 'Previous models',
     next: 'Next models',
     slide: 'View model',
-    pause: 'Pause carousel',
-    play: 'Play carousel',
     why: 'Why HD Auto Export',
     benefits: [
       {
@@ -368,12 +350,6 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     countries: calculatorCountries('en'),
     ready: 'Ready to find your car?',
     readyBody: 'Tell us your budget and preferences to explore cars from China and export options.',
-    phone: 'Your phone number',
-    send: 'Continue on WhatsApp',
-    formHint: 'Review your enquiry in WhatsApp before sending.',
-    enquiryMessage: 'Hello, I would like to discuss buying and exporting a vehicle from China.',
-    enquiryPhoneLabel: 'My contact number',
-    phoneFallback: 'Add your contact number in WhatsApp, then send your enquiry.',
   },
   ru: {
     popular: 'Поиск по моделям',
@@ -385,8 +361,6 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     previous: 'Предыдущие модели',
     next: 'Следующие модели',
     slide: 'Посмотреть модель',
-    pause: 'Остановить прокрутку',
-    play: 'Включить прокрутку',
     why: 'Почему HD Auto Export',
     benefits: [
       {
@@ -542,11 +516,5 @@ export const sectionContent: Record<Locale, SectionCopy> = {
     ready: 'Готовы найти свой автомобиль?',
     readyBody:
       'Расскажите о бюджете и пожеланиях — обсудим автомобили из Китая и варианты экспорта.',
-    phone: 'Ваш номер телефона',
-    send: 'Написать в WhatsApp',
-    formHint: 'Проверьте текст обращения в WhatsApp перед отправкой.',
-    enquiryMessage: 'Здравствуйте! Хочу обсудить покупку и экспорт автомобиля из Китая.',
-    enquiryPhoneLabel: 'Мой контактный номер',
-    phoneFallback: 'Добавьте контактный номер в WhatsApp и отправьте обращение.',
   },
 };

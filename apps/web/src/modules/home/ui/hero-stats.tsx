@@ -1,6 +1,7 @@
 'use client';
 
 import type { Locale } from '@/i18n/routing';
+import { partsCatalogReferenceCount } from '@/shared/config/parts-catalog';
 import { companyMetrics } from '../content/company-metrics';
 import { homeContent } from '../content/home-content';
 import { CountUpValue } from '@/shared/ui/count-up-value';
@@ -18,11 +19,7 @@ export function HeroStats({
   const t = homeContent[locale];
   const metrics = [
     { id: 'catalog', value: catalogTotal, suffix: undefined },
-    {
-      id: 'clients',
-      value: companyMetrics.happyClients,
-      suffix: companyMetrics.happyClientsSuffix,
-    },
+    { id: 'parts', value: partsCatalogReferenceCount, suffix: undefined },
     { id: 'years', value: companyMetrics.yearsOnMarket, suffix: t.yearsSuffix },
   ] as const;
   return (

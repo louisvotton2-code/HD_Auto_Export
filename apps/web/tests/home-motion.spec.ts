@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { resetPublicFixture } from './helpers/public-fixture';
 
 test.beforeEach(async ({ request }) => {
@@ -7,64 +7,6 @@ test.beforeEach(async ({ request }) => {
 test.afterEach(async ({ request }) => {
   await resetPublicFixture(request);
 });
-
-type ArcSample = { x: number; y: number; radius: number; frame: number };
-type CanvasProbe = { frames: number; arcs: ArcSample[] };
-const probeKey = '__hdHeroMotionProbe';
-
-// Observe actual canvas output without adding a diagnostic API to the shipped component.
-async function observeHeroCanvas(page: Page) {
-  await page.addInitScript((key) => {
-    const probe = { frames: 0, arcs: [] as ArcSample[] };
-    Reflect.set(window, key, probe);
-    const originalFill = CanvasRenderingContext2D.prototype.fillRect;
-    const originalArc = CanvasRenderingContext2D.prototype.arc;
-    CanvasRenderingContext2D.prototype.fillRect = function (x, y, width, height) {
-      if (
-        this.canvas.dataset.testid === 'hero-ripple-canvas' &&
-        x === 0 &&
-        y === 0 &&
-        width > 100 &&
-        height > 100
-      )
-        probe.frames++;
-      return originalFill.call(this, x, y, width, height);
-    };
-    CanvasRenderingContext2D.prototype.arc = function (x, y, radius, start, end, anticlockwise) {
-      if (this.canvas.dataset.testid === 'hero-ripple-canvas' && radius > 12) {
-        probe.arcs.push({ x, y, radius, frame: probe.frames });
-        if (probe.arcs.length > 15_000) probe.arcs.splice(0, 5000);
-      }
-      return originalArc.call(this, x, y, radius, start, end, anticlockwise);
-    };
-  }, probeKey);
-}
-
-async function readCanvas(page: Page): Promise<CanvasProbe> {
-  return page.evaluate((key) => Reflect.get(window, key) as CanvasProbe, probeKey);
-}
-
-function expandingCenters(arcs: ArcSample[]) {
-  const centers = new Map<string, Map<number, number>>();
-  for (const arc of arcs) {
-    const center = `${arc.x.toFixed(2)},${arc.y.toFixed(2)}`;
-    const frames = centers.get(center) ?? new Map<number, number>();
-    frames.set(arc.frame, Math.max(frames.get(arc.frame) ?? 0, arc.radius));
-    centers.set(center, frames);
-  }
-  return [...centers.entries()].filter(([, frames]) => {
-    const radii = [...frames.values()];
-    return radii.length >= 6 && radii.at(-1)! - radii[0] > 20;
-  });
-}
-
-async function waitForHero(page: Page) {
-  await page.goto('/en/');
-  const canvas = page.getByTestId('hero-ripple-canvas');
-  await expect(canvas).toBeVisible();
-  await page.evaluate(() => document.fonts.ready);
-  return canvas;
-}
 
 async function rotation(card: Locator) {
   return card.evaluate((node) => {
@@ -83,92 +25,163 @@ async function expectFlat(card: Locator) {
     .toBeLessThan(0.0001);
 }
 
-test('hero waves expand from distinct automatic origins and from the actual pointer position', async ({
+test('the mobile light crosses a fixed frame in both directions and settles after scrolling', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await observeHeroCanvas(page);
-  const canvas = await waitForHero(page);
-  await expect
-    .poll(async () => expandingCenters((await readCanvas(page)).arcs).length, { timeout: 8000 })
-    .toBeGreaterThanOrEqual(2);
+  await page.goto('/en/');
+  const hero = page.locator('[data-home-section="hero"]');
+  const image = hero.locator('img[src="/media/home/dawn-convoy.webp"]');
+  const light = hero.getByTestId('hero-road-light');
+  const frame = image.locator('..');
+  const progress = () =>
+    hero.evaluate((node) => Number.parseFloat(node.style.getPropertyValue('--drive-progress')));
+  const translation = () =>
+    light.evaluate((node) => new DOMMatrixReadOnly(getComputedStyle(node).transform).m41);
+  const scroll = (top: number) =>
+    page.evaluate((y) => window.scrollTo({ top: y, behavior: 'instant' }), top);
+  const sampledChange = () =>
+    hero.evaluate(async (node) => {
+      const initial = node.style.getPropertyValue('--drive-progress');
+      for (let frame = 0; frame < 8; frame++) {
+        await new Promise<number>((resolve) => requestAnimationFrame(resolve));
+      }
+      return node.style.getPropertyValue('--drive-progress') !== initial;
+    });
 
-  const box = await canvas.boundingBox();
-  const point = { x: 180, y: Math.round(box!.height * 0.43) };
-  await page.evaluate((key) => {
-    (Reflect.get(window, key) as CanvasProbe).arcs = [];
-  }, probeKey);
-  await page.mouse.click(box!.x + point.x, box!.y + point.y);
+  await expect(hero.locator('canvas')).toHaveCount(0);
+  await expect(hero.getByRole('button', { name: 'Pause autoplay' })).toHaveCount(0);
+  await expect.poll(progress).toBe(0);
+  const initialImage = await image.evaluate((node) => getComputedStyle(node).transform);
+  const initialLight = await translation();
+  const frameWidth = (await frame.boundingBox())!.width;
+  const lightWidth = await light.evaluate((node) => getComputedStyle(node, '::before').width);
+  const lightOpacity = await light.evaluate((node) => getComputedStyle(node).opacity);
+  await scroll(96);
+  await expect.poll(progress).toBeGreaterThan(0.25);
+  await expect.poll(sampledChange).toBe(false);
+  const forward = await progress();
+  const forwardLight = await translation();
+  expect(forwardLight).toBeGreaterThan(initialLight);
+  expect((await frame.boundingBox())!.width).toBeCloseTo(frameWidth, 2);
+  expect(await light.evaluate((node) => getComputedStyle(node, '::before').width)).toBe(lightWidth);
+  await expect(image).not.toHaveCSS('transform', initialImage);
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect.poll(sampledChange).toBe(false);
+  expect(await progress()).toBeCloseTo(forward, 2);
+
+  await scroll(48);
+  await expect.poll(progress).toBeLessThan(forward - 0.07);
+  await expect.poll(sampledChange).toBe(false);
+  const backward = await progress();
+  expect(backward).toBeGreaterThan(0);
+  expect(await translation()).toBeLessThan(forwardLight);
+
+  await scroll(330);
+  await expect.poll(progress).toBe(1);
+  expect((await frame.boundingBox())!.width).toBeCloseTo(frameWidth, 2);
+  expect(await light.evaluate((node) => getComputedStyle(node, '::before').width)).toBe(lightWidth);
+  await expect(light).toHaveCSS('opacity', lightOpacity);
+  expect(await translation()).toBeGreaterThan(frameWidth);
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(image).toHaveCSS('transform', 'none');
+  await expect(light).toHaveCSS('opacity', '0');
+  const scrollCue = hero.getByRole('link', { name: 'Scroll down' });
+  await expect(scrollCue).toHaveText('Scroll down');
+  await expect(scrollCue.locator('span[aria-hidden]')).toHaveCSS('animation-name', 'none');
+  const dataRequests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname.replace(/\/$/, '');
+    if (path === '/api/v1/home/vehicles' || path === '/api/v1/vehicle-filters') {
+      dataRequests.push(path);
+    }
+  });
+  await scrollCue.click();
+  await expect(page).toHaveURL(/#home-vehicles$/);
   await expect
-    .poll(async () => {
-      const arcs = (await readCanvas(page)).arcs.filter(
-        (arc) => Math.abs(arc.x - point.x) < 1 && Math.abs(arc.y - point.y) < 1,
-      );
-      return expandingCenters(arcs).length;
-    })
-    .toBe(1);
+    .poll(() => page.locator('#home-vehicles').evaluate((section) =>
+      Math.round(section.getBoundingClientRect().top),
+    ))
+    .toBe(84);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/en\/$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/#home-vehicles$/);
+  await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  expect(dataRequests).toEqual([]);
 });
 
-test('hero excludes interactive targets and stops rendering while paused or outside the viewport', async ({
-  page,
-}) => {
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await observeHeroCanvas(page);
-  const canvas = await waitForHero(page);
-  await expect.poll(async () => (await readCanvas(page)).frames).toBeGreaterThan(2);
-  const pause = page.getByRole('button', { name: 'Pause autoplay', exact: true });
-  const phone = page.locator('[data-home-section="hero"] a[href^="tel:"]');
-  const buttonBox = await phone.boundingBox();
-  const canvasBox = await canvas.boundingBox();
-  const center = {
-    x: buttonBox!.x + buttonBox!.width / 2 - canvasBox!.x,
-    y: buttonBox!.y + buttonBox!.height / 2 - canvasBox!.y,
-  };
-  // Prevent the native tel action while preserving the real bubbling click seen by the hero.
-  await phone.evaluate((node) =>
-    node.addEventListener('click', (event) => event.preventDefault(), { once: true }),
-  );
-  await phone.click();
-  await page.waitForTimeout(150);
-  expect(
-    (await readCanvas(page)).arcs.filter(
-      (arc) => Math.abs(arc.x - center.x) < 1 && Math.abs(arc.y - center.y) < 1,
-    ),
-  ).toHaveLength(0);
-  await pause.click();
-  await expect(page.getByTestId('home-page')).toHaveAttribute('data-motion-paused', 'true');
-  await page.waitForTimeout(150);
-  const pausedFrames = (await readCanvas(page)).frames;
-  await page.waitForTimeout(350);
-  expect((await readCanvas(page)).frames).toBe(pausedFrames);
-  await page.getByRole('button', { name: 'Resume autoplay', exact: true }).click();
-  await expect.poll(async () => (await readCanvas(page)).frames).toBeGreaterThan(pausedFrames);
-  await page.locator('[data-home-section="why"]').scrollIntoViewIfNeeded();
-  await page.waitForTimeout(150);
-  const offscreenFrames = (await readCanvas(page)).frames;
-  await page.waitForTimeout(350);
-  expect((await readCanvas(page)).frames).toBe(offscreenFrames);
-});
+test.describe('touch scrolling on the homepage', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-test('reduced motion keeps the hero static, including after a click and a preference change', async ({
-  page,
-}) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await observeHeroCanvas(page);
-  const canvas = await waitForHero(page);
-  await page.waitForTimeout(150);
-  const initial = (await readCanvas(page)).frames;
-  const box = await canvas.boundingBox();
-  await page.mouse.click(box!.x + 180, box!.y + 360);
-  await page.waitForTimeout(350);
-  expect((await readCanvas(page)).frames).toBe(initial);
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await expect.poll(async () => (await readCanvas(page)).frames).toBeGreaterThan(initial + 2);
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.waitForTimeout(150);
-  const reducedFrames = (await readCanvas(page)).frames;
-  await page.waitForTimeout(350);
-  expect((await readCanvas(page)).frames).toBe(reducedFrames);
+  test('toolbar height changes cannot reverse the light during a swipe', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.goto('/en/');
+    const hero = page.locator('[data-home-section="hero"]');
+    const progress = () =>
+      hero.evaluate((node) => Number.parseFloat(node.style.getPropertyValue('--drive-progress')));
+    const swipe = (
+      type: 'touchstart' | 'touchmove' | 'touchend',
+      screenY: number,
+      scrollTop?: number,
+    ) =>
+      page.evaluate(({ type, screenY, scrollTop }) => {
+        const gesture = new Event(type);
+        Object.defineProperty(gesture, 'touches', {
+          value: type === 'touchend' ? [] : [{ screenY }],
+        });
+        window.dispatchEvent(gesture);
+        if (scrollTop !== undefined) window.scrollTo({ top: scrollTop, behavior: 'instant' });
+      }, { type, screenY, scrollTop });
+    const expectStable = async (expected: number) => {
+      const observed = await hero.evaluate(async (node) => {
+        const values: number[] = [];
+        for (let frame = 0; frame < 8; frame++) {
+          await new Promise<number>((resolve) => requestAnimationFrame(resolve));
+          values.push(Number.parseFloat(node.style.getPropertyValue('--drive-progress')));
+        }
+        return values;
+      });
+      for (const value of observed) expect(value).toBe(expected);
+    };
+
+    const cue = hero.getByRole('link', { name: 'Scroll down' });
+    const arrows = cue.locator('span[aria-hidden]');
+    await expect(arrows.locator('svg')).toHaveCount(2);
+    await cue.scrollIntoViewIfNeeded();
+    await expect(arrows).toHaveCSS('animation-iteration-count', 'infinite');
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await expect.poll(progress).toBe(0);
+    await swipe('touchstart', 550);
+    await swipe('touchmove', 500, 120);
+    await expect.poll(progress).toBe(0.427);
+
+    await page.setViewportSize({ width: 390, height: 920 });
+    await swipe('touchmove', 490, 86);
+    await expectStable(0.427);
+    await swipe('touchmove', 440, 154);
+    await expect.poll(progress).toBe(0.548);
+
+    await swipe('touchmove', 470, 110);
+    await expect.poll(progress).toBe(0.392);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await swipe('touchmove', 485, 140);
+    await expectStable(0.392);
+    await swipe('touchend', 485, 136);
+    await expectStable(0.392);
+    await swipe('touchstart', 480);
+    await swipe('touchmove', 500, 64);
+    await expect.poll(progress).toBe(0.228);
+
+    await cue.evaluate((link) => window.scrollTo({
+      top: window.scrollY + link.getBoundingClientRect().bottom + 20,
+      behavior: 'instant',
+    }));
+    await expect(arrows).toHaveCSS('animation-name', 'none');
+  });
 });
 
 test('vehicle cards rotate in opposite directions across the pointer, reset on leave and retain navigation', async ({
@@ -176,9 +189,9 @@ test('vehicle cards rotate in opposite directions across the pointer, reset on l
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto('/en/');
-  await page.getByRole('button', { name: 'Pause autoplay', exact: true }).click();
   const card = page.locator('[data-home-section^="vehicles-"] article').first();
   await card.scrollIntoViewIfNeeded();
+  await page.locator('[data-home-section^="vehicles-"] [tabindex="0"]').first().focus();
   const box = await card.boundingBox();
   await page.mouse.move(box!.x + box!.width * 0.2, box!.y + box!.height * 0.2);
   await expect
@@ -230,49 +243,5 @@ test('vehicle tilt stays disabled for touch pointers and reduced-motion users', 
     } finally {
       await context.close();
     }
-  }
-});
-
-test('touch waves keep CSS-pixel origins after resize and a scrolled hero at high DPR', async ({
-  browser,
-  baseURL,
-}) => {
-  const context = await browser.newContext({
-    baseURL,
-    viewport: { width: 390, height: 844 },
-    deviceScaleFactor: 3,
-    isMobile: true,
-    hasTouch: true,
-    reducedMotion: 'no-preference',
-  });
-  const page = await context.newPage();
-  try {
-    await observeHeroCanvas(page);
-    const canvas = await waitForHero(page);
-    for (const resized of [false, true]) {
-      if (resized) {
-        await page.setViewportSize({ width: 430, height: 932 });
-        await page.evaluate(() => scrollTo({ top: 100, behavior: 'instant' }));
-      }
-      const box = await canvas.boundingBox();
-      const point = { x: 40, y: Math.round(box!.height * 0.6) };
-      await page.evaluate((key) => {
-        (Reflect.get(window, key) as CanvasProbe).arcs = [];
-      }, probeKey);
-      await page.touchscreen.tap(box!.x + point.x, box!.y + point.y);
-      await expect
-        .poll(
-          async () =>
-            expandingCenters(
-              (await readCanvas(page)).arcs.filter(
-                (a) => Math.abs(a.x - point.x) < 1 && Math.abs(a.y - point.y) < 1,
-              ),
-            ).length,
-        )
-        .toBe(1);
-      await expect(canvas).toHaveAttribute('width', String((resized ? 430 : 390) * 2));
-    }
-  } finally {
-    await context.close();
   }
 });

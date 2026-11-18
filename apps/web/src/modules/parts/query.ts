@@ -1,10 +1,11 @@
 import type { Locale } from '@/i18n/routing';
+import { partsCatalogReferenceCount } from '@/shared/config/parts-catalog';
 import { catalogCategoryFilters, catalogSubcategoryFilters } from './mock/parts-filters';
 import type { Part, PartCategory, PartsQuery } from './types';
 
 export const partCategories: readonly PartCategory[] = ['chassis', 'transmission', 'components', 'body'];
 export const defaultPartsQuery: PartsQuery = { q: '', brand: '', category: '', subcategory: '', min: '', max: '', sort: 'default' };
-export const catalogRecordCount = 48_689;
+export const catalogRecordCount = partsCatalogReferenceCount;
 // The reference catalog uses 24 entries per page for its page numbering.
 export const catalogPageCount = Math.ceil(catalogRecordCount / 24);
 

@@ -4,6 +4,10 @@
   background: #0a0a0a;
   color: #fff;
 }
+.sections :is(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid #dca673;
+  outline-offset: -3px;
+}
 .container {
   position: relative;
   width: 100%;
@@ -40,6 +44,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 44px;
   font-size: 14px;
   color: var(--gray);
   white-space: nowrap;
@@ -60,7 +65,9 @@
   display: none;
 }
 .modelCard {
+  display: flex;
   flex: 0 0 100%;
+  flex-direction: column;
   min-width: 0;
   overflow: hidden;
   background: #141414;
@@ -79,12 +86,6 @@
   aspect-ratio: 16/9;
   overflow: hidden;
 }
-.modelFacet {
-  display: grid;
-  place-items: center;
-  color: #b67749;
-  background: radial-gradient(ellipse at center, #b6774929, #141414 70%);
-}
 .modelPhoto img {
   display: block;
   width: 100%;
@@ -97,6 +98,7 @@
 }
 .modelBody {
   display: flex;
+  flex: 1;
   flex-direction: column;
   padding: 20px;
 }
@@ -127,7 +129,8 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: auto;
+  padding-top: 20px;
 }
 .modelBottom > span:first-child {
   display: flex;
@@ -146,74 +149,81 @@
 .modelMore {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
   gap: 6px;
   font-size: 12px;
   color: var(--copper);
 }
 .pagination {
-  height: 14px;
-  display: flex;
+  display: grid;
+  grid-template-columns: 44px minmax(0, auto) 44px;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  margin-top: 24px;
+  gap: clamp(6px, 1.5vw, 16px);
+  margin-block: 18px 0;
 }
+
+.modelCount {
+  display: none;
+}
+
 .dots {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 4px;
 }
+
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 22px;
+  height: 32px;
   padding: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.dot::before {
+  display: block;
+  width: 7px;
+  height: 7px;
+  margin: auto;
   border-radius: 50%;
-  background: #4a4a4a;
-  transition:
-    background 0.3s,
-    transform 0.3s;
+  background: #5b5350;
+  content: '';
+  transition: background 0.2s, transform 0.2s;
 }
-.dot[data-active='true'] {
+
+.dot:is(:hover, [aria-current='true'])::before {
   background: var(--copper);
-  transform: scale(1.2);
 }
+
+.dot[aria-current='true']::before {
+  transform: scale(1.35);
+}
+
 .modelPrevious,
 .modelNext {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid #b6774926;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid #b6774966;
   border-radius: 50%;
   background: transparent;
   color: var(--copper);
-  font-size: 18px;
 }
-.pause {
-  position: absolute;
-  right: 24px;
-  bottom: -6px;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid #b6774926;
-  background: transparent;
-  color: #8a8a8a;
-  font-size: 11px;
+
+.pagination button:not([aria-disabled='true']):hover {
+  background: #b677491a;
 }
-.pause span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+
+.pagination button[aria-disabled='true'] {
+  opacity: 0.42;
+  cursor: default;
 }
+
 .mobileCatalog {
   display: none;
 }
@@ -273,7 +283,7 @@
   display: none;
 }
 .step {
-  flex: 0 0 280px;
+  flex: 0 0 min(280px, 100%);
   min-height: 260px;
   border: 1px solid #b6774933;
   background: #141414;
@@ -362,7 +372,7 @@
 .reviewCard {
   display: flex;
   flex-direction: column;
-  flex: 0 0 280px;
+  flex: 0 0 min(280px, 100%);
   text-align: left;
   border: 1px solid #4a4a4a4d;
   background: #141414;
@@ -387,6 +397,7 @@
 }
 .enlarge {
   position: absolute;
+  color: #fff;
   right: 12px;
   bottom: 12px;
   background: #0009;
@@ -396,11 +407,10 @@
   width: 32px;
   height: 32px;
   font-size: 22px;
-  opacity: 0;
-  transition: opacity 0.3s;
+  transition: background-color 0.3s;
 }
 .reviewCard:hover .enlarge {
-  opacity: 1;
+  background: #2b2019;
 }
 .reviewCaption {
   padding: 16px;
@@ -524,12 +534,17 @@
 .dialogToolbar button {
   display: grid;
   place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
   background: transparent;
   font-size: 24px;
   color: #ccc;
 }
 .chatExpanded {
-  min-height: 650px;
+  min-height: min(650px, 75dvh);
 }
 .chatExpanded .chatBody {
   padding: 24px;
@@ -635,25 +650,23 @@
   .countries li { grid-column: span 2; }
   .countries li:nth-child(5):nth-last-child(3) { grid-column: 2 / span 2; }
 }
+.calculateButton,
+.contactButton {
+  background: #9d6037;
+  color: #fff;
+  transition: transform 0.3s, background 0.3s;
+}
 .calculateButton {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  min-height: 44px;
   padding: 14px 20px;
   border-radius: 999px;
-  background: var(--copper);
-  color: #fff;
   font-size: 14px;
   white-space: nowrap;
   box-shadow: 0 0 24px #b6774926;
-  transition:
-    transform 0.3s,
-    background 0.3s;
-}
-.calculateButton:hover {
-  transform: translateY(-2px);
-  background: #ca8958;
 }
 .cta {
   padding: 96px 16px;
@@ -677,66 +690,24 @@
   color: var(--gray);
   margin-top: 16px;
 }
-.enquiryForm {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 680px;
-  margin: 40px auto 0;
-}
-.enquiryForm input {
-  border: 1px solid #4a4a4a80;
-  background: #141414;
-  color: #fff;
+.contactButton {
+  min-height: 52px;
+  margin-top: 26px;
   border-radius: 999px;
-  padding: 16px 24px;
-  min-height: 56px;
-  flex: 1;
-  width: 100%;
-  font-size: 16px;
-  transition: border-color 0.3s;
-}
-.enquiryForm input:focus {
-  border-color: var(--copper);
-}
-.enquiryForm button {
-  min-height: 56px;
-  border-radius: 999px;
-  background: var(--copper);
-  color: #fff;
-  padding: 16px 28px;
+  padding: 12px 24px;
   font-weight: 600;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   line-height: 1.5;
-  transition:
-    transform 0.3s,
-    background 0.3s;
 }
-.enquiryForm button:hover {
-  transform: translateY(-2px);
-  background: #ca8958;
-}
-.formHint {
-  display: block;
-  font-size: 10px;
-  line-height: 18px;
-  color: #8a8a8a;
-  margin: 12px auto 0;
-  max-width: 680px;
-}
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+@media (hover: hover) {
+  .calculateButton:hover,
+  .contactButton:hover {
+    transform: translateY(-2px);
+    background: #a76437;
+  }
 }
 @media (min-width: 640px) {
   .container {
@@ -752,12 +723,6 @@
   }
   .modelCard {
     flex-basis: calc((100% - 20px) / 2);
-  }
-  .enquiryForm {
-    flex-direction: row;
-  }
-  .enquiryForm input {
-    width: 0;
   }
   .calculatorWrap {
     padding: 0 24px;
@@ -811,18 +776,58 @@
 }
 @media (max-width: 639px) {
   .catalogLink {
-    font-size: 12px;
-    flex-shrink: 0;
+    display: none;
+  }
+  .mobileCatalog {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    margin-top: 6px;
+    color: #dca673;
+    font-size: 14px;
+  }
+  .pagination {
+    grid-template-columns: 44px minmax(68px, auto) 44px;
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .dots {
+    display: none;
+  }
+  .modelCount {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.36em;
+    min-height: 36px;
+    padding-inline: 10px;
+    border: 1px solid #b6774933;
+    border-radius: 999px;
+    background: #141414;
+    color: var(--gray);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .modelCount strong {
+    color: #fff;
   }
   .benefit {
     min-height: 220px;
   }
-  .reviewImage {
-    height: 608px;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sections * {
+  .benefit:hover,
+  .step:hover,
+  .reviewCard:hover,
+  .modelCard:hover img,
+  .calculateButton:hover,
+  .contactButton:hover {
+    transform: none;
+  }
+  .sections *,
+  .sections *::before {
     transition: none !important;
     scroll-behavior: auto !important;
   }

@@ -146,7 +146,7 @@ test.describe('persistent vehicle identities and aligned cards', () => {
       },
     );
     await page.goto('/ru/');
-    await expect(page.getByTestId('hero-ripple-canvas')).toHaveAttribute('width', /^[1-9]\d*$/);
+    await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
     // A real client navigation lets the public-resource lifecycle mount before
     // Back triggers its explicit recheck. A synthetic hash jump could run first.
     await page

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
+import { DESTINATION_COUNTRY_STORAGE_KEY } from '../src/shared/lib/destination-country';
 import { fillNumericDate } from './helpers/numeric-date';
 
 test.beforeEach(async ({ page }) => {
@@ -84,14 +85,14 @@ test.describe('native header navigation', () => {
   });
 });
 
-test('header, footer and guide use the preference entry while country links stay explicit', async ({
+test('header and footer fall back to Russia while country links stay explicit', async ({
   page,
 }) => {
   await page.goto('/zh/buy/');
   const calculatorLinks = page.locator('a[href^="/zh/calculator"]');
   expect(await calculatorLinks.count()).toBeGreaterThan(0);
   for (const link of await calculatorLinks.all()) {
-    await expect(link).toHaveAttribute('href', '/zh/calculator/');
+    await expect(link).toHaveAttribute('href', '/zh/calculator/russia/');
   }
   for (const link of await page.locator('a[href^="/zh/buy"]').all()) {
     await expect(link).toHaveAttribute('href', '/zh/buy/');
@@ -132,16 +133,38 @@ test('hydrated country and header navigation preserve the document and the edita
   await page.locator('.main-nav:visible a[href="/zh/buy/"]').click();
   await expect(page).toHaveURL(/\/zh\/buy\/$/);
   await expect(page.getByTestId('buy-guide')).toBeVisible();
-  await page.locator('.main-nav:visible a[href="/zh/calculator/"]').click();
+  await page.locator('.main-nav:visible a[href="/zh/calculator/kazakhstan/"]').click();
   await expect(page).toHaveURL(/\/zh\/calculator\/kazakhstan\/$/);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#price')).toHaveValue('215000');
   await expect(page.locator('#displacementCc')).toHaveValue('1700');
   expect(await page.evaluate(() => Reflect.get(window, '__hdNavigationDocument'))).toBe('original');
   expect(documents).toEqual([]);
-  // The generic entry may be prefetched or read during navigation; either uses RSC,
-  // preserves this document and resolves the last explicitly selected country.
-  for (const request of entryRequests) expect(request.headers().rsc).toBe('1');
+  expect(entryRequests).toEqual([]);
+});
+
+test('both home calculator shortcuts open the saved country without the intermediate route', async ({ page }) => {
+  await page.addInitScript((key) => localStorage.setItem(key, 'KZ'), DESTINATION_COUNTRY_STORAGE_KEY);
+  const entryRequests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/^\/(zh|en|ru)\/calculator\/(?:__next[^/]*\.rsc)?$/.test(path)) entryRequests.push(path);
+  });
+
+  for (const locale of ['zh', 'en']) {
+    await page.goto(`/${locale}/`);
+    await page.evaluate(() => Reflect.set(window, '__hdNavigationDocument', 'original'));
+    const path = `/${locale}/calculator/kazakhstan/`;
+    const link = locale === 'zh'
+      ? page.locator(`#home-shortcuts a[href="${path}"]`)
+      : page.locator('[data-home-section="calculator"]').getByRole('link', { name: 'Calculate cost', exact: true });
+    await expect(link).toHaveAttribute('href', path);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    await expect(page.locator('.reset-button')).toBeEnabled();
+    expect(await page.evaluate(() => Reflect.get(window, '__hdNavigationDocument'))).toBe('original');
+  }
+  expect(entryRequests).toEqual([]);
 });
 
 test('language navigation retains the country, importer and manual draft while using final URLs', async ({

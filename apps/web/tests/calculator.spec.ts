@@ -863,14 +863,22 @@ test('HD Auto Export uses its logo and real contact links; account numbers are c
   await expect(footer.getByRole('list', { name: '付款方式参考' })).toContainText('Mastercard');
   await expect(footer.getByText('请先向销售确认订单可用的付款方式。')).toBeVisible();
 
-  const button = footer.getByRole('button', { name: '复制微信联系号码', exact: true });
-  await expect(button).toContainText('18215932610');
+  const firstWeChat = footer.getByRole('button', { name: '复制微信联系号码 +86 182 1593 2610', exact: true });
+  const secondWeChat = footer.getByRole('button', { name: '复制微信联系号码 +86 199 3899 9916', exact: true });
+  await expect(firstWeChat).toContainText('+86 182 1593 2610');
+  await expect(secondWeChat).toContainText('+86 199 3899 9916');
   await page.evaluate(() => navigator.clipboard.writeText(''));
-  await button.click();
+  await firstWeChat.click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toBe('18215932610');
-  await expect(button).toContainText('已复制');
+    .toBe('+8618215932610');
+  await expect(firstWeChat).toContainText('已复制');
+  await secondWeChat.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe('+8619938999916');
+  await expect(secondWeChat).toContainText('已复制');
+  await expect(firstWeChat).not.toContainText('已复制');
 });
 
 test('an unknown destination returns HTTP 404', async ({ page }) => {

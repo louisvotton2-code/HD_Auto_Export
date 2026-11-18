@@ -1,102 +1,63 @@
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: start;
-  gap: 16px;
-  width: min(100%, 800px);
-  margin: 80px auto 0;
-  padding: 0;
+  grid-template-columns: var(--home-columns);
+  gap: var(--home-column-gap);
+  margin: 0;
+  padding-block-start: clamp(17px, 2.5vw, 27px);
+  border-block-start: 1px solid #d6b89a4a;
 }
 
 .item {
   position: relative;
   display: flex;
+  min-width: 0;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  min-width: 0;
+  gap: 5px;
   text-align: center;
 }
 
 .item + .item::before {
-  content: '';
   position: absolute;
-  left: -8px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(74, 74, 74, 0.3);
+  inset-block: 3px;
+  inset-inline-start: calc((var(--home-column-gap) + 1px) / -2);
+  inline-size: 1px;
+  background: #d6b89a33;
+  content: '';
 }
 
-.number {
-  order: -1;
-  margin: 0;
-  min-width: 0;
-}
+.number { order: -1; min-width: 0; margin: 0; }
 
 .value {
   display: inline-block;
-  color: #b67749;
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 32px;
-  letter-spacing: -0.025em;
+  color: #f1d8be;
+  font-size: clamp(1.54rem, 3.25vw, 3.25rem);
+  font-weight: 630;
+  line-height: 1;
+  letter-spacing: -.065em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .suffix {
-  font-size: 0.72em;
-  letter-spacing: -0.015em;
+  color: #deab7b;
+  font-size: .6em;
+  letter-spacing: -.02em;
 }
 
 .label {
-  max-width: min(100%, 190px);
-  color: #c0c0c0;
-  font-size: 10px;
-  line-height: 1.5;
-  font-weight: 400;
-  text-transform: uppercase;
+  max-width: 100%;
+  color: #c8b7a7;
+  font-size: clamp(.65rem, 1.15vw, .88rem);
+  line-height: 1.4;
+  text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 374px) {
-  .catalogValue {
-    font-size: 20px;
-  }
+@media (max-width: 760px) {
+  .value { font-size: clamp(1.32rem, 6.4vw, 2.85rem); }
 }
 
-@media (max-width: 639px) {
-  .catalogPreset {
-    font-size: clamp(16px, 5vw, 24px);
-  }
-}
-
-@media (min-width: 640px) {
-  .stats {
-    gap: 32px;
-  }
-  .item + .item::before {
-    left: -16px;
-  }
-  .value {
-    font-size: 30px;
-    line-height: 36px;
-  }
-  .label {
-    font-size: 12px;
-  }
-}
-
-@media (min-width: 768px) {
-  .stats {
-    gap: 64px;
-  }
-  .item + .item::before {
-    left: -32px;
-  }
-  .value {
-    font-size: 36px;
-    line-height: 40px;
-  }
+@media (max-width: 360px) {
+  .catalogValue, .catalogPreset { font-size: 1.24rem; }
 }

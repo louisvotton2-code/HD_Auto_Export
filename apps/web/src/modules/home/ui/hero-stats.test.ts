@@ -8,18 +8,20 @@ function metricHtml(html: string, metric: string): string {
 }
 
 describe('hero statistics server content', () => {
-  for (const [locale, catalogLabel, years] of [
-    ['zh', '目录中的汽车', '23年'],
-    ['en', 'Cars in catalog', '23 years'],
-    ['ru', 'Автомобили в каталоге', '23 года'],
+  for (const [locale, catalogLabel, partsLabel, years] of [
+    ['zh', '目录中的汽车', '汽车配件', '23年'],
+    ['en', 'Cars in catalog', 'Auto parts', '23 years'],
+    ['ru', 'Автомобили в каталоге', 'Автозапчасти', '23 года'],
   ] as const) {
     it(`${locale}: starts each counter at zero and includes the exact final values`, () => {
       const catalogTotal = 108_481;
       const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogTotal }));
-      const catalog = new Intl.NumberFormat(locale).format(catalogTotal);
+      const format = new Intl.NumberFormat(locale);
+      const catalog = format.format(catalogTotal);
       expect(metricHtml(html, 'catalog')).toContain(`>${catalogLabel}</dt>`);
       expect(metricHtml(html, 'catalog')).toContain(`data-counter-target="${catalogTotal}"`);
-      for (const [metric, finalText] of [['catalog', catalog], ['clients', '660+'], ['years', years]]) {
+      expect(metricHtml(html, 'parts')).toContain(`>${partsLabel}</dt>`);
+      for (const [metric, finalText] of [['catalog', catalog], ['parts', format.format(48_689)], ['years', years]]) {
         const markup = metricHtml(html, metric);
         expect(markup).toContain('data-counter-value="0">0</span>');
         expect(markup).toContain(`>${finalText}</span>`);

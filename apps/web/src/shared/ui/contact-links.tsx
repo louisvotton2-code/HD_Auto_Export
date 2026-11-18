@@ -8,12 +8,10 @@ import { SocialIcon } from './social-icon';
 
 const phones = ['phone', 'phone2'] as const;
 const socialContacts = ['telegram', 'whatsapp', 'facebook', 'instagram', 'tiktok'] as const;
-const copyContacts = ['wechat'] as const;
-type CopyContact = (typeof copyContacts)[number];
 
 export function ContactLinks() {
   const t = useTranslations('Contacts');
-  const [copied, setCopied] = useState<CopyContact | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const [copyFailed, setCopyFailed] = useState(false);
 
   useEffect(() => {
@@ -25,10 +23,10 @@ export function ContactLinks() {
     return () => window.clearTimeout(timeout);
   }, [copied, copyFailed]);
 
-  async function copy(key: CopyContact) {
+  async function copy(copyValue: string) {
     try {
-      await navigator.clipboard.writeText(siteConfig.contacts[key].copyValue);
-      setCopied(key);
+      await navigator.clipboard.writeText(copyValue);
+      setCopied(copyValue);
       setCopyFailed(false);
     } catch {
       setCopied(null);
@@ -54,24 +52,24 @@ export function ContactLinks() {
             </span>
           </a>
         ))}
-        {copyContacts.map((key) => (
+        {siteConfig.contacts.wechat.map(({ display, copyValue }) => (
           <button
             type="button"
-            key={key}
+            key={copyValue}
             className="hd-contact-item"
-            onClick={() => copy(key)}
-            aria-label={t('copyAccount', { platform: t(key) })}
+            onClick={() => copy(copyValue)}
+            aria-label={`${t('copyAccount', { platform: t('wechat') })} ${display}`}
           >
-            <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
-              <SocialIcon platform={key} size={18} />
+            <span className="hd-contact-icon" data-channel="wechat" aria-hidden="true">
+              <SocialIcon platform="wechat" size={18} />
             </span>
             <span className="hd-contact-label">
-              <strong>{t(key)}</strong>
-              <span dir="ltr">{siteConfig.contacts[key].display}</span>
+              <strong>{t('wechat')}</strong>
+              <span dir="ltr">{display}</span>
             </span>
             <span className="hd-copy-action">
-              <Icon name={copied === key ? 'check' : 'copy'} size={14} />
-              <small>{t(copied === key ? 'copied' : 'copy')}</small>
+              <Icon name={copied === copyValue ? 'check' : 'copy'} size={14} />
+              <small>{t(copied === copyValue ? 'copied' : 'copy')}</small>
             </span>
           </button>
         ))}

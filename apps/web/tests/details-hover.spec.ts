@@ -14,9 +14,9 @@ async function prepareCard(
 ) {
   await page.emulateMedia({ reducedMotion });
   await page.goto('/en/');
-  await page.getByRole('button', { name: 'Pause autoplay', exact: true }).click();
   const card = page.locator('[data-home-section^="vehicles-"] article').first();
   await card.scrollIntoViewIfNeeded();
+  await page.locator('[data-home-section^="vehicles-"] [tabindex="0"]').first().focus();
   await page.mouse.move(5, 80);
   return { card, details: card.getByRole('link', { name: 'Details', exact: true }) };
 }
