@@ -75,7 +75,7 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
     const originReads = (rows: RecordedRequest[]) => anonymous(rows).filter(row => row.path === `${internal}/vehicle-filters`);
     for (let read = 1; read <= 2; read++) {
       expect((await page.goto('/en/'))?.status()).toBe(200);
-      await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26');
+      await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26', { useInnerText: true });
       await expect(page.locator('[data-home-section="popular-models"] a[href*="model="]')).toHaveCount(2);
       const rows = await recorded(request);
       expect(originReads(rows)).toHaveLength(read * 2);

@@ -109,7 +109,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         ).toHaveCount(2);
         await expect(status).not.toBeVisible();
         await expectExistingCars(page, true);
-        await expect(homeTotal).toHaveText('31');
+        await expect(homeTotal).toHaveText('31', { useInnerText: true });
       }
     });
   }
@@ -226,7 +226,7 @@ test.describe('facets-only Retry-After shares the page cooldown', () => {
         expect((await document).status()).toBe(200);
         await expect(page.getByTestId('public-resource-status')).not.toBeVisible();
         await expectExistingCars(page, entry.home);
-        if (entry.home) await expect(homeTotal).toHaveText('26');
+        if (entry.home) await expect(homeTotal).toHaveText('26', { useInnerText: true });
         if (!entry.home)
           await expect(page.locator('select[name="make"] option[value="beta"]')).toHaveCount(1);
       } finally {
