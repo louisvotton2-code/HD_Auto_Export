@@ -3,10 +3,13 @@ import createNextIntlPlugin from 'next-intl/plugin';
 import { fileURLToPath } from 'node:url';
 
 const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
+const deploymentId = process.env.HD_DEPLOYMENT_ID || undefined;
 const config: NextConfig = {
   output: 'standalone',
   // OPS supplies the same source SHA to every instance of this build.
-  deploymentId: process.env.HD_DEPLOYMENT_ID || undefined,
+  deploymentId,
+  // Keep each release's Next manifests under a distinct URL in shared static storage.
+  generateBuildId: deploymentId ? () => deploymentId : undefined,
   outputFileTracingRoot: fileURLToPath(new URL('../../', import.meta.url)),
   // Validate vehicle metadata before sending HTML, including real 404s and demo noindex.
   htmlLimitedBots: /.*/,

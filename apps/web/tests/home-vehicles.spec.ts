@@ -71,7 +71,7 @@ test('home keeps its section order and presents the editorial hero on desktop', 
   await page.goto('/en/');
   const hero = page.locator('[data-home-section="hero"]');
   await expect(hero.locator('canvas')).toHaveCount(0);
-  const artwork = hero.locator('img[src="/media/home/dawn-convoy.webp"]');
+  const artwork = hero.locator('img[src^="/media/home/dawn-convoy.webp"]');
   await expect(artwork).toHaveAttribute('alt', '');
   await expect.poll(() => artwork.evaluate((node: HTMLImageElement) => node.naturalWidth)).toBeGreaterThan(0);
   const header = await page.locator('.site-header').boundingBox();

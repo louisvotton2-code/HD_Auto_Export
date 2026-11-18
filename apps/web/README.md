@@ -18,6 +18,7 @@ HD_DEPLOYMENT_ENV=local HD_RELEASE_ID="$(git rev-parse HEAD)" HD_SSR_SERVICE_SEC
 
 - `VEHICLE_API_BASE_URL`：**服务端**API origin，默认127.0.0.1:3320；不加NEXT_PUBLIC前缀，不带凭据／路径，不传入客户端props。SSR查询不使用员工会话。
 - `HD_DEPLOYMENT_ENV` / `HD_RELEASE_ID`：所有实际Node启动显式配置。环境只允许production／local／test；正式版本只允许完整小写commit SHA（40–64位）或`sha256:`加64位摘要，本地／隔离测试可使用固定ASCII标签。缺失、非法或`unreleased`会在启动时退出，不自动生成默认版本。生产值由OPS绑定最终交付版本，不根据访客或公开构建变量生成；与正式API联调的本地环境也使用完整SHA。
+- `HD_DEPLOYMENT_ID`：生产镜像构建传入最终合并提交的完整 SHA。Next 同时使用该值识别客户端版本和生成 `/_next/static/<BUILD_ID>/` 下的版本清单，使新旧清单可在网关保留。隔离构建可省略此值，使用 Next 的默认构建标识。
 - `HD_SSR_SERVICE_SECRET_FILE`：与API一致、仅服务端可读的静态服务凭据文件绝对路径。普通文件、owner-only权限（例如0600）、32–256字节可打印ASCII，可含一个结尾换行；拒绝符号链接和过大文件。不要把值放入环境变量、浏览器、镜像层或Git。Node启动会核验；构建阶段不需要真实密钥。API原始socket peer白名单及公网`/internal`拒绝由OPS配置，完整协议见[车辆接口§19](../../docs/开发/车辆接口.md#19-be-rel-03-目录缓存与分页契约)。
 - `NEXT_PUBLIC_SITE_URL`：公开官网origin，在构建时写入客户端草稿及metadata。实际域名或验收端口变化须重建；内部 3317 成品经 3363 提供用户验收；在其他端口隔离测试时 canonical／草稿仍指向构建时配置的 3363。
 - `SITE_INDEXABLE=false`：本地默认禁止索引。展示样例详情、当前精选目录始终noindex；仅符合条件的manual在售详情可在正式开关开启后加入动态sitemap。demo、external、sold／reserved／unknown均不入详情sitemap。
