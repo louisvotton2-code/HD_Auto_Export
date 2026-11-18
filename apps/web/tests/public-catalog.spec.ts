@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 
 // State-changing test controls are never sent to a real API, including the local 3320 DB.
 const fixtureBaseValue = process.env.PUBLIC_FIXTURE_API_URL;
@@ -173,7 +174,7 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await expect(page.locator('main [data-public-vehicle]')).toHaveCount(2);
     await expect(page.locator('main [data-public-vehicle="fixture_demo"]')).toHaveCount(0);
     const form = page.locator('main form').first();
-    await form.locator('select[name="make"]').selectOption('alpha');
+    await chooseCatalogBrand(form, 'alpha');
     await form.locator('select[name="model"]').selectOption('alpha_model');
     await form.locator('select[name="powertrain"]').selectOption('bev');
     await form.locator('[type="submit"]').last().click();

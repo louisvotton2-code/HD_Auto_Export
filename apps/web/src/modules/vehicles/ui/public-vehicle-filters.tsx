@@ -8,6 +8,7 @@ import { liveVehicleCopy } from '../live-copy';
 import { catalogFilterCopy } from '../catalog-filter-copy';
 import { catalogFilterKeys, parseCatalogPageQuery } from '../public-query';
 import { formatPublicAmount, publicCatalogHref } from '../public-presentation';
+import { CatalogBrandPicker } from './catalog-brand-picker';
 import styles from './public-vehicles.module.css';
 
 const priceSteps = [
@@ -169,20 +170,16 @@ export function PublicVehicleFiltersForm({
         </select>
       </label>
       <div className={styles.filterDivider} />
-      <label>
-        <span>{t.make}</span>
-        <select
-          name="make"
-          value={make}
-          onChange={(e) => {
-            onModelScopeChange(e.target.value, '');
-            setGeneration('');
-            setTrim('');
-          }}
-        >
-          {options(filters?.makes ?? [], make)}
-        </select>
-      </label>
+      <CatalogBrandPicker
+        locale={locale}
+        brands={filters?.makes ?? []}
+        value={make}
+        onChange={value => {
+          onModelScopeChange(value, '');
+          setGeneration('');
+          setTrim('');
+        }}
+      />
       <label>
         <span>{t.model}</span>
         <select

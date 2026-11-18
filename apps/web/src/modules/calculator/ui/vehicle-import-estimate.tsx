@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import type { PublicVehicle } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -61,6 +61,16 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const copy = vehicleEstimateCopy[locale];
   const preference = useDestinationCountry(undefined, vehicle.id);
   const prefix = useId();
+  const countryPicker = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const picker = countryPicker.current;
+    if (!picker) return;
+    function closeOnOutsidePress(event: PointerEvent) {
+      if (picker?.open && event.target instanceof Node && !picker.contains(event.target)) picker.open = false;
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePress, true);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePress, true);
+  }, []);
   const [visitDate, setVisitDate] = useState<string | null>(null);
   useEffect(() => setVisitDate(getClearanceDate(new Date())), []);
   const calculationDate = visitDate ?? initialDate;
@@ -200,8 +210,9 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     <fieldset className={styles.fields} disabled={!active}>
       <div className={styles.field}>
         <span id={`${prefix}-country-label`} className={styles.countryLabel}>{t('destination')}</span>
-        <details className={styles.countryPicker} onBlur={event => {
-          if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+        <details ref={countryPicker} className={styles.countryPicker} onBlur={event => {
+          // WebKit can blur the summary before delivering a tapped option's click.
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
         }} onKeyDown={event => {
           if (event.key !== 'Escape' || !event.currentTarget.open) return;
           event.currentTarget.open = false;

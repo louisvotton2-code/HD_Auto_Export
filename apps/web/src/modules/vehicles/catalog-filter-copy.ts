@@ -5,6 +5,8 @@ type Copy = {
   sort: string;
   sorts: Record<'newest' | 'price_asc' | 'price_desc' | 'mileage_asc' | 'year_desc', string>;
   search: string;
+  brandSearch: string;
+  noBrands: string;
   generation: string;
   trim: string;
   drive: string;
@@ -22,6 +24,8 @@ export const catalogFilterCopy = {
   zh: {
     sort: '排序', sorts: { newest: '最新发布', price_asc: '价格从低到高', price_desc: '价格从高到低', mileage_asc: '里程从少到多', year_desc: '年款从新到旧' },
     search: '搜索',
+    brandSearch: '搜索品牌',
+    noBrands: '没有找到匹配的品牌',
     generation: '代次',
     trim: '配置',
     drive: '驱动方式',
@@ -38,6 +42,8 @@ export const catalogFilterCopy = {
   en: {
     sort: 'Sort', sorts: { newest: 'Newest', price_asc: 'Price: low to high', price_desc: 'Price: high to low', mileage_asc: 'Mileage: low to high', year_desc: 'Model year: newest' },
     search: 'Search',
+    brandSearch: 'Search brands',
+    noBrands: 'No matching brands',
     generation: 'Generation',
     trim: 'Trim',
     drive: 'Drivetrain',
@@ -60,6 +66,8 @@ export const catalogFilterCopy = {
   ru: {
     sort: 'Сортировка', sorts: { newest: 'Сначала новые', price_asc: 'Цена по возрастанию', price_desc: 'Цена по убыванию', mileage_asc: 'Пробег по возрастанию', year_desc: 'Сначала новые годы' },
     search: 'Найти',
+    brandSearch: 'Поиск по маркам',
+    noBrands: 'Подходящих марок нет',
     generation: 'Поколение',
     trim: 'Комплектация',
     drive: 'Привод',

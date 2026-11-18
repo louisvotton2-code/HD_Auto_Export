@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 import {
   resetPublicFixture,
   patchPublicFixture,
@@ -72,7 +73,7 @@ test('HTTP-supported filters, empty state and reset operate on published vehicle
   const initialCount = await page.locator('main article').count();
   expect(initialCount).toBeGreaterThan(0);
   const form = page.locator('main form');
-  await form.locator('select[name="make"]').selectOption('alpha');
+  await chooseCatalogBrand(form, 'alpha');
   await form.locator('select[name="model"]').selectOption('alpha_model');
   await form.locator('select[name="powertrain"]').selectOption('petrol');
   await form.getByRole('button', { name: '应用筛选' }).click();
