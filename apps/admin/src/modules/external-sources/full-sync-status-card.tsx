@@ -23,7 +23,7 @@ export function FullSyncStatusCard() {
   const status = resource.data?.data;
   const reload = () => { setRevision(value => value + 1); resource.resume(); };
   return <Card className={styles.card} title="全量与持续同步" extra={<Button disabled={controlBusy} loading={resource.loading} onClick={reload}>刷新同步进度</Button>}>
-    <ResourceContent {...resource} retry={reload}>{status && <>
+    <ResourceContent {...resource} failureTitle="同步进度读取失败" retry={reload}>{status && <>
       <Space wrap><Tag>{status.mode === 'continuous' ? '正式持续同步' : '正式全量同步'}</Tag>
         <Tag color={status.state === 'error' ? 'error' : status.state === 'complete' ? 'success' : undefined}>{states[status.state]}</Tag>
         <Tag color={status.paused ? 'warning' : undefined}>{status.paused ? '重任务暂停中' : '重任务未暂停'}</Tag>

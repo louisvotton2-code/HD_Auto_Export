@@ -7,6 +7,7 @@ import { ExternalStatusPage, ExternalCatalogPage, ExternalBatchHistoryPage, Exte
 import { createBrowserRouter, Navigate, RouterProvider, useOutletContext, useParams, Link } from 'react-router-dom';
 import type { StaffMe, StaffPermission } from '@hd/contracts/admin';
 import { Workspace, AccessDenied } from './modules/auth';
+import { StaffManagementPage } from './modules/staff/staff-management-page';
 import { VehiclesPage, VehicleEditorPage, PublicCatalogPage } from './modules/vehicles';
 import type { ReactNode } from 'react';
 import './styles.css';
@@ -30,8 +31,9 @@ const router = createBrowserRouter([{
     { path: 'home-sections', element: <RequirePermission permission="home:write"><HomeSectionsPage /></RequirePermission> },
     { path: 'public-catalog', element: <RequirePermission permission="vehicles:read"><ExternalCatalogPage /></RequirePermission> },
     { path: 'public-catalog/verification', element: <RequirePermission permission="vehicles:read"><PublicCatalogPage /></RequirePermission> },
+    { path: 'staff', element: <RequirePermission permission="staff:manage"><StaffManagementPage /></RequirePermission> },
     { path: 'external-sources', element: <RequirePermission permission="vehicles:read"><ExternalWorkspace /></RequirePermission>, children: [
-      { index: true, element: <ExternalStatusPage /> },
+      { index: true, element: <RequirePermission permission="staff:manage"><ExternalStatusPage /></RequirePermission> },
       { path: 'batches', element: <ExternalBatchHistoryPage /> },
       { path: 'batches/:batchId', element: <ExternalBatchPage /> },
       { path: 'batches/:batchId/records/:row', element: <ExternalBatchRecordPage /> },

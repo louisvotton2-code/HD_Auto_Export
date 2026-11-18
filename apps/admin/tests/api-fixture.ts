@@ -50,6 +50,7 @@ export async function installApi(page: Page, options: {
   authenticated?: boolean;
   items?: AdminVehicle[];
   permissions?: StaffMe['permissions'];
+  role?: StaffMe['role'];
   createdId?: string;
   localizations?: VehicleLocalization[];
   publicationReadiness?: PublishReadiness[];
@@ -59,7 +60,7 @@ export async function installApi(page: Page, options: {
   const state = {
     authenticated: options.authenticated ?? true,
     items: options.items ?? [],
-    me: { ...staff, permissions: options.permissions ?? staff.permissions },
+    me: { ...staff, role: options.role ?? staff.role, permissions: options.permissions ?? staff.permissions },
     creates: [] as Array<{ key: string | undefined; body: string | null }>,
     saves: [] as Array<{ version: number; draft: VehicleDraftInput }>,
     lifecycle: [] as Array<{ operation: 'delete' | 'restore'; key: string | undefined; body: string | null }>,
@@ -126,6 +127,7 @@ export async function installApi(page: Page, options: {
     }
     if (!state.authenticated) return reply(route, error('UNAUTHENTICATED'), 401);
     if (url.pathname === '/api/v1/admin/me') return reply(route, envelope(state.me));
+    if (url.pathname === '/api/v1/admin/me/upload-stats') return reply(route, envelope({ staffId: state.me.id, today: state.creates.length, total: state.creates.length }));
     if (url.pathname === '/api/v1/admin/vehicle-filters') return reply(route, envelope({
       scope: 'all_inventory',
       makes: [...new Map(state.items.filter(item => !item.deletedAt).flatMap(item => item.draft.facts.make ? [[item.draft.facts.make.id, { ...item.draft.facts.make, count: 1 }] as const] : [])).values()],

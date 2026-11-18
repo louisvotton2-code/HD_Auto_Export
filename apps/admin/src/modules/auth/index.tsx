@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Avatar, Breadcrumb, Button, Card, Drawer, Form, Grid, Input, Layout, Menu, Modal, Result, Space, Spin, Tag, Typography } from 'antd';
-import { ApiOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { StaffLoginSchema, StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request, signIn, signOut } from '../../shared/api/client';
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import { UploadTotals } from '../staff/upload-totals';
 
 // Original public-header asset: apps/web/public/brand/hd-auto-logo.webp.
 // SHA-256: ff10157d783b86d3326dc089c564beaa24d1b54b2ba0b10d64360eed8fbe4d16.
@@ -82,23 +83,41 @@ export function Workspace() {
   const pathname = location.pathname;
   const current = pathname.startsWith('/public-catalog') || pathname.startsWith('/external-sources/listings/') ? '/public-catalog'
     : pathname.startsWith('/external-sources') ? '/external-sources'
+    : pathname.startsWith('/staff') ? '/staff'
     : pathname.startsWith('/home-sections') ? '/home-sections'
     : pathname.startsWith('/recycle-bin') ? '/recycle-bin' : '/vehicles';
-  const pageName = current === '/external-sources' ? '三方 API 状态' : current === '/home-sections' ? '首页展示配置' : current === '/public-catalog' ? '三方车源管理' : current === '/recycle-bin' ? '车辆回收站' : '车辆工作台';
+  const pageNames = { '/staff': '员工管理', '/external-sources': '三方 API 状态', '/home-sections': '首页展示配置',
+    '/public-catalog': '三方车源管理', '/recycle-bin': '车辆回收站', '/vehicles': '车辆工作台' };
   const menuItems = [
     { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">精品车辆管理</Link> },
     { key: '/recycle-bin', icon: <DeleteOutlined />, label: <Link to="/recycle-bin">车辆回收站</Link> },
     ...(staff.permissions.includes('home:write') ? [{ key: '/home-sections', icon: <HomeOutlined />, label: <Link to="/home-sections">首页展示配置</Link> }] : []),
     ...(staff.permissions.includes('vehicles:read') ? [
       { key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">三方车源管理</Link> },
-      { key: '/external-sources', className: 'supplier-nav-item', icon: <ApiOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> },
+    ] : []),
+    ...(staff.permissions.includes('staff:manage') ? [
+      { key: '/staff', className: 'admin-utilities-start', icon: <TeamOutlined />, label: <Link to="/staff">员工管理</Link> },
+      { key: '/external-sources', icon: <ApiOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> },
     ] : []),
   ];
   const navigation = <div className="sidebar-inner"><Link className="brand-mark" to="/vehicles"><BrandIdentity /></Link><div className="nav-caption">运营空间</div><nav aria-label="后台导航"><Menu theme="dark" selectedKeys={[current]} items={menuItems} /></nav><div className="nav-bottom"><SafetyCertificateOutlined /><div>内部协作空间<small>车源 · 内容 · 展示</small></div></div></div>;
   return <>
     <Layout className="workspace" key={staff.id} inert={expired}>
       <Layout.Sider width={232} className="workspace-sidebar">{navigation}</Layout.Sider>
-      <Layout className="workspace-body"><Layout.Header className="topbar"><Space size={16}>{narrow && <Button type="text" icon={<MenuOutlined />} aria-label="打开导航" onClick={() => setMenuOpen(true)} />}<Breadcrumb items={[{ title: '运营管理' }, { title: pageName }]} /></Space><Space size={14}><Tag className="local-tag" bordered={false}>本地工作台</Tag><Avatar className="staff-avatar" icon={<UserOutlined />} /><div className="staff-name">{staff.name}<small>{staff.role === 'admin' ? '管理员' : '编辑员'}</small></div><Button type="text" icon={<LogoutOutlined />} onClick={() => void logout()} loading={busy}>退出登录</Button></Space></Layout.Header>
+      <Layout className="workspace-body">
+        <Layout.Header className="topbar">
+          <Space size={16}>
+            {narrow && <Button type="text" icon={<MenuOutlined />} aria-label="打开导航" onClick={() => setMenuOpen(true)} />}
+            <Breadcrumb items={[{ title: '运营管理' }, { title: pageNames[current] }]} />
+          </Space>
+          <div className="topbar-account">
+            <Tag className="local-tag" bordered={false}>本地工作台</Tag>
+            <Avatar className="staff-avatar" icon={<UserOutlined />} />
+            <div className="staff-name">{staff.name}<small>{staff.role === 'admin' ? '管理员' : '编辑员'}</small></div>
+            {!expired && <UploadTotals staffId={staff.id} />}
+            <Button type="text" icon={<LogoutOutlined />} onClick={() => void logout()} loading={busy}>退出登录</Button>
+          </div>
+        </Layout.Header>
         <Layout.Content id="main-content" className="page-content">{error && <Alert title={error} type="error" showIcon closable onClose={() => setError('')} />}<Outlet context={staff} /></Layout.Content><Layout.Footer className="app-footer">HD Auto Export <span>车辆运营工作台</span></Layout.Footer>
       </Layout>
     </Layout>

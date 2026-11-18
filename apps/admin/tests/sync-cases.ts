@@ -2,15 +2,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import { ExternalFullSyncControlSchema } from '@hd/contracts/admin';
 import { makeExternalAdminFixture } from '@hd/contracts/fixtures';
-import { envelope, error, installApi, reply, staff } from './api-fixture';
+import { envelope, error, installApi, reply } from './api-fixture';
 import { syncStatus } from './sync-fixture';
 import { select } from './ui-helpers';
 
 const root = '/api/v1/admin/external';
 const ui = '/admin/external-sources';
 async function setup(page: Page, admin = false) {
-  await installApi(page, { permissions: ['vehicles:read'] });
-  await page.route('**/api/v1/admin/me', route => reply(route, envelope({ ...staff, role: admin ? 'admin' : 'editor', permissions: ['vehicles:read'] })));
+  await installApi(page, { role: admin ? 'admin' : 'editor', permissions: admin ? ['vehicles:read', 'staff:manage'] : ['vehicles:read'] });
   await page.route(`**${root}/provider-status`, route => reply(route, envelope({ provider: 'chinacarapi', worker: 'continuous', lastBatch: null, lastImportAt: null, lastFetchedAt: null, lastSupplierUpdatedAt: null,
     account: { state: 'not_configured', checkedAt: null, plan: null, expiresAt: null, sources: [], dailyLimit: null, remainingToday: null } })));
   await page.route(`**${root}/sync-status`, route => reply(route, envelope(syncStatus())));
@@ -18,7 +17,7 @@ async function setup(page: Page, admin = false) {
 const card = (page: Page) => page.locator('.ant-card').filter({ has: page.getByText('全量与持续同步', { exact: true }) });
 
 test('EXT07 sync read-only progress separates real counts pending classes and failed reads', async ({ page }) => {
-  await setup(page);
+  await setup(page, true);
   let writes = 0;
   page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/sync-control')) writes++; });
   await page.goto(ui);
@@ -30,14 +29,19 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
   await expect(panel.getByText('已接收事件', { exact: true })).toBeVisible();
   await expect(panel.getByText('900', { exact: true })).toBeVisible();
   await expect(panel.getByText('870', { exact: true })).toBeVisible();
-  await expect(panel.getByRole('button', { name: /暂停|恢复/ })).toHaveCount(0);
   await page.setViewportSize({ width: 320, height: 850 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   await page.route(`**${root}/sync-status`, route => reply(route, error('SERVICE_UNAVAILABLE'), 503));
   await panel.getByRole('button', { name: '刷新同步进度' }).click();
+  await expect(panel.getByText('同步进度读取失败', { exact: true })).toBeVisible();
   await expect(panel.getByText(/服务暂时不可用/)).toBeVisible();
+  await expect(page.getByText('ChinaCarAPI', { exact: true })).toBeVisible();
   await expect(panel.locator('.ant-statistic')).toHaveCount(0);
   await expect(panel.getByText('重任务未暂停', { exact: true })).toHaveCount(0);
+  await page.route(`**${root}/sync-status`, route => reply(route, envelope(syncStatus())));
+  await panel.getByRole('button', { name: '重新读取', exact: true }).click();
+  await expect(panel.getByText('同步进度读取失败', { exact: true })).toHaveCount(0);
+  await expect(panel.getByText('重任务未暂停', { exact: true })).toBeVisible();
   expect(writes).toBe(0);
 });
 
