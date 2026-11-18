@@ -6,6 +6,7 @@ import {
   type Page,
   type Request,
 } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 import { resetPublicFixture } from './helpers/public-fixture';
 
 const fixtureOrigin = process.env.PUBLIC_FIXTURE_API_URL;
@@ -165,7 +166,7 @@ test.describe('explicit public queries, stable activation and media regression',
     const initialDocuments = audit.documents();
     const form = page.locator('main form').first();
     await form.locator('[name="q"]').fill('Alpha Model');
-    await form.locator('select[name="make"]').selectOption('alpha');
+    await chooseCatalogBrand(form, 'alpha');
     const draftModelResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return cleanPath(url.href) === catalogFacetsPath &&

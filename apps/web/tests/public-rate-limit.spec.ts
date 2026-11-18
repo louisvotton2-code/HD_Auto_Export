@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 import { resetPublicFixture } from './helpers/public-fixture';
 
 const suite = 'hd-web-public-catalog-v1';
@@ -59,7 +60,7 @@ test.describe('public 429 preservation and Retry-After cooldown', () => {
       await expect(current.locator('[data-public-vehicle]')).toHaveCount(2);
       expect(await contacts(current).count()).toBeGreaterThan(0);
       const form = page.locator('main form').first();
-      await form.locator('select[name="make"]').selectOption('alpha');
+      await chooseCatalogBrand(form, 'alpha');
       await page.evaluate(() => window.scrollTo(0, 200));
       const before = {
         heading: await page.locator('main h1').textContent(),

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Isolated catalog fixture only.');
@@ -65,6 +66,7 @@ for (const locale of ['zh', 'en', 'ru']) {
     expect(response.status()).toBe(200);
     const html = await response.text();
     for (const name of [
+      'make',
       'generation',
       'drivetrain',
       'trim',
@@ -80,7 +82,7 @@ for (const locale of ['zh', 'en', 'ru']) {
     const form = page.locator('main form').first();
     await expect(form.locator('[name=priceCurrency]')).toHaveValue('USD');
     await expect(form.locator('[name=model]')).toBeDisabled();
-    await form.locator('[name=make]').selectOption('beta');
+    await chooseCatalogBrand(form, 'beta');
     await expect(form.locator('[name=model]')).toBeEnabled();
     await form.locator('[name=model]').selectOption('beta_model');
     await expect(form.locator('[name=trim] option[value=beta_model_trim]')).toHaveCount(1);
@@ -98,14 +100,75 @@ for (const locale of ['zh', 'en', 'ru']) {
   });
 }
 
+test('brand search filters available options before selection on touch and keyboard in all languages', async ({
+  browser, baseURL,
+}) => {
+  const context = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
+  try {
+    const page = await context.newPage();
+    const reads: string[] = [];
+    page.on('request', request => {
+      const { pathname } = new URL(request.url());
+      if (pathname === '/catalog-facets.json' || /^\/api\/v1\/(?:vehicles|vehicle-filters)\/?$/.test(pathname))
+        reads.push(request.url());
+    });
+    for (const [locale, label, placeholder, empty] of [
+      ['zh', '品牌', '搜索品牌', '没有找到匹配的品牌'],
+      ['en', 'Make', 'Search brands', 'No matching brands'],
+      ['ru', 'Марка', 'Поиск по маркам', 'Подходящих марок нет'],
+    ] as const) {
+      await page.goto(`/${locale}/cars/?make=beta&model=beta_model&trim=beta_model_trim`);
+      const initialUrl = page.url();
+      const form = page.locator('main form').first();
+      const search = form.getByTestId('catalog-brand-search');
+      const brand = form.locator('select[name="make"]');
+      const list = form.getByRole('listbox', { name: label });
+      await expect(brand).toHaveCount(1);
+      await expect(brand).toHaveValue('beta');
+      await expect(search).toHaveAccessibleName(label);
+      const initialReads = reads.length;
+      await search.tap();
+      await expect(search).toHaveAttribute('placeholder', placeholder);
+      await search.fill('zzz');
+      await expect(form.getByText(empty, { exact: true })).toBeVisible();
+      await search.press('Escape');
+      await expect(list).toBeHidden();
+      await expect(brand).toHaveValue('beta');
+
+      await search.tap();
+      await search.fill('L');
+      const alpha = list.getByRole('option', { name: /Alpha Motors/ });
+      await expect(alpha).toBeVisible();
+      await expect(list.getByRole('option', { name: /Beta Motors/ })).toHaveCount(0);
+      expect(reads).toHaveLength(initialReads);
+      if (locale === 'en') {
+        await search.press('ArrowDown');
+        await expect(search).toHaveAttribute('aria-activedescendant', (await alpha.getAttribute('id'))!);
+        await search.press('Enter');
+      } else {
+        await search.dispatchEvent('focusout', { relatedTarget: null });
+        await alpha.tap();
+      }
+      await expect(brand).toHaveValue('alpha');
+      await expect(search).toHaveAttribute('placeholder', 'Alpha Motors');
+      await expect(list).toBeHidden();
+      await expect(form.locator('[name=model]')).toHaveValue('');
+      await expect(form.locator('[name=trim]')).toHaveValue('');
+      await expect(page).toHaveURL(initialUrl);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test('combined criteria filter the whole catalog before pagination and survive links, reload and Back', async ({
   page,
   request,
 }) => {
   await page.goto('/en/cars/?pageSize=2');
   const form = page.locator('main form').first();
+  await chooseCatalogBrand(form, 'beta');
   for (const [name, value] of Object.entries({
-    make: 'beta',
     model: 'beta_model',
     generation: 'beta_model_gen',
     powertrain: 'petrol',
@@ -143,7 +206,7 @@ test('combined criteria filter the whole catalog before pagination and survive l
   await expect(form.locator('[name=trim]')).toHaveValue('beta_model_trim');
   await page.reload();
   await expect(form.locator('[name=mileageMin]')).toHaveValue('0');
-  await form.locator('[name=make]').selectOption('alpha');
+  await chooseCatalogBrand(form, 'alpha');
   for (const name of ['model', 'generation', 'trim'])
     await expect(form.locator(`[name=${name}]`)).toHaveValue('');
   const calls = await (
@@ -191,14 +254,14 @@ test('shared catalog selections hydrate without facet reads and draft requests s
   });
   try {
     const requested = page.waitForRequest((request) => russianAlpha(new URL(request.url())));
-    await make.selectOption('alpha');
+    await chooseCatalogBrand(form, 'alpha');
     await requested;
     expect(reads).toHaveLength(1);
     await expect(model).toHaveValue('');
     await expect(page).toHaveURL(sharedUrl);
 
     const aborted = page.waitForEvent('requestfailed', (request) => russianAlpha(new URL(request.url())));
-    await make.selectOption('beta');
+    await chooseCatalogBrand(form, 'beta');
     expect((await aborted).failure()?.errorText).toContain('ERR_ABORTED');
     await expect(model.locator('option[value=beta_model]')).toHaveCount(1);
     await expect(model.locator('option[value=alpha_model]')).toHaveCount(0);
@@ -216,7 +279,7 @@ test('shared catalog selections hydrate without facet reads and draft requests s
     await page.unroute(russianAlpha);
   }
 
-  await make.selectOption('beta');
+  await chooseCatalogBrand(form, 'beta');
   await expect(model.locator('option[value=beta_model]')).toHaveCount(1);
   await model.selectOption('beta_model');
   await expect(form.locator('[name=trim] option[value=beta_model_trim]')).toHaveCount(1);
@@ -289,12 +352,15 @@ test('native GET form works without JavaScript with restored parent, range and c
     const page = await context.newPage();
     await page.goto('/en/cars/?make=beta&model=beta_model&pageSize=2');
     const form = page.locator('main form').first();
+    await expect(form.locator('select[name="make"]')).toBeVisible();
+    await chooseCatalogBrand(form, 'beta', true);
     await form.locator('[name=drivetrain]').selectOption('awd');
     await form.locator('[name=priceMin]').selectOption('5000');
     await form.locator('[name=priceMax]').selectOption('20000');
     await form.getByRole('button', { name: 'Apply filters', exact: true }).click();
     await expect(page.locator('main [data-public-vehicle]')).toHaveCount(2);
     await expect(page.locator('main')).toContainText('5 vehicle records');
+    expect(new URL(page.url()).searchParams.get('make')).toBe('beta');
     expect(new URL(page.url()).searchParams.get('priceCurrency')).toBe('USD');
   } finally {
     await context.close();
@@ -340,8 +406,8 @@ test('reset clears unapplied drafts and validation on the already-unfiltered URL
   await page.goto('/en/cars/');
   const form = page.locator('main form').first();
   await form.locator('[name=q]').fill('unapplied inquiry');
+  await chooseCatalogBrand(form, 'beta');
   for (const [name, value] of Object.entries({
-    make: 'beta',
     model: 'beta_model',
     trim: 'beta_model_trim',
     generation: 'beta_model_gen',

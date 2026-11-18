@@ -217,6 +217,39 @@ test('Russian detail budget fits a 320px screen and works without inventing miss
   );
 });
 
+test.describe('touch destination picker', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  test('a tap changes the destination even when the summary loses focus before the click', async ({ page }) => {
+    await page.goto('/en/cars/fixture_car_1/');
+    const budget = page.getByTestId('vehicle-import-estimate');
+    const picker = budget.getByTestId('vehicle-destination-picker');
+    const details = picker.locator('..');
+    await expect(budget).toHaveAttribute('data-country-ready', 'true');
+    await expect(picker).toHaveAttribute('aria-disabled', 'false');
+    await picker.tap();
+    await expect(details).toHaveAttribute('open', '');
+    await picker.focus();
+    await expect(picker).toBeFocused();
+    const kazakhstan = budget.locator('[data-country-option="KZ"]');
+    // Reproduce WebKit's null-relatedTarget focus loss before a touch click.
+    await kazakhstan.evaluate((option) => option.addEventListener('pointerdown', () => {
+      option.closest('details')?.querySelector('summary')?.blur();
+    }, { once: true }));
+    await kazakhstan.tap();
+    await expect(budget).toHaveAttribute('data-country', 'KZ');
+    await expect(details).not.toHaveAttribute('open');
+    await fillNumericDate(budget, 'manufactureDate', '2024-02');
+    await expect(budget.getByTestId('inline-estimate-total')).toContainText('KZT');
+
+    await picker.tap();
+    await expect(details).toHaveAttribute('open', '');
+    await budget.locator('[id$="-country-label"]').tap();
+    await expect(details).not.toHaveAttribute('open');
+    await expect(budget).toHaveAttribute('data-country', 'KZ');
+  });
+});
+
 test('the import calculator stays usable on both sides of the two-column breakpoints', async ({ page }) => {
   await page.goto('/en/cars/fixture_car_1/');
   const calculator = page.getByRole('complementary', { name: 'Import cost calculator' });
