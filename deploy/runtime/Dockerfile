@@ -45,6 +45,11 @@ ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000 NEXT_TELEMETRY_DISABLED=1
 COPY --from=web-build /app/apps/web/.next/standalone ./
 USER 1000:1000
 CMD ["node", "apps/web/server.js"]
+FROM ${NODE_IMAGE} AS html-cache
+WORKDIR /app
+COPY deploy/runtime/production/html-cache.mjs deploy/runtime/production/html-cache-start.mjs ./
+USER 1000:1000
+CMD ["node", "html-cache-start.mjs"]
 FROM build AS admin-build
 RUN pnpm --filter @hd/admin build
 FROM ${NGINX_IMAGE} AS proxy

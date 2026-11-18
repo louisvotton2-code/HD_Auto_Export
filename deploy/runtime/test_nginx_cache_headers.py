@@ -1,10 +1,12 @@
 """Exercise the actual domain config over private Unix TLS, never a public listener."""
-import gzip, http.client, http.server, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
+import gzip, http.client, http.server, importlib.util, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
 from concurrent.futures import ThreadPoolExecutor
 HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
 CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
+CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-Key', 'X-HD-HTML-Nonce', 'X-HD-HTML-Proof',
+                       'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket']
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     def do_GET(self):
@@ -22,12 +24,23 @@ class Origin(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith('/404/'):
             content_type='text/html';body=('<html>readable '+self.path.split('/')[2]+' missing vehicle</html>').encode()
         self.send_response(status);self.send_header('Content-Type',content_type);self.send_header('Cache-Control','public, max-age=600' if self.path=='/zh/guide/' else 'no-store')
+        for name in CACHE_CONTROL_HEADERS:self.send_header(name,'synthetic-origin-control')
         if self.path.startswith('/staff/'):
             self.send_header('X-Frame-Options','SAMEORIGIN');self.send_header('Content-Security-Policy',"frame-ancestors 'self'");self.send_header('Referrer-Policy','same-origin')
         self.send_header('Content-Length',str(len(body) if status!=304 else 0));self.end_headers()
         if status!=304 and self.command!='HEAD':self.wfile.write(body)
     do_HEAD=do_GET
     def log_message(self,*args):pass
+
+class CacheOrigin(Origin):
+    calls=[]
+    def do_GET(self):
+        if self.path=='/ru/':
+            self.calls.append(self.path)
+            self.send_error(502)
+        else:
+            super().do_GET()
+
 class UnixHttp(socketserver.ThreadingMixIn,socketserver.UnixStreamServer):
     daemon_threads=True
     request_queue_size=64  # Synthetic origin must accept the bounded16-client rate probe.
@@ -41,15 +54,28 @@ class DomainCacheHeaders(unittest.TestCase):
         subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=cars.hongdingauto.com','-addext','subjectAltName=DNS:cars.hongdingauto.com,DNS:admin.hongdingauto.com','-keyout',str(r/'key.pem'),'-out',str(r/'cert.pem')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         (r/'key.pem').chmod(0o600)
         cls.backend=UnixHttp(str(r/'origin.sock'),Origin);cls.thread=threading.Thread(target=cls.backend.serve_forever,daemon=True);cls.thread.start();cls.addClassCleanup(cls.backend.server_close);cls.addClassCleanup(cls.backend.shutdown)
+        cls.cache=UnixHttp(str(r/'cache.sock'),CacheOrigin)
+        threading.Thread(target=cls.cache.serve_forever,daemon=True).start()
+        cls.addClassCleanup(cls.cache.server_close)
+        cls.addClassCleanup(cls.cache.shutdown)
         includes=r/'includes';shutil.copytree(HERE/'nginx-domains',includes)
         for fragment in includes.glob('*.conf'):fragment.write_text(fragment.read_text().replace('/etc/nginx/hd-domains',str(includes)))
-        config=(HERE/'nginx-domains.conf').read_text().replace('/etc/nginx/hd-domains',str(includes)).replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem')).replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin').replace('root /srv;',f'root {r};').replace('listen 8080',f'listen unix:{r}/http.sock').replace('listen 8443',f'listen unix:{r}/tls.sock')
+        spec=importlib.util.spec_from_file_location('slots',HERE/'production/release-slots.py')
+        slots=importlib.util.module_from_spec(spec);spec.loader.exec_module(slots)
+        marker='    # HD_HTML_CACHE_LOCATIONS'
+        args=dict(web_host='web-blue',public_api_host='api-blue',admin_api_host='api-blue')
+        inactive=slots.gateway_files(HERE,**args)['default.conf']
+        active=slots.gateway_files(HERE,**args,html_cache_host='html-cache-blue')['default.conf']
+        before,after=inactive.split(marker)
+        assert active.startswith(before) and active.endswith(after)
+        route=active[len(before):-len(after)].replace('http://web-blue:3000','http://web:3000')
+        config=(HERE/'nginx-domains.conf').read_text().replace(marker,route).replace('/etc/nginx/hd-domains',str(includes)).replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem')).replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin').replace('http://html-cache-blue:3010','http://hd_test_cache').replace('root /srv;',f'root {r};').replace('listen 8080',f'listen unix:{r}/http.sock').replace('listen 8443',f'listen unix:{r}/tls.sock')
         # Keep the production edge protections; only fixture paths and transport differ.
         edge=(HERE/'nginx-edge.conf').read_text()
         # Darwin's larger pages require a larger bookkeeping zone; rate/burst/connection limits are identical.
         if os.uname().sysname=='Darwin':edge=edge.replace('zone=hd_edge_total:64k','zone=hd_edge_total:256k')
         rootuser='user root;\n' if os.getuid()==0 else ''
-        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }}\n'+edge+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n}\n'
+        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n}\n'
         (r/'nginx.conf').write_text(full);cls.log=(r/'nginx.log').open('wb');cls.addClassCleanup(cls.log.close);cls.process=subprocess.Popen([NGINX,'-e',str(r/'bootstrap.log'),'-p',str(r)+'/', '-c',str(r/'nginx.conf'),'-g','daemon off;'],stdout=cls.log,stderr=cls.log)
         def stop():
             if cls.process.poll() is None:cls.process.terminate();cls.process.wait(timeout=8)
@@ -101,6 +127,31 @@ class DomainCacheHeaders(unittest.TestCase):
         for path in ['/api/v1/vehicles','/zh/cars/']:
             status,headers,body=self.request('cars.hongdingauto.com',path,{'X-HD-SSR-Key':'synthetic-forgery','X-Forwarded-For':'203.0.113.55'});self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'no-store');origin=json.loads(body)['headers'];self.assertFalse(any(k.lower()=='x-hd-ssr-key' for k in origin));self.assertNotEqual(origin.get('X-Forwarded-For'),'203.0.113.55')
         self.assertEqual(self.request('cars.hongdingauto.com','/zh/guide/')[1]['cache-control'],'public, max-age=600')
+    def test_cache_controls_are_private_on_api_web_and_home_cache_hops(self):
+        forged={name:'synthetic-forgery' for name in CACHE_CONTROL_HEADERS}
+        hidden={name.lower() for name in CACHE_CONTROL_HEADERS}
+        for path in ['/api/v1/vehicles','/zh/guide/','/en/']:
+            with self.subTest(path=path):
+                status, headers, body = self.request('cars.hongdingauto.com', path, forged)
+                self.assertEqual(status, 200)
+                self.assertTrue(hidden.isdisjoint(headers))
+                self.assertTrue(hidden.isdisjoint(name.lower() for name in json.loads(body)['headers']))
+    def test_home_cache_falls_back_to_web_and_hits_keep_edge_limits(self):
+        host='cars.hongdingauto.com'
+        Origin.calls.clear();CacheOrigin.calls.clear()
+        self.assertEqual(self.request(host,'/en/',method='HEAD')[0],200)
+        self.assertEqual(self.request(host,'/ru/',{'Accept':'text/html'})[0],200)
+        self.assertEqual(CacheOrigin.calls,['/ru/'])
+        self.assertEqual(Origin.calls,['/en/','/ru/'])
+        time.sleep(2.3)
+        try:
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                statuses=list(pool.map(lambda _:self.request(host,'/en/',{'Accept':'text/html'},paced=False)[0],range(48)))
+            self.assertIn(200,statuses)
+            self.assertIn(429,statuses)
+            self.assertTrue(all(status in (200,429) for status in statuses))
+            self.assertEqual(CacheOrigin.calls.count('/en/'),statuses.count(200))
+        finally:time.sleep(2.3)
     def test_public_catalog_json_negotiates_gzip_without_changing_body_or_cache_policy(self):
         paths=[('/api/v1/vehicles/', '/api/v1/vehicles'), ('/api/v1/vehicle-filters/', '/api/v1/vehicle-filters'),
                ('/catalog-facets.json', '/catalog-facets.json')]

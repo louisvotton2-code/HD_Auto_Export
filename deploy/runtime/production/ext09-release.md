@@ -10,6 +10,16 @@
 
 `immutable-assets.py` 合并当前与前一版 Next 静态资源；相同URL不同内容拒绝。旧哈希文件先保留，不能切换后就随旧槽删除。Nginx只为此目录设immutable缓存，不缓存HTML。Next deploymentId识别RSC跨版本；`?dpl`本身不负责选槽。后台静态产物也保存在gateway/admin，不强刷未保存表单。
 
+## 可选的内网首页缓存
+
+同版 Web 和 API 的 CACHE-300 联调通过后，可为该应用槽构建 `deploy/runtime/Dockerfile` 的 `html-cache` 目标，并标记为 `hd-auto-html-cache:<发布SHA>`。生成槽配置时，`release-slots.py` 同时接收 `--html-cache-ip` 和 `--html-cache-secret-file`。使用应用私网内未占用的固定 IPv4，避开动态分配区。Web 与缓存容器共用一个应用用户可读的独立 owner-only 密钥文件，两个容器均按只读秘密挂载。缓存容器仅接受固定 Nginx 私网地址的连接，依同槽 Web 的固定地址回源。
+
+生成网关时，显式传 `html_cache_host='html-cache-blue'` 或 `'html-cache-green'`，与 `web_host` 对应。默认模板继续动态渲染。配置仅涉及中文、英文和俄文的规范首页，无查询参数的匿名 GET 才可复用。切回动态网关时沿用相同配置文件集合，正常 reload 即可。
+
+命中前从 Web 私有 `/internal/public-html/version/?locale=...` 读取两个实时版本域。未命中时由 `/internal/public-html/render/` 发起当次渲染。两个内网请求显式协商协议 2，使用独立 nonce。网关在完整 HTTP EOF 后才验收私有渲染的单个 `X-HD-HTML-Proof`，核对发布标识、目录和筛选版本、汇率身份及到期时间。仅保存健康匿名 HTML 200。副本取实际渲染、实时版本和 300 秒的最早期限，命中沿用原到期时间。每个槽独立保留最多三个文档，每个文档最多 512 KiB，并限制同时验证请求。
+
+版本检查失败、旧服务和不完整响应会走动态路径。实时版本或私有渲染返回 429 时，保留 `Retry-After` 并直接返回。对外首页保持 `no-store`，私有控制头在代理两跳剥离，公网 `/internal/` 返回 404。缓存使用现有入口限流。
+
 ## 单一写入交接
 
 后续受控版本：先旧槽 draining，读取旧 `/health/serving` 等真实副作用请求计数为0，再将新槽 active并切后台路由；不能同时两个active。不因客户端断线推断付费调用结束。新API按双投影兼容旧FE，扩展迁移先做，破坏性移除另排。worker待新API正常后同版本交接，不开第二worker，持久 paused=true 保留。

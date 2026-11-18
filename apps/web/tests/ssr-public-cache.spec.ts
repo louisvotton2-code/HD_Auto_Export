@@ -16,6 +16,7 @@ type RecordedRequest = {
   hasCookie?: boolean;
   hasAuthorization?: boolean;
   hasRequestId?: boolean;
+  filterScope?: boolean;
 };
 
 async function recorded(request: APIRequestContext): Promise<RecordedRequest[]> {
@@ -59,11 +60,29 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
     const second = await recorded(request);
     expect(versions(second).length).toBeGreaterThan(versions(first).length);
     expect(anonymous(second)).toHaveLength(anonymous(first).length);
+    expect(versions(second).some(row => row.query.scope === 'filters')).toBe(true);
+    expect(versions(second).every(row => !row.filterScope)).toBe(true);
     expect(versions(second).every(row => row.serviceAuthenticated && row.hasVisitorIp)).toBe(true);
     expect(anonymous(second).every(row => row.serviceAuthenticated && !row.hasVisitorIp)).toBe(true);
+    expect(anonymous(second).every(row => row.filterScope === (row.path === `${internal}/vehicle-filters`))).toBe(true);
     expect([...versions(second), ...anonymous(second)].every(row =>
       !row.hasCookie && !row.hasAuthorization && !row.hasRequestId)).toBe(true);
     expect(JSON.stringify(second)).not.toMatch(/SYNTHETIC_BROWSER_ONLY|must_stay_at_web|synthetic-browser-trace|x-hd-ssr-key/i);
+  });
+
+  test('unstamped exact filter results render the homepage and reload against the current scope', async ({ page, request }) => {
+    await setPublicFixtureState(request, { filtersUnstamped: true });
+    const originReads = (rows: RecordedRequest[]) => anonymous(rows).filter(row => row.path === `${internal}/vehicle-filters`);
+    for (let read = 1; read <= 2; read++) {
+      expect((await page.goto('/en/'))?.status()).toBe(200);
+      await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26');
+      await expect(page.locator('[data-home-section="popular-models"] a[href*="model="]')).toHaveCount(2);
+      const rows = await recorded(request);
+      expect(originReads(rows)).toHaveLength(read * 2);
+      expect(originReads(rows).every(row => row.filterScope)).toBe(true);
+      expect(versions(rows).filter(row => row.query.scope === 'filters')).toHaveLength(read * 2);
+      expect(anonymous(rows).filter(row => row.path === `${internal}/home/vehicles`)).toHaveLength(1);
+    }
   });
 
   test('business and FX changes invalidate the same URL and withdrawn vehicles disappear', async ({ page, request }) => {

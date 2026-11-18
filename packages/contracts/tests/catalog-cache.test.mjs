@@ -23,6 +23,34 @@ test('USD reuse stops at FX expiry; original and missing FX stay distinct', () =
   assert(pub.PublicCatalogVersionQuerySchema.safeParse({priceView:'usd'}).success);
   assert.equal(pub.PublicCatalogVersionQuerySchema.safeParse({locale:'zh'}).success,false);
 });
+test('negotiated internal stamps allow 300 seconds while public envelopes still stop at 15 seconds', () => {
+  assert.equal(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER, 'x-hd-cache-protocol');
+  assert.equal(pub.INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, 300_000);
+  assert.equal(pub.PUBLIC_CATALOG_CACHE_MAX_TTL_MS, 15_000);
+  const extended = { ...stamp, validUntil: '2026-11-13T00:05:00.000Z' };
+  const version = { data: extended, meta: { requestId: 'internal' } };
+  assert(pub.InternalPublicCatalogVersionResponseSchema.safeParse(version).success);
+  assert(pub.InternalPublicCatalogCacheStampSchema.safeParse(stamp).success);
+  assert.equal(pub.PublicCatalogVersionResponseSchema.safeParse(version).success, false);
+  assert.equal(pub.PublicVehicleResponseSchema.safeParse({
+    data: makePublicVehicleFixture(),
+    meta: { ...version.meta, catalogCache: extended },
+  }).success, false);
+
+  const fx = { version: 'f98da774-3d08-45b0-8e06-4bdfe90da2c0', expiresAt: extended.validUntil };
+  const usd = { ...extended, priceView: 'usd', fx };
+  assert(pub.InternalPublicCatalogCacheStampSchema.safeParse(usd).success);
+  assert(pub.InternalPublicCatalogCacheStampSchema.safeParse({ ...usd, fx: null }).success);
+  const invalidStamps = [
+    { ...extended, validUntil: '2026-11-13T00:05:00.001Z' },
+    { ...extended, validUntil: extended.checkedAt },
+    { ...extended, validUntil: '2026-11-12T23:59:59.999Z' },
+    { ...extended, fx },
+    { ...usd, fx: { ...fx, expiresAt: '2026-11-13T00:04:59.999Z' } },
+    { ...usd, epoch: 'private-epoch' },
+  ];
+  for (const invalid of invalidStamps) assert(!pub.InternalPublicCatalogCacheStampSchema.safeParse(invalid).success);
+});
 test('offset 10000 is accepted, larger offset rejects without truncating counts or cursors', () => {
   assert.equal(pub.isPublicCatalogOffsetAllowed(209,48),true);
   assert.equal(pub.isPublicCatalogOffsetAllowed(210,48),false);

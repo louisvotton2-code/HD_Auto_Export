@@ -105,6 +105,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     errorResponseBuilder:()=>({statusCode:429,code:'RATE_LIMITED',message:'Request rate exceeded.'})});
   const staff=new WeakMap<object,adm.StaffMe>();
   const requestSignals=new WeakMap<object,AbortSignal>();
+  const longCacheRequests=new WeakSet<object>();
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
     serving.enter(request,request.method,request.routeOptions.url??'');
@@ -120,6 +121,10 @@ export async function buildApp(config:Config=readConfig(), options:{
     }
     if(request.routeOptions.url?.startsWith(`${SSR_CATALOG_PREFIX}/`)) {
       if(!isSsrService(request)) throw notFound();
+      if(request.headers[pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]==='2') {
+        longCacheRequests.add(request);
+        reply.header(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER,'2');
+      }
       if(request.routeOptions.url!==SSR_CATALOG_VERSION_PATH && !ssrOriginLimiter.take()) {
         reply.header('Retry-After','1');
         throw new ApiError(429,'RATE_LIMITED','SSR origin capacity is busy.',undefined,true);
@@ -197,7 +202,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,
         ...(metrics&&catalogError?{catalogReason:catalogError.reason,
           activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
-          timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,oversizedValues:metrics.oversizedValues,
+          timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,oversizedValues:metrics.oversizedValues,
           poolWaiting:db.pool.waitingCount}:{}),
       },'Request failed');
     }
@@ -211,23 +216,26 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.addHook('onClose',async()=>{try{await catalogCache.close();}finally{await db.close();}});
   const actor=(request:{id:string}):Actor=>({id:staff.get(request)!.id,requestId:request.id});
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
+  const cacheProtocol=(request:object)=>longCacheRequests.has(request)?2:1;
   const cached=<T,Q extends {priceView?:'usd'}>(route:PublicCacheRoute,query:Q,load:()=>Promise<T>,request:{id:string})=>
-    catalogCache.getVersioned(route,query,load,query.priceView==='usd',requestSignals.get(request));
+    catalogCache.getVersioned(route,query,load,query.priceView==='usd',requestSignals.get(request),cacheProtocol(request));
   const publicResponse=async<T,Q extends {priceView?:'usd'}>(route:PublicCacheRoute,query:Q,load:()=>Promise<T>,request:{id:string})=>{
     const {value,stamp}=await cached(route,query,load,request);
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   };
 
   app.get(SSR_CATALOG_VERSION_PATH,{schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
-    response:{200:pub.PublicCatalogVersionResponseSchema,...errorResponses}}},async request=>
-    response(await catalogCache.currentVersion((request.query as {priceView?:'usd'}).priceView==='usd',requestSignals.get(request)),request));
+    response:{200:pub.InternalPublicCatalogVersionResponseSchema,...errorResponses}}},async request=>{
+    const query=request.query as z.infer<typeof pub.PublicCatalogVersionQuerySchema>;
+    return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
+  });
 
   app.get('/health/live',{schema:schema('health','liveness',{response:{200:z.object({status:z.literal('ok')})}})},async()=>({status:'ok' as const}));
   if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:config.publicCache.enabled,metrics:catalogCache.metrics()}));
   app.get('/health/serving',{schema:{hide:true}},async()=>serving.status());
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint,el.inquiry_number FROM home_config h
+      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,cs.filter_revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint,el.inquiry_number FROM home_config h
         JOIN public_catalog_state cs ON cs.id=1 JOIN translation_budget_state bs ON bs.id=1
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
@@ -270,9 +278,19 @@ export async function buildApp(config:Config=readConfig(), options:{
   }});
 
   for (const prefix of ['/api/v1',SSR_CATALOG_PREFIX]) {
-  const publicSchema=(operation:string,options:Record<string,unknown>)=>prefix===SSR_CATALOG_PREFIX?{...options,hide:true}:schema('public',operation,options);
-  const routeConfig=prefix===SSR_CATALOG_PREFIX?{rateLimit:false as const}:undefined;
-  app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([pub.PublicVehicleCardListSchema,pub.PublicVehicleListSchema]),...errorResponses}})},
+  const internal=prefix===SSR_CATALOG_PREFIX;
+  const publicSchema=(operation:string,options:Record<string,unknown>)=>internal?{...options,hide:true}:schema('public',operation,options);
+  const routeConfig=internal?{rateLimit:false as const}:undefined;
+  const longerStamp={catalogCache:pub.InternalPublicCatalogCacheStampSchema.optional()};
+  const meta=pub.PublicCatalogResponseMetaSchema.safeExtend(longerStamp);
+  const listMeta=pub.CatalogMetaSchema.safeExtend(longerStamp);
+  const cardList=internal?pub.PublicVehicleCardListSchema.safeExtend({meta:listMeta}):pub.PublicVehicleCardListSchema;
+  const list=internal?pub.PublicVehicleListSchema.safeExtend({meta:listMeta}):pub.PublicVehicleListSchema;
+  const detail=internal?pub.PublicVehicleResponseSchema.safeExtend({meta}):pub.PublicVehicleResponseSchema;
+  const inline=internal?pub.PublicVehicleInlineResponseSchema.safeExtend({meta}):pub.PublicVehicleInlineResponseSchema;
+  const filters=internal?pub.PublicVehicleFiltersSchema.safeExtend({meta}):pub.PublicVehicleFiltersSchema;
+  const home=internal?pub.PublicHomeSectionsSchema.safeExtend({meta}):pub.PublicHomeSectionsSchema;
+  app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([cardList,list]),...errorResponses}})},
     async request=>{
       const query=request.query as pub.PublicVehicleQuery;
       const {value:loaded,stamp}=await cached('list',query,async()=>{
@@ -281,7 +299,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       },request);
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
-  app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([pub.PublicVehicleResponseSchema,pub.PublicVehicleInlineResponseSchema]),...errorResponses}})},
+  app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([detail,inline]),...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
       const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView);
       if(p.id.startsWith('ext-')) {
@@ -289,10 +307,17 @@ export async function buildApp(config:Config=readConfig(), options:{
       }
       return vehicle;
     },request);});
-  app.get(`${prefix}/vehicle-filters`,{config:routeConfig,schema:publicSchema('vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:pub.PublicVehicleFiltersSchema,...errorResponses}})},async request=>{
-    const query=request.query as pub.PublicFilterQuery;return publicResponse('filters',query,()=>inventory.filters(query),request);
+  app.get(`${prefix}/vehicle-filters`,{config:routeConfig,schema:publicSchema('vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:filters,...errorResponses}})},async request=>{
+    const query=request.query as pub.PublicFilterQuery;
+    // Previous Web releases still compare the filter response with the global version.
+    const legacy=internal&&request.headers['x-hd-catalog-scope']!=='filters';
+    const usd=query.priceView==='usd', signal=requestSignals.get(request), protocol=cacheProtocol(request);
+    const {value,stamp}=legacy
+      ? await catalogCache.getBoundedVersioned('filters',query,()=>inventory.filterResult(query),usd,signal,protocol)
+      : await catalogCache.getFilterSnapshot(query,()=>inventory.filterSnapshot(query),usd,signal,protocol);
+    return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   });
-  app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:pub.PublicHomeSectionsSchema,...errorResponses}})},async request=>{
+  app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:home,...errorResponses}})},async request=>{
     const query=request.query as pub.PublicLocaleQuery;return publicResponse('home',query,()=>inventory.publicHome(query.locale,query.view,query.priceView),request);
   });
   }

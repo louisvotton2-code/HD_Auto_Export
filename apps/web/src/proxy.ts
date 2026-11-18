@@ -29,6 +29,7 @@ export function proxy(request: NextRequest) {
   const reserved = ['api', '_next', 'brand', 'fonts', 'demo-vehicles', 'staff'];
   if (
     !segment ||
+    /^\/internal\/public-html\/(?:render|version)\/$/.test(path) ||
     ['zh', 'en', 'ru'].includes(segment) ||
     reserved.includes(segment) ||
     /\.[a-z0-9]+$/i.test(path)

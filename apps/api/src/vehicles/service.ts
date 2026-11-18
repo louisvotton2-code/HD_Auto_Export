@@ -10,6 +10,7 @@ import { AdminVehicleSchema, HomeVehicleIdSchema, VehicleTranslationSuggestionsS
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
+import { readPublicCatalogRevision } from '../external/public-cache.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
@@ -21,7 +22,7 @@ import type { TranslationPlanInput, TranslationPlanInputField } from './translat
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor } from '../external/catalog.js';
+import { aggregateCatalogFacets, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -289,8 +290,9 @@ function publicConditions(query:Omit<PublicFilterQuery,'projection'>,params:unkn
   const search=publicSearch(query,params);if(search)where.push(search);
   return where.join(' AND ');
 }
-function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null) {
-  const where=publicConditions(query,params,quote),fact="p.data->'facts'";
+function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null,pairs?:readonly CatalogModelPair[]) {
+  const conditions=publicConditions(query,params,quote),fact="p.data->'facts'";
+  const where=pairs ? `${conditions} AND ${catalogModelScope(params,pairs,`${fact}->'make'->>'id'`,`${fact}->'model'->>'id'`)}` : conditions;
   const names:Record<string,string>={};
   if(query.view==='localized') {
     params.push(query.locale);const language=`$${params.length}::text`;
@@ -797,16 +799,49 @@ export class InventoryService {
     });
   }
   async filters(query:PublicFilterQuery) {
+    return (await this.filterResult(query)).value;
+  }
+
+  async filterResult(query: PublicFilterQuery) {
     return this.db.transaction(async tx=>{
       await tx.query(catalogReadTransaction);
-      const quote=query.priceView==='usd'?await readFxQuote(tx):null;
-      const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote);
-      const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
-      const includeExternal=this.externalCatalog&&query.view==='localized';
-      const external=includeExternal?await externalFacets(tx,query,quote):[];
-      return facetData(staff,external,query,includeExternal);
+      return this.readFilters(tx,query);
     });
   }
+
+  async filterSnapshot(query: PublicFilterQuery) {
+    return this.db.transaction(async tx => {
+      await tx.query(catalogReadTransaction);
+      const revision = await readPublicCatalogRevision({pool:tx},query.priceView==='usd','filters');
+      return { revision, ...await this.readFilters(tx,query) };
+    });
+  }
+
+  private async readFilters(tx: PoolClient, query: PublicFilterQuery) {
+    const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+    const includeExternal=this.externalCatalog&&query.view==='localized';
+    let pairs: CatalogModelPair[] | undefined;
+    let expiresAt: number | undefined;
+    if (query.projection === 'home-models') {
+      const home = await this.readPublicHome(tx,query.locale,'localized');
+      const featured = new Map<string,CatalogModelPair>();
+      for (const { vehicles } of home.sections) for (const vehicle of vehicles) {
+        const makeId = vehicle.facts.make?.id, modelId = vehicle.facts.model?.id;
+        if (!vehicle.images.length || !makeId || !modelId) continue;
+        featured.set(JSON.stringify([makeId,modelId]),{makeId,modelId});
+        for (const image of vehicle.images) {
+          if (image.remote?.expiresAt) expiresAt = Math.min(expiresAt ?? Infinity,Date.parse(image.remote.expiresAt));
+        }
+      }
+      pairs = [...featured.values()];
+      if (!pairs.length) return {value:facetData([],[],query,includeExternal)};
+    }
+    const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote,pairs);
+    const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
+    const external=includeExternal?await externalFacets(tx,query,quote,pairs):[];
+    return {value:facetData(staff,external,query,includeExternal),expiresAt};
+  }
+
   async getHome():Promise<AdminHomeSections> {
     return (await this.db.pool.query('SELECT version,sections FROM home_config WHERE id=1')).rows[0];
   }
@@ -835,16 +870,20 @@ export class InventoryService {
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const quote=priceView==='usd'?await readFxQuote(tx):null;
-      const config=(await tx.query('SELECT sections FROM home_config WHERE id=1')).rows[0] as Pick<AdminHomeSections,'sections'>;
-      const {staff,supplier}=homeVehicleIds(config.sections);
-      const params:unknown[]=[staff];const visible=localeVisible(locale,params);
-      const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
-      const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view,priceView,quote)]));
-      if(view==='localized'&&this.externalCatalog) {
-        const external=await readExternalHomeVehicles(tx,supplier,locale,Date.now(),priceView,quote);
-        for(const vehicle of external)map.set(vehicle.id,vehicle);
-      }
-      return {sections:config.sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
+      return this.readPublicHome(tx,locale,view,priceView,quote);
     });
+  }
+
+  private async readPublicHome(tx:PoolClient,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {
+    const config=(await tx.query('SELECT sections FROM home_config WHERE id=1')).rows[0] as Pick<AdminHomeSections,'sections'>;
+    const {staff,supplier}=homeVehicleIds(config.sections);
+    const params:unknown[]=[staff];const visible=localeVisible(locale,params);
+    const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
+    const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view,priceView,quote)]));
+    if(view==='localized'&&this.externalCatalog) {
+      const external=await readExternalHomeVehicles(tx,supplier,locale,Date.now(),priceView,quote);
+      for(const vehicle of external)map.set(vehicle.id,vehicle);
+    }
+    return {sections:config.sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
   }
 }

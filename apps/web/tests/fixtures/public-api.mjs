@@ -201,6 +201,8 @@ const resetState = () => ({
   futureAvailability: 'available',
   futureArchived: false,
   filtersUnavailable: false,
+  filtersUnstamped: false,
+  homeUnavailable: false,
   externalPublished: false,
   externalRemotePhoto: false,
   importedPublished: false,
@@ -660,7 +662,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       fxVersion = randomUUID();
     mismatchesRemaining = state.cacheMismatch === 'once' ? 1 : 0;
   };
-  const stamp = (priceView, mismatch = false) => {
+  const stamp = (priceView, mismatch = false, scope = 'catalog') => {
     const now = Date.now();
     const fx = priceView === 'usd' && state.usdRateAvailable && now < stateChangedAt + state.cacheFxTtlMs
       ? { version: fxVersion, expiresAt: new Date(stateChangedAt + state.cacheFxTtlMs).toISOString() }
@@ -673,7 +675,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       hasActiveRemoteImages ? stateChangedAt + state.cacheMediaTtlMs : Infinity);
     if (validUntil <= now) return null;
     return PublicCatalogCacheStampSchema.parse({
-      version: createHash('sha256').update(`${catalogEpoch}:${catalogRevision}:${priceView}:${fx?.version ?? 'no-fx'}:${hasActiveRemoteImages ? 'active-media' : 'no-active-media'}:${mismatch ? 'mismatch' : 'current'}`).digest('hex'),
+      version: createHash('sha256').update(`${scope}:${catalogEpoch}:${catalogRevision}:${priceView}:${fx?.version ?? 'no-fx'}:${hasActiveRemoteImages ? 'active-media' : 'no-active-media'}:${mismatch ? 'mismatch' : 'current'}`).digest('hex'),
       priceView, fx, checkedAt: new Date(now).toISOString(), validUntil: new Date(validUntil).toISOString(),
     });
   };
@@ -706,7 +708,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           futurePublished: (v) => typeof v === 'boolean',
           futureAvailability: (v) => ['available', 'reserved', 'sold', 'unknown'].includes(v),
           futureArchived: (v) => typeof v === 'boolean',
-          filtersUnavailable: (v) => typeof v === 'boolean',
+          filtersUnavailable: (v) => typeof v === 'boolean' || ['overview', 'home-models'].includes(v),
+          homeUnavailable: (v) => typeof v === 'boolean',
           externalPublished: (v) => typeof v === 'boolean',
           externalRemotePhoto: (v) => typeof v === 'boolean',
           importedPublished: (v) => typeof v === 'boolean',
@@ -721,6 +724,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
+          filtersUnstamped: (v) => typeof v === 'boolean',
           longTitles: (v) => typeof v === 'boolean',
           richCatalog: (v) => typeof v === 'boolean',
           largeFacetDictionary: (v) => typeof v === 'boolean',
@@ -763,6 +767,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       if (url.pathname === '/__fixtures/requests' && req.method === 'GET')
         return send(res, 200, { suite: fixtureSuite, requests });
       const internalRequest = url.pathname.startsWith('/internal/');
+      let filterScope = false;
       if (internalRequest) {
         // Store only presence flags, including for rejected requests. Never record the service key.
         const authorized = authenticated(req);
@@ -771,14 +776,17 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         const hasCookie = req.headers.cookie !== undefined;
         const hasAuthorization = req.headers.authorization !== undefined;
         const hasRequestId = req.headers['x-request-id'] !== undefined || req.headers['request-id'] !== undefined;
+        const catalogScope = req.headers['x-hd-catalog-scope'];
+        filterScope = catalogScope === 'filters';
         requests.push({ path: url.pathname, method: req.method, query: Object.fromEntries(url.searchParams),
-          serviceAuthenticated: authorized, hasVisitorIp, hasCookie, hasAuthorization, hasRequestId });
+          serviceAuthenticated: authorized, hasVisitorIp, hasCookie, hasAuthorization, hasRequestId, filterScope });
         if (requests.length > 1000) requests.shift();
         if (!authorized || req.method !== 'GET') return send(res, 404, error('NOT_FOUND'));
         const versionRequest = url.pathname === '/internal/public-catalog/version';
         const alias = /^\/internal\/public-catalog\/(vehicles(?:\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})?|vehicle-filters|home\/vehicles)$/.exec(url.pathname);
         if (!versionRequest && !alias) return send(res, 404, error('NOT_FOUND'));
-        if (hasCookie || hasAuthorization || hasRequestId || (!versionRequest && hasVisitorIp))
+        if (hasCookie || hasAuthorization || hasRequestId || (!versionRequest && hasVisitorIp)
+          || (catalogScope !== undefined && (!filterScope || alias?.[1] !== 'vehicle-filters')))
           return send(res, 400, error('INVALID_REQUEST'));
         if (versionRequest) {
           if ([...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1))
@@ -788,7 +796,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           if (state.cacheVersionFailure) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
           // This is the entry quota check: a warm DTO is not allowed to bypass it.
           if (state.publicRateLimited) return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
-          const current = stamp(query.data.priceView ?? 'original');
+          const current = stamp(query.data.priceView ?? 'original', false, query.data.scope);
           return current ? send(res, 200, PublicCatalogVersionResponseSchema.parse({ data: current, meta: { requestId: 'fixture-version' } }))
             : send(res, 503, error('SERVICE_UNAVAILABLE', true));
         }
@@ -880,7 +888,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
       if (state.filtersRateLimited && url.pathname === '/api/v1/vehicle-filters')
         return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
-      if (state.filtersUnavailable && url.pathname === '/api/v1/vehicle-filters')
+      if (url.pathname === '/api/v1/vehicle-filters' &&
+          (state.filtersUnavailable === true || state.filtersUnavailable === filterQuery.projection))
+        return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+      if (state.homeUnavailable && url.pathname === '/api/v1/home/vehicles')
         return send(res, 503, error('SERVICE_UNAVAILABLE', true));
       if (state.mode === 'unavailable' && url.pathname.startsWith('/api/v1/'))
         return send(res, 503, error('SERVICE_UNAVAILABLE', true));
@@ -893,10 +904,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       const publicDto = url.pathname === '/api/v1/home/vehicles' || url.pathname === '/api/v1/vehicles' ||
         url.pathname === '/api/v1/vehicle-filters' || /^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname);
       const mismatch = internalRequest && (state.cacheMismatch === 'always' || mismatchesRemaining > 0);
-      const dtoStamp = publicDto ? stamp(url.searchParams.get('priceView') === 'usd' ? 'usd' : 'original', mismatch) : null;
+      const scopedFilters = url.pathname === '/api/v1/vehicle-filters' && (!internalRequest || filterScope);
+      const dtoStamp = publicDto ? stamp(url.searchParams.get('priceView') === 'usd' ? 'usd' : 'original', mismatch,
+        scopedFilters ? 'filters' : 'catalog') : null;
       if (publicDto && !dtoStamp) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
       if (publicDto && mismatch && mismatchesRemaining > 0) mismatchesRemaining--;
-      const catalogMeta = (requestId, extra = {}) => ({ requestId, ...extra, catalogCache: dtoStamp });
+      const catalogMeta = (requestId, extra = {}) => ({ requestId, ...extra,
+        ...(state.filtersUnstamped && scopedFilters ? {} : { catalogCache: dtoStamp }),
+      });
       const priceProjection = (row) =>
         url.searchParams.get('priceView') === 'usd'
           ? { ...row, displayPrice: fixtureUsdPrice(row,
@@ -1015,7 +1030,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (snapshot.segmentDelayMs) await new Promise(resolve => setTimeout(resolve, snapshot.segmentDelayMs));
         return send(res, 200, payload);
       }
-      if (url.pathname === '/api/v1/home/vehicles') {
+      const homeSections = () => {
         const featured = state.homeStampSamples
           ? ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)))
           : staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
@@ -1037,11 +1052,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               .filter((v) => v.source.kind === 'demo' || v.availability === 'available')
               .slice(3, 4),
           });
+        return sections;
+      };
+      if (url.pathname === '/api/v1/home/vehicles') {
         return send(
           res,
           200,
           PublicHomeSectionsSchema.parse({
-            data: { sections },
+            data: { sections: homeSections() },
             meta: catalogMeta('fixture-home'),
           }),
         );
@@ -1080,6 +1098,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         const { projection } = filterQuery;
         const overview = projection === 'overview' || projection === 'overview-models';
         const localizedFull = !projection && filterQuery.view === 'localized';
+        const modelPairs = projection === 'home-models' ? new Set(homeSections().flatMap(section =>
+          section.vehicles.flatMap(({ facts: { make, model }, images }) =>
+            make && model && images.length > 0 ? [`${make.id}:${model.id}`] : []))) : null;
         const makes = new Map(), models = new Map(), powertrains = new Map();
         const includeSyntheticTrims = state.largeFacetDictionary && !filterQuery.make && !filterQuery.model
           && !filterQuery.q && filterQuery.priceMin === undefined && filterQuery.priceMax === undefined;
@@ -1088,7 +1109,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           if (make) makes.set(make.id, {...make,count:(makes.get(make.id)?.count ?? 0)+1});
           if (make && model) {
             const key = `${make.id}:${model.id}`;
-            models.set(key, {...model,makeId:make.id,count:(models.get(key)?.count ?? 0)+1});
+            if (!modelPairs || modelPairs.has(key))
+              models.set(key, {...model,makeId:make.id,count:(models.get(key)?.count ?? 0)+1});
           }
           if (!row.external || powertrain !== 'unknown')
             powertrains.set(powertrain,(powertrains.get(powertrain) ?? 0)+1);
@@ -1101,7 +1123,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               catalog: 'curated',
               ...(overview || (state.importedPublished && localizedFull) ? { total: searched.length } : {}),
               makes: !projection || overview ? [...makes.values()].sort((a,b)=>a.id.localeCompare(b.id)) : [],
-              models: !projection || projection === 'overview-models' || projection === 'models'
+              models: !projection || projection === 'overview-models' || projection === 'models' || projection === 'home-models'
                 ? [...models.values()].sort((a,b)=>a.makeId.localeCompare(b.makeId)||a.id.localeCompare(b.id)) : [],
               powertrains: !projection || overview
                 ? [...powertrains].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})) : [],

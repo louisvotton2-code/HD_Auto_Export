@@ -203,6 +203,7 @@ export function HomePage({
   locale,
   sections,
   catalogFilters = null,
+  catalogModels = [],
   catalogTotal,
   unavailable = false,
   retryAfter = 0,
@@ -211,6 +212,7 @@ export function HomePage({
   locale: Locale;
   sections: PublicHomeSection[];
   catalogFilters?: PublicVehicleFilters['data'] | null;
+  catalogModels?: PublicVehicleFilters['data']['models'];
   catalogTotal: number | null;
   unavailable?: boolean;
   retryAfter?: number;
@@ -223,34 +225,33 @@ export function HomePage({
     : sections.filter((section) => section.vehicles.length > 0);
   const brands =
     catalogFilters?.makes.filter((make) => make.count > 0).map((make) => make.name) ?? [];
-  const models: HomeModel[] =
-    catalogFilters?.models
-      .filter((model) => model.count > 0)
-      .flatMap((model) => {
-        const representative = visibleSections
-          .flatMap((section) => section.vehicles)
-          .find(
-            (vehicle) =>
-              vehicle.facts.make?.id === model.makeId &&
-              vehicle.facts.model?.id === model.id &&
-              vehicle.images.length > 0,
-          );
-        if (!representative) return [];
-        const image = publicVehicleCover(representative);
-        if (!image) return [];
-        return [
-          {
-            name: model.name,
-            brand: catalogFilters.makes.find((make) => make.id === model.makeId)?.name ?? '',
-            count: model.count,
-            href: `/${locale}/cars/?${new URLSearchParams({ make: model.makeId, model: model.id }).toString()}`,
-            image: {
-              ...image,
-              alt: image.alt || publicVehicleTitle(representative, locale).text,
-            },
+  const featuredVehicles = visibleSections.flatMap((section) => section.vehicles);
+  const models: HomeModel[] = catalogModels
+    .filter((model) => model.count > 0)
+    .flatMap((model) => {
+      const representative = featuredVehicles.find(
+        (vehicle) =>
+          vehicle.facts.make?.id === model.makeId &&
+          vehicle.facts.model?.id === model.id &&
+          vehicle.images.length > 0,
+      );
+      if (!representative) return [];
+      const image = publicVehicleCover(representative);
+      if (!image) return [];
+      return [
+        {
+          name: model.name,
+          brand: catalogFilters?.makes.find((make) => make.id === model.makeId)?.name
+            ?? representative.facts.make?.name ?? '',
+          count: model.count,
+          href: `/${locale}/cars/?${new URLSearchParams({ make: model.makeId, model: model.id }).toString()}`,
+          image: {
+            ...image,
+            alt: image.alt || publicVehicleTitle(representative, locale).text,
           },
-        ];
-      }) ?? [];
+        },
+      ];
+    });
   return (
     <main id="main" className={styles.home} data-testid="home-page" data-motion-paused={paused}>
       <section className={styles.hero} data-home-section="hero">

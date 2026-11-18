@@ -43,7 +43,8 @@ test('SSR and browser facet requests use scoped API projections', async ({ reque
   const dynamic = rows.filter(row => row.path === '/api/v1/vehicle-filters').map(row => row.query);
   const bounds = { q: 'Beta', priceMin: '0', priceMax: '100000.49', priceCurrency: 'USD' };
   expect(ssr).toEqual(expect.arrayContaining([
-    { catalog: 'curated', locale: 'en', view: 'localized', priceView: 'usd', projection: 'overview-models' },
+    { catalog: 'curated', locale: 'en', view: 'localized', priceView: 'usd', projection: 'overview' },
+    { catalog: 'curated', locale: 'en', view: 'localized', priceView: 'usd', projection: 'home-models' },
     expect.objectContaining({ ...bounds, projection: 'overview-models' }),
     expect.objectContaining({ ...bounds, projection: 'overview' }),
     expect.objectContaining({ ...bounds, projection: 'models', make: 'beta' }),

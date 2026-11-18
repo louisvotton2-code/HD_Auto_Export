@@ -1,4 +1,7 @@
 import {
+  INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  InternalPublicCatalogCacheStampSchema,
+  InternalPublicCatalogVersionResponseSchema,
   PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
   PublicCatalogCacheStampSchema,
   PublicCatalogVersionResponseSchema,
@@ -13,15 +16,18 @@ export type SsrPublicEnvelope = { data: unknown; meta: { requestId: string; cata
 type Envelope = SsrPublicEnvelope;
 export type AnonymousPublicEnvelope<T extends Envelope> = Omit<T, 'meta'> & { meta: Omit<T['meta'], 'requestId'> };
 type Anonymous<T extends Envelope> = AnonymousPublicEnvelope<T>;
-type Stored<T extends Envelope> = { resource: Anonymous<T>; deadline: number };
+type Stored<T extends Envelope> = { resource: Anonymous<T>; deadline: number; proofExpiry: number | null };
 export type SsrPublicDescriptor<T extends Envelope> = {
   path: string;
   priceView: PublicCatalogCacheStamp['priceView'];
+  scope?: 'filters';
   schema: { parse: (value: unknown) => T };
   media?: (resource: Anonymous<T>) => readonly PublicMedia[];
 };
 export type SsrCacheIdentity = { deploymentEnv: string; releaseId: string; apiOrigin: string };
-export type SsrAnonymousReader = <T extends Envelope>(descriptor: SsrPublicDescriptor<T>) => Promise<Anonymous<T>>;
+export type SsrCacheProtocol = 1 | 2;
+type Negotiated<T> = { protocol: SsrCacheProtocol; value: T };
+export type SsrAnonymousReader = <T extends Envelope>(descriptor: SsrPublicDescriptor<T>) => Promise<Negotiated<Anonymous<T>>>;
 const changedVersionIdentity = Symbol.for('hd-auto.ssr-version-mismatch.v1');
 class ChangedPublicVersion extends Error { readonly [changedVersionIdentity] = true; }
 const isChangedVersion = (value: unknown) => value !== null && typeof value === 'object' && Reflect.get(value, changedVersionIdentity) === true;
@@ -33,55 +39,87 @@ function sameVersion(left: PublicCatalogCacheStamp, right: PublicCatalogCacheSta
 }
 
 /** Translate the backend's remaining duration, including full network time, without comparing host clocks. */
-function deadlineAt(startedAt: number, stamp: PublicCatalogCacheStamp) {
-  return startedAt + Math.min(PUBLIC_CATALOG_CACHE_MAX_TTL_MS, Date.parse(stamp.validUntil) - Date.parse(stamp.checkedAt));
+function deadlineAt(startedAt: number, stamp: PublicCatalogCacheStamp, maxLifetime: number) {
+  return startedAt + Math.min(maxLifetime, Date.parse(stamp.validUntil) - Date.parse(stamp.checkedAt));
 }
+
+const protocolLifetime = (protocol: SsrCacheProtocol) => protocol === 2
+  ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
 
 /** This closure only receives public descriptors/stamps and a static service reader, never visitor context. */
 function anonymousLoad<T extends Envelope>(
-  descriptor: SsrPublicDescriptor<T>, expected: PublicCatalogCacheStamp, versionDeadline: number,
+  descriptor: SsrPublicDescriptor<T>, expected: PublicCatalogCacheStamp, protocol: SsrCacheProtocol, versionDeadline: number,
   readAnonymous: SsrAnonymousReader, now: () => number,
 ) {
   return async () => {
     const startedAt = now();
     // The HTTP adapter validates the official schema and removes its trace first.
-    const resource = await readAnonymous(descriptor);
-    const parsed = PublicCatalogCacheStampSchema.safeParse(resource.meta.catalogCache);
-    if (!parsed.success || !sameVersion(parsed.data, expected)) throw new ChangedPublicVersion();
-    const mediaBudget = (descriptor.media?.(resource) ?? []).reduce((duration, image) =>
-      image.remote?.expiresAt ? Math.min(duration, Date.parse(image.remote.expiresAt) - Date.parse(parsed.data.checkedAt)) : duration,
-    PUBLIC_CATALOG_CACHE_MAX_TTL_MS);
-    const deadline = Math.min(versionDeadline, deadlineAt(startedAt, parsed.data), startedAt + mediaBudget);
+    const { protocol: resourceProtocol, value: resource } = await readAnonymous(descriptor);
+    const rawStamp = resource.meta.catalogCache;
+    const schema = resourceProtocol === 2 ? InternalPublicCatalogCacheStampSchema : PublicCatalogCacheStampSchema;
+    const parsed = schema.safeParse(rawStamp);
+    const stamp = parsed.success ? parsed.data : undefined;
+    if ((rawStamp !== undefined && !stamp) || (stamp && stamp.priceView !== expected.priceView))
+      throw new ChangedPublicVersion();
+    const reusable = stamp !== undefined && sameVersion(stamp, expected);
+    if (!reusable && descriptor.scope !== 'filters') throw new ChangedPublicVersion();
+    const maxLifetime = Math.min(protocolLifetime(protocol), protocolLifetime(resourceProtocol));
+    const mediaExpiry = (descriptor.media?.(resource) ?? []).reduce((expiry, image) =>
+      image.remote?.expiresAt ? Math.min(expiry, Date.parse(image.remote.expiresAt)) : expiry, Infinity);
+    const resourceDeadline = stamp ? Math.min(deadlineAt(startedAt, stamp, maxLifetime),
+      startedAt + mediaExpiry - Date.parse(stamp.checkedAt)) : startedAt + maxLifetime;
+    const deadline = Math.min(versionDeadline, resourceDeadline);
     if (now() >= deadline) throw new SsrDtoCacheExpiredError();
-    return { value: { resource, deadline } satisfies Stored<T>, expiresAt: deadline };
+    const proofExpiry = protocol === 2 && resourceProtocol === 2 && reusable
+      ? Math.min(Date.parse(stamp.validUntil), mediaExpiry) : null;
+    // A consistent filter result may finish during a version change. Share it with
+    // the waiting readers, without assigning it to the checked cache key.
+    return { value: { resource, deadline, proofExpiry } satisfies Stored<T>, expiresAt: deadline, reusable };
   };
 }
 
-export function createSsrPublicReader({ identity, readVersion, readAnonymous, cache, now = () => performance.now() }: {
+export function createSsrPublicReader({ identity, readVersion, readAnonymous, cache, onStamp,
+  now = () => performance.now(), wallNow = Date.now }: {
   identity: SsrCacheIdentity;
-  readVersion: (priceView: PublicCatalogCacheStamp['priceView']) => Promise<PublicCatalogVersionResponse>;
+  readVersion: (priceView: PublicCatalogCacheStamp['priceView'], scope?: 'filters') => Promise<Negotiated<PublicCatalogVersionResponse>>;
   readAnonymous: SsrAnonymousReader;
   cache?: SsrDtoCache;
+  onStamp?: (stamp: PublicCatalogCacheStamp | null, acceptedDeadlineEpochMs?: number) => void;
   now?: () => number;
+  wallNow?: () => number;
 }) {
   const store = cache ?? new SsrDtoCache({ now });
   return async function read<T extends Envelope>(descriptor: SsrPublicDescriptor<T>): Promise<T> {
+    let observed: PublicCatalogCacheStamp | null = null;
+    let acceptedDeadlineEpochMs: number | undefined;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         // Intentionally outside the shared loader and executed even on a warm hit.
         const versionStartedAt = now();
-        const current = PublicCatalogVersionResponseSchema.parse(await readVersion(descriptor.priceView));
+        const { protocol, value } = await readVersion(descriptor.priceView, descriptor.scope);
+        const schema = protocol === 2 ? InternalPublicCatalogVersionResponseSchema : PublicCatalogVersionResponseSchema;
+        const current = schema.parse(value);
         const stamp = current.data;
         if (stamp.priceView !== descriptor.priceView) throw new PublicApiError(503);
-        const versionDeadline = deadlineAt(versionStartedAt, stamp);
+        const versionDeadline = deadlineAt(versionStartedAt, stamp, protocolLifetime(protocol));
         if (now() >= versionDeadline) throw new PublicApiError(503);
         const key = JSON.stringify([
           identity.deploymentEnv, identity.releaseId, identity.apiOrigin,
-          descriptor.path, stamp.version, stamp.priceView, stamp.fx?.version ?? null, stamp.fx?.expiresAt ?? null,
+          descriptor.path, descriptor.scope ?? null, protocol, stamp.version, stamp.priceView, stamp.fx?.version ?? null, stamp.fx?.expiresAt ?? null,
         ]);
         try {
-          const stored = await store.read<Stored<T>>(key, anonymousLoad(descriptor, stamp, versionDeadline, readAnonymous, now));
-          if (now() >= Math.min(versionDeadline, stored.deadline)) throw new PublicApiError(503);
+          const stored = await store.read<Stored<T>>(key, anonymousLoad(descriptor, stamp, protocol, versionDeadline, readAnonymous, now));
+          const remaining = Math.min(versionDeadline, stored.deadline) - now();
+          if (remaining <= 0) throw new PublicApiError(503);
+          const actual = stored.resource.meta.catalogCache;
+          if (onStamp && actual && stored.proofExpiry !== null) {
+            const wall = wallNow();
+            const expiry = Math.floor(Math.min(stored.proofExpiry, Date.parse(stamp.validUntil), wall + remaining));
+            if (expiry > wall && expiry > Date.parse(actual.checkedAt)) {
+              observed = { ...actual, fx: actual.fx && { ...actual.fx } };
+              acceptedDeadlineEpochMs = expiry;
+            }
+          }
           return { ...stored.resource, meta: { ...stored.resource.meta, requestId: current.meta.requestId } } as T;
         } catch (error) {
           if (isChangedVersion(error) && attempt === 0) continue;
@@ -92,6 +130,9 @@ export function createSsrPublicReader({ identity, readVersion, readAnonymous, ca
     } catch (error) {
       if (isPublicApiError(error)) throw new PublicApiError(error.status, error.retryAfter);
       throw new PublicApiError(503);
+    } finally {
+      // Proof bookkeeping is optional and must not replace the rendered data or its error.
+      try { onStamp?.(observed, acceptedDeadlineEpochMs); } catch { /* Render proof stays incomplete. */ }
     }
   };
 }

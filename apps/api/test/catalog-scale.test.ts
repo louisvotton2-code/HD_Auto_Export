@@ -176,6 +176,71 @@ test('nested facet counts preserve the latest nonnull label when the newest hist
   } finally {await tx.query('ROLLBACK');tx.release();}
 });
 
+test('supplier and cover observation times only change the global version; cover and visibility changes invalidate filters',async()=>{
+  const id=externalIds[0]!;
+  const photo=randomUUID();
+  await db.pool.query(`INSERT INTO external_media(id,listing_id,source_media_id,url,position,active,refreshed_at)
+    VALUES($1,$2,'scope-fixture','https://photos.example.invalid/cache-scope.webp',0,true,now())`,[photo,id]);
+  const scope=filters({projection:'overview-models'});
+  const original=await inventory.filters(scope);
+  async function versions(client:Pick<PoolClient,'query'>=db.pool) {
+    const result=await client.query<{revision:string;filter_revision:string}>(
+      'SELECT revision,filter_revision FROM public_catalog_state WHERE id=1');
+    const row=result.rows[0]!;
+    return {global:BigInt(row.revision),filters:BigInt(row.filter_revision)};
+  }
+  const refresh=async (client:Pick<PoolClient,'query'>)=>{
+    await client.query("UPDATE external_listings SET fetched_at=fetched_at+interval '1 second',source_updated_at=fetched_at WHERE id=$1",[id]);
+    await client.query("UPDATE external_media SET refreshed_at=refreshed_at+interval '1 second' WHERE id=$1",[photo]);
+  };
+  const originalVersions=await versions();
+  await db.transaction(async tx=>{
+    await refresh(tx);
+    await refresh(tx);
+    assert.deepEqual(await versions(tx),originalVersions);
+  });
+  const refreshed=await versions();
+  assert.deepEqual(refreshed,{global:originalVersions.global+1n,filters:originalVersions.filters});
+  assert.deepEqual(await inventory.filters(scope),original);
+
+  const withdraw=async (tx:PoolClient)=>{
+    await refresh(tx);
+    await tx.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[id]);
+  };
+  await assert.rejects(db.transaction(async tx=>{
+    await withdraw(tx);
+    throw new Error('intentional rollback');
+  }),/intentional rollback/);
+  assert.deepEqual(await versions(),refreshed);
+  assert.deepEqual(await inventory.filters(scope),original);
+
+  await db.transaction(withdraw);
+  try {
+    assert.deepEqual(await versions(),{global:refreshed.global+1n,filters:refreshed.filters+1n});
+    assert.equal((await inventory.filters(scope)).total,original.total!-1);
+  } finally {
+    await db.pool.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1",[id]);
+  }
+  assert.deepEqual(await inventory.filters(scope),original);
+  const beforeCoverChange=await versions();
+  const expiry=new Date(Date.now()+90_000);
+  await db.pool.query('UPDATE external_media SET expires_at=$2 WHERE id=$1',[photo,expiry]);
+  assert.deepEqual(await versions(),{global:beforeCoverChange.global+1n,filters:beforeCoverChange.filters+1n});
+  const config=await inventory.getHome();
+  await db.pool.query("UPDATE home_config SET sections=jsonb_set(sections,'{0,vehicleIds}',$1::jsonb) WHERE id=1",
+    [JSON.stringify([`ext-${id}`])]);
+  try {
+    const scoped=filters({projection:'home-models'});
+    const legacyRead=await inventory.filterResult(scoped);
+    assert.equal(legacyRead.value.models.length,1);
+    assert.equal(legacyRead.expiresAt,expiry.getTime());
+    assert.equal((await inventory.filterSnapshot(scoped)).expiresAt,expiry.getTime());
+  } finally {
+    await db.pool.query('UPDATE home_config SET sections=$1 WHERE id=1',[JSON.stringify(config.sections)]);
+    await db.pool.query('DELETE FROM external_media WHERE id=$1',[photo]);
+  }
+});
+
 test('cursor rejects changed filters, revision and restore epochs',async()=>{
   const first=await inventory.listPublic(query({pagination:'cursor'}),'first');const cursor=first.data.nextCursor!;
   await assert.rejects(inventory.listPublic(query({cursor,q:'new query'}),'bad'),(e:any)=>e.status===400);

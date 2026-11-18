@@ -31,6 +31,41 @@ class Slots(unittest.TestCase):
     def test_no_config_injection(self):
         with self.assertRaises(ValueError):m.gateway_files(Path(__file__).parent,web_host='web;bad',public_api_host='api',admin_api_host='api')
         with self.assertRaises(ValueError):m.slot_config(self.config(),slot='bad',release='a'*40,api_ip='172.20.0.21',web_ip='172.20.0.22',mode_root='/srv')
+    def test_html_cache_is_private_and_bound_to_the_same_release_and_web_slot(self):
+        config = self.config()
+        config['services']['proxy'] = {'networks': {'default': {'ipv4_address': '172.20.0.2'}}}
+        config['services']['web'].update(platform='linux/amd64', user='1000:1000', logging={})
+        config['services']['web']['environment']['NEXT_PUBLIC_SITE_URL'] = 'https://cars.hongdingauto.com'
+        args = dict(slot='blue', release='a'*40, api_ip='172.20.0.21', web_ip='172.20.0.22',
+                    mode_root='/srv/hd-auto/staging/slots/blue')
+        value = m.slot_config(config, **args, html_cache_ip='172.20.0.23',
+                              html_cache_secret_file='/srv/hd-auto/secrets/html-cache')
+        cache = value['services']['html-cache-blue']
+        self.assertEqual(cache['image'], 'hd-auto-html-cache:' + args['release'])
+        self.assertEqual(cache['environment']['HD_HTML_CACHE_ORIGIN'], 'http://web-blue:3000')
+        self.assertEqual(cache['environment']['HD_HTML_CACHE_EDGE_IP'], '172.20.0.2')
+        self.assertIn('html_cache_secret', value['services']['web-blue']['secrets'])
+        self.assertEqual(cache['networks']['default']['aliases'], ['html-cache-blue'])
+        self.assertNotIn('ports', cache)
+        self.assertNotIn('html_cache_secret', value['services']['api-blue'].get('secrets', []))
+        with self.assertRaises(ValueError):
+            m.slot_config(config, **args, html_cache_ip='172.20.0.22',
+                          html_cache_secret_file='/srv/hd-auto/secrets/html-cache')
+        with self.assertRaises(ValueError):
+            m.slot_config(config, **args, html_cache_ip='172.20.0.23')
+
+    def test_gateway_enables_html_cache_only_for_explicit_web_slot(self):
+        args = dict(web_host='web-green', public_api_host='api-green', admin_api_host='api-blue')
+        source = Path(__file__).parent
+        inactive = m.gateway_files(source, **args)['default.conf']
+        active = m.gateway_files(source, **args, html_cache_host='html-cache-green')['default.conf']
+        self.assertNotIn('http://html-cache', inactive)
+        self.assertIn('http://html-cache-green:3010', active)
+        self.assertIn('error_page 419 502 504 = @hd_home_dynamic;', active)
+        self.assertEqual(active.rsplit('    server_name admin.hongdingauto.com;', 1)[1],
+                         inactive.rsplit('    server_name admin.hongdingauto.com;', 1)[1])
+        with self.assertRaises(ValueError):
+            m.gateway_files(source, **args, html_cache_host='html-cache-blue')
 
 
 class Assets(unittest.TestCase):

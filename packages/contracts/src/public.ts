@@ -196,11 +196,16 @@ export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({
 export type PublicVehicleDetailQuery=z.infer<typeof PublicVehicleDetailQuerySchema>;
 
 export const PublicFilterQuerySchema = z.strictObject({
-  ...catalogQueryFields, projection: z.enum(['overview', 'overview-models', 'models', 'variants']).optional(),
+  ...catalogQueryFields, projection: z.enum(['overview', 'overview-models', 'home-models', 'models', 'variants']).optional(),
 }).superRefine((value, ctx) => {
   validateCatalogQuery(value, ctx);
   if (value.projection && value.view !== 'localized')
     ctx.addIssue({code:'custom',path:['view'],message:'Facet projections require localized view'});
+  if (value.projection === 'home-models') {
+    const { locale, catalog, view, priceView, projection, ...filters } = value;
+    if (Object.values(filters).some(filter => filter !== undefined))
+      ctx.addIssue({code:'custom',path:['projection'],message:'Homepage model facets use the configured homepage scope'});
+  }
   if ((value.projection === 'models' || value.projection === 'variants') && !value.make)
     ctx.addIssue({code:'custom',path:['make'],message:'Model and variant facets require a make ID'});
   if (value.projection === 'models' && value.model)

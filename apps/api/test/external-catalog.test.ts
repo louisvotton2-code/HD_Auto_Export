@@ -754,8 +754,14 @@ test('a confirmed source make or model identity change suspends manual copy unti
 });
 
 test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn and nonprimary suppliers', async () => {
+  const fixtures = [301, 302, 303, 304, 305].map(index => {
+    const candidate = makeExternalCandidateFixture(index);
+    candidate.facts.make = index === 302 ? {id:'fixture-home-brand-b',name:'Home B'} : {id:'fixture-home-brand-a',name:'Home A'};
+    candidate.facts.model = index === 302 || index === 305 ? {id:'fixture-home-model-b',name:'Model B'} : {id:'fixture-home-model-a',name:'Model A'};
+    return candidate;
+  });
   const { data: { id: fixtureBatch } } = admin.ExternalBatchResponseSchema.parse(
-    (await importBatch({ provider: 'synthetic-feed', records: [301, 302, 303, 304, 305].flatMap(index => one(makeExternalCandidateFixture(index)).records) })).json(),
+    (await importBatch({ provider: 'synthetic-feed', records: fixtures.flatMap(candidate => one(candidate).records) })).json(),
   );
   const [primary, hidden, withdrawn, alias, noPublicTitle] = (await readRecords(fixtureBatch)).map(row => row.listingId!);
   const original = await runtime.inventory.getHome();
@@ -773,6 +779,11 @@ test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn 
     return publicApi.PublicHomeSectionsSchema.parse(response.json());
   };
   const ids = (result: publicApi.PublicHomeSections) => result.data.sections.map(section => section.vehicles.map(vehicle => vehicle.id));
+  const facets = async (locale:string,projection:'home-models'|'overview-models') => {
+    const response=await call({url:`/api/v1/vehicle-filters?locale=${locale}&view=localized&priceView=usd&projection=${projection}`});
+    assert.equal(response.statusCode,200,response.body);
+    return publicApi.PublicVehicleFiltersSchema.parse(response.json());
+  };
   const before = await home('zh','localized');
   assert.equal((await saveHome(payload,{})).statusCode,401);
   assert.equal((await saveHome(payload,{...headers(editorCookie),origin:'https://other.invalid'})).statusCode,403);
@@ -801,6 +812,17 @@ test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn 
     assert.equal(vehicle.images.length,1);
     assert.equal(vehicle.images[0]?.remote?.revision,1);
     assert.doesNotMatch(JSON.stringify(result),/listings\.example\.invalid|reports\.example\.invalid|"synthetic-0301"/);
+    const full = (await facets(locale,'overview-models')).data;
+    const scoped = (await facets(locale,'home-models')).data;
+    const featured = result.data.sections.flatMap(section=>section.vehicles).filter(vehicle=>vehicle.images.length);
+    assert.ok(full.models.some(model=>model.makeId==='fixture-home-brand-a'&&model.id==='fixture-home-model-b'));
+    const expected = full.models.filter(model=>featured.some(vehicle=>vehicle.facts.make?.id===model.makeId&&vehicle.facts.model?.id===model.id));
+    assert.deepEqual(scoped,{catalog:'curated',makes:[],models:expected,powertrains:[]});
+    assert.ok(scoped.models.some(model=>model.makeId==='fixture-home-brand-b'&&model.count===1));
+  }
+  for (const query of ['&make=fixture-home-brand-a','&sort=newest','&q=sample']) {
+    const response=await call({url:`/api/v1/vehicle-filters?locale=zh&view=localized&projection=home-models${query}`});
+    assert.equal(response.statusCode,400,response.body);
   }
   assert.deepEqual(ids(await home()),[[manualId]]);
   assert.deepEqual(ids(await home('ru','legacy')),[[manualId]]);
@@ -811,6 +833,7 @@ test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn 
   const hiddenResult=await home('zh','localized');
   assert.notEqual(hiddenResult.meta.catalogCache?.version,stocked.meta.catalogCache?.version);
   assert.deepEqual(ids(hiddenResult),[[primary,manualId,withdrawn,alias],[primary]]);
+  assert.equal((await facets('zh','home-models')).data.models.some(model=>model.makeId==='fixture-home-brand-b'),false);
   assert.equal((await importBatch(makeExternalWithdrawalFixture(303,2))).statusCode,201);
   const withdrawnResult=await home('zh','localized');
   assert.notEqual(withdrawnResult.meta.catalogCache?.version,hiddenResult.meta.catalogCache?.version);

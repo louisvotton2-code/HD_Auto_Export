@@ -18,6 +18,71 @@ const catalogLabels = {
   ru: 'Автомобили в каталоге',
 };
 
+for (const failedProjection of ['overview', 'home-models'] as const) {
+  test(`home keeps the other facet data and retries only ${failedProjection}`, async ({ page, request }) => {
+    await setPublicFixtureState(request, { filtersUnavailable: failedProjection });
+    const browserProjections: (string | null)[] = [];
+    page.on('request', (read) => {
+      const url = new URL(read.url());
+      if (/^\/api\/v1\/(home\/vehicles|vehicle-filters|vehicles)\/?$/.test(url.pathname))
+        browserProjections.push(url.searchParams.get('projection'));
+    });
+
+    expect((await page.goto('/en/'))?.status()).toBe(200);
+    const modelLinks = page.locator('[data-home-section="popular-models"] a[href*="model="]');
+    const count = page.getByTestId('hero-stat-catalog');
+    await expect(count.locator('strong')).toHaveText('26');
+    await expect(count.locator('dt')).toHaveText(catalogLabels.en);
+    await expect(modelLinks).toHaveCount(failedProjection === 'overview' ? 2 : 0);
+    const status = page.getByTestId('public-resource-status');
+    await expect(status.getByRole('button')).toBeEnabled();
+    expect(browserProjections).toEqual([]);
+
+    const events = await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`);
+    expect(events.ok()).toBe(true);
+    const { requests } = (await events.json()) as {
+      requests: Array<{ path: string; query: Record<string, string> }>;
+    };
+    const filterReads = requests.filter((read) => read.path === '/internal/public-catalog/vehicle-filters');
+    expect(filterReads.map((read) => read.query.projection).sort()).toEqual(['home-models', 'overview']);
+    const fallbackReads = requests.filter((read) => read.path === '/internal/public-catalog/vehicles');
+    expect(fallbackReads).toHaveLength(failedProjection === 'overview' ? 1 : 0);
+
+    await setPublicFixtureState(request, { filtersUnavailable: false });
+    await status.getByRole('button').click();
+    await expect(status).not.toBeVisible();
+    await expect(modelLinks).toHaveCount(2);
+    await expect(count.locator('strong')).toHaveText('26');
+    expect(browserProjections).toEqual([failedProjection]);
+  });
+}
+
+test('recovering the featured rail refreshes models after the featured selection changes', async ({ page, request }) => {
+  await setPublicFixtureState(request, { homeUnavailable: true, homeStampSamples: true });
+  const reads: [string, string | null][] = [];
+  page.on('request', (read) => {
+    const { pathname, searchParams } = new URL(read.url());
+    if (/^\/api\/v1\/(home\/vehicles|vehicle-filters|vehicles)\/?$/.test(pathname))
+      reads.push([pathname, searchParams.get('projection')]);
+  });
+
+  await page.goto('/en/');
+  await expect(page.getByTestId('home-catalog-error')).toBeVisible();
+  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26');
+  expect(reads).toEqual([]);
+
+  await setPublicFixtureState(request, { homeUnavailable: false, homeStampSamples: false });
+  const status = page.getByTestId('public-resource-status');
+  await status.getByRole('button').click();
+  await expect(status).not.toBeVisible();
+  await expect(page.getByTestId('home-catalog-error')).toHaveCount(0);
+  await expect(page.locator('[data-home-section="popular-models"] a[href*="model=beta_model"]')).toHaveCount(1);
+  expect(reads.sort()).toEqual([
+    ['/api/v1/home/vehicles/', null],
+    ['/api/v1/vehicle-filters/', 'home-models'],
+  ]);
+});
+
 for (const [label, fixture, locale, total, catalogLabel] of [
   ['uses the exact list total when only filters fail', { filtersUnavailable: true }, 'en', '26', catalogLabels.en],
   ['labels the preset (zh) when both sources fail', { mode: 'unavailable' }, 'zh', '470,000+', '目录总数暂不可用 · 预设值'],

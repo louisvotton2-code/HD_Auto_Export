@@ -57,7 +57,7 @@ test('RESP client uses only authenticated GET/SET PX, supports fragmented Unicod
   const port = await redis(t, (parts, socket) => {
     commands.push(parts);
     if (parts[0] === 'AUTH') { assert.deepEqual(parts, ['AUTH', 'cache', 'private-test-password']); socket.write('+OK\r\n'); }
-    else if (parts[0] === 'SET') { assert.deepEqual(parts.slice(3), ['PX', '100']); values.set(parts[1]!, parts[2]!); socket.write('+OK\r\n'); }
+    else if (parts[0] === 'SET') { assert.equal(parts[3], 'PX'); assert.ok(['100','300000'].includes(parts[4]!)); values.set(parts[1]!, parts[2]!); socket.write('+OK\r\n'); }
     else {
       assert.equal(parts[0], 'GET');
       const value = values.get(parts[1]!);
@@ -70,9 +70,11 @@ test('RESP client uses only authenticated GET/SET PX, supports fragmented Unicod
   assert.equal(await store.get('hd:test:slot:0'), null);
   await store.set('hd:test:slot:0', '中文 русский\nvalue', 100);
   assert.equal(await store.get('hd:test:slot:0'), '中文 русский\nvalue');
-  assert.equal(commands.length, 6);
+  await store.set('hd:test:slot:0', 'internal', 300_000);
+  assert.equal(await store.get('hd:test:slot:0'), 'internal');
+  assert.deepEqual(commands.map(([verb])=>verb), ['AUTH','GET','AUTH','SET','AUTH','GET','AUTH','SET','AUTH','GET']);
   await assert.rejects(store.set('hd:test:slot:0', 'x'.repeat(257), 100));
-  await assert.rejects(store.set('hd:test:slot:0', 'x', 30_001));
+  await assert.rejects(store.set('hd:test:slot:0', 'x', 300_001));
   await store.close(); await assert.rejects(store.get('hd:test:slot:0'));
 });
 

@@ -1,17 +1,16 @@
 import { createHash } from 'node:crypto';
-import { PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
+import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { ACTIVE_FX_SQL } from './fx.js';
 import { canonicalJson } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
-export const PUBLIC_CATALOG_REVISION_SQL = 'SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1';
-const USD_CATALOG_REVISION_SQL = `SELECT s.epoch::text,s.revision::text,f.version::text AS fx_version,f.expires_at AS fx_expires_at
-  FROM public_catalog_state s LEFT JOIN public_fx_quote f ON ${ACTIVE_FX_SQL}
-  WHERE s.id=1`;
 export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
-type DatabaseReader = Pick<Database, 'pool'>;
+type RevisionScope = 'catalog' | 'filters';
+type CacheProtocol = 1 | 2;
+const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
+type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
   'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
 export class PublicCatalogUnavailableError extends ApiError {
@@ -20,9 +19,12 @@ export class PublicCatalogUnavailableError extends ApiError {
   }
 }
 const unavailable = (reason: CatalogUnavailableReason) => new PublicCatalogUnavailableError(reason);
-export async function readPublicCatalogRevision(db: DatabaseReader, usd = false): Promise<PublicCatalogRevision> {
+export async function readPublicCatalogRevision(db: DatabaseReader, usd = false, scope: RevisionScope = 'catalog'): Promise<PublicCatalogRevision> {
+  const revisionColumn = scope === 'filters' ? 'filter_revision' : 'revision';
   try {
-    const result = await db.pool.query<PublicCatalogRevision & {fx_version?:string|null;fx_expires_at?:Date|null}>(usd ? USD_CATALOG_REVISION_SQL : PUBLIC_CATALOG_REVISION_SQL);
+    const result = await db.pool.query<PublicCatalogRevision & {fx_version?:string|null;fx_expires_at?:Date|null}>(`SELECT s.epoch::text,s.${revisionColumn}::text AS revision
+      ${usd ? ',f.version::text AS fx_version,f.expires_at AS fx_expires_at' : ''} FROM public_catalog_state s
+      ${usd ? `LEFT JOIN public_fx_quote f ON ${ACTIVE_FX_SQL}` : ''} WHERE s.id=1`);
     const row = result.rows[0];
     if (result.rowCount !== 1 || !row || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.epoch) || !/^[1-9][0-9]{0,18}$/.test(row.revision)) throw unavailable('revision-read');
     const revision:PublicCatalogRevision = {epoch:row.epoch,revision:row.revision};
@@ -47,14 +49,22 @@ export type PublicCatalogCacheOptions = {
 export type PublicCacheMetrics = {
   localHits: number; redisHits: number; misses: number; originLoads: number; rejectedLoads: number;
   redisErrors: number; invalidEntries: number; oversizedValues: number; versionRetries: number; timeouts: number;
-  activeLoads: number; activeRevisionReads: number; queuedLoads: number; entries: number; bytes: number;
+  uncachedFilterLoads: number; activeLoads: number; activeRevisionReads: number; queuedLoads: number; entries: number; bytes: number;
 };
 type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
-type Flight = {promise:Promise<Envelope>;controller:AbortController;waiters:number};
-type Dependencies = { readRevision: (usd: boolean) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
-const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch && a.revision === b.revision &&
+type PublicSourceResult<T> = { value: T; expiresAt?: number };
+type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision };
+type LoadedEnvelope = Envelope & { snapshotOnly?: true };
+type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
+type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
+const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
+const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
+function canReturnFilterSnapshot(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision) {
+  return sameEpochAndFx(start,snapshot) && sameEpochAndFx(snapshot,current) &&
+    BigInt(start.revision) <= BigInt(snapshot.revision) && BigInt(snapshot.revision) <= BigInt(current.revision);
+}
 const bounded = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => key === 'requestId' ? undefined : item);
 const interrupted = (signal: AbortSignal) => signal.reason instanceof PublicCatalogUnavailableError ? signal.reason : unavailable('cancelled');
@@ -83,7 +93,7 @@ export class PublicCatalogCache {
   private closed = false;
   private values: PublicCacheMetrics = { localHits: 0, redisHits: 0, misses: 0, originLoads: 0, rejectedLoads: 0,
     redisErrors: 0, invalidEntries: 0, oversizedValues: 0, versionRetries: 0, timeouts: 0,
-    activeLoads: 0, activeRevisionReads: 0, queuedLoads: 0, entries: 0, bytes: 0 };
+    uncachedFilterLoads: 0, activeLoads: 0, activeRevisionReads: 0, queuedLoads: 0, entries: 0, bytes: 0 };
 
   constructor(private readonly options: PublicCatalogCacheOptions, private readonly dependencies: Dependencies) {
     this.now = dependencies.now ?? Date.now;
@@ -101,12 +111,12 @@ export class PublicCatalogCache {
   }
 
   metrics(): PublicCacheMetrics { return { ...this.values, entries: this.memory.size }; }
-  private stamp(revision: PublicCatalogRevision, usd: boolean, expiresAt = Infinity): PublicCatalogCacheStamp {
+  private stamp(revision: PublicCatalogRevision, usd: boolean, scope: RevisionScope, protocol: CacheProtocol, expiresAt = Infinity): PublicCatalogCacheStamp {
     const checkedAt = this.now();
-    const validUntil = Math.min(expiresAt, checkedAt + PUBLIC_CATALOG_CACHE_MAX_TTL_MS, revision.fx?.expiresAt ?? Infinity);
+    const validUntil = Math.min(expiresAt, checkedAt + maxLifetime(protocol), revision.fx?.expiresAt ?? Infinity);
     if (validUntil <= checkedAt) throw unavailable('expired');
     // Includes deployment read policy: toggling external visibility cannot reuse a broader DTO.
-    const version = createHash('sha256').update(canonicalJson([6, revision.epoch, revision.revision,
+    const version = createHash('sha256').update(canonicalJson([scope === 'filters' ? 7 : 6, revision.epoch, revision.revision,
       this.options.deployment ?? {environment:'test',releaseId:'unreleased'},
       !!this.options.externalCatalog, usd, usd ? revision.fx ?? null : null])).digest('hex');
     return { version, priceView: usd ? 'usd' : 'original',
@@ -114,14 +124,14 @@ export class PublicCatalogCache {
       checkedAt: new Date(checkedAt).toISOString(), validUntil: new Date(validUntil).toISOString() };
   }
   /** A live, bounded DB read; deliberately never enters L1, Redis or the single-flight map. */
-  async currentVersion(usd = false,signal?:AbortSignal) {
-    return this.withDeadline(async () => this.stamp(await this.revision(usd), usd),signal);
+  async currentVersion(usd = false,signal?:AbortSignal,scope:RevisionScope='catalog',protocol:CacheProtocol=1) {
+    return this.withDeadline(async () => this.stamp(await this.revision(usd,scope), usd, scope, protocol),signal);
   }
-  private async revision(usd: boolean) {
+  private async revision(usd: boolean, scope: RevisionScope) {
     // A slow/unavailable database cannot grow an unbounded pool wait queue through cache lookups.
     if (this.closed || this.values.activeRevisionReads >= this.maxRevisionReads) { this.values.rejectedLoads++; throw unavailable(this.closed?'closed':'revision-capacity'); }
     this.values.activeRevisionReads++;
-    try { return await this.dependencies.readRevision(usd); }
+    try { return await this.dependencies.readRevision(usd,scope); }
     catch { throw unavailable('revision-read'); }
     finally { this.values.activeRevisionReads--; }
   }
@@ -137,19 +147,19 @@ export class PublicCatalogCache {
     while (this.memory.size >= this.maxEntries || this.values.bytes + bytes > this.maxBytes) this.remove(this.memory.keys().next().value!);
     this.memory.set(key, { encoded, expiresAt, bytes }); this.values.bytes += bytes;
   }
-  private parse(encoded: string, key: string): Envelope | null {
+  private parse(encoded: string, key: string, protocol: CacheProtocol): Envelope | null {
     try {
       if (Buffer.byteLength(encoded) > this.maxValueBytes) return null;
       const value = JSON.parse(encoded) as Envelope;
       if (value?.format !== 1 || value.key !== key || !Number.isFinite(value.expiresAt) || value.expiresAt <= this.now() ||
-          value.expiresAt > this.now() + 30_000 || !Object.hasOwn(value, 'value') || json(value) !== encoded) return null;
+          value.expiresAt > this.now() + maxLifetime(protocol) || !Object.hasOwn(value, 'value') || json(value) !== encoded) return null;
       // JSON roundtrip comparison also excludes requestId in poisoned/old cache entries.
       return value;
     } catch { return null; }
   }
   private slot(key: string) { return `${this.options.namespace}:slot:${parseInt(key.slice(0, 8), 16) % this.maxEntries}`; }
-  private deadline(value: unknown): number {
-    let deadline = this.now() + this.ttlMs;
+  private deadline(value: unknown, protocol: CacheProtocol): number {
+    let deadline = this.now() + (protocol === 2 ? maxLifetime(protocol) : Math.min(this.ttlMs,maxLifetime(protocol)));
     const stack: unknown[] = [value];
     while (stack.length) {
       const item = stack.pop();
@@ -172,11 +182,11 @@ export class PublicCatalogCache {
     }
     return deadline;
   }
-  private async lookup(key: string): Promise<Envelope | null> {
+  private async lookup(key: string, protocol: CacheProtocol): Promise<Envelope | null> {
     if (this.options.enabled === false) return null;
     const local = this.memory.get(key);
     if (local) {
-      const envelope = this.parse(local.encoded, key);
+      const envelope = this.parse(local.encoded,key,protocol);
       if (envelope) {
         this.memory.delete(key); this.memory.set(key, local); this.values.localHits++; return envelope;
       }
@@ -186,23 +196,35 @@ export class PublicCatalogCache {
     try {
       const encoded = await this.dependencies.store.get(this.slot(key));
       if (encoded === null) return null;
-      const envelope = this.parse(encoded, key);
+      const envelope = this.parse(encoded,key,protocol);
       if (!envelope) { this.values.invalidEntries++; return null; }
       this.remember(key, encoded, envelope.expiresAt); this.values.redisHits++; return envelope;
     } catch { this.values.redisErrors++; return null; }
   }
-  private async load<T>(key: string, revision: PublicCatalogRevision, load: () => Promise<T>, usd: boolean, deadline: number, signal:AbortSignal): Promise<Envelope> {
+  private async load<T>(key: string, revision: PublicCatalogRevision, load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal): Promise<LoadedEnvelope> {
     await this.acquireLoad(deadline,signal);
     try {
       if(signal.aborted)throw interrupted(signal);
       if(performance.now()>=deadline)throw unavailable('deadline');
       this.values.originLoads++;
-      const value = JSON.parse(json(await load())) as T;
-      if (!sameRevision(revision, await this.revision(usd))) { this.values.versionRetries++; throw changedRevision; }
-      const expiresAt = Math.min(this.deadline(value), this.now() + PUBLIC_CATALOG_CACHE_MAX_TTL_MS, revision.fx?.expiresAt ?? Infinity);
+      const snapshot = await load(revision);
+      const value = JSON.parse(json(snapshot.value)) as T;
+      const current = await this.revision(usd,scope);
+      const moved = !sameRevision(revision,snapshot.revision) || !sameRevision(revision,current);
+      if (moved && (scope !== 'filters' || !canReturnFilterSnapshot(revision,snapshot.revision,current))) {
+        this.values.versionRetries++;
+        throw changedRevision;
+      }
+      const expiresAt = Math.min(this.deadline(value,protocol),snapshot.expiresAt ?? Infinity,snapshot.revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
-      if (expiresAt <= this.now()) throw unavailable('expired');
+      if (!(expiresAt > this.now())) throw unavailable('expired');
       const envelope = { format: 1 as const, key, expiresAt, value };
+      if (moved) {
+        // The response is exact for its own read snapshot. It cannot populate either version's cache.
+        this.values.uncachedFilterLoads++;
+        return { ...envelope, snapshotOnly: true };
+      }
       if (this.options.enabled === false) return envelope;
       const encoded = JSON.stringify(envelope);
       if (Buffer.byteLength(encoded) > this.maxValueBytes) { this.values.oversizedValues++; return envelope; }
@@ -241,7 +263,21 @@ export class PublicCatalogCache {
   async get<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal): Promise<T> {
     return (await this.getVersioned(route, normalizedInput, load, usd, signal)).value;
   }
-  async getVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal): Promise<{value:T;stamp:PublicCatalogCacheStamp}> {
+  async getVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal,protocol:CacheProtocol=1): Promise<{value:T;stamp:PublicCatalogCacheStamp}> {
+    return this.getBoundedVersioned(route,normalizedInput,async()=>({value:await load()}),usd,signal,protocol);
+  }
+  async getBoundedVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<PublicSourceResult<T>>,
+    usd = false, signal?: AbortSignal, protocol:CacheProtocol=1) {
+    const result = await this.read(route,normalizedInput,async revision=>({...await load(),revision}),usd,'catalog',protocol,signal);
+    return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
+  }
+  async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,protocol:CacheProtocol=1) {
+    const result = await this.read('filters',normalizedInput,load,usd,'filters',protocol,signal);
+    if (result.snapshotOnly && result.expiresAt <= this.now()) throw unavailable('expired');
+    return { value: result.value, stamp: result.snapshotOnly ? undefined : this.stamp(result.revision,usd,'filters',protocol,result.expiresAt) };
+  }
+  private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal) {
     const deadline=performance.now()+this.timeoutMs;
     if (this.closed) throw unavailable('closed');
     if (!['list', 'filters', 'detail', 'home'].includes(route)) throw unavailable('invalid-input');
@@ -249,18 +285,19 @@ export class PublicCatalogCache {
     if (Buffer.byteLength(input) > 16_384) throw unavailable('invalid-input');
     const work = async (requestSignal:AbortSignal) => {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const revision = await this.revision(usd);
+        const revision = await this.revision(usd,scope);
         if(requestSignal.aborted)throw interrupted(requestSignal);
-        const keyParts = [this.stamp(revision, usd).version, route, input];
+        const version = this.stamp(revision,usd,scope,protocol).version;
+        const keyParts = protocol === 2 ? [version,route,input,protocol] : [version,route,input];
         const key = createHash('sha256').update(canonicalJson(keyParts)).digest('hex');
-        const cached = await this.lookup(key);
+        const cached = await this.lookup(key,protocol);
         if(requestSignal.aborted)throw interrupted(requestSignal);
-        if (cached) return { value: cached.value as T, stamp: this.stamp(revision, usd, cached.expiresAt) };
+        if (cached) return { value: cached.value as T, revision, expiresAt: cached.expiresAt, snapshotOnly: false };
         this.values.misses++;
         let flight = this.flights.get(key);
         if (!flight) {
           const controller=new AbortController();
-          flight={promise:this.load(key, revision, load, usd, deadline,controller.signal),controller,waiters:0};
+          flight={promise:this.load(key,revision,load,usd,scope,protocol,deadline,controller.signal),controller,waiters:0};
           this.flights.set(key, flight);
           const own=flight;
           void own.promise.finally(() => { if (this.flights.get(key) === own) this.flights.delete(key); }).catch(() => {});
@@ -268,7 +305,7 @@ export class PublicCatalogCache {
         flight.waiters++;
         try {
           const envelope = await waitFor(flight.promise,requestSignal);
-          return { value: JSON.parse(json(envelope.value)) as T, stamp: this.stamp(revision, usd, envelope.expiresAt) };
+          return { value: JSON.parse(json(envelope.value)) as T, revision, expiresAt: envelope.expiresAt, snapshotOnly: !!envelope.snapshotOnly };
         }
         catch (error) { if (error !== changedRevision) throw error; }
         finally {if(--flight.waiters===0)flight.controller.abort();}
@@ -296,5 +333,5 @@ const changedRevision = Symbol('public catalog changed during load');
 
 export async function createPublicCatalogCache(db: DatabaseReader, options: PublicCatalogCacheOptions): Promise<PublicCatalogCache> {
   const store = options.redis ? await createRedisPublicCacheStore(options.redis, options.maxValueBytes ?? 1_048_576) : undefined;
-  return new PublicCatalogCache(options, { readRevision: usd => readPublicCatalogRevision(db, usd), store });
+  return new PublicCatalogCache(options, { readRevision: (usd,scope) => readPublicCatalogRevision(db, usd,scope), store });
 }
