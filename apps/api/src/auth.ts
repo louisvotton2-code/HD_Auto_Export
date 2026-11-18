@@ -26,6 +26,13 @@ export function createAuth(db: Database, config: Config) {
 }
 export type Auth = ReturnType<typeof createAuth>;
 
+export async function staffSignInCredential(db: Database, email: string) {
+  const result = await db.pool.query<{id:string;password:string}>(`SELECT s.id,a.password FROM staff s
+    JOIN staff_accounts a ON a.user_id=s.id AND a.account_id=s.id AND a.provider_id='credential'
+    WHERE s.email=$1 AND s.banned IS NOT TRUE AND a.password IS NOT NULL`,[email]);
+  return result.rows[0];
+}
+
 export function authHeaders(request:FastifyRequest) {
   const headers=fromNodeHeaders(request.headers);
   // Only Fastify's configured proxy policy determines client identity; never trust a caller's IP header.

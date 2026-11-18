@@ -6,7 +6,7 @@ import {makeVehicleDraftFixture,makePublicVehicleFixture,makeExternalCandidateFi
 import {createDatabase,type Database} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
 import {InventoryService} from '../src/vehicles/service.js';
-import {externalFacets} from '../src/external/catalog.js';
+import {countExternal,externalFacets,listExternalPage} from '../src/external/catalog.js';
 import {buildProjection,emptyOverrides} from '../src/external/normalize.js';
 import type {PoolClient} from 'pg';
 
@@ -251,6 +251,72 @@ test('cursor rejects changed filters, revision and restore epochs',async()=>{
   const next=(await inventory.listPublic(query({pagination:'cursor'}),'first')).data.nextCursor!;
   await db.pool.query('UPDATE public_catalog_state SET epoch=$1 WHERE id=1',[randomUUID()]);
   await assert.rejects(inventory.listPublic(query({cursor:next}),'restored'),(e:any)=>e.code==='VERSION_CONFLICT');
+});
+
+test('exact counts, facets and pages agree for every supported locale mask',async()=>{
+  const locales=['zh','en','ru'] as const;
+  const tx=await db.pool.connect();await tx.query('BEGIN');
+  try {
+    for(const [mask,id] of externalIds.entries()) {
+      const visible=locales.filter((_,index)=>(mask&(1<<index))!==0);
+      await tx.query(`UPDATE external_catalog SET localized=(
+        SELECT coalesce(jsonb_object_agg(key,value),'{}'::jsonb) FROM jsonb_each(localized) WHERE key=ANY($2::text[])
+      ) WHERE listing_id=$1`,[id,visible]);
+    }
+    for(const [index,locale] of locales.entries()) {
+      const expected=externalIds.filter((_,mask)=>(mask&(1<<index))!==0).sort();
+      const q=filters({locale,projection:'overview-models'});
+      assert.equal(await countExternal(tx,q),expected.length);
+      assert.equal((await externalFacets(tx,q)).find(row=>row.kind==='total')?.count,expected.length);
+      const page=await listExternalPage(tx,query({locale}),48,0,Date.now());
+      assert.deepEqual(page.anchors.map(anchor=>anchor.id).sort(),expected);
+    }
+  } finally {await tx.query('ROLLBACK');tx.release();}
+});
+
+test('USD price ordering and cursor seek preserve rounded ties, zero and missing-rate ordering',async()=>{
+  const tx=await db.pool.connect();await tx.query('BEGIN');
+  try {
+    const ids=[...externalIds].sort();
+    // Both small source values round to USD 0.00. The smaller ID has the larger raw amount.
+    const prices=['0.03','0.01','0.04','0.18','1.00','2.00',null,null];
+    for(const [index,id] of ids.entries())
+      await tx.query('UPDATE external_catalog SET price_cny=$2 WHERE listing_id=$1',[id,prices[index]]);
+    const priceQuote={version:'synthetic-sort',source:'synthetic' as const,asOf:'2026-01-01T00:00:00.000Z',
+      expiresAt:'2099-01-01T00:00:00.000Z',rates:{CNY:'7'}};
+    const q=query({sort:'price_asc',priceView:'usd',projection:'card'});
+    let after:Awaited<ReturnType<typeof listExternalPage>>['anchors'][number]|undefined;
+    const seen:string[]=[];
+    for(let index=0;index<ids.length;index++) {
+      const page=await listExternalPage(tx,q,1,0,Date.now(),after,priceQuote);
+      after=page.anchors[0]!;
+      seen.push(after.id);
+      if(index<2) assert.equal(after.sortValue,'0.00');
+    }
+    assert.deepEqual(seen,ids);
+    assert.equal((await listExternalPage(tx,q,1,0,Date.now(),after,priceQuote)).items.length,0);
+    const descending=await listExternalPage(tx,{...q,sort:'price_desc'},48,0,Date.now(),undefined,priceQuote);
+    assert.deepEqual(descending.anchors.map(anchor=>anchor.id),[ids[5],ids[4],ids[3],ids[2],ids[0],ids[1],ids[6],ids[7]]);
+    const missing=await listExternalPage(tx,q,48,0,Date.now());
+    assert.deepEqual(missing.anchors.map(anchor=>[anchor.id,anchor.sortValue]),ids.map(id=>[id,null]));
+
+    // Finite-scale division can round the first value up twice and turn these into a false tie.
+    await tx.query('UPDATE external_catalog SET price_cny=20000000000010.02 WHERE listing_id=$1',[ids[0]]);
+    await tx.query('UPDATE external_catalog SET price_cny=20000000000010.01 WHERE listing_id=$1',[ids[1]]);
+    const precise=await listExternalPage(tx,{...q,priceMin:'10000000000000.00',priceCurrency:'USD'},48,0,Date.now(),
+      undefined,{...priceQuote,rates:{CNY:'2.000000000001'}});
+    assert.deepEqual(precise.anchors.map(anchor=>[anchor.id,anchor.sortValue]),
+      [[ids[1],'10000000000000.00'],[ids[0],'10000000000000.01']]);
+  } finally {await tx.query('ROLLBACK');tx.release();}
+  const options={sort:'price_asc',priceView:'usd'};
+  const first=await inventory.listPublic(query({...options,pagination:'cursor'}),'usd-first');
+  const cursor=first.data.nextCursor!;
+  const resumed=await inventory.listPublic(query({...options,cursor}),'usd-resume');
+  assert.equal(resumed.data.page,2);
+  const previous=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
+  delete previous.usdSort;
+  const oldCursor=Buffer.from(JSON.stringify(previous)).toString('base64url');
+  await assert.rejects(inventory.listPublic(query({...options,cursor:oldCursor}),'usd-old'),(e:any)=>e.code==='VERSION_CONFLICT');
 });
 
 test('count and materialized page share one repeatable-read snapshot during a concurrent withdrawal',async()=>{

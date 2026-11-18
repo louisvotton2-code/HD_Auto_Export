@@ -28,8 +28,9 @@ test('full sync HTTP controls require an admin and preserve versioned idempotent
    const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password}});assert.equal(login.statusCode,200,login.body);cookies[role]=login.cookies.map(c=>`${c.name}=${c.value}`).join('; ');}
   const statusUrl='/api/v1/admin/external/sync-status',controlUrl='/api/v1/admin/external/sync-control';
   assert.equal((await app.inject({url:statusUrl})).statusCode,401);
+  assert.equal((await app.inject({url:statusUrl,headers:{origin,cookie:cookies.editor}})).statusCode,403);
   await runtime.db.pool.query('UPDATE external_full_sync SET enabled=true,paused=false WHERE id=1');
-  const current=await app.inject({url:statusUrl,headers:{origin,cookie:cookies.editor}});assert.equal(current.statusCode,200,current.body);assert.equal(current.headers['cache-control'],'no-store');
+  const current=await app.inject({url:statusUrl,headers:{origin,cookie:cookies.admin}});assert.equal(current.statusCode,200,current.body);assert.equal(current.headers['cache-control'],'no-store');
   const status=ExternalFullSyncStatusResponseSchema.parse(current.json()).data;
   const request={method:'POST' as const,url:controlUrl,headers:{origin,cookie:cookies.admin,'idempotency-key':randomUUID()},payload:{version:status.version,action:'pause'}};
   assert.equal((await app.inject({...request,headers:{...request.headers,cookie:cookies.editor}})).statusCode,403);

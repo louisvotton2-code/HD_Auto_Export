@@ -136,9 +136,18 @@ export const PublicInspectionInlineSchema=z.strictObject({
   normalItemCount:z.number().int().nonnegative(),hasMoreConclusions:z.boolean(),hasMoreDefects:z.boolean(),
 });
 export const PublicConfigurationInlineItemSchema=z.strictObject({id:z.string().min(1).max(450),semanticKey:z.string().regex(/^[a-z][A-Za-z0-9]{0,79}$/).nullable(),name:DisplayTextSchema,value:DisplayTextSchema});
+export const PublicEnglishVehicleTitleSchema = PublicTextSchema.extend({
+  requestedLocale: z.literal('en'),
+  contentLocale: PublicTextSchema.shape.contentLocale.regex(/^en(?:-|$)/i),
+});
+export type PublicEnglishVehicleTitle = z.infer<typeof PublicEnglishVehicleTitleSchema>;
 export const PublicVehicleInlineSchema=PublicVehicleSchema.safeExtend({projection:z.literal('detail-inline-v1'),
   inspectionSummary:PublicInspectionSummarySchema,inspectionInline:PublicInspectionInlineSchema,
-  configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200),technicalDetails:VehicleTechnicalDetailsSchema.optional()});
+  configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200),technicalDetails:VehicleTechnicalDetailsSchema.optional(),
+  englishTitle:PublicEnglishVehicleTitleSchema.optional()}).superRefine((value, ctx) => {
+    if (value.source.kind !== 'manual' && value.englishTitle?.reviewed)
+      ctx.addIssue({ code: 'custom', path: ['englishTitle', 'reviewed'], message: 'Demo and external text cannot claim human review' });
+  });
 export type PublicVehicleInline=z.infer<typeof PublicVehicleInlineSchema>;
 export const PublicVehicleInlineResponseSchema=responseSchema(PublicVehicleInlineSchema).extend({meta:PublicCatalogResponseMetaSchema});
 export type PublicVehicleInlineResponse=z.infer<typeof PublicVehicleInlineResponseSchema>;
@@ -188,10 +197,11 @@ export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.def
 });
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({
-  projection:z.literal('detail-inline-v1').optional(),technicalView:z.literal('verified').optional(),
+  projection:z.literal('detail-inline-v1').optional(),technicalView:z.literal('verified').optional(),titleView:z.literal('english').optional(),
 }).superRefine((value,ctx)=>{
   if(value.projection && value.view!=='localized')ctx.addIssue({code:'custom',path:['view'],message:'Inline detail requires localized view'});
   if(value.technicalView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'Verified technical view requires inline detail'});
+  if(value.titleView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'English title view requires inline detail'});
 });
 export type PublicVehicleDetailQuery=z.infer<typeof PublicVehicleDetailQuerySchema>;
 

@@ -11,8 +11,10 @@ import * as adm from '@hd/contracts/admin';
 import { readConfig, type Config } from './config.js';
 import { classifyCapacityFailure, createDatabase, type PublicFailureDiagnostic } from './db/index.js';
 import { LoginAccountLimiter } from './login-account-limiter.js';
-import { createAuth, authHeaders, requireStaff, requireTrustedOrigin } from './auth.js';
+import { createAuth, authHeaders, requireStaff, requireTrustedOrigin, staffSignInCredential } from './auth.js';
 import { InventoryService, type Actor } from './vehicles/service.js';
+import { staffUploadStats } from './vehicles/upload-attribution.js';
+import { StaffManagement } from './staff-management.js';
 import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
 import { VehicleEvidence } from './vehicles/evidence.js';
@@ -29,6 +31,10 @@ import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCac
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
+const staffPath='/api/v1/admin/staff';
+const StaffIdParams=z.strictObject({id:adm.StaffRecordSchema.shape.id});
+const signInResultSchema=z.object({token:z.string().min(1),user:z.object({id:z.string().min(1)})});
+const externalAdminReadPaths=new Set(['/api/v1/admin/external/provider-status','/api/v1/admin/external/sync-status']);
 const versionHeader=z.object({'if-match':z.string().regex(/^\d+$/)});
 const idemHeader=z.object({'idempotency-key':adm.IdempotencyKeySchema});
 // Full drafts include two source fields, six translations and bounded private/media metadata.
@@ -81,6 +87,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   }); }
   catch (error) { await db.close(); throw error; }
   const auth=createAuth(db,config);
+  const staffManagement=new StaffManagement(db,auth);
   const loginAccounts=new LoginAccountLimiter(config.authSecret);
   const mediaStore=new LocalMediaStore(config.mediaRoot);
   const inventory=new InventoryService(db,config.externalCatalog,mediaStore);
@@ -144,6 +151,9 @@ export async function buildApp(config:Config=readConfig(), options:{
       const member=await requireStaff(request,auth,db);
       staff.set(request,member);
       requireTrustedOrigin(request,config);
+      if ((route===staffPath || route.startsWith(`${staffPath}/`)) && !member.permissions.includes('staff:manage')) {
+        throw new ApiError(403,'FORBIDDEN','Staff management permission is required.');
+      }
       if((external || route.endsWith('/activity')) && !member.permissions.includes('vehicles:read')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle read permission is required.');
       }
@@ -152,7 +162,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       if((changesExternalListing || route===configurationImportPath || route===configurationImportPreviewPath) && !member.permissions.includes('vehicles:write')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle write permission is required.');
       }
-      if(external && member.role!=='admin' && (route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath,'/api/v1/admin/external/sync-control'].includes(route))) {
+      if(external && member.role!=='admin' && (externalAdminReadPaths.has(route) || route.endsWith('/raw') || request.method==='POST' && [externalBatchPath,externalTrialPath,'/api/v1/admin/external/sync-control'].includes(route))) {
         throw new ApiError(403,'FORBIDDEN','Administrator role is required for this external catalog operation.');
       }
     }
@@ -262,19 +272,35 @@ export async function buildApp(config:Config=readConfig(), options:{
     const allowed=(request.method==='POST'&&['/api/auth/sign-in/email','/api/auth/sign-out'].includes(path??'')) || (request.method==='GET'&&path==='/api/auth/get-session');
     if(!allowed) return reply.code(404).send({code:'NOT_FOUND',message:'Authentication route is not exposed.'});
     if(request.method==='POST' && !config.trustedOrigins.includes(request.headers.origin??'')) return reply.code(403).send({code:'INVALID_ORIGIN',message:'Trusted Origin is required.'});
-    if(request.method==='POST'&&path==='/api/auth/sign-in/email') {
-      const retryAfter=loginAccounts.retryAfter((request.body as {email?:unknown}|null)?.email);
+    const signingIn=request.method==='POST'&&path==='/api/auth/sign-in/email';
+    const emailInput=(request.body as {email?:unknown}|null)?.email;
+    if(signingIn) {
+      const retryAfter=loginAccounts.retryAfter(emailInput);
       if(retryAfter!==null) {
         reply.header('Retry-After',String(retryAfter));
         throw new ApiError(429,'RATE_LIMITED','Request rate exceeded.',undefined,true);
       }
     }
+    const login=signingIn?adm.StaffLoginSchema.safeParse(emailInput):undefined;
+    const email=login?.success?adm.staffLoginEmail(login.data):undefined;
+    const credential=email?await staffSignInCredential(db,email):undefined;
     const headers=authHeaders(request);
     const result=await auth.handler(new Request(`${config.authBaseUrl}${request.url}`,{method:request.method,headers,
       ...(request.method==='POST'?{body:JSON.stringify(request.body??{})}:{})}));
+    const body=await result.text();
+    if (signingIn&&result.ok) {
+      const session=signInResultSchema.parse(JSON.parse(body));
+      const current=email?await staffSignInCredential(db,email):undefined;
+      // A concurrent reset may finish between password verification and session creation.
+      // Remove only this request's new token before any cookie is sent.
+      if (!current||credential?.id!==session.user.id||current.id!==session.user.id||credential.password!==current.password) {
+        await db.pool.query('DELETE FROM staff_sessions WHERE token=$1 AND user_id=$2',[session.token,session.user.id]);
+        throw new ApiError(401,'UNAUTHENTICATED','Staff login is required.');
+      }
+    }
     for(const [key,value] of result.headers) if(key!=='set-cookie'&&key!=='cache-control') reply.header(key,value);
     const cookies=result.headers.getSetCookie();if(cookies.length) reply.header('set-cookie',cookies);
-    return reply.code(result.status).send(await result.text());
+    return reply.code(result.status).send(body);
   }});
 
   for (const prefix of ['/api/v1',SSR_CATALOG_PREFIX]) {
@@ -301,7 +327,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([detail,inline]),...errorResponses}})},
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
-      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView);
+      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView);
       if(p.id.startsWith('ext-')) {
         try{await serving.optionalEffect(()=>markFullSyncAccess(db,listingUuid(p.id)));}catch{request.log.debug('Full-sync access hint unavailable');}
       }
@@ -359,7 +385,22 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
   registerExternalRoutes(app,db,actor,config.providerAccountKey);
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
-  app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>response(await inventory.listAdmin(request.query as z.infer<typeof adm.AdminVehicleQuerySchema>),request));
+  app.get('/api/v1/admin/me/upload-stats',{schema:adminSchema('staffUploadStats',{response:{200:adm.StaffUploadStatsResponseSchema,...errorResponses}})},
+    async request=>response(await staffUploadStats(db.pool,staff.get(request)!.id),request));
+  app.get(staffPath,{schema:adminSchema('listStaff',{response:{200:adm.StaffDirectoryResponseSchema,...errorResponses}})},
+    async request=>response(await staffManagement.list(),request));
+  app.post(staffPath,{bodyLimit:4096,schema:adminSchema('createStaff',{body:adm.StaffCreateRequestSchema,response:{201:adm.StaffRecordResponseSchema,...errorResponses}})},
+    async(request,reply)=>reply.code(201).send(response(await staffManagement.create(request.body as adm.StaffCreateRequest),request)));
+  app.post(`${staffPath}/:id/password`,{bodyLimit:2048,schema:adminSchema('resetStaffPassword',{params:StaffIdParams,body:adm.StaffPasswordResetRequestSchema,response:{200:adm.StaffMutationResponseSchema,...errorResponses}})},
+    async request=>response(await staffManagement.resetPassword((request.params as {id:string}).id,(request.body as {password:string}).password),request));
+  app.delete(`${staffPath}/:id`,{schema:adminSchema('revokeStaff',{params:StaffIdParams,response:{200:adm.StaffMutationResponseSchema,...errorResponses}})},
+    async request=>response(await staffManagement.revoke((request.params as {id:string}).id),request));
+  app.get('/api/v1/admin/vehicles',{schema:adminSchema('adminListVehicles',{querystring:adm.AdminVehicleQuerySchema,response:{200:adm.AdminVehicleListSchema,...errorResponses}})},async request=>{
+    const query=request.query as adm.AdminVehicleQuery;
+    const member=staff.get(request)!;
+    if(query.uploader&&!member.permissions.includes('staff:manage')) throw new ApiError(403,'FORBIDDEN','Staff management permission is required.');
+    return response(await inventory.listAdmin(query,member.id),request);
+  });
   app.get('/api/v1/admin/vehicle-filters',{schema:adminSchema('adminVehicleFilters',{querystring:adm.AdminVehicleFiltersQuerySchema,response:{200:adm.AdminVehicleFiltersResponseSchema,...errorResponses}})},async request=>response(await inventory.adminFilters(request.query as adm.AdminVehicleFiltersQuery),request));
   app.post('/api/v1/admin/vehicles/bulk',{schema:adminSchema('bulkVehicleMutation',{body:adm.BulkVehicleMutationRequestSchema,headers:idemHeader,response:{200:adm.BulkVehicleMutationResponseSchema,...errorResponses}})},async request=>response(await inventory.bulk(request.body as adm.BulkVehicleMutationRequest,actor(request),request.headers['idempotency-key'] as string),request));
   app.post('/api/v1/admin/vehicles',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('createVehicle',{body:adm.CreateVehicleRequestSchema,headers:idemHeader,response:{201:adm.AdminVehicleResponseSchema,...errorResponses}})},async(request,reply)=>{

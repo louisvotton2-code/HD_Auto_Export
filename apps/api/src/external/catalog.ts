@@ -12,16 +12,21 @@ import type { ReportSourceRow } from './report-evidence.js';
 import { projectSourceReport } from './reports.js';
 import { applyInspectionEnrichment } from './inspection-enrichment.js';
 import {emptyInspectionSummary} from './sources/inspection-projection.js';
-import { catalogOrder, catalogSeek, numericSort, usdSortAmount, type CatalogAnchor } from './cursor.js';
+import { catalogOrder, catalogSeek, exactUsdSortValue, numericSort, type CatalogAnchor } from './cursor.js';
+import { englishCatalogTitle, explicitEnglishDetailTitle } from '../vehicles/english-detail-title.js';
 export type { CatalogAnchor } from './cursor.js';
 
 export const publicListingId = (id: string) => `ext-${id}`;
 export const listingUuid = (id: string) => id.slice(4);
 export const publicMediaId = (id: string) => `ximg-${id}`;
 type Queryable = Pick<Database['pool'] | PoolClient, 'query'>;
+const catalogNameKeys = ['make', 'model', 'trim'] as const;
+type CatalogName = typeof catalogNameKeys[number];
+type CatalogNames = Partial<Pick<VehicleDisplay, CatalogName>>;
 type CatalogRow = {
   configuration_total?:number; overridden_names?:string[];
-  extras?: Pick<PublicVehicleCard, 'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'> & {powerHp?:number|null;names?:Partial<Pick<VehicleDisplay,'make'|'model'|'trim'>>};
+  extras?: Pick<PublicVehicleCard, 'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'> & {powerHp?:number|null;names?:CatalogNames};
+  english?: { title: unknown; display: CatalogNames; names: CatalogNames | null } | null;
   listing_id: string; inquiry_number: string; platform_id?: string;
   facts: ExternalProjection['facts']; price_cny: string | null; issues: ExternalIssue[];
   localized: ExternalProjection['localized'][Locale]; details?: ExternalProjection['details'];
@@ -94,12 +99,13 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
 
 function catalogDisplay(row: CatalogRow, locale: Locale): VehicleDisplay {
   const display = publicExternalDisplay(row.localized.display, locale);
-  for(const key of ['make','model','trim'] as const) {
-    const extra=row.extras?.names?.[key];
-    // Current employee edits and disputed/missing identities retain precedence over source names.
-    if(row.facts[key] && extra?.status==='ready' && display[key].provenance!=='human' && !row.overridden_names?.includes(key))display[key]=extra;
-  }
+  for (const key of catalogNameKeys) display[key] = catalogName(row, key, display[key], row.extras?.names?.[key]) ?? display[key];
   return display;
+}
+function catalogName(row: CatalogRow, key: CatalogName, localized: CatalogNames[CatalogName], extra: CatalogNames[CatalogName]) {
+  // Current employee edits and disputed/missing identities retain precedence over source names.
+  return row.facts[key] && extra?.status === 'ready' && localized?.provenance !== 'human' && !row.overridden_names?.includes(key)
+    ? extra : localized;
 }
 // Stored evidence still carries the supplier reference for internal use.
 function publicExtras(row: CatalogRow) {
@@ -285,21 +291,45 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
   return rows.map(row => toPublic({...row,configuration_total:configurationTotals.get(row.listing_id)}, images.get(row.listing_id) ?? [], locale, time,priceView,quote));
 }
 
-export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null) {
+export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null,titleView?:'english') {
+  const needsOtherLocale = titleView !== undefined && locale !== 'en';
+  // Point lookups bind English to the same listing/version and eligibility as a standalone English detail.
+  const englishColumns = needsOtherLocale ? `,CASE WHEN en.listing_id IS NOT NULL THEN jsonb_build_object(
+    'title',c.localized#>'{en,title}','display',jsonb_build_object('make',c.localized#>'{en,display,make}',
+    'model',c.localized#>'{en,display,model}','trim',c.localized#>'{en,display,trim}'),'names',xe.data->'names') END AS english` : '';
+  const englishJoins = needsOtherLocale ? `LEFT JOIN external_catalog_search en ON en.listing_id=c.listing_id AND en.locale='en'
+    LEFT JOIN external_vehicle_extras xe ON xe.listing_id=en.listing_id AND xe.locale='en'` : '';
   const result = await tx.query<CatalogRow>(`SELECT ${columns},jsonb_set(c.details,'{inspection}','null'::jsonb) AS details,l.provider,l.platform_id,l.external_id,l.source_revision::text,l.source_hash,
     CASE WHEN l.source_data IS NULL THEN NULL ELSE jsonb_build_object('platformId',l.source_data->'platformId','externalId',l.source_data->'externalId','disputes',coalesce(l.source_data->'disputes','[]'::jsonb),'inspection',jsonb_build_object('hasReport',l.source_data->'inspection'->'hasReport','reportUrl',l.source_data->'inspection'->'reportUrl')) END AS source_data,l.upstream_state,
     i.binding AS inspection_binding,jsonb_set(i.content,'{inspection}','null'::jsonb) AS inspection_content,ev.status AS inspection_status,ev.overview->'summary' AS inspection_summary
-    ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
+    ${englishColumns} ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
     LEFT JOIN external_vehicle_evidence_sets ev ON ev.listing_id=l.id AND ev.locale=$1 AND ev.kind='inspection'
-    ${visible} AND c.listing_id=$2`, [locale, id]);
-  return ((await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle | undefined) ?? null;
+    ${englishJoins} ${visible} AND c.listing_id=$2`, [locale, id]);
+  const row = result.rows[0];
+  if (!row) return null;
+  const vehicle = (await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle;
+  if (!titleView) return vehicle;
+  const english = needsOtherLocale ? row.english : { title: vehicle.content.title, display: vehicle.display, names: null };
+  if (!english) return vehicle;
+  const explicit = explicitEnglishDetailTitle(english.title);
+  if (explicit) return { ...vehicle, englishTitle: explicit };
+  const display: CatalogNames = {};
+  for (const key of catalogNameKeys) {
+    if (!row.facts[key]) continue;
+    const name = catalogName(row, key, english.display?.[key], english.names?.[key]);
+    if (name) display[key] = name;
+  }
+  const englishTitle = englishCatalogTitle(display, row.facts.modelYear);
+  return englishTitle ? { ...vehicle, englishTitle } : vehicle;
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
 const filterFrom = (query: CatalogMatchQuery) => 'FROM external_catalog_filter f' +
   (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
-const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND (f.locale_mask & CASE $1::text WHEN 'zh' THEN 1 WHEN 'en' THEN 2 WHEN 'ru' THEN 4 ELSE 0 END)<>0`;
+const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(
+  (CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
+    WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[])`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 
 export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null): Promise<number> {
@@ -307,13 +337,23 @@ export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quot
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
   return result.rows[0]!.total;
 }
+function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
+  const rate = quote?.rates.CNY;
+  const range = usdSourceRange('CNY',quote);
+  if (!rate || !range) return 'NULL::numeric';
+  const last = values.push(range.minimum,range.maximum,rate);
+  // The inverse price range is exact in source cents. Convert only supported CNY prices.
+  return `CASE WHEN f.price_cny BETWEEN $${last-2}::numeric AND $${last-1}::numeric
+    THEN ${exactUsdSortValue('f.price_cny',`$${last}::numeric`)} END`;
+}
+
 export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null) {
   const { where, values } = matches(query,quote);
   const sort=query.sort??'newest',numeric=numericSort(sort);
   let column=sort==='mileage_asc'?'f.mileage_km':sort==='year_desc'?'f.model_year':'f.price_cny';
-  if(sort.startsWith('price_')&&query.priceView==='usd')column=usdSortAmount(column,"'CNY'",quote,values);
-  const sortSelect=numeric?`,(${column}) AS sort_value`:'';
-  const selection=`SELECT f.listing_id,f.published_at${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
+  if(sort.startsWith('price_')&&query.priceView==='usd')column=externalUsdSort(quote,values);
+  const sortSelect=numeric?`,(${column}) AS sort_value`:',f.published_at';
+  const selection=`SELECT f.listing_id${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
   const order=numeric?`ORDER BY ${catalogOrder(column,'f.listing_id',sort)}`:filterOrdered;
   let picked:string;
   if(after && !numeric) {
@@ -339,15 +379,21 @@ export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery,
   return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote,query.projection==='card'),
     anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}))};
 }
-const externalFacetValues = {
-  make: "('make',a.make_id,NULL::text,NULL::text)",
-  model: "('model',a.model_id,a.make_id,NULL::text)",
-  trim: "('trim',a.trim_id,a.make_id,a.model_id)",
-  generation: "('generation',a.generation_id,a.make_id,a.model_id)",
-  powertrain: "('powertrain',nullif(a.powertrain,'unknown'),NULL::text,NULL::text)",
-  drivetrain: "('drivetrain',a.drivetrain,NULL::text,NULL::text)",
-  year: "('year',a.model_year::text,NULL::text,NULL::text)",
-};
+const externalFacetGroups = {
+  make: ['make_id'], model: ['model_id','make_id'], trim: ['trim_id','make_id','model_id'],
+  generation: ['generation_id','make_id','model_id'], powertrain: ['powertrain'],
+  drivetrain: ['drivetrain'], year: ['model_year'], currency: ['price_available'],
+} as const;
+function externalFacetGroup(kind: keyof typeof externalFacetGroups, currency:'CNY'|'USD') {
+  const columns = externalFacetGroups[kind];
+  const [id, make, model] = columns;
+  const label = ['make','model','trim','generation'].includes(kind) ? 'min(label_order COLLATE "C")' : 'NULL::text';
+  const valid = kind==='currency' ? 'price_available'
+    : columns.map(column=>`${column} IS NOT NULL`).concat(kind==='powertrain'?["powertrain<>'unknown'"]:[]).join(' AND ');
+  return `SELECT '${kind}' AS kind,${kind==='currency'?`'${currency}'`:id+'::text'} AS id,
+    ${make??'NULL::text'} AS make_id,${model??'NULL::text'} AS model_id,sum(row_count)::int AS count,${label} AS label_order
+    FROM atoms WHERE ${valid} GROUP BY ${columns.join(',')}`;
+}
 const fullFacetDimensions = ['make_id','model_id','trim_id','generation_id','powertrain','drivetrain','model_year','price_available'];
 const projectedFacetDimensions = {
   overview: ['make_id','powertrain','drivetrain','model_year'],
@@ -375,11 +421,10 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   const inputColumns=overview?[...new Set([...dimensions,'model_id','trim_id','generation_id'])]:dimensions;
   const matchedDimensions=inputColumns.map(column=>column==='price_available'?`${priceAvailable} AS price_available`:`f.${column}`);
   const groupBy=dimensions.join(',');
-  const facets=kinds.map(kind=>kind==='currency'?
-    `('currency',CASE WHEN a.price_available THEN '${currency}'::text END,NULL::text,NULL::text)`:externalFacetValues[kind]);
+  const facets=kinds.map(kind=>externalFacetGroup(kind,currency));
   // First coalesce identical complete facet tuples. Counts and minimum winner
-  // keys are distributive, so expanding these atoms preserves exact per-facet
-  // counts. Overview keeps only overview dimensions in the grouping; variant
+  // keys are distributive, so grouping these atoms by each dimension preserves
+  // exact counts. Overview keeps only overview dimensions in the grouping; variant
   // IDs contribute to availability without producing per-variant dictionaries.
   const result=await tx.query<CatalogFacetRow>(`WITH matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
@@ -389,14 +434,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count
     FROM matched GROUP BY ${groupBy}
   )${includeTotal?`, summary AS (SELECT coalesce(sum(row_count),0)::int AS total${overview?',bool_or(has_trims) AS has_trims,bool_or(has_generations) AS has_generations':''} FROM atoms)`:''}, facets AS (
-    SELECT d.kind,d.id,d.make_id,d.model_id,sum(a.row_count)::int AS count,
-      min(a.label_order COLLATE "C") FILTER (WHERE d.kind IN ('make','model','trim','generation')) AS label_order
-    FROM atoms a CROSS JOIN LATERAL (VALUES
-      ${facets.join(',\n      ')}
-    ) d(kind,id,make_id,model_id)
-    WHERE d.id IS NOT NULL AND (d.kind NOT IN ('model','trim','generation') OR d.make_id IS NOT NULL)
-      AND (d.kind NOT IN ('trim','generation') OR d.model_id IS NOT NULL)
-    GROUP BY d.kind,d.id,d.make_id,d.model_id
+    ${facets.join('\n    UNION ALL ')}
     ${includeTotal?"UNION ALL SELECT 'total',NULL,NULL,NULL,total,NULL FROM summary":''}
     ${overview?facetOverviewRows:''}
   ) SELECT g.kind,g.id,
