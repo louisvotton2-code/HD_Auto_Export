@@ -33,6 +33,8 @@ async function setup(t:TestContext,trustProxy='false') {
     const statement=typeof sql==='string' ? sql.replace(/\s+/g,' ') : sql;
     if(statement==='SELECT s.epoch::text,s.revision::text AS revision FROM public_catalog_state s WHERE s.id=1')
       return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'}],rowCount:1};
+    if(typeof statement==='string'&&statement.startsWith('SELECT s.id,a.password FROM staff s'))
+      return {rows:[],rowCount:0};
     assert.equal(sql,'SELECT id,name,role,banned FROM staff WHERE id=$1');
     return {rows:[{id:'auth-rate-test-staff',name:'Test admin',role:'admin',banned:false}],rowCount:1};
   });

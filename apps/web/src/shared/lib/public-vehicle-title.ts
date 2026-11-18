@@ -1,15 +1,15 @@
-import type { PublicVehicle } from '@hd/contracts/public';
+import type { PublicVehicleInline } from '@hd/contracts/public';
 import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import { hasPrivateVehicleSource } from './public-vehicle-reference';
 import type { Locale } from '@/i18n/routing';
 
-export function publicDetailTitleRevision(vehicle: Pick<PublicVehicle, 'id' | 'publishedAt' | 'sourceUpdatedAt' | 'fetchedAt'>) {
-  return JSON.stringify([vehicle.id, vehicle.publishedAt, vehicle.sourceUpdatedAt, vehicle.fetchedAt]);
-}
-
-export function publicEnglishDetailTitle(vehicle: PublicVehicleSummary) {
-  const title = publicVehicleTitle(vehicle, 'en');
-  return title.lang?.toLowerCase().split('-')[0] === 'en' ? title : undefined;
+export function publicDetailTitle(vehicle: PublicVehicleInline, locale: Locale) {
+  const title = vehicle.englishTitle;
+  const text = title?.text.trim();
+  if (title && text && text !== '—' && !hasPrivateVehicleSource(text)) {
+    return { text, lang: title.contentLocale };
+  }
+  return publicVehicleTitle(vehicle, locale);
 }
 
 const hasChineseText = /\p{Script=Han}/u;

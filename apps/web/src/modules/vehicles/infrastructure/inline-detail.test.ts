@@ -68,14 +68,17 @@ describe('explicit inline detail HTTP projection', () => {
     const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope(data)));
     vi.stubGlobal('fetch', fetcher);
 
-    expect(publicInlineVehicleView(staff.id)).not.toHaveProperty('technicalView');
-    expect(publicInlineVehicleView(id)).toEqual({ view: 'localized', priceView: 'usd', projection: 'detail-inline-v1', technicalView: 'verified' });
+    expect(publicInlineVehicleView(staff.id, 'en')).not.toHaveProperty('technicalView');
+    expect(publicInlineVehicleView(id, 'ru')).toEqual({
+      view: 'localized', priceView: 'usd', projection: 'detail-inline-v1', technicalView: 'verified', titleView: 'english',
+    });
     const response = await proxyPublicRequest(new Request(
-      `https://website.test/api/v1/vehicles/${id}?locale=ru&view=localized&projection=detail-inline-v1&technicalView=verified`,
+      `https://website.test/api/v1/vehicles/${id}?locale=ru&view=localized&projection=detail-inline-v1&technicalView=verified&titleView=english`,
     ), ['vehicles', id]);
     expect(response.status).toBe(200);
     expect((await response.json()).data.technicalDetails).toEqual(data.technicalDetails);
     expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('technicalView')).toBe('verified');
+    expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('titleView')).toBe('english');
   });
 
   it('keeps a request without projection on the strict old localized response', async () => {

@@ -26,10 +26,18 @@ export * from './catalog.js';
 export const StaffLoginSchema = z.string().trim().toLowerCase().pipe(
   z.union([z.email(), z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/)]),
 );
+const staffLoginDomain = '@staff.hd-auto.invalid';
 
 export function staffLoginEmail(input: string): string {
   const login = StaffLoginSchema.parse(input);
-  return login.includes('@') ? login : `${login}@staff.hd-auto.invalid`;
+  return login.includes('@') ? login : `${login}${staffLoginDomain}`;
+}
+
+export function staffLoginFromEmail(email: string): string {
+  const normalized = StaffLoginSchema.parse(email);
+  if (!normalized.endsWith(staffLoginDomain)) return normalized;
+  const short = normalized.slice(0,-staffLoginDomain.length);
+  return StaffLoginSchema.safeParse(short).success ? short : normalized;
 }
 
 export const LocalizedTextSchema = z.strictObject({
@@ -129,8 +137,11 @@ export const AdminVehicleSchema = z.strictObject({
 export type AdminVehicle = z.infer<typeof AdminVehicleSchema>;
 export const AdminVehicleResponseSchema = responseSchema(AdminVehicleSchema);
 export type AdminVehicleResponse = z.infer<typeof AdminVehicleResponseSchema>;
+export const AdminVehicleListItemSchema = AdminVehicleSchema.extend({
+  uploaderLogin: StaffLoginSchema.nullable().optional(),
+});
 export const AdminVehicleListSchema = responseSchema(z.strictObject({
-  items: z.array(AdminVehicleSchema).max(48), page: z.number().int().positive(),
+  items: z.array(AdminVehicleListItemSchema).max(48), page: z.number().int().positive(),
   pageSize: z.number().int().min(1).max(48), total: z.number().int().nonnegative(), hasMore: z.boolean(),
 }));
 export type AdminVehicleList = z.infer<typeof AdminVehicleListSchema>;
@@ -141,6 +152,11 @@ export const AdminVehicleQuerySchema = z.strictObject({
   q: SearchTextSchema.optional(),
   make: IdSchema.optional(), model: IdSchema.optional(), powertrain: PowertrainSchema.optional(),
   deleted: z.enum(['exclude', 'only']).default('exclude'),
+  mine: z.enum(['true','false']).optional(),
+  uploader: IdSchema.optional(),
+  includeUploader: z.enum(['true','false']).optional(),
+}).superRefine((value,ctx)=>{
+  if(value.mine==='true'&&value.uploader) ctx.addIssue({code:'custom',path:['uploader'],message:'Select either your own uploads or an employee'});
 });
 export type AdminVehicleQuery = z.infer<typeof AdminVehicleQuerySchema>;
 export const AdminVehicleDetailQuerySchema = z.strictObject({ includeDeleted: z.enum(['false', 'true']).default('false') });
@@ -362,3 +378,22 @@ export const StaffMeSchema = z.strictObject({ id: IdSchema, name: z.string().min
 export const StaffMeResponseSchema = responseSchema(StaffMeSchema);
 export type StaffMe = z.infer<typeof StaffMeSchema>;
 export type StaffMeResponse = z.infer<typeof StaffMeResponseSchema>;
+
+export const StaffPasswordSchema = z.string().min(12).max(128);
+export const StaffCreateRequestSchema = z.strictObject({
+  login: StaffLoginSchema, name: z.string().trim().min(1).max(200), password: StaffPasswordSchema,
+});
+export type StaffCreateRequest = z.infer<typeof StaffCreateRequestSchema>;
+export const StaffPasswordResetRequestSchema = z.strictObject({ password: StaffPasswordSchema });
+export const StaffUploadCountsSchema = z.strictObject({
+  today: z.number().int().nonnegative(), total: z.number().int().nonnegative(),
+});
+export const StaffUploadStatsResponseSchema = responseSchema(StaffUploadCountsSchema.extend({staffId:IdSchema}));
+export const StaffRecordSchema = z.strictObject({
+  id: IdSchema, login: StaffLoginSchema, name: z.string().min(1).max(200), role: StaffRoleSchema,
+  disabled: z.boolean(), createdAt: TimestampSchema, updatedAt: TimestampSchema, uploads: StaffUploadCountsSchema,
+});
+export type StaffRecord = z.infer<typeof StaffRecordSchema>;
+export const StaffRecordResponseSchema = responseSchema(StaffRecordSchema);
+export const StaffDirectoryResponseSchema = responseSchema(z.strictObject({items:z.array(StaffRecordSchema)}));
+export const StaffMutationResponseSchema = responseSchema(z.strictObject({id:IdSchema}));

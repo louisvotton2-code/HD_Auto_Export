@@ -26,6 +26,7 @@ export function HomeHero({
     if (!node || !('IntersectionObserver' in window)) return;
 
     const preference = matchMedia('(prefers-reduced-motion: reduce)');
+    const touchPointer = matchMedia('(pointer: coarse)');
     let visible = false;
     let frame = 0;
     let lastFrame = 0;
@@ -36,6 +37,10 @@ export function HomeHero({
     let touchY: number | null = null;
     let touchDirection = 0;
     let releaseTimer: number | undefined;
+
+    const paintProgress = () => {
+      node.style.setProperty('--drive-progress', displayed.toFixed(3));
+    };
 
     const cancel = () => {
       if (frame) cancelAnimationFrame(frame);
@@ -51,7 +56,7 @@ export function HomeHero({
       lastFrame = time;
       displayed += (target - displayed) * (1 - Math.exp(-elapsed / 42));
       if (Math.abs(target - displayed) < .002) displayed = target;
-      node.style.setProperty('--drive-progress', displayed.toFixed(3));
+      paintProgress();
       if (displayed !== target) frame = requestAnimationFrame(update);
       else lastFrame = 0;
     }
@@ -64,6 +69,13 @@ export function HomeHero({
       if (touchDirection < 0) next = Math.min(next, target, displayed);
       // Ignore subpixel bounce around a settled scroll position while keeping both ends exact.
       if (next === 0 || next === 1 || Math.abs(next - target) * distance >= 1.5) target = next;
+      const lag = target - displayed;
+      // Touch updates can arrive several frames apart. Show the sweep while the image
+      // is still in view, then ease the rest of the way to the current scroll position.
+      if ((touchDirection || touchPointer.matches) && Math.abs(lag) * distance >= 48) {
+        displayed += lag * .72;
+        paintProgress();
+      }
       if (!frame && displayed !== target) frame = requestAnimationFrame(update);
     }
 
@@ -120,7 +132,7 @@ export function HomeHero({
     }
 
     measure();
-    node.style.setProperty('--drive-progress', displayed.toFixed(3));
+    paintProgress();
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.target === node) {
@@ -169,7 +181,7 @@ export function HomeHero({
             alt=""
             fill
             preload
-            sizes="(max-width: 760px) 100vw, 69vw"
+            sizes="(max-width: 760px) 100vw, min(69vw, 980px)"
             className={styles.roadImage}
           />
           <div className={styles.roadLight} data-testid="hero-road-light" />

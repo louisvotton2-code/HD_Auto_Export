@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useBlocker, useOutletContext, useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Card, Dropdown, Empty, Image, Input, Modal, Pagination, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Checkbox, Dropdown, Empty, Image, Input, Modal, Pagination, Select, Space, Table, Tag, Typography } from 'antd';
 import { CarOutlined, CheckCircleOutlined, FileTextOutlined, MoreOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { AdminVehicleListSchema, AvailabilitySchema, PublicationStateSchema, PowertrainSchema, type AdminVehicle, type AdminVehicleList, type StaffMe } from '@hd/contracts/admin';
+import { AdminVehicleListSchema, AvailabilitySchema, IdSchema, PublicationStateSchema, PowertrainSchema, type AdminVehicle, type AdminVehicleList, type StaffMe } from '@hd/contracts/admin';
 import { ActivityHistory, ActivitySummary, ActivityTimestamp, type ActivityTarget } from '../activity';
 import { request } from '../../shared/api/client';
 import { useVehicleDictionary } from '../../shared/api/vehicle-dictionary';
@@ -38,6 +38,9 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
   }, [bulkBusy]);
   useEffect(() => () => { window.dispatchEvent(new CustomEvent('admin:dirty', { detail: false })); }, []);
   const q = params.get('q') ?? '';
+  const mine = !deleted && params.get('mine') === 'true';
+  const requestedUploader = IdSchema.safeParse(params.get('uploader'));
+  const uploader = !deleted && !mine && staff.permissions.includes('staff:manage') && requestedUploader.success ? requestedUploader.data : '';
   const make = params.get('make') ?? '';
   const model = make ? params.get('model') ?? '' : '';
   const rawPowertrain = PowertrainSchema.safeParse(params.get('powertrain'));
@@ -54,27 +57,32 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
   const inventory = inventoryValue.success ? inventoryValue.data : '';
   useEffect(() => {
     const controller = new AbortController();
-    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize), deleted: deleted ? 'only' : 'exclude' });
-    for (const [key, value] of Object.entries({ publicationState: publication, availability: inventory, q, make, model, powertrain })) if (value) query.set(key, value);
+    const query = new URLSearchParams({
+      page: String(page), pageSize: String(pageSize), deleted: deleted ? 'only' : 'exclude', includeUploader: 'true',
+    });
+    for (const [key, value] of Object.entries({ publicationState: publication, availability: inventory, q, make, model, powertrain,
+      mine: mine ? 'true' : '', uploader })) if (value) query.set(key, value);
     setLoading(true); setError('');
     request(`/api/v1/admin/vehicles?${query}`, AdminVehicleListSchema, { signal: controller.signal })
       .then(response => { if (!controller.signal.aborted) setResult(response.data); })
       .catch(failure => { if (!controller.signal.aborted) { setResult(null); setError(failure instanceof Error ? failure.message : '车辆读取失败'); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [page, pageSize, publication, inventory, q, make, model, powertrain, refresh, deleted]);
+  }, [page, pageSize, publication, inventory, q, make, model, powertrain, refresh, deleted, mine, uploader]);
   function update(name: string, value: string) {
     const next = new URLSearchParams(params);
     if (value) next.set(name, value); else next.delete(name);
     if (name !== 'page') next.delete('page');
     if (name === 'make') next.delete('model');
+    if (name === 'mine') next.delete('uploader');
+    if (name === 'mine' || name === 'uploader') setSelected([]);
     setParams(next);
   }
   function changePage(nextPage: number, nextSize: number) {
     const next = new URLSearchParams(params); next.set('page', String(nextSize !== pageSize ? 1 : nextPage)); next.set('pageSize', String(nextSize)); setParams(next);
   }
   const pageItems = result?.items ?? [];
-  const isFiltered = Boolean(q || make || model || powertrain || publication || inventory);
+  const isFiltered = Boolean(q || make || model || powertrain || publication || inventory || mine || uploader);
   const publicationColor = { draft: 'default', published: 'green', archived: 'default' };
   const inventoryColor = { available: 'green', reserved: 'blue', sold: 'red', unknown: 'default' };
   function finishedLifecycle(record: AdminVehicle) {
@@ -111,19 +119,24 @@ export function VehiclesPage({ deleted = false }: { deleted?: boolean }) {
         <div><label className="filter-label" htmlFor="model-filter">车型</label><Select id="model-filter" aria-label="车型筛选" placeholder={make ? '全部车型' : '先选择品牌'} value={model || undefined} showSearch optionFilterProp="label" allowClear onChange={value => update('model', value ?? '')} disabled={bulkBusy || !make || dictionary.loading} options={dictionary.data?.models.filter(item => item.makeId === make).map(item => ({ value: item.id, label: item.name }))} /></div>
         <div><label className="filter-label" htmlFor="powertrain-filter">动力</label><Select id="powertrain-filter" aria-label="动力分类" value={powertrain || undefined} placeholder="全部动力" allowClear onChange={value => update('powertrain', value ?? '')} disabled={bulkBusy} options={Object.entries(powertrainLabels).map(([value, label]) => ({ value, label }))} /></div>
       </div>
-      <div className="toolbar-bottom"><Space wrap><Select aria-label="发布状态" style={{ width: 140 }} value={publication || undefined} placeholder="全部发布状态" allowClear onChange={value => update('publicationState', value ?? '')} disabled={bulkBusy} options={Object.entries(publicationLabels).map(([value, label]) => ({ value, label }))} /><Select aria-label="库存状态" style={{ width: 140 }} value={inventory || undefined} placeholder="全部库存状态" allowClear onChange={value => update('availability', value ?? '')} disabled={bulkBusy} options={Object.entries(availabilityLabels).map(([value, label]) => ({ value, label }))} /></Space><Button type="link" disabled={bulkBusy} onClick={() => { setSearchText(''); setParams({}); }}>清空筛选</Button></div>
+      <div className="toolbar-bottom"><Space wrap><Select aria-label="发布状态" style={{ width: 140 }} value={publication || undefined} placeholder="全部发布状态" allowClear onChange={value => update('publicationState', value ?? '')} disabled={bulkBusy} options={Object.entries(publicationLabels).map(([value, label]) => ({ value, label }))} /><Select aria-label="库存状态" style={{ width: 140 }} value={inventory || undefined} placeholder="全部库存状态" allowClear onChange={value => update('availability', value ?? '')} disabled={bulkBusy} options={Object.entries(availabilityLabels).map(([value, label]) => ({ value, label }))} /></Space><Button type="link" disabled={bulkBusy} onClick={() => { setSearchText(''); if (mine || uploader) setSelected([]); setParams({}); }}>清空筛选</Button></div>
+      {!deleted && <Space wrap className={styles.uploaderFilters}>
+        <Checkbox checked={mine} disabled={bulkBusy} onChange={event => update('mine', event.target.checked ? 'true' : '')}>我上传的车辆</Checkbox>
+        {uploader && <Button size="small" onClick={() => update('uploader', '')} disabled={bulkBusy}>取消员工筛选</Button>}
+      </Space>}
       {dictionary.error && <Alert type="warning" title="品牌车型选项暂时不可用" description={dictionary.error} action={<Button size="small" onClick={dictionary.reload}>重试字典</Button>} style={{ marginTop: 16 }} />}
     </Card>
     <Card className="workspace-card list-card">
       <div className="list-topline"><Space><Typography.Text strong>车辆档案</Typography.Text><Tag>{result?.total ?? 0} 辆</Tag></Space><Typography.Text type="secondary" style={{ fontSize: 11 }}>库存与发布分别管理 · 已选版本受保护</Typography.Text></div>
       {canWrite && !deleted && <BulkVehicleActions selected={selected} onSelectionChange={setSelected} onRefresh={() => { setRefresh(value => value + 1); dictionary.reload(); }} onBusyChange={setBulkBusy} />}
-      {error ? <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(value => value + 1)}>重新读取</Button>} style={{ margin: 20 }} /> : <div className="table-region"><Table<AdminVehicle> rowKey="id" size="middle" loading={loading} dataSource={pageItems} pagination={false} scroll={{ x: 850 }} locale={{ emptyText: <Empty description={isFiltered ? '当前条件下暂无车辆' : '暂无车辆，从新建一份档案开始'} /> }}
+      {error ? <Alert type="error" showIcon title={error} action={<Button onClick={() => setRefresh(value => value + 1)}>重新读取</Button>} style={{ margin: 20 }} /> : <div className="table-region"><Table<(typeof pageItems)[number]> rowKey="id" size="middle" loading={loading} dataSource={pageItems} pagination={false} scroll={{ x: 850 }} locale={{ emptyText: <Empty description={isFiltered ? '当前条件下暂无车辆' : '暂无车辆，从新建一份档案开始'} /> }}
         rowSelection={canWrite && !deleted ? { selectedRowKeys: selected.map(row => row.id), preserveSelectedRowKeys: true, getCheckboxProps: row => ({ disabled: bulkBusy || (selected.length >= 50 && !selected.some(item => item.id === row.id)), 'aria-label': `选择车辆 ${row.stockCode}` }), onChange: (keys, rows) => { if (keys.length > 50) { void message.warning('一次最多选择50辆'); return; } const known = new Map([...rows.filter(Boolean), ...selected].map(row => [row.id, row])); setSelected(keys.flatMap(key => known.has(String(key)) ? [known.get(String(key))!] : [])); } } : undefined}
         columns={[
           { title: '车辆信息', key: 'vehicle', width: 260, render: (_, row) => { const media = row.draft.media.find(item => item.isCover) ?? row.draft.media[0]; const name = [row.draft.facts.make?.name, row.draft.facts.model?.name].filter(Boolean).join(' ') || row.draft.content.title.sourceText || '待补充车辆'; return <div className="vehicle-cell">{media && !deleted ? <Image width={84} height={60} src={`/api/v1/admin/media/${encodeURIComponent(media.id)}/preview`} alt={media.alt || name} style={{ objectFit: 'cover', borderRadius: 8 }} /> : <span className="vehicle-thumb-placeholder"><CarOutlined /></span>}<div>{canWrite ? <Link className="vehicle-name" to={`/vehicles/${row.id}`}>{name}</Link> : <span className="vehicle-name">{name}</span>}<div className="vehicle-stock">{row.stockCode}</div><div className="vehicle-spec">{row.draft.facts.modelYear ? `${row.draft.facts.modelYear}款 · ` : ''}{powertrainLabels[row.draft.facts.powertrain]}</div>{row.draft.source.kind === 'external' && <Tag color="blue" style={{ marginTop: 5 }}>外部挂牌 · 库存未知</Tag>}{row.draft.source.kind === 'demo' && <Tag className="demo-tag" color="gold" style={{ marginTop: 5 }}>展示样例，非实际库存</Tag>}</div></div>; } },
           { title: '展示价格', width: 125, render: (_, row) => <div className="vehicle-price">{row.draft.price.kind === 'on_request' ? '待询价' : row.draft.price.money?.amount == null ? `报价待填写${row.draft.price.money ? ` · ${row.draft.price.money.currency}` : ''}` : `${row.draft.price.money.amount} ${row.draft.price.money.currency}`} <small>{row.draft.price.kind === 'reference' ? '参考价格' : row.draft.price.kind === 'asking' ? '公开报价' : '暂无公开报价'}</small></div> },
           { title: '库存 / 发布', width: 120, render: (_, row) => deleted ? <Tag>已删除</Tag> : <Space direction="vertical" size={5}><Tag className={styles.statusTag} color={row.draft.source.kind === 'demo' ? 'gold' : inventoryColor[row.availability]}>{row.draft.source.kind === 'demo' ? '非实际库存' : row.draft.source.kind === 'external' ? '外部挂牌 · 库存未知' : availabilityLabels[row.availability]}</Tag><Tag color={publicationColor[row.publicationState]}>{publicationLabels[row.publicationState]}</Tag></Space> },
           { title: deleted ? '删除 / 追溯' : '时间 / 追溯', key: 'activity', width: 145, render: (_, row) => <div className={styles.times}>
+            <div className={styles.timeMeta}>上传账号：{row.uploaderLogin ?? '未记录'}</div>
             <ActivitySummary activity={row.activity} external={row.draft.source.kind === 'external'} compact />
             <div className={styles.timeMeta}>{deleted ? '删除' : '资料更新'}：{(deleted ? row.deletedAt : row.updatedAt) ? <ActivityTimestamp at={(deleted ? row.deletedAt : row.updatedAt)!} compact /> : '尚未记录'}</div>
             <div className={styles.timeMeta}>库存核验：{row.draft.source.kind !== 'manual' ? '不适用' : row.availabilityCheckedAt ? <ActivityTimestamp at={row.availabilityCheckedAt} compact /> : '尚未记录'}</div>

@@ -10,8 +10,12 @@ import { moneyCents } from '@/shared/lib/public-vehicle-price';
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
 const publicInlineDetailView = { ...publicUsdView, projection: 'detail-inline-v1' } as const;
 
-export function publicInlineVehicleView(id: string) {
-  return id.startsWith('ext-') ? { ...publicInlineDetailView, technicalView: 'verified' as const } : publicInlineDetailView;
+export function publicInlineVehicleView(id: string, locale: Locale) {
+  return {
+    ...publicInlineDetailView,
+    ...(id.startsWith('ext-') ? { technicalView: 'verified' as const } : {}),
+    ...(locale !== 'en' ? { titleView: 'english' as const } : {}),
+  };
 }
 
 export type UsdFilterScope = Pick<PublicVehicleQuery, 'q' | 'priceMin' | 'priceMax' | 'priceCurrency'>;

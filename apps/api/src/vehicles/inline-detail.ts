@@ -1,6 +1,6 @@
 import type {PoolClient} from 'pg';
 import {CONFIGURATION_SEMANTIC_ALIASES,SUPPLIER_TECHNICAL_CONFIGURATION_KEYS,type ConfigurationSemanticKey,type VehicleDetailMatchKey,type VehicleTechnicalDetails} from '@hd/contracts/public';
-import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,PublicInspectionConclusionSchema,type PublicVehicle,type Locale} from '@hd/contracts/public';
+import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,PublicInspectionConclusionSchema,type PublicVehicle,type PublicVehicleInline,type Locale} from '@hd/contracts/public';
 import {emptyInspectionSummary} from '../external/sources/inspection-projection.js';
 import {sourceDisplay} from '../external/sources/display.js';
 import {configurationTechnicalKey} from './configuration-technical-facts.js';
@@ -22,7 +22,7 @@ export function configurationSemanticKey(id:string,label:string|null):Configurat
 }
 
 /** Called inside the same visibility-checked REPEATABLE READ transaction as the ordinary detail. No stored DTO changes. */
-export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle,locale:Locale,technicalView?:'verified'){
+export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle & Pick<PublicVehicleInline,'englishTitle'>,locale:Locale,technicalView?:'verified'){
  const inspectionSummary=vehicle.inspectionSummary??emptyInspectionSummary(vehicle.report?.hasReport?'unavailable':'unknown');
  let conclusions:unknown[]=[],defects:unknown[]=[],normalItemCount=0;
  let items:Array<{id:string;name:ReturnType<typeof sourceDisplay>;value:ReturnType<typeof sourceDisplay>}>=vehicle.configuration?.items??[];

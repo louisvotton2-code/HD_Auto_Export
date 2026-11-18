@@ -30,7 +30,7 @@
 
 .value {
   display: inline-block;
-  color: #f1d8be;
+  color: #deab7b;
   font-size: clamp(1.54rem, 3.25vw, 3.25rem);
   font-weight: 630;
   line-height: 1;
@@ -40,7 +40,6 @@
 }
 
 .suffix {
-  color: #deab7b;
   font-size: .6em;
   letter-spacing: -.02em;
 }

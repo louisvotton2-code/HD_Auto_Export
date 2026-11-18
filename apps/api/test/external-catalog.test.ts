@@ -65,7 +65,7 @@ async function adminListings(params: Record<string, string> = {}) {
 }
 
 async function providerStatus() {
-  const response = await call({ url: `${base}/provider-status`, headers: { cookie: editorCookie } });
+  const response = await call({ url: `${base}/provider-status`, headers: { cookie: adminCookie } });
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(response.headers['cache-control'], 'no-store');
   return admin.ExternalProviderStatusResponseSchema.parse(response.json()).data;
@@ -631,6 +631,9 @@ test('manual copy survives eligible source refresh until staff remove it, with s
 });
 
 test('provider status separates ChinaCarAPI import receipts, fetched times and supplier times from synthetic data', async () => {
+  const forbidden = await call({ url: `${base}/provider-status`, headers: { cookie: editorCookie } });
+  assert.equal(forbidden.statusCode, 403);
+  assert.equal(remoteFetch.mock.callCount(), 0);
   const empty = await providerStatus();
   assert.deepEqual(empty, { provider: 'chinacarapi', worker: 'not_configured', lastBatch: null, lastImportAt: null,
     lastFetchedAt: null, lastSupplierUpdatedAt: null, account: { state: 'not_configured', checkedAt: null,
@@ -671,9 +674,8 @@ test('provider status separates ChinaCarAPI import receipts, fetched times and s
   assert.equal(status.lastSupplierUpdatedAt, '2026-11-09T08:00:00.000Z');
   assert.deepEqual(status.account, empty.account);
   assert.equal(status.worker, 'not_configured');
-  const asAdmin = await call({ url: `${base}/provider-status`, headers: { cookie: adminCookie } });
-  assert.equal(asAdmin.statusCode, 200, asAdmin.body);
-  assert.deepEqual(admin.ExternalProviderStatusResponseSchema.parse(asAdmin.json()).data, status);
+  await adminListings();
+  assert.equal((await call({ url: `${base}/batches`, headers: { cookie: editorCookie } })).statusCode, 200);
   assert.equal(remoteFetch.mock.callCount(), 0);
 });
 

@@ -312,6 +312,7 @@ export function VehicleEditorPage() {
       setSuccess(publicContentCurrent ? '草稿已保存，对外内容已是最新，无需重复发布。' : '草稿已保存，尚未发布这些修改。');
       void message.success(publicContentCurrent ? '资料已保存，公开内容无需重复发布。' : '草稿已保存。可继续导入三语资料和补充图片。');
       if (!id) {
+        window.dispatchEvent(new Event('admin:vehicle-created'));
         inFlight.current = false;
         navigate(`/vehicles/${encodeURIComponent(response.data.id)}`, { replace: true, state: { afterCreate: afterSave } });
       } else if (afterSave) openTab(afterSave);

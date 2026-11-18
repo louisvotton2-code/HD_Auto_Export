@@ -11,7 +11,7 @@ import { countries } from '@/modules/calculator/config/countries';
 import { getPublicVehicleById, PublicApiError } from '@/modules/vehicles/server';
 import { localizedAlternates, siteConfig } from '@/shared/config/site';
 import { hasPrivateVehicleSource } from '@/shared/lib/public-vehicle-reference';
-import { publicDetailTitleRevision, publicEnglishDetailTitle, publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
+import { publicDetailTitle } from '@/shared/lib/public-vehicle-title';
 import { ScopedMessagesProvider } from '@/i18n/scoped-messages-provider';
 import { getVehicleCalculatorMessages } from '@/i18n/client-messages';
 import { getClearanceDate } from '@/modules/calculator/application/current-date';
@@ -24,8 +24,6 @@ async function load(params: Props['params']) {
   const { locale, slug } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   await connection();
-  const englishRequest = locale === 'en' ? null
-    : getPublicVehicleById(slug, 'en').catch(() => null);
   let vehicle;
   try {
     vehicle = await getPublicVehicleById(slug, locale);
@@ -35,21 +33,15 @@ async function load(params: Props['params']) {
         locale,
         slug,
         vehicle: null,
-        detailTitle: undefined,
         retryAfter: error.status === 429 ? Number(error.retryAfter ?? 60) : 0,
       };
     throw error;
   }
   if (!vehicle) notFound();
-  let detailTitle = publicVehicleTitle(vehicle, locale);
-  const english = await englishRequest;
-  if (english && publicDetailTitleRevision(english) === publicDetailTitleRevision(vehicle)) {
-    detailTitle = publicEnglishDetailTitle(english) ?? detailTitle;
-  }
-  return { locale, slug, vehicle, detailTitle, retryAfter: 0 };
+  return { locale, slug, vehicle, retryAfter: 0 };
 }
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { locale, vehicle, detailTitle } = await load(params);
+  const { locale, vehicle } = await load(params);
   if (!vehicle)
     return {
       title: publicVehicleMessages(locale).unavailable,
@@ -62,14 +54,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     vehicle.availability === 'available';
   const description = vehicle.content.description?.text;
   return {
-    title: detailTitle.text,
+    title: publicDetailTitle(vehicle, locale).text,
     description: description && !hasPrivateVehicleSource(description) ? description.slice(0, 300) : undefined,
     robots: { index, follow: index },
     alternates: { canonical: vehicle.detailPath, languages: localizedAlternates(path) },
   };
 }
 export default async function CarPage({ params }: Props) {
-  const { locale, slug, vehicle, detailTitle, retryAfter } = await load(params);
+  const { locale, slug, vehicle, retryAfter } = await load(params);
   setRequestLocale(locale);
   // Resolve primary SSR content before returning; it must not require a client-side reveal.
   const t = await getTranslations({ locale, namespace: 'Countries' });
@@ -81,7 +73,6 @@ export default async function CarPage({ params }: Props) {
         key={`${locale}:${slug}`}
         locale={locale}
         vehicle={vehicle}
-        detailTitle={detailTitle}
         id={slug}
         initialRetryAfter={retryAfter}
         initialDate={getClearanceDate(new Date())}

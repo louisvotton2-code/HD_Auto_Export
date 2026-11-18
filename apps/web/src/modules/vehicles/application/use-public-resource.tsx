@@ -46,10 +46,12 @@ export function usePublicResource<T>(
     navigationPath,
     initialRetryAfter = 0,
     cooldown,
+    loadOnMount = false,
   }: {
     navigationPath?: string;
     initialRetryAfter?: number;
     cooldown?: { current: number };
+    loadOnMount?: boolean;
   } = {},
 ) {
   const navigation = useSyncExternalStore(
@@ -63,7 +65,7 @@ export function usePublicResource<T>(
     phase: PublicFreshness;
     missing: boolean;
     navigation: number;
-  }>({ url, data: initial, phase: initial ? 'fresh' : 'error', missing: false, navigation: 0 });
+  }>({ url: loadOnMount && !initial ? null : url, data: initial, phase: initial ? 'fresh' : 'error', missing: false, navigation: 0 });
   const [loadingUrl, setLoadingUrl] = useState<string | null>(null);
   const active = useRef({ url, schema, navigationPath });
   active.current = { url, schema, navigationPath };
@@ -75,6 +77,7 @@ export function usePublicResource<T>(
   }>({ id: 0 });
   const initialRef = useRef(initial);
   const initialRateRef = useRef(initialRetryAfter);
+  const initialLoadRef = useRef(loadOnMount);
   const localRetryAt = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const retryAt = cooldown ?? localRetryAt;
   const [retryTick, setRetryAfter] = useState(initialRetryAfter);
@@ -197,9 +200,10 @@ export function usePublicResource<T>(
     if (url !== null && state.url !== url) void load();
   }, [url, load, state.url]);
   useEffect(() => {
-    if (initial !== initialRef.current || initialRetryAfter !== initialRateRef.current) {
+    if (initial !== initialRef.current || initialRetryAfter !== initialRateRef.current || loadOnMount !== initialLoadRef.current) {
       initialRef.current = initial;
       initialRateRef.current = initialRetryAfter;
+      initialLoadRef.current = loadOnMount;
       request.current.controller?.abort();
       request.current.id++;
       setLoadingUrl(null);
@@ -210,14 +214,14 @@ export function usePublicResource<T>(
         Math.max(initialRetryAfter, Math.max(0, Math.ceil((retryAt.current - Date.now()) / 1000))),
       );
       setState({
-        url,
+        url: loadOnMount && !initial ? null : url,
         data: initial,
         phase: initial ? 'fresh' : 'error',
         missing: false,
         navigation: navigationPath ? publicNavigationVersion(navigationPath) : 0,
       });
     }
-  }, [initial, url, initialRetryAfter]);
+  }, [initial, url, initialRetryAfter, loadOnMount]);
   useEffect(
     () =>
       subscribePublicNavigation((signal) => {

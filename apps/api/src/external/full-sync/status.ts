@@ -12,7 +12,13 @@ async function statusInTransaction(tx:PoolClient){
    count(*) FILTER(WHERE state='withdrawn')::integer AS withdrawn,count(*) FILTER(WHERE state<>'withdrawn' AND applied_generation<desired_generation)::integer AS pending_details,
    coalesce(sum(CASE WHEN state<>'withdrawn' THEN 3-cardinality(locales) ELSE 0 END),0)::integer AS pending_locales FROM external_full_members`)).rows[0]!;
   const work=(await tx.query(`SELECT count(*) FILTER(WHERE attempts>=5)::integer AS failed,count(*) FILTER(WHERE kind='report')::integer AS reports FROM external_full_work`)).rows[0]!;
-  const visible=(await tx.query(`SELECT count(DISTINCT c.listing_id)::integer AS n FROM external_catalog c JOIN external_catalog_filter f ON f.listing_id=c.listing_id JOIN external_listings l ON l.id=c.listing_id LEFT JOIN external_listing_overrides o ON o.listing_id=l.id WHERE l.upstream_state='active' AND l.formal_primary AND NOT coalesce((o.data->>'hidden')::boolean,false) AND f.active AND f.locale_mask>0`)).rows[0]!.n;
+  // A nonzero locale mask comes from a live catalogue projection. Each joined
+  // table has one row per listing, so count the narrow filter rows directly.
+  const visible=(await tx.query(`SELECT count(*)::integer AS n FROM external_catalog_filter f
+   JOIN external_listings l ON l.id=f.listing_id
+   LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
+   WHERE f.active AND f.locale_mask<>0 AND l.upstream_state='active' AND l.formal_primary
+     AND NOT coalesce((o.data->>'hidden')::boolean,false)`)).rows[0]!.n;
   const pending=counts.pending_details>0||counts.pending_locales>0||work.reports>0||work.failed>0||Number(state.received_events)!==Number(state.applied_events);
   return {version:state.version,mode:state.mode,state:!state.enabled?'disabled':state.paused||state.disk_paused||state.capacity_pending?'paused':state.last_error_code?'error':snap&&!['complete','failed'].includes(snap.state)?'snapshot':pending?'syncing':state.mode==='full'&&snap?.state==='complete'&&Number(state.received_events)===Number(state.applied_events)?'complete':'idle',
    asOf:iso(state.as_of)!,lastSuccessAt:iso(state.last_success_at),lastError:state.last_error_code?{code:state.last_error_code,message:'Synchronization requires attention.',at:iso(state.last_error_at)!}:null,

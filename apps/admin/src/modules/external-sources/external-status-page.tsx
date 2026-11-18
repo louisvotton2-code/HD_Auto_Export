@@ -1,11 +1,12 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
 import { ExternalProviderStatusResponseSchema, type ExternalProviderAccount } from '@hd/contracts/admin';
+import { usePrivateResource } from '../../shared/api/use-private-resource';
 import { formatTime } from '../vehicles/draft-form';
 import { externalRoot, platformName } from './external-labels';
 import { FullSyncStatusCard } from './full-sync-status-card';
 import { ResourceContent } from './resource-content';
-import { useExternalResource } from './use-external-resource';
 import styles from './external-sources.module.css';
 
 const accountLabels: Record<ExternalProviderAccount['state'], string> = {
@@ -19,7 +20,9 @@ const accountLabels: Record<ExternalProviderAccount['state'], string> = {
 };
 
 export function ExternalStatusPage() {
-  const resource = useExternalResource(`${externalRoot}/provider-status`, ExternalProviderStatusResponseSchema);
+  const [revision, setRevision] = useState(0);
+  const resource = usePrivateResource(`${externalRoot}/provider-status`, ExternalProviderStatusResponseSchema, revision);
+  const reload = () => { setRevision(value => value + 1); resource.resume(); };
   const status = resource.data?.data;
   const account = status?.account;
 
@@ -27,15 +30,15 @@ export function ExternalStatusPage() {
     <header className={styles.heading}>
       <Typography.Title level={2}>三方 API 状态</Typography.Title>
       <Space wrap>
-        <Button onClick={resource.reload} loading={resource.loading}>刷新账户状态</Button>
+        <Button onClick={reload} loading={resource.loading}>刷新账户状态</Button>
         <Link to="/external-sources/batches">历史导入批次</Link>
       </Space>
     </header>
     <FullSyncStatusCard />
-    <ResourceContent {...resource} retry={resource.reload}>
+    <ResourceContent {...resource} failureTitle="供应商账户状态读取失败" retry={reload}>
       {status && account && <>
         <Card title="ChinaCarAPI">
-          {account.state === 'not_configured' && <Alert showIcon type="info" title="本机尚未配置账户探测"
+          {account.state === 'not_configured' && <Alert showIcon type="info" title="尚未配置账户探测"
             description="配置 ChinaCarAPI 账户凭据后，这里可显示套餐、到期时间、覆盖平台及供应商提供的额度。" />}
           <Descriptions column={{ xs: 1, md: 2 }} items={[
             { key: 'connection', label: '账户连接', children: <Tag color={account.state === 'ok' ? 'success' : undefined}>{accountLabels[account.state]}</Tag> },

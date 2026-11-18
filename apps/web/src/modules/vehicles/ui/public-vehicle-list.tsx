@@ -1,6 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import {
+  Component, createRef, useEffect, useMemo, useRef, useState,
+  type MouseEvent, type ReactNode, type RefObject,
+} from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import {
   PublicVehicleFiltersSchema,
@@ -19,13 +22,51 @@ import {
 } from '../public-query';
 import { catalogFacetOverviewSchema, catalogFacetUrl, type CatalogFacetOverview } from '../catalog-facets';
 import { localizedCardListSchema } from '../localized-projection';
-import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
+import { PublicFreshnessBoundary, usePublicResource, type PublicFreshness } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
 import { PublicVehicleFiltersForm } from './public-vehicle-filters';
 import { PublicResourceStatus } from './public-resource-status';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { CatalogPagination } from './catalog-pagination';
 import styles from './public-vehicles.module.css';
+
+type CatalogSidebarProps = {
+  results: RefObject<HTMLElement | null>;
+  filterPhase: PublicFreshness;
+  brandPhase: PublicFreshness | undefined;
+  modelPhase: PublicFreshness | undefined;
+  preserveScroll: boolean;
+  children: ReactNode;
+};
+
+class CatalogSidebar extends Component<CatalogSidebarProps, object, number | null> {
+  private sidebar = createRef<HTMLElement>();
+
+  getSnapshotBeforeUpdate(previous: CatalogSidebarProps) {
+    const { preserveScroll, filterPhase, brandPhase, modelPhase, results } = this.props;
+    if (!preserveScroll || (previous.filterPhase === filterPhase &&
+        previous.brandPhase === brandPhase && previous.modelPhase === modelPhase)) return null;
+    const sidebar = this.sidebar.current;
+    const position = results.current?.getBoundingClientRect();
+    if (!sidebar || !position || sidebar.contains(document.activeElement) ||
+        position.top >= window.innerHeight || position.bottom <= 0 ||
+        sidebar.getBoundingClientRect().bottom > position.top) return null;
+    // On stacked layouts the filters can grow above the cards while they are being read.
+    return position.top;
+  }
+
+  componentDidUpdate(_previous: CatalogSidebarProps, _state: object, previousTop: number | null) {
+    if (previousTop === null) return;
+    const position = this.props.results.current?.getBoundingClientRect();
+    if (!position) return;
+    const delta = position.top - previousTop;
+    if (Math.abs(delta) >= 1) window.scrollBy({ top: delta, behavior: 'instant' });
+  }
+
+  render() {
+    return <aside ref={this.sidebar} className={styles.sidebar}>{this.props.children}</aside>;
+  }
+}
 
 export function PublicVehicleList({
   locale,
@@ -35,6 +76,7 @@ export function PublicVehicleList({
   initialModelFilters,
   query: initialQuery,
   initialRetryAfter = 0,
+  deferFilters = false,
 }: {
   locale: Locale;
   result: CatalogResult | null;
@@ -44,11 +86,13 @@ export function PublicVehicleList({
   query: PublicVehicleQuery;
   error?: boolean;
   initialRetryAfter?: number;
+  deferFilters?: boolean;
 }) {
   const t = publicVehicleMessages(locale),
     search = useSearchParams();
   const pathname = usePathname();
   const locationKey = `${pathname}${search.size ? `?${search.toString()}` : ''}`;
+  const results = useRef<HTMLElement>(null);
   // Next commits native history updates in a transition. Keep click feedback urgent while it does.
   const [navigationFrom, setNavigationFrom] = useState<string | null>(null);
   useEffect(() => {
@@ -79,14 +123,15 @@ export function PublicVehicleList({
   const filterUrl = catalogFacetUrl(locale, selected, {
     selectedModel: selected.make ? undefined : selected.model,
   });
-  const facets = usePublicResource(filterUrl, filters, catalogFacetOverviewSchema, { cooldown });
+  const facetOptions = { cooldown, loadOnMount: deferFilters };
+  const facets = usePublicResource(filterUrl, filters, catalogFacetOverviewSchema, facetOptions);
   const brand = usePublicResource(
     make ? catalogFacetUrl(locale, selected, { make }) : null,
-    initialBrandFilters, PublicVehicleFiltersSchema, { cooldown },
+    initialBrandFilters, PublicVehicleFiltersSchema, facetOptions,
   );
   const modelOptions = usePublicResource(
     make && model ? catalogFacetUrl(locale, selected, { make, model }) : null,
-    initialModelFilters, PublicVehicleFiltersSchema, { cooldown },
+    initialModelFilters, PublicVehicleFiltersSchema, facetOptions,
   );
   const facetOverview = facets.dataCurrent ? facets.data : null;
   const brandFilters = brand.dataCurrent ? brand.data?.data : null;
@@ -131,9 +176,7 @@ export function PublicVehicleList({
     ) {
       event.preventDefault();
       navigate(event.currentTarget.href);
-      document
-        .getElementById('catalog-results')
-        ?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      results.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
     }
   }
   return (
@@ -142,11 +185,18 @@ export function PublicVehicleList({
         <div className={styles.shell}>
           <h1 className={styles.srOnly}>{t.title}</h1>
           <div className={styles.catalogLayout}>
-            <aside className={styles.sidebar}>
+            <CatalogSidebar
+              results={results}
+              filterPhase={facets.phase}
+              brandPhase={brandPhase}
+              modelPhase={modelPhase}
+              preserveScroll={deferFilters}
+            >
               <PublicVehicleFiltersForm
                 key={appliedKey}
                 locale={locale}
                 filters={facetOverview?.data ?? null}
+                filtersPending={facets.phase === 'checking'}
                 brandModels={make ? brandFilters?.models ?? [] : facetOverview?.data.models ?? []}
                 brandPending={brandPhase === 'checking'}
                 modelFilters={modelFilters}
@@ -165,10 +215,11 @@ export function PublicVehicleList({
                 navigate={navigate}
                 onRetry={reloadCatalog}
               />
-            </aside>
+            </CatalogSidebar>
             <section
               className={styles.results}
               id="catalog-results"
+              ref={results}
               aria-busy={phase === 'checking'}
             >
               <div className={styles.catalogStatus}>

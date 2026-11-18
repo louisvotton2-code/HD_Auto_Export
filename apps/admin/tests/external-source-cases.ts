@@ -23,8 +23,7 @@ const providerStatus: ExternalProviderStatus = {
 
 
 async function setup(page: Page, role: 'admin' | 'editor' = 'editor') {
-  await installApi(page);
-  await page.route('**/api/v1/admin/me', route => reply(route, envelope({ ...staff, role })));
+  await installApi(page, { role, permissions: role === 'admin' ? [...staff.permissions, 'staff:manage'] : staff.permissions });
   await page.route(`**${root}/provider-status`, route => reply(route, envelope(providerStatus)));
   await page.route(`**${root}/sync-status`, route => reply(route, envelope(syncStatus({ state: 'disabled', lastSuccessAt: null }))));
   await page.route(`**${root}/ingestion-status`, route => reply(route, envelope({ mode: 'fixed_once', continuous: false, latestJob: null })));
@@ -73,7 +72,7 @@ test('external provider status keeps account probe, local import and supplier ti
   await expect(page.getByText('未配置', { exact: true })).toHaveCount(1);
   await expect(page.getByText('尚未记录', { exact: true })).toHaveCount(2);
   await expect(page.getByText('Fixture Starter', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('本机尚未配置账户探测', { exact: true })).toBeVisible();
+  await expect(page.getByText('尚未配置账户探测', { exact: true })).toBeVisible();
   await expect(page.getByText('套餐到期', { exact: true })).toHaveCount(0);
   expect(reads).toBe(2);
 });
@@ -245,10 +244,10 @@ test('external batches expose source conflict and usage details to editors at mo
   await page.getByRole('link', { name: '查看三方车源', exact: true }).click();
   await page.getByRole('button', { name: '打开导航', exact: true }).click();
   const navigation = page.getByRole('dialog').getByRole('navigation', { name: '后台导航' });
-  await expect(navigation.getByRole('link').last()).toHaveText('三方 API 状态');
-  await navigation.getByRole('link', { name: '三方 API 状态', exact: true }).click();
-  await page.getByRole('link', { name: '历史导入批次', exact: true }).click();
+  await expect(navigation.getByRole('link', { name: '三方 API 状态', exact: true })).toHaveCount(0);
+  await page.goto(`${ui}/batches`);
   await expect(page.getByRole('heading', { name: '历史导入批次' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '三方 API 状态', exact: true })).toHaveCount(0);
   await expect(page.getByRole('link', { name: '返回车辆管理', exact: true })).toHaveAttribute('href', '/admin/vehicles');
   await expect(page.getByText('手动导入', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '导入批次' })).toHaveCount(0);

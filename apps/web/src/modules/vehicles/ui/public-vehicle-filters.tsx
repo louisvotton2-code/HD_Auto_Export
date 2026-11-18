@@ -19,6 +19,7 @@ const mileageSteps = [0, 10000, 20000, 30000, 50000, 75000, 100000, 150000, 2000
 export function PublicVehicleFiltersForm({
   locale,
   filters,
+  filtersPending = false,
   brandModels,
   brandPending,
   modelFilters,
@@ -36,6 +37,7 @@ export function PublicVehicleFiltersForm({
 }: {
   locale: Locale;
   filters: PublicVehicleFilters['data'] | null;
+  filtersPending?: boolean;
   brandModels: PublicVehicleFilters['data']['models'];
   brandPending: boolean;
   modelFilters: Pick<PublicVehicleFilters['data'], 'trims' | 'generations'> | null;
@@ -312,7 +314,12 @@ export function PublicVehicleFiltersForm({
           {t.reset}
         </a>
       </div>
-      {!filters && (
+      {!filters && filtersPending && (
+        <p className={styles.filterNotice} role="status" data-testid="public-filter-loading">
+          {c.optionsLoading}
+        </p>
+      )}
+      {!filters && !filtersPending && (
         <p className={styles.filterNotice} data-testid="public-filter-unavailable">
           {t.filterUnavailable}{' '}
           <a

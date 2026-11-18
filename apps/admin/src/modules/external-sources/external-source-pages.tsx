@@ -49,7 +49,10 @@ export function ExternalBatchHistoryPage() {
     <header className={styles.heading}>
       <div>
         <Title level={2}>历史导入批次</Title>
-        <Space wrap><Link to="/external-sources">三方 API 状态</Link><Link to="/vehicles">返回车辆管理</Link></Space>
+        <Space wrap>
+          {staff.permissions.includes('staff:manage') && <Link to="/external-sources">三方 API 状态</Link>}
+          <Link to="/vehicles">返回车辆管理</Link>
+        </Space>
       </div>
       <Button onClick={refresh}>重新读取</Button>
     </header>

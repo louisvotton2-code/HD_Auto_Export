@@ -215,6 +215,7 @@ const resetState = () => ({
   reportPresenceMode: 'default',
   inspectionSummaryStatus: 'auto',
   responseDelayMs: 0,
+  omitEnglishTitle: false,
   publicRateLimited: false,
   filtersRateLimited: false,
   longTitles: false,
@@ -722,6 +723,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           inspectionSummaryStatus: (v) => ['auto','available','no_report','unknown','pending','unavailable'].includes(v),
           reportPresenceMode: (v) => ['default', 'known', 'false', 'absent'].includes(v),
           responseDelayMs: (v) => Number.isInteger(v) && v >= 0 && v <= 5000,
+          omitEnglishTitle: (v) => typeof v === 'boolean',
           publicRateLimited: (v) => typeof v === 'boolean',
           filtersRateLimited: (v) => typeof v === 'boolean',
           filtersUnstamped: (v) => typeof v === 'boolean',
@@ -1205,9 +1207,16 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       if (detailId) {
         const inline = url.searchParams.get('projection') === 'detail-inline-v1';
         const detailSchema = inline ? PublicVehicleInlineResponseSchema : PublicVehicleResponseSchema;
-        const detailProjection = row => inline ? inlineDetail(row, locale, state) : row;
+        const wantsTitle = inline && url.searchParams.get('titleView') === 'english' && !state.omitEnglishTitle;
+        const detailProjection = (row, englishTitle) => inline ? {
+          ...inlineDetail(row, locale, state),
+          ...(englishTitle?.contentLocale === 'en' ? { englishTitle } : {}),
+        } : row;
         const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
-        if (kind) return send(res,200,detailSchema.parse({data:detailProjection(makeImport(kind,true)),meta:catalogMeta('fixture-import-detail')}));
+        if (kind) {
+          const title = wantsTitle ? makeImportedPublicVehicleFixture('en', kind, true).content.title : undefined;
+          return send(res,200,detailSchema.parse({data:detailProjection(makeImport(kind,true), title),meta:catalogMeta('fixture-import-detail')}));
+        }
         const found =
           all.find((v) => v.id === detailId) ??
           (detailId === 'fixture_sold'
@@ -1220,7 +1229,10 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
               res,
               200,
               detailSchema.parse({
-                data: detailProjection(segmentSeed(state, withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode), locale)),
+                data: detailProjection(
+                  segmentSeed(state, withReportPresence({ ...project(found), ...(state.configurationMode !== 'none' ? { configuration: fixtureConfiguration(locale, state.configurationMode) } : {}) }, state.reportPresenceMode), locale),
+                  wantsTitle ? vehicle(detailId, 'en').content.title : undefined,
+                ),
                 meta: catalogMeta('fixture-detail'),
               }),
             )
