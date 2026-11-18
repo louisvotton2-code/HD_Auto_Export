@@ -28,8 +28,21 @@ describe('hero statistics server content', () => {
       }
     });
   }
-  it.each([[0, '0'], [null, '—']] as const)('renders catalog total %s as %s', (catalogTotal, expected) => {
-    const html = renderToStaticMarkup(createElement(HeroStats, { locale: 'en', catalogTotal }));
-    expect(metricHtml(html, 'catalog')).toContain(`>${expected}</strong>`);
+  it('keeps an exact zero', () => {
+    const html = renderToStaticMarkup(createElement(HeroStats, { locale: 'en', catalogTotal: 0 }));
+    expect(metricHtml(html, 'catalog')).toContain('>0</strong>');
+    expect(metricHtml(html, 'catalog')).toContain('Cars in catalog');
+  });
+  it.each([
+    ['zh', '目录总数暂不可用 · 预设值'],
+    ['en', 'Catalog count unavailable · Preset'],
+    ['ru', 'Количество недоступно · Заданное значение'],
+  ] as const)('%s: labels the preset when the catalog total is missing', (locale, label) => {
+    const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogTotal: null }));
+    const markup = metricHtml(html, 'catalog');
+    expect(markup).toContain(label);
+    expect(markup).toContain(`>${new Intl.NumberFormat(locale).format(470_000)}<span`);
+    expect(markup).toContain('>+</span></strong>');
+    expect(markup).not.toContain('data-counter-value');
   });
 });

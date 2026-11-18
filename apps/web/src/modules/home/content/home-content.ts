@@ -10,6 +10,7 @@ type HomeCopy = {
   catalogUnavailableBody: string;
   retry: string;
   stats: [string, string, string];
+  catalogCountPresetLabel: string;
   yearsSuffix: string;
   scroll: string;
   shortcuts: [string, string, string];
@@ -34,6 +35,7 @@ export const homeContent = {
     catalogUnavailableBody: '暂时无法获取车辆信息。请稍后重试，或联系我们咨询。',
     retry: '重新加载',
     stats: ['目录中的汽车', '满意客户', '经营年限'],
+    catalogCountPresetLabel: '目录总数暂不可用 · 预设值',
     yearsSuffix: '年',
     scroll: '向下探索',
     shortcuts: ['汽车目录', '汽车配件', '费用计算器'],
@@ -57,6 +59,7 @@ export const homeContent = {
       'Vehicle information is temporarily unavailable. Please try again or contact us for assistance.',
     retry: 'Try again',
     stats: ['Cars in catalog', 'Happy clients', 'On the market'],
+    catalogCountPresetLabel: 'Catalog count unavailable · Preset',
     yearsSuffix: ' years',
     scroll: 'Scroll down',
     shortcuts: ['Catalog', 'Auto Parts', 'Customs Calculator'],
@@ -80,6 +83,7 @@ export const homeContent = {
       'Сведения об автомобилях временно недоступны. Попробуйте ещё раз или свяжитесь с нами.',
     retry: 'Повторить загрузку',
     stats: ['Автомобили в каталоге', 'Довольные клиенты', 'На рынке'],
+    catalogCountPresetLabel: 'Количество недоступно · Заданное значение',
     yearsSuffix: ' года',
     scroll: 'Листайте вниз',
     shortcuts: ['Каталог автомобилей', 'Автозапчасти', 'Калькулятор'],

@@ -18,6 +18,40 @@ const catalogLabels = {
   ru: 'Автомобили в каталоге',
 };
 
+for (const [label, fixture, locale, total, catalogLabel] of [
+  ['uses the exact list total when only filters fail', { filtersUnavailable: true }, 'en', '26', catalogLabels.en],
+  ['labels the preset (zh) when both sources fail', { mode: 'unavailable' }, 'zh', '470,000+', '目录总数暂不可用 · 预设值'],
+  ['labels the preset (en) when both sources fail', { mode: 'unavailable' }, 'en', '470,000+', 'Catalog count unavailable · Preset'],
+  ['labels the preset (ru) when both sources fail', { mode: 'unavailable' }, 'ru', new Intl.NumberFormat('ru').format(470_000) + '+', 'Количество недоступно · Заданное значение'],
+] as const) {
+  test(`catalog count ${label} in the server-rendered HTML`, async ({ page, request }) => {
+    await setPublicFixtureState(request, fixture);
+    await page.setViewportSize({ width: 320, height: 800 });
+    const browserReads: string[] = [];
+    page.on('request', (read) => {
+      const path = new URL(read.url()).pathname;
+      if (/^\/api\/v1\/(home\/vehicles|vehicle-filters|vehicles)\/?$/.test(path)) browserReads.push(path);
+    });
+    const response = await page.goto(`/${locale}/`);
+    expect(response?.status()).toBe(200);
+    expect(await response?.text()).toContain(catalogLabel);
+    const catalog = page.getByTestId('hero-stat-catalog');
+    await expect(catalog.locator('strong')).toHaveText(total);
+    await expect(catalog.locator('dt')).toHaveText(catalogLabel);
+    await expect(page.getByTestId('public-resource-status')).toBeVisible();
+    expect(await catalog.evaluate((item) => item.scrollWidth <= item.clientWidth + 1)).toBe(true);
+    expect(browserReads).toEqual([]);
+    const events = await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`);
+    expect(events.ok()).toBe(true);
+    const reads = (await events.json()).requests.filter(
+      (read: { path: string }) => read.path === '/internal/public-catalog/vehicles',
+    );
+    expect(reads).toEqual([
+      expect.objectContaining({ query: expect.objectContaining({ locale, pageSize: '1' }) }),
+    ]);
+  });
+}
+
 for (const locale of ['zh', 'en', 'ru'] as const) {
   test(`${locale}: hero shows the exact catalog total without a browser API request at 320px`, async ({
     page,
