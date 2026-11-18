@@ -1,14 +1,21 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useLocale, useTranslations } from 'next-intl';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { hasLocale, useLocale, useTranslations } from 'next-intl';
 import Image from 'next/image';
 import { usePathname } from '@/i18n/navigation';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
-import { routing } from '@/i18n/routing';
+import { routing, type Locale } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
+import { CountryFlag, type FlagCountryCode } from './country-flag';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
+
+const languageFlags = { zh: 'CN', en: 'GB', ru: 'RU' } as const satisfies Record<Locale, FlagCountryCode>;
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
 
 export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?: ReactNode; enquiryAction?: ReactNode }) {
   const locale = useLocale();
@@ -19,6 +26,8 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
   const menuButton = useRef<HTMLElement>(null);
   const mobileMenu = useRef<HTMLDetailsElement>(null);
   const languageMenu = useRef<HTMLDetailsElement>(null);
+  const scrollHomeOnNavigation = useRef(false);
+  const activeLanguage = hasLocale(routing.locales, locale) ? locale : routing.defaultLocale;
   const calculatorActive = pathname === '/calculator' || pathname.startsWith('/calculator/');
   const carsActive = pathname === '/cars' || pathname.startsWith('/cars/');
   const buyActive = pathname.replace(/\/$/, '') === '/buy';
@@ -35,6 +44,12 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
     setMenuOpen(false);
     if (mobileMenu.current) mobileMenu.current.open = false;
     if (languageMenu.current) languageMenu.current.open = false;
+  }, [pathname, locale]);
+
+  useLayoutEffect(() => {
+    if (!scrollHomeOnNavigation.current) return;
+    scrollHomeOnNavigation.current = false;
+    if (pathname === '/') scrollToTop();
   }, [pathname, locale]);
 
   function closeMenu() {
@@ -100,9 +115,26 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
       <div className={`header-inner ${styles.headerInner}`}>
         <Link
           href="/"
+          scroll={false}
           className={`brand hd-brand ${styles.brand}`}
           aria-label={`${siteConfig.name} — ${t('Nav.home')}`}
           onClick={closeMenu}
+          onNavigate={(event) => {
+            if (pathname === '/') {
+              event.preventDefault();
+              if (languageMenu.current) languageMenu.current.open = false;
+              const { search, hash } = window.location;
+              if (search || hash) {
+                window.history.replaceState(null, '', window.location.pathname);
+              }
+              scrollToTop();
+              // A smooth anchor scroll can still apply its last queued position on the next frame.
+              if (hash) window.requestAnimationFrame(scrollToTop);
+            } else {
+              // Scroll after the destination commits so the departed page retains its position.
+              scrollHomeOnNavigation.current = true;
+            }
+          }}
         >
           <Image
             src={siteConfig.brand.logo.src}
@@ -128,8 +160,8 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
           >
             <details ref={languageMenu} className={styles.languageMenu}>
               <summary aria-label={t('Common.language')}>
-                <Icon name="globe" size={16} />
-                <span>{locale === 'zh' ? '中文' : locale.toUpperCase()}</span>
+                <CountryFlag countryCode={languageFlags[activeLanguage]} className={styles.languageFlag} />
+                <span>{activeLanguage === 'zh' ? '中文' : activeLanguage.toUpperCase()}</span>
                 <Icon name="chevron" size={13} />
               </summary>
               <div className={styles.languageOptions}>
@@ -144,6 +176,7 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
                     className={locale === language ? 'selected' : undefined}
                     onClick={closeMenu}
                   >
+                    <CountryFlag countryCode={languageFlags[language]} className={styles.languageFlag} />
                     {language === 'zh' ? '中文' : language.toUpperCase()}
                   </Link>
                 ))}

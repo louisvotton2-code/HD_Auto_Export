@@ -35,7 +35,7 @@ test('localized catalog pages preserve API priority, original currency and safe 
   await page.goto('/en/');
   const total = page.getByTestId('hero-stat-catalog').locator('strong');
   await expect(total).toBeVisible();
-  await expect(total).toHaveText('31');
+  await expect(total).toHaveText('31', { useInnerText: true });
 });
 
 test('a direct photo error is reported once and detail shows only a report summary', async ({ page, request }) => {

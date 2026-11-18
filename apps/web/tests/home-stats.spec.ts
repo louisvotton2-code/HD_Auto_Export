@@ -31,7 +31,7 @@ for (const failedProjection of ['overview', 'home-models'] as const) {
     expect((await page.goto('/en/'))?.status()).toBe(200);
     const modelLinks = page.locator('[data-home-section="popular-models"] a[href*="model="]');
     const count = page.getByTestId('hero-stat-catalog');
-    await expect(count.locator('strong')).toHaveText('26');
+    await expect(count.locator('strong')).toHaveText('26', { useInnerText: true });
     await expect(count.locator('dt')).toHaveText(catalogLabels.en);
     await expect(modelLinks).toHaveCount(failedProjection === 'overview' ? 2 : 0);
     const status = page.getByTestId('public-resource-status');
@@ -52,7 +52,7 @@ for (const failedProjection of ['overview', 'home-models'] as const) {
     await status.getByRole('button').click();
     await expect(status).not.toBeVisible();
     await expect(modelLinks).toHaveCount(2);
-    await expect(count.locator('strong')).toHaveText('26');
+    await expect(count.locator('strong')).toHaveText('26', { useInnerText: true });
     expect(browserProjections).toEqual([failedProjection]);
   });
 }
@@ -68,7 +68,7 @@ test('recovering the featured rail refreshes models after the featured selection
 
   await page.goto('/en/');
   await expect(page.getByTestId('home-catalog-error')).toBeVisible();
-  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26');
+  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26', { useInnerText: true });
   expect(reads).toEqual([]);
 
   await setPublicFixtureState(request, { homeUnavailable: false, homeStampSamples: false });
@@ -101,7 +101,7 @@ for (const [label, fixture, locale, total, catalogLabel] of [
     expect(response?.status()).toBe(200);
     expect(await response?.text()).toContain(catalogLabel);
     const catalog = page.getByTestId('hero-stat-catalog');
-    await expect(catalog.locator('strong')).toHaveText(total);
+    await expect(catalog.locator('strong')).toHaveText(total, { useInnerText: true });
     await expect(catalog.locator('dt')).toHaveText(catalogLabel);
     await expect(page.getByTestId('public-resource-status')).toBeVisible();
     expect(await catalog.evaluate((item) => item.scrollWidth <= item.clientWidth + 1)).toBe(true);
@@ -137,10 +137,21 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     const catalog = page.getByTestId('hero-stat-catalog');
     const catalogTotal = catalog.locator('strong');
     await expect(catalogTotal).toBeVisible();
-    await expect(catalogTotal).toHaveText(new Intl.NumberFormat(locale).format(list.meta.total));
-    await expect(catalogTotal).not.toHaveAttribute('data-counter-target');
+    const formatCount = new Intl.NumberFormat(locale);
+    await expect(catalogTotal).toHaveText(formatCount.format(list.meta.total), { useInnerText: true });
+    await expect(catalogTotal).toHaveAttribute('data-counter-target', String(list.meta.total));
     await expect(catalog.locator('dt')).toHaveText(catalogLabels[locale]);
-    expect(await catalog.evaluate((item) => item.scrollWidth <= item.clientWidth + 1)).toBe(true);
+    // The compact fixture has few cars. Check the same number lane at production scale.
+    expect(await catalog.evaluate(async (item, largeCount) => {
+      await document.fonts.ready;
+      const counter = item.querySelector('[data-counter-value]')!;
+      const original = counter.textContent;
+      counter.textContent = largeCount;
+      const frame = item.getBoundingClientRect();
+      const text = counter.getBoundingClientRect();
+      counter.textContent = original;
+      return text.left >= frame.left - 1 && text.right <= frame.right + 1;
+    }, formatCount.format(479_000))).toBe(true);
     const cards = await page.locator('[data-home-section^="vehicles-"] article').count();
     expect(list.meta.total).toBeGreaterThan(cards);
     const clients = page.getByTestId('hero-stat-clients').locator('strong');
@@ -152,7 +163,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
   });
 }
 
-test('company counters grow from zero while the exact catalog total stays static', async ({
+test('all hero counters grow from their server-rendered zero to the exact values', async ({
   page,
   browser,
 }) => {
@@ -161,12 +172,13 @@ test('company counters grow from zero while the exact catalog total stays static
   const assets = /\/_next\/static\/.*\.(?:css|js)(?:\?|$)/;
   await page.route(assets, (route) => route.abort());
   await page.goto('/en/');
-  const catalog = page.getByTestId('hero-stat-catalog').locator('strong');
-  await expect(catalog).toHaveText('26');
-  const metrics = ['clients', 'years'] as const;
+  const metrics = ['catalog', 'clients', 'years'] as const;
+  const initialValues = { catalog: '0', clients: '0+', years: '0 years' };
   for (const id of metrics) {
-    await expect(page.getByTestId(`hero-stat-${id}`).locator('[data-counter-value]')).toHaveText('0');
+    await expect(page.getByTestId(`hero-stat-${id}`).locator('strong'))
+      .toHaveText(initialValues[id], { useInnerText: true });
   }
+  await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveAttribute('data-counter-target', '26');
   await page.unroute(assets);
 
   await page.addInitScript((ids) => {
@@ -190,13 +202,11 @@ test('company counters grow from zero while the exact catalog total stays static
   for (let i = 0; i < 2; i++) {
     if (i === 0) await page.goto('/en/');
     else await page.reload();
-    const expected = { clients: 660, years: 23 };
+    const expected = { catalog: 26, clients: 660, years: 23 };
     for (const id of metrics) {
       await expect(page.getByTestId(`hero-stat-${id}`).locator('[data-counter-value]'))
         .toHaveAttribute('data-counter-value', String(expected[id]));
     }
-    await expect(catalog).toHaveText('26');
-    await expect(catalog).not.toHaveAttribute('data-counter-target');
     const observations = await page.evaluate(() =>
       Reflect.get(window, '__counterObservations') as Record<string, number[]>);
     for (const id of metrics) {
@@ -208,8 +218,7 @@ test('company counters grow from zero while the exact catalog total stays static
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.reload();
-  await expect(catalog).toHaveText('26');
-  const reducedValues = { clients: '660+', years: '23 years' };
+  const reducedValues = { catalog: '26', clients: '660+', years: '23 years' };
   for (const id of metrics) {
     const metric = page.getByTestId(`hero-stat-${id}`);
     await expect(metric.locator('strong')).toHaveText(reducedValues[id], { useInnerText: true });
@@ -225,7 +234,8 @@ test('company counters grow from zero while the exact catalog total stays static
   await expect(plainClients.locator('strong')).toHaveText('660+', { useInnerText: true });
   await expect(plainClients.locator('[data-counter-value]')).toBeHidden();
   const plainCatalog = plain.getByTestId('hero-stat-catalog').locator('strong');
-  await expect(plainCatalog).toHaveText('26');
+  await expect(plainCatalog).toHaveText('26', { useInnerText: true });
+  await expect(plainCatalog.locator('[data-counter-value]')).toBeHidden();
   await expect(plain.getByTestId('hero-stat-years').locator('strong')).toHaveText('23年', { useInnerText: true });
   await noScript.close();
 });

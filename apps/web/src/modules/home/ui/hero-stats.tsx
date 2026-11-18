@@ -17,7 +17,7 @@ export function HeroStats({
 }) {
   const t = homeContent[locale];
   const metrics = [
-    { id: 'catalog', value: catalogTotal },
+    { id: 'catalog', value: catalogTotal, suffix: undefined },
     {
       id: 'clients',
       value: companyMetrics.happyClients,
@@ -38,12 +38,10 @@ export function HeroStats({
             {metric.id === 'catalog' && metric.value === null ? t.catalogCountPresetLabel : t.stats[index]}
           </dt>
           <dd className={styles.number}>
-            {metric.id === 'catalog' ? (
-              <strong
-                className={`${styles.value} ${metric.value === null ? styles.catalogPreset : styles.catalogValue}`}
-              >
-                {new Intl.NumberFormat(locale).format(metric.value ?? presetCatalogCount)}
-                {metric.value === null && <span className={styles.suffix}>+</span>}
+            {metric.id === 'catalog' && metric.value === null ? (
+              <strong className={`${styles.value} ${styles.catalogPreset}`}>
+                {new Intl.NumberFormat(locale).format(presetCatalogCount)}
+                <span className={styles.suffix}>+</span>
               </strong>
             ) : (
               <CountUpValue
@@ -51,7 +49,7 @@ export function HeroStats({
                 suffix={metric.suffix}
                 locale={locale}
                 startAtZero
-                className={styles.value}
+                className={metric.id === 'catalog' ? `${styles.value} ${styles.catalogValue}` : styles.value}
                 suffixClassName={styles.suffix}
               />
             )}

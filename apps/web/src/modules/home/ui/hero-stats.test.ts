@@ -13,14 +13,13 @@ describe('hero statistics server content', () => {
     ['en', 'Cars in catalog', '23 years'],
     ['ru', 'Автомобили в каталоге', '23 года'],
   ] as const) {
-    it(`${locale}: renders the exact total without animation and starts the company metrics at zero`, () => {
+    it(`${locale}: starts each counter at zero and includes the exact final values`, () => {
       const catalogTotal = 108_481;
       const html = renderToStaticMarkup(createElement(HeroStats, { locale, catalogTotal }));
       const catalog = new Intl.NumberFormat(locale).format(catalogTotal);
       expect(metricHtml(html, 'catalog')).toContain(`>${catalogLabel}</dt>`);
-      expect(metricHtml(html, 'catalog')).toContain(`>${catalog}</strong>`);
-      expect(metricHtml(html, 'catalog')).not.toContain('data-counter-value');
-      for (const [metric, finalText] of [['clients', '660+'], ['years', years]]) {
+      expect(metricHtml(html, 'catalog')).toContain(`data-counter-target="${catalogTotal}"`);
+      for (const [metric, finalText] of [['catalog', catalog], ['clients', '660+'], ['years', years]]) {
         const markup = metricHtml(html, metric);
         expect(markup).toContain('data-counter-value="0">0</span>');
         expect(markup).toContain(`>${finalText}</span>`);
@@ -30,7 +29,9 @@ describe('hero statistics server content', () => {
   }
   it('keeps an exact zero', () => {
     const html = renderToStaticMarkup(createElement(HeroStats, { locale: 'en', catalogTotal: 0 }));
-    expect(metricHtml(html, 'catalog')).toContain('>0</strong>');
+    expect(metricHtml(html, 'catalog')).toContain('data-counter-target="0"');
+    expect(metricHtml(html, 'catalog')).toContain('data-counter-value="0">0</span>');
+    expect(metricHtml(html, 'catalog')).not.toContain(' hidden');
     expect(metricHtml(html, 'catalog')).toContain('Cars in catalog');
   });
   it.each([

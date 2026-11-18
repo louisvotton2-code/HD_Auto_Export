@@ -11,6 +11,79 @@ async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 }
 
+test('the logo returns to the top of the localized home without reloading the document', async ({ page }) => {
+  await page.goto('/zh/buy/');
+  await expect(page.getByTestId('buy-guide')).toBeVisible();
+  await page.evaluate(() => {
+    Reflect.set(window, '__hdNavigationDocument', 'original');
+    window.scrollTo({ top: 700, behavior: 'instant' });
+  });
+  const scrollY = () => page.evaluate(() => window.scrollY);
+  await expect.poll(scrollY).toBeGreaterThan(600);
+  const logo = page.locator('header a.hd-brand');
+  await expect(logo).toHaveAttribute('href', '/zh/');
+  await logo.click();
+  await expect(page).toHaveURL(/\/zh\/$/);
+  await expect(page.getByTestId('home-page')).toBeVisible();
+  await expect.poll(scrollY).toBe(0);
+  expect(await page.evaluate(() => Reflect.get(window, '__hdNavigationDocument'))).toBe('original');
+
+  // Same-route activation works for both anchored and plain homepage URLs.
+  await page.locator('header a.nav-utility[href="#contact"]:visible').click();
+  await expect(page).toHaveURL(/\/zh\/#contact$/);
+  await expect.poll(scrollY).toBeGreaterThan(600);
+  await logo.click();
+  await expect(page).toHaveURL(/\/zh\/$/);
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect.poll(scrollY).toBe(0);
+
+  await page.evaluate(() => window.scrollTo({ top: 700, behavior: 'instant' }));
+  await expect.poll(scrollY).toBeGreaterThan(600);
+  await logo.press('Enter');
+  await expect.poll(scrollY).toBe(0);
+});
+
+for (const width of [1440, 320, 414]) {
+  test(`language flags display and update in the ${width}px header`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 850 });
+    await page.goto('/ru/buy/');
+    const languageSwitch = page.locator('.language-switch');
+    const summary = languageSwitch.locator('summary');
+    await expect(summary.locator('img')).toHaveAttribute('src', '/flags/ru.svg');
+    await summary.click();
+    for (const [language, flag] of [['zh', 'cn'], ['en', 'gb'], ['ru', 'ru']]) {
+      const icon = languageSwitch.locator(`a[lang="${language}"] img`);
+      await expect(icon).toHaveAttribute('src', `/flags/${flag}.svg`);
+      await expect(icon).toBeVisible();
+      await expect.poll(() => icon.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    }
+    await expect(languageSwitch.locator('a[lang=ru]')).toHaveAttribute('aria-current', 'page');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await languageSwitch.locator('a[lang=en]').click();
+    await expect(page).toHaveURL(/\/en\/buy\/$/);
+    await expect(summary.locator('img')).toHaveAttribute('src', '/flags/gb.svg');
+    await expect(languageSwitch.locator('details')).not.toHaveAttribute('open');
+  });
+}
+
+test.describe('native header navigation', () => {
+  test.use({ javaScriptEnabled: false });
+  test('the logo and flag language links work without JavaScript', async ({ page }) => {
+    await page.goto('/en/buy/');
+    const languageSwitch = page.locator('.language-switch');
+    await languageSwitch.locator('summary').click();
+    const chinese = languageSwitch.locator('a[lang=zh]');
+    await expect(chinese.locator('img')).toBeVisible();
+    await chinese.click();
+    await expect(page).toHaveURL(/\/zh\/buy\/$/);
+    await page.locator('header a.hd-brand').click();
+    await expect(page).toHaveURL(/\/zh\/$/);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  });
+});
+
 test('header, footer and guide use the preference entry while country links stay explicit', async ({
   page,
 }) => {
