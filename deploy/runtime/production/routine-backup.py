@@ -291,7 +291,12 @@ def control_root(path):
     if not path.is_absolute() or '..' in path.parts:
         raise ValueError('Control root must be canonical and absolute')
     directories = [ROOT/'secrets', ROOT/'data/current/secrets', ROOT/'data/current/tls', ROOT/'data/current/acme', Path('/etc/hd-auto'), Path('/etc/letsencrypt')]
-    exact = [Path('/etc/fstab'), Path('/etc/systemd/system/docker.service.d/hd-auto-storage.conf'), Path('/usr/local/sbin/hd-auto-storage-check')]
+    exact = [
+        Path('/etc/fstab'),
+        Path('/etc/systemd/system/docker.service.d/hd-auto-storage.conf'),
+        Path('/etc/systemd/system/hd-auto-ext07-backup.service.d/20-card-media.conf'),
+        Path('/usr/local/sbin/hd-auto-storage-check'),
+    ]
     if path in exact or any(path == root or root in path.parents for root in directories):
         return path
     if path.is_file() and (ROOT/'staging' in path.parents or ROOT/'releases' in path.parents and '/deploy/runtime/' in str(path)):

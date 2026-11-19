@@ -22,6 +22,10 @@ class RoutineBackupTests(unittest.TestCase):
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/data'))
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/secrets/../../../../etc/passwd'))
         self.assertEqual(routine.control_root(Path('/etc/fstab')), Path('/etc/fstab'))
+        dropin = Path('/etc/systemd/system/hd-auto-ext07-backup.service.d/20-card-media.conf')
+        self.assertEqual(routine.control_root(dropin), dropin)
+        with self.assertRaises(ValueError):
+            routine.control_root(dropin.with_name('other.conf'))
 
     def test_projected_backup_counts_new_dump_and_cipher_once_each(self):
         self.assertEqual(routine.reserve_bytes(2000,100,[(1500,300)]),1200+256*1024**2)
