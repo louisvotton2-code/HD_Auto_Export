@@ -35,17 +35,26 @@ export function PublicVehicleDetail({
   detailTitle,
   locale,
   destinations = [],
-  budget,
+  renderBudget,
 }: {
   locale: Locale;
   vehicle: PublicVehicle;
   detailTitle?: ReturnType<typeof publicVehicleTitle>;
   destinations?: VehicleDestination[];
-  budget?: ReactNode;
+  renderBudget?: (engineCc: number | null) => ReactNode;
 }) {
   const t = publicVehicleMessages(locale);
   const copy = detailContent[locale];
   const facts = publicVehicleFacts(vehicle, locale);
+  // Share the numeric configuration fact with the form without treating it as an API fact.
+  const displacement = facts.find(({ id }) => id === 'displacementCc')?.configuration;
+  const configuredCc = displacement?.value;
+  const isStaffText = (provenance?: string | null) => provenance === 'original' || provenance === 'human';
+  const engineCc = vehicle.facts.engineCc ?? (
+    vehicle.source.kind === 'manual' && vehicle.facts.powertrain !== 'bev' &&
+    isStaffText(displacement?.name.provenance) && isStaffText(displacement?.field.provenance) &&
+    typeof configuredCc === 'number' && configuredCc > 0 ? configuredCc : null
+  );
   const reference = publicVehicleReference(vehicle);
   const fresh = usePublicFreshness() === 'fresh';
   const sold = fresh && vehicle.availability === 'sold';
@@ -182,7 +191,7 @@ export function PublicVehicleDetail({
             </div>
             <div className={styles.budgetBody}>
               <p>{copy.budgetIntro}</p>
-              {budget ?? <VehicleBudgetPanel locale={locale} destinations={destinations} />}
+              {renderBudget?.(engineCc) ?? <VehicleBudgetPanel locale={locale} destinations={destinations} />}
               <p className={styles.smallNote}>{copy.budgetNote}</p>
             </div>
           </aside>

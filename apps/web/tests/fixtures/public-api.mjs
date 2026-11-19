@@ -5,7 +5,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { makeImportedPublicVehicleFixture, makePublicVehicleFixture, makePublicationPreviewFixture, makeConfigurationDisplayFixture, makeExternalInspectionFixture } from '@hd/contracts/fixtures';
-import { PublicationPreviewQuerySchema, PublicationPreviewResponseSchema } from '@hd/contracts/admin';
+import { PublicationPreviewQuerySchema, PublicationPreviewResponseSchema, vehicleConfigurationItemId } from '@hd/contracts/admin';
 import {
   ApiErrorSchema,
   ExternalMediaFailureRequestSchema,
@@ -235,6 +235,7 @@ const resetState = () => ({
   previewSlowLocale: '',
   previewImageCount: 1,
   estimateDateRange: false,
+  estimateDisplacementMl: null,
   segmentGalleryCount: null,
   segmentConfigurationCount: null,
   segmentFailure: 'none',
@@ -354,6 +355,18 @@ function segmentSeed(state, row, locale) {
   if (state.estimateDateRange && row.id === 'fixture_car_1') {
     row.facts.manufacturedAt = null;
     row.manufacture = { date: null, range: { earliest: { precision: 'month', value: '2020-11' }, latest: { precision: 'month', value: '2026-11' } }, source: 'supplier', basis: null };
+  }
+  if (state.estimateDisplacementMl && row.id === 'fixture_car_1') {
+    if (state.estimateDisplacementMl !== 'structured') row.facts.engineCc = null;
+    const name = { zh: '排量(mL)', en: 'Displacement(mL)', ru: 'Рабочий объём(mL)' }[locale];
+    row.configuration = { version: 1, items: [{
+      id: vehicleConfigurationItemId('排量(mL)'),
+      name: {
+        ...segmentDisplay(name, locale),
+        provenance: state.estimateDisplacementMl === 'machine' ? 'machine' : locale === 'zh' ? 'original' : 'human',
+      },
+      value: segmentDisplay('1197', locale, 'und'),
+    }] };
   }
   if (state.segmentGalleryCount !== null) {
     const images = segmentGallery(state, row, locale);
@@ -656,7 +669,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
-    if (Object.keys(patch).some(key => ['estimateDateRange', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDisplacementMl', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
       'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
@@ -744,6 +757,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
           estimateDateRange: (v) => typeof v === 'boolean',
+          estimateDisplacementMl: (v) => [null, 'configuration', 'structured', 'machine'].includes(v),
           segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
           segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
           segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),

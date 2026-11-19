@@ -15,16 +15,20 @@ export function VehicleDetailPage({ initialDate, initialRates, ...props }: Props
   return (
     <PublicDetailResource
       {...props}
-      renderBudget={(vehicle, current) => (
-        <VehicleImportEstimate
-          key={JSON.stringify([vehicle.id, vehicle.facts, vehicle.price])}
-          vehicle={vehicle}
-          locale={props.locale}
-          initialDate={initialDate}
-          initialRates={initialRates}
-          disabled={!current}
-        />
-      )}
+      renderBudget={(vehicle, current, engineCc) => {
+        const estimateVehicle = engineCc === vehicle.facts.engineCc
+          ? vehicle : { ...vehicle, facts: { ...vehicle.facts, engineCc } };
+        return (
+          <VehicleImportEstimate
+            key={JSON.stringify([estimateVehicle.id, estimateVehicle.facts, estimateVehicle.price])}
+            vehicle={estimateVehicle}
+            locale={props.locale}
+            initialDate={initialDate}
+            initialRates={initialRates}
+            disabled={!current}
+          />
+        );
+      }}
     />
   );
 }

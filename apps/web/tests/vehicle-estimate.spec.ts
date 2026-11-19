@@ -42,7 +42,19 @@ async function complete(scope: Locator, code: string) {
   await expect(scope.getByTestId('inline-estimate-result')).toBeVisible();
 }
 
-for (const locale of ['zh', 'en', 'ru']) {
+for (const locale of ['zh', 'en', 'ru'] as const) {
+  test(`${locale}: an explicit mL configuration supplies the missing displacement to the detail and calculators`, async ({ page, request }) => {
+    await setPublicFixtureState(request, { estimateDisplacementMl: 'configuration' });
+    await page.goto(`/${locale}/cars/fixture_car_1/`);
+    const detail = page.locator('[data-vehicle-fact="displacementCc"] dd');
+    await expect(detail).toHaveText(`${new Intl.NumberFormat(locale).format(1197)} cm³`);
+    const budget = page.getByTestId('vehicle-import-estimate');
+    await expect(budget.locator('[name="displacementCc"]')).toHaveValue('1197');
+    await budget.getByTestId('vehicle-full-calculator').click();
+    await expect(page).toHaveURL(new RegExp(`/${locale}/calculator/russia/`));
+    await expect(page.locator('[name="displacementCc"]')).toHaveValue('1197');
+  });
+
   test(`${locale}: detail budget uses direct hp and estimates a range without filling in an unknown manufacture month`, async ({
     page,
   }) => {
@@ -82,6 +94,17 @@ for (const locale of ['zh', 'en', 'ru']) {
     expect(errors).toEqual([]);
   });
 }
+
+test('the estimate prefers an authoritative displacement and does not prefill machine-only evidence', async ({ page, request }) => {
+  const field = page.getByTestId('vehicle-import-estimate').locator('[name="displacementCc"]');
+  await setPublicFixtureState(request, { estimateDisplacementMl: 'structured' });
+  await page.goto('/zh/cars/fixture_car_1/');
+  await expect(field).toHaveValue('1998');
+  await setPublicFixtureState(request, { estimateDisplacementMl: 'machine' });
+  await page.reload();
+  await expect(page.locator('[data-vehicle-fact="displacementCc"] dd')).toContainText('1,197 cm³');
+  await expect(field).toHaveValue('');
+});
 
 for (const [code, slug] of Object.entries({
   RU: 'russia',
