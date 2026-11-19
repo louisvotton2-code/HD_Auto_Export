@@ -70,7 +70,7 @@ export function PublicVehicleDetail({
   const contactId = `vehicle-contact-${vehicle.id}`;
 
   return (
-    <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id}>
+    <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id} data-analytics-demo={vehicle.source.kind === 'demo' || undefined}>
       <div className={styles.container}>
         <PublicCatalogLink locale={locale} className={styles.back} href={`/${locale}/cars/`}>
           <Icon name="arrow-left" size={16} />{t.back}

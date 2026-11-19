@@ -22,6 +22,10 @@ class RoutineBackupTests(unittest.TestCase):
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/data'))
         with self.assertRaises(ValueError): routine.control_root(Path('/srv/hd-auto/secrets/../../../../etc/passwd'))
         self.assertEqual(routine.control_root(Path('/etc/fstab')), Path('/etc/fstab'))
+        dropin = Path('/etc/systemd/system/hd-auto-ext07-backup.service.d/20-card-media.conf')
+        self.assertEqual(routine.control_root(dropin), dropin)
+        with self.assertRaises(ValueError):
+            routine.control_root(dropin.with_name('other.conf'))
 
     def test_projected_backup_counts_new_dump_and_cipher_once_each(self):
         self.assertEqual(routine.reserve_bytes(2000,100,[(1500,300)]),1200+256*1024**2)
@@ -86,12 +90,31 @@ class RoutineBackupTests(unittest.TestCase):
 
 
 class OnlineInputs(unittest.TestCase):
-    def test_known_temporaries_and_thumbnails_are_not_archived(self):
+    def test_snapshot_pin_changes_require_the_same_durable_lease(self):
+        reference='backup:ext07:daily-20261119T042000Z'
+        command=['psql','-Atq']
+        with patch.object(routine.subprocess, 'check_output', return_value='\n\n1|2\n') as run:
+            self.assertEqual(routine.snapshot_backup_pins(command,reference,acquire=True),2)
+            self.assertEqual(routine.snapshot_backup_pins(command,reference,acquire=False),2)
+            pin, release = run.call_args_list
+            self.assertEqual(pin.args[0],command+['-v','ON_ERROR_STOP=1','-v','backup_reference='+reference,'-f','-'])
+            self.assertIn("SELECT reference FROM backup_gc_leases WHERE reference=:'backup_reference'",pin.kwargs['input'])
+            self.assertIn('INSERT INTO external_full_archive_pins',pin.kwargs['input'])
+            self.assertIn('DELETE FROM external_full_archive_pins p USING lease',release.kwargs['input'])
+            self.assertLess(pin.kwargs['input'].index('78291335'),pin.kwargs['input'].index('78291334'))
+        with patch.object(routine.subprocess,'check_output',return_value='0|0\n'):
+            with self.assertRaisesRegex(ValueError,'persistent backup lease'):
+                routine.snapshot_backup_pins(command,reference,acquire=True)
+        with self.assertRaisesRegex(ValueError,'routine backup reference'):
+            routine.snapshot_backup_pins(command,'backup:other',acquire=True)
+
+    def test_known_temporaries_and_derivatives_are_not_archived(self):
         uid='12345678-1234-1234-1234-123456789abc'
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)/'media';root.mkdir()
             (root/(uid+'.webp')).write_bytes(b'original')
-            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp',uid+'.thumb.webp']:
+            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp','.'+uid+'.'+uid+'.card.tmp',
+                         uid+'.thumb.webp',uid+'.card.webp']:
                 (root/name).write_bytes(b'changing')
             files=routine.pack_roots(Path(temp)/'media.tar.gz',[root],'media')
             self.assertEqual({Path(p).name for p in files},{'media',uid+'.webp'})
@@ -156,6 +179,30 @@ class IncompleteJobs(unittest.TestCase):
 
 
 class Envelope(unittest.TestCase):
+    def test_retention_keeps_two_verified_points_and_preserves_any_protected_old_point(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            points=[]
+            for n in range(3):
+                path=root/f'daily-20261119T04200{n}Z'
+                path.mkdir()
+                cipher=path/'recovery.cms'
+                cipher.write_bytes(f'point-{n}'.encode())
+                points.append(dict(kind='daily',name=path.name,complete=True,createdAt=path.name,
+                                   reference='backup:ext07:'+path.name,ciphertextSha256=routine.digest(cipher)))
+            release=root/'release-protected'
+            release.mkdir()
+            with patch.object(routine.subprocess,'check_output',return_value='t\n'):
+                with self.assertRaisesRegex(ValueError,'still has protection'):
+                    routine.retire_completed_points(root,points,['psql','-Atq'])
+                self.assertTrue(all((root/p['name']).is_dir() for p in points))
+            with patch.object(routine.subprocess,'check_output',return_value='f\n') as run:
+                routine.retire_completed_points(root,points,['psql','-Atq'])
+                self.assertIn('backup_reference='+points[0]['reference'],run.call_args.args[0])
+            self.assertFalse((root/points[0]['name']).exists())
+            self.assertTrue(all((root/p['name']).is_dir() for p in points[1:]))
+            self.assertTrue(release.is_dir())
+
     def test_corrupt_survivor_blocks_retention(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); point=root/'daily-20261114T000000Z'; point.mkdir()

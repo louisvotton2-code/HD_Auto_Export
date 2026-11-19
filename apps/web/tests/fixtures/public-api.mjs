@@ -52,11 +52,11 @@ function pngChunk(type, data) {
   chunk.writeUInt32BE((crc ^ 0xffffffff) >>> 0, data.length + 8);
   return chunk;
 }
-function imageBytes(id, thumbnail) {
-  const key = `${id}:${thumbnail}`;
+function imageBytes(id, thumbnail, card = false) {
+  const key = `${id}:${thumbnail}:${card}`;
   if (imageCache.has(key)) return imageCache.get(key);
-  const width = thumbnail ? 120 : 640,
-    height = thumbnail ? 80 : 420;
+  const width = thumbnail ? 120 : card ? 800 : 640,
+    height = thumbnail ? 80 : card ? 525 : 420;
   const seed = [...id].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) >>> 0, 0);
   const pixels = Buffer.alloc((width * 3 + 1) * height);
   for (let y = 0; y < height; y++)
@@ -205,6 +205,7 @@ const resetState = () => ({
   homeUnavailable: false,
   externalPublished: false,
   externalRemotePhoto: false,
+  wideCardPhoto: false,
   importedPublished: false,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
@@ -474,6 +475,10 @@ function visibleVehicles(state, locale) {
       external.images[0].url = 'https://photos.example.invalid/fixture-external.jpg';
     rows.push(external);
   }
+  if (state.wideCardPhoto) {
+    const photo = rows.find(({ id }) => id === 'fixture_car_1')?.images[0];
+    if (photo) { photo.width = 1280; photo.height = 840; }
+  }
   if (state.richCatalog) {
     for (const [index, row] of rows.entries()) {
       if (row.source.kind !== 'manual' || row.id === 'fixture_reserved') continue;
@@ -726,6 +731,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           homeUnavailable: (v) => typeof v === 'boolean',
           externalPublished: (v) => typeof v === 'boolean',
           externalRemotePhoto: (v) => typeof v === 'boolean',
+          wideCardPhoto: (v) => typeof v === 'boolean',
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
@@ -1263,7 +1269,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         ];
         const referenced = readable.some((v) => segmentGallery(state, v, locale).some((image) => image.id === mediaId));
         if (!referenced) return send(res, 404, error('NOT_FOUND'));
-        const png = imageBytes(mediaId, mediaQuery?.variant === 'thumb');
+        const png = imageBytes(mediaId, mediaQuery?.variant === 'thumb', mediaQuery?.variant === 'card');
         res.writeHead(200, {
           'content-type': 'image/png',
           'content-length': png.length,

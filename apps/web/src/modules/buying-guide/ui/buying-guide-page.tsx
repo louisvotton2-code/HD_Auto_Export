@@ -131,6 +131,7 @@ export async function BuyingGuidePage({ locale }: { locale: Locale }) {
             <a
               className={styles.secondaryButton}
               href={siteConfig.contacts.whatsapp.href}
+              data-analytics-contact="whatsapp"
               target="_blank"
               rel="noopener noreferrer"
             >

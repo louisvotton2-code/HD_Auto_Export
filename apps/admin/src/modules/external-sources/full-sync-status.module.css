@@ -1,6 +1,8 @@
 .card :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 8px; padding-block: 10px; }
 .card :global(.ant-card-head-title) { white-space: normal; overflow-wrap: anywhere; }
 .card :global(.ant-card-extra) { margin-inline-start: 0; }
-.note { margin-top: 12px; }
-.pending { margin-block: 20px; padding-block: 14px; border-block: 1px solid #e8e2d5; }
+.overview { margin-block: 14px; }
+.card .note { margin: 10px 0 0; }
+.section { margin-block: 16px; padding-top: 14px; border-top: 1px solid #e8e2d5; }
+.card .sectionTitle { font-size: 16px; margin-block: 0 10px; }
 .long { white-space: pre-wrap; overflow-wrap: anywhere; }

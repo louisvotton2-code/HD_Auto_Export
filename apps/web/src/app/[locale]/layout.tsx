@@ -9,6 +9,7 @@ import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
 import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
 import { VehicleFavorites } from '@/modules/vehicles';
+import { SiteAnalytics } from '@/modules/analytics';
 import { EnquiryProvider, EnquiryTrigger } from '@/modules/enquiries';
 import { getShellMessages } from '@/i18n/client-messages';
 import '../globals.css';
@@ -70,6 +71,7 @@ export default async function LocaleLayout({
           <SiteFooter />
           <InteractionMotion />
           <PublicNavigationFreshness />
+          <SiteAnalytics locale={locale} />
           </EnquiryProvider>
         </NextIntlClientProvider>
       </body>

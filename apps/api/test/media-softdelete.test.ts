@@ -98,14 +98,19 @@ test('public media GET and HEAD revalidate only while the owner remains public',
       t.after(()=>runtime.app.close());
       const vehicleId=await vehicle();const image=await ready(vehicleId);
       const url=`/api/v1/media/${image.id}`;
-      const unpublished=await runtime.app.inject({method:'GET',url,headers:{'if-none-match':'*'}});
-      assert.equal(unpublished.statusCode,404);
-      assert.equal(unpublished.headers['cache-control'],'no-store');
+      const variants=[undefined,'thumb','card'] as const;
+      for(const variant of variants) {
+        const imageUrl=variant?`${url}?variant=${variant}`:url;
+        const unpublished=await runtime.app.inject({method:'GET',url:imageUrl,headers:{'if-none-match':'*'}});
+        assert.equal(unpublished.statusCode,404);
+        assert.equal(unpublished.headers['cache-control'],'no-store');
+      }
+      assert.ok(!(await readdir(path.join(root,'media'))).includes(`${image.id}.card.webp`));
       await publish(vehicleId,image.id);
 
       const validators=new Map<string,string>();
-      for(const variant of [undefined,'thumb'] as const) {
-        const imageUrl=variant?`${url}?variant=thumb`:url;
+      for(const variant of variants) {
+        const imageUrl=variant?`${url}?variant=${variant}`:url;
         const get=await runtime.app.inject({method:'GET',url:imageUrl});
         const etag=get.headers.etag;
         assert.equal(get.statusCode,200,get.body);
@@ -118,7 +123,7 @@ test('public media GET and HEAD revalidate only while the owner remains public',
         assert.equal(head.headers.etag,etag);
         assert.equal(head.rawPayload.length,0);
         if(mode==='nginx') {
-          const internalPath=`/_hd_public_media/${image.id}${variant?'.thumb':''}.webp`;
+          const internalPath=`/_hd_public_media/${image.id}${variant?`.${variant}`:''}.webp`;
           assert.equal(get.headers['x-accel-redirect'],internalPath);
           assert.equal(head.headers['x-accel-redirect'],internalPath);
           assert.equal(get.rawPayload.length,0);
@@ -141,7 +146,7 @@ test('public media GET and HEAD revalidate only while the owner remains public',
           assert.equal(cached.rawPayload.length,0);
         }
       }
-      assert.equal(new Set(validators.values()).size,2);
+      assert.equal(new Set(validators.values()).size,variants.length);
       await db.pool.query('UPDATE vehicles SET deleted_at=now(),deleted_by=$2 WHERE id=$1',[vehicleId,actor.id]);
       for(const [imageUrl,etag] of validators) {
         for(const method of ['GET','HEAD'] as const) {
@@ -155,6 +160,7 @@ test('public media GET and HEAD revalidate only while the owner remains public',
       }
       assert.ok((await store.read(image.id)).length);
       assert.ok((await store.readThumbnail(image.id)).length);
+      assert.equal((await store.prepareDelivery(image.id,'card')).filename,`${image.id}.card.webp`);
     });
   }
 });

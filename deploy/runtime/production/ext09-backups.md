@@ -4,7 +4,7 @@
 
 前提：API 和 worker 均已部署 0026 物理删除保护；私有配置 mediaLeaseCommand 为实际 API 镜像执行 `node dist/backup-lease-cli.js` 的命令数组。程序追加 acquire/release 与唯一 reference。持久保护没有自动到期；中断后确认归档进程停止，再按该 reference 释放，不能批量清 lease。
 
-pg_dump 使用自身一致快照，不停官网、API 或 worker。文件归档期间保护媒体与原档物理删除。当前备份预检仅按现有库和文件估算瞬时空间，不依赖未来全量容量准入。70% 门槛不变。
+pg_dump 使用自身一致快照，官网、API 和 worker 在线。准确 reference 的持久 lease 阻止媒体、原档数据和 CSV 的物理清理。程序在持有 lease 后只对未清理的 CSV 快照登记对应 pins。原档数据库行随 MVCC dump 保存，保护由全局 lease 提供。当前备份预检按现有库和文件估算瞬时空间，实盘 70% 门槛继续生效。
 
 压缩组件经校验后以 tar 流送入 CMS AES-256-GCM。密文落盘、哈希及成功状态保存后删除本次明文组件；保留 manifest。归档生成成功、恢复验证、离机验证是三种不同状态。每次备份不作恢复演练；新流程上线时用隔离合成证书验证认证解密和`unpack_verified_bundle`，再以同一正式备份点的校验组件完成一次隔离数据库恢复；两种证据分开记录。嵌套文件归档绝不能直接解压覆盖生产根目录。私钥保持离机。
 
@@ -14,10 +14,10 @@ pg_dump 使用自身一致快照，不停官网、API 或 worker。文件归档�
 
 一次真实恢复使用显式 `--retain-for-restore`，默认关闭。该点状态标为 `plaintextRetention=temporary-for-one-time-restore`，仅暂留同一 manifest 中哈希绑定的组件。OPS 从这些组件恢复到独立库，核对引用后写该点 restore-proof，再调用 `remove_verified_components` 清理组件并更新明文状态。恢复证明必须标明 `input=plaintext-components`，不能声称最终生产密文已认证解密或离机成功。生产私钥不上传服务器；流式 GCM 的认证解密与篡改拒绝用隔离合成证书验证。保留组件模式不进入每日计划命令。
 
-在线文件清单使用明确 profile：媒体仅保存不可变 UUID.webp 原图，派生缩略图可按需重建；排除已知 UUID 上传临时名。CSV仅保存已原子发布的 UUID.csv，忽略对应 .csv.partial。未知命名仍拒绝，controls不忽略任何临时后缀。原图发布瞬间的双硬链接最多等待500ms；持续异常或已发布原图消失仍失败，不能静默漏掉快照引用。
+在线媒体清单保存不可变 UUID.webp 原图。缩略图和卡片图可按需重建，已知暂存文件一并排除。CSV 归档覆盖原子发布的 UUID.csv 或 UUID.csv.gz，下载中的 .csv.partial 排除。未知命名会使备份失败。原图发布时双硬链接最多等待 500 ms，持续异常或已发布原图消失都会终止归档。
 
 失败恢复采取最小 fail-closed 策略：持单任务锁，创建点后立即持久化 ownerPid/reference/phase；任一 daily 点缺失成功证明、处于 dump/pack/encrypt 或仍待一次恢复清理时，下一次任务在创建新目录和新全库副本前拒绝。不会仅按 TTL 自动删材料或释放活动保护。失败最多保留这一份未解决副本，不每日堆积。OPS 必须先确认所属 docker exec/子进程和文件描述符已结束，按本点 manifest/owned phase 清理明确组件，释放其准确 archive pin 和 lease，归档日志及失败标记后才能再启。未知目录、基准和 EXT08 材料不自动处理。同步失败也优先保留证据并阻止下次运行，避免误认为 Python 退出就等于服务端 pg_dump 已退出。
 
-CSV归档在持久lease和dump完成后读取 external_full_snapshots 正式状态且未pruned的path，仅归档SQL引用的UUID.csv或UUID.csv.gz；未被引用的合法文件视为下载/压缩过程，不收录。选中路径缺失与未知名称仍失败。worker路径只允许/private/full-sync精确basename映射，不接受任意文件路径。
+CSV 归档在持久 lease 和 dump 完成后读取 external_full_snapshots 中未清理的路径。选取 SQL 引用的 UUID.csv 或 UUID.csv.gz，并按 /private/full-sync 下的精确文件名映射。有效密文落盘并校验明文组件收尾后，先清除本点 CSV pins，再释放相同 reference 的全局 lease。失败点保留保护，供操作员核对任务已停止后按准确 reference 收尾。早期失败点如含逐行原档引用，仍走旧 archive-release 清除该点的引用。
 
 最终名单覆盖所有未pruned快照（含已变failed），以dump引用超集为目标。已有正式文件均保存，仅downloading/failed且文件不存在时可略过；其他missing失败。上次成功daily超过两个说明淘汰未收尾，下一次任务先拒绝，不再积累新副本。

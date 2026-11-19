@@ -51,16 +51,17 @@ function SavedCar({
   const cover = publicVehicleCover(vehicle);
   const copy = publicVehicleMessages(locale);
   const title = publicVehicleTitle(vehicle, locale);
+  const analyticsVehicle = vehicle.source.kind === 'demo' ? undefined : vehicle.id;
   return (
     <>
       <div className={styles.photo}>
-        <PublicCatalogLink locale={locale} href={vehicle.detailPath} tabIndex={-1} aria-hidden="true" onClick={close}>
+        <PublicCatalogLink locale={locale} href={vehicle.detailPath} data-analytics-vehicle={analyticsVehicle} tabIndex={-1} aria-hidden="true" onClick={close}>
           <VehiclePhoto image={cover} locale={locale} alt="" compact />
         </PublicCatalogLink>
         <VehiclePhotoStamps vehicle={vehicle} locale={locale} placement="compact" />
       </div>
       <div className={styles.info}>
-        <PublicCatalogLink locale={locale} href={vehicle.detailPath} onClick={close} lang={title.lang}>
+        <PublicCatalogLink locale={locale} href={vehicle.detailPath} data-analytics-vehicle={analyticsVehicle} onClick={close} lang={title.lang}>
           {title.text}
         </PublicCatalogLink>
         <small>

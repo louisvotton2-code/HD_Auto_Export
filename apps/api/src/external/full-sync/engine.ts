@@ -454,8 +454,13 @@ export class FullSyncWorker{
    }
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
-   const initialPending=(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
-   if(active||((!s.since_at||!initialPending)&&new Date(s.next_snapshot_at).getTime()<=Date.now()&&(s.mode==='continuous'||!s.last_success_at)))await this.snapshot();
+   const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();
+   // Detail work can outlive a snapshot. A continuous export follows its own schedule after the prior snapshot completes.
+   if(active||(snapshotDue&&current.mode==='continuous'))await this.snapshot();
+   else if(snapshotDue&&!current.last_success_at){
+    const bootstrapDetailPending=current.since_at&&(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
+    if(!bootstrapDetailPending)await this.snapshot();
+   }
    await this.details();for(let reports=0;reports<20;reports++){if(!await this.report())break;}
    await this.capacityGate();await this.rotate();await this.pruneStaging();
    const pending=(await this.db.pool.query("SELECT 1 FROM external_full_work UNION ALL SELECT 1 FROM external_full_events WHERE applied_at IS NULL UNION ALL SELECT 1 FROM external_full_members WHERE state<>'withdrawn' AND (applied_generation<desired_generation OR cardinality(locales)<3 OR verification_pending) LIMIT 1")).rowCount;

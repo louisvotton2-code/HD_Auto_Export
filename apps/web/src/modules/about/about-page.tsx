@@ -119,7 +119,7 @@ export async function AboutPage({ locale }: { locale: Locale }) {
           <p>{copy.contactBody}</p>
         </div>
         <div className={styles.actions}>
-          <a href={siteConfig.contacts.whatsapp.href} className={styles.primary}>
+          <a href={siteConfig.contacts.whatsapp.href} className={styles.primary} data-analytics-contact="whatsapp">
             {copy.contactAction}<Icon name="diagonal" size={17} />
           </a>
           <NavigationLink href="/cars/" className={styles.secondary}>

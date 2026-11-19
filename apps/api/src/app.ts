@@ -22,6 +22,7 @@ import {markFullSyncAccess} from './external/full-sync/engine.js';
 import {listingUuid} from './external/catalog.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
+import { analyticsEventsPath, registerAnalyticsRoutes } from './analytics/routes.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { trimHttpWhitespace } from './media/conditional.js';
@@ -57,6 +58,7 @@ function rateLimitKey(request:FastifyRequest) {
     '/api/v1/admin/vehicles/:id/translation-plans/:planId/generate'].includes(route);
   // Matched route families, never a caller-supplied ID/query/header, select the budget.
   const bucket=route===externalMediaFailurePath?'external-media-report':
+    route===analyticsEventsPath?'public-analytics':
     request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
     upload?'admin-upload':translate?'admin-translation':
     route==='/api/v1/media/:id'?'public-media':
@@ -70,7 +72,7 @@ const publicMediaCacheControl = 'private, no-cache';
 
 function sendInternalMedia(reply:FastifyReply,file:{filename:string},etag?:string) {
   // Only a store-prepared UUID and fixed derivative can become an internal URI.
-  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.thumb)?\.webp$/.test(file.filename)) {
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.(?:thumb|card))?\.webp$/.test(file.filename)) {
     throw new MediaStorageError('MEDIA_STORAGE_ERROR','The media delivery target is invalid.');
   }
   const prefix=etag?'/_hd_public_media/':'/_hd_media/';
@@ -259,6 +261,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN publication_preview_confirmations pc ON false
         LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
         LEFT JOIN backup_gc_leases bg ON false LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
+        LEFT JOIN analytics_collection_state ac ON false
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false
         LEFT JOIN external_listings el ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
@@ -367,12 +370,17 @@ export async function buildApp(config:Config=readConfig(), options:{
     const readBody=request.method==='GET'&&!failedIfMatch;
     const options={ifNoneMatch,readBody:readBody&&!internal};
     let delivery:Awaited<ReturnType<MediaService['publicDelivery']>>|undefined;
-    if(variant==='thumb') {
-      await serving.optionalEffect(async()=>{delivery=await media.publicDelivery(id,variant,options);});
+    if(variant) {
+      await serving.optionalEffect(async()=>{
+        try { delivery=await media.publicDelivery(id,variant,options); }
+        catch(error) {
+          if(!(error instanceof MediaStorageError)||error.code!=='MEDIA_DERIVATIVE_BUSY') throw error;
+        }
+      });
     }
-    // A non-active slot cannot generate a thumbnail. Never cache its original
-    // image under the requested thumbnail URL.
-    const fallback=variant==='thumb'&&delivery===undefined;
+    // Non-active slots and busy card generators serve the authorized original
+    // without a validator so it cannot be cached under the derivative URL.
+    const fallback=variant!==undefined&&delivery===undefined;
     delivery??=await media.publicDelivery(id,undefined,fallback?{readBody}:options);
     if(failedIfMatch) throw new ApiError(412,'VERSION_CONFLICT','The media precondition did not match.');
     if(!fallback) {
@@ -420,6 +428,8 @@ export async function buildApp(config:Config=readConfig(), options:{
     const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.status(id,planId,actor(request)),request);
   });
   registerExternalRoutes(app,db,actor,config.providerAccountKey);
+  const analytics=registerAnalyticsRoutes(app,config,request=>staff.get(request)?.permissions.includes('staff:manage')===true,
+    work=>serving.optionalEffect(work));
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
   app.get('/api/v1/admin/me/upload-stats',{schema:adminSchema('staffUploadStats',{response:{200:adm.StaffUploadStatsResponseSchema,...errorResponses}})},
     async request=>response(await staffUploadStats(db.pool,staff.get(request)!.id),request));
@@ -481,5 +491,5 @@ export async function buildApp(config:Config=readConfig(), options:{
     return reply.type('image/webp').send(await media.preview(id));
   });
   await app.ready();
-  return {app,db,auth,inventory,media};
+  return {app,db,auth,inventory,media,analytics};
 }

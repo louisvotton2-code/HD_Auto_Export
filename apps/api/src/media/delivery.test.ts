@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
+import type { PublicMediaQuery } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { MediaService } from './service.js';
@@ -11,7 +12,7 @@ const etag = 'W/"public-image"';
 function fixture() {
   let authorized = true;
   const queries: Array<{ sql: string; values: unknown[] }> = [];
-  const accesses: Array<{ method: string; id: string; variant?: 'thumb'; options?: PublicMediaDeliveryOptions }> = [];
+  const accesses: Array<{ method: string; id: string; variant?: PublicMediaQuery['variant']; options?: PublicMediaDeliveryOptions }> = [];
   const db = {
     pool: {
       query: async (sql: string, values: unknown[]) => {
@@ -29,11 +30,11 @@ function fixture() {
       accesses.push({ method: 'prepareDelivery', id, variant });
       return { filename: `${id}${variant ? '.thumb' : ''}.webp`, byteSize: 100 };
     },
-    async preparePublicDelivery(id: string, variant: 'thumb' | undefined, options: PublicMediaDeliveryOptions) {
+    async preparePublicDelivery(id: string, variant: PublicMediaQuery['variant'], options: PublicMediaDeliveryOptions) {
       accesses.push({ method: 'preparePublicDelivery', id, variant, options });
       return {
-        filename: `${id}${variant ? '.thumb' : ''}.webp`, byteSize: 100, etag, notModified: false,
-        body: options.readBody ? Buffer.from(variant ? 'thumbnail' : 'display image') : undefined,
+        filename: `${id}${variant ? `.${variant}` : ''}.webp`, byteSize: 100, etag, notModified: false,
+        body: options.readBody ? Buffer.from(variant ?? 'display image') : undefined,
       };
     },
   } as unknown as LocalMediaStore;
@@ -51,7 +52,7 @@ test('public delivery checks current publication before either body or metadata 
   const bodyOptions = { readBody: true };
   const metadataOptions = { readBody: false, ifNoneMatch: 'W/"previous-image"' };
   assert.equal((await service.publicDelivery(id, undefined, bodyOptions)).body?.toString(), 'display image');
-  assert.equal((await service.publicDelivery(id, 'thumb', bodyOptions)).body?.toString(), 'thumbnail');
+  assert.equal((await service.publicDelivery(id, 'thumb', bodyOptions)).body?.toString(), 'thumb');
   assert.deepEqual(await service.publicDelivery(id, undefined, metadataOptions), {
     filename: `${id}.webp`, byteSize: 100, etag, notModified: false, body: undefined,
   });
@@ -90,14 +91,14 @@ test('preview buffer and file delivery share ready-media and active-vehicle chec
 test('revoked public access is rechecked on every request and never prepares an internal filename', async () => {
   const { service, queries, accesses, revoke } = fixture();
   const id = randomUUID();
-  await service.publicDelivery(id, undefined, { readBody: false });
+  await service.publicDelivery(id, 'card', { readBody: false });
   revoke();
-  for (const variant of [undefined, 'thumb'] as const) {
+  for (const variant of [undefined, 'thumb', 'card'] as const) {
     await assert.rejects(service.publicDelivery(id, variant, { readBody: false, ifNoneMatch: etag }), unavailable);
     await assert.rejects(service.publicDelivery(id, variant, { readBody: true }), unavailable);
   }
-  assert.equal(queries.length, 5);
-  assert.deepEqual(accesses, [{ method: 'preparePublicDelivery', id, variant: undefined, options: { readBody: false } }]);
+  assert.equal(queries.length, 7);
+  assert.deepEqual(accesses, [{ method: 'preparePublicDelivery', id, variant: 'card', options: { readBody: false } }]);
 });
 
 test('revoked preview access prevents both file preparation and buffer reads', async () => {

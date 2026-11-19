@@ -16,6 +16,7 @@ const Env = z.object({
   AUTH_SECRET: z.string().min(32),
   AUTH_BASE_URL: z.string().url().default('http://127.0.0.1:3318'),
   TRUSTED_ORIGINS: z.string().default('http://127.0.0.1:3318'),
+  ANALYTICS_ORIGINS: z.string().max(2048).default(''),
   MEDIA_ROOT: z.string().default('.data/media'),
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
@@ -100,6 +101,13 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
   if (!trustedOrigins.includes(new URL(e.AUTH_BASE_URL).origin)) throw new Error('AUTH_BASE_URL origin must be trusted');
   if (new URL(e.AUTH_BASE_URL).origin !== e.AUTH_BASE_URL) throw new Error('AUTH_BASE_URL must be an origin without a path');
   if (e.NODE_ENV === 'production' && trustedOrigins.some(o => !o.startsWith('https://'))) throw new Error('Production origins must use HTTPS');
+  const analyticsOrigins = e.ANALYTICS_ORIGINS.trim() ? e.ANALYTICS_ORIGINS.split(',').map(origin=>origin.trim()) : [];
+  if (analyticsOrigins.some(origin => {
+    try {
+      return new URL(origin).origin !== origin || !/^https?:/.test(origin) ||
+        (e.NODE_ENV === 'production' && !origin.startsWith('https://'));
+    } catch { return true; }
+  })) throw new Error('ANALYTICS_ORIGINS must contain exact website origins and use HTTPS in production');
   if (e.EXTERNAL_CATALOG_MODE === 'synthetic') {
     const database = new URL(e.DATABASE_URL);
     if (e.NODE_ENV === 'production' || e.HOST !== '127.0.0.1' || database.hostname !== '127.0.0.1' ||
@@ -160,7 +168,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
   }
   return {
     servingModeFile:e.API_SERVING_MODE_FILE, environment: e.NODE_ENV, deployment, ssrService, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
-    authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins,
+    authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins, analyticsOrigins,
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
     trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog, externalScale,
     externalIngestion: e.EXTERNAL_CATALOG_MODE !== 'disabled', externalSync: e.EXTERNAL_SYNC_MODE,

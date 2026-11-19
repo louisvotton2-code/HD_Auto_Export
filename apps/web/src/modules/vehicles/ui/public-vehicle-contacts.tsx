@@ -23,6 +23,7 @@ export function PublicVehicleContacts({
 }) {
   const t = publicVehicleMessages(locale);
   const trusted = usePublicFreshness() === 'fresh';
+  const analyticsVehicle = trusted && vehicle.source.kind !== 'demo' ? vehicle.id : undefined;
   const inspection = purpose === 'inspection';
   const links = inspection
     ? buildVehicleInspectionContactLinks(vehicle, locale)
@@ -42,6 +43,8 @@ export function PublicVehicleContacts({
       <a
         className={`${styles.contactAction} ${styles.telegram}`}
         href={trusted ? links.telegram : undefined}
+        data-analytics-contact={trusted ? 'telegram' : undefined}
+        data-analytics-contact-vehicle={analyticsVehicle}
         aria-disabled={!trusted || undefined}
         tabIndex={trusted ? undefined : -1}
         target="_blank"
@@ -54,6 +57,8 @@ export function PublicVehicleContacts({
       <a
         className={`${styles.contactAction} ${styles.whatsapp}`}
         href={trusted ? links.whatsapp : undefined}
+        data-analytics-contact={trusted ? 'whatsapp' : undefined}
+        data-analytics-contact-vehicle={analyticsVehicle}
         aria-disabled={!trusted || undefined}
         tabIndex={trusted ? undefined : -1}
         target="_blank"

@@ -113,6 +113,7 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
                 target="_blank"
                 rel="noopener noreferrer"
                 data-platform={platform}
+                data-analytics-contact={platform === 'whatsapp' || platform === 'telegram' ? platform : undefined}
                 aria-label={contacts(platform)}
                 title={contacts(platform)}
               >

@@ -9,6 +9,7 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./public": { "types": "./dist/public.d.ts", "import": "./dist/public.js" },
     "./admin": { "types": "./dist/admin.d.ts", "import": "./dist/admin.js" },
+    "./analytics": { "types": "./dist/analytics.d.ts", "import": "./dist/analytics.js" },
     "./fixtures": { "types": "./dist/fixtures.d.ts", "import": "./dist/fixtures.js" }
   },
   "files": ["dist"],

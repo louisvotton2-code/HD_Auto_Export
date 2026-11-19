@@ -192,6 +192,7 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
           {enquiryAction ?? <a
             className={styles.contactButton}
             href={siteConfig.contacts.whatsapp.href}
+            data-analytics-contact="whatsapp"
             target="_blank"
             rel="noopener noreferrer"
             aria-label={t('Contacts.whatsapp')}

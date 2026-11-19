@@ -2,12 +2,24 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { preload } from 'react-dom';
-import Image from 'next/image';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
 import { homeContent } from '../content/home-content';
 import { HeroStats } from './hero-stats';
 import styles from './home-hero.module.css';
+
+const roadImagePath = '/media/home/dawn-convoy.webp';
+const roadImageSrcSet = [576, 1056, 1440]
+  .map((width) => `/media/home/dawn-convoy-${width}.webp ${width}w`)
+  .concat(`${roadImagePath} 1536w`)
+  .join(', ');
+// Keep in sync with roadFrame: cover scales the 3:2 image by width or 1.5 × height.
+const desktopCoverWidth = 'calc(1.5 * (clamp(520px, 100svh - 346px, 800px) - clamp(100px, 12svh, 138px) - clamp(28px, 5svh, 52px)))';
+const roadImageSizes = [
+  '(max-width: 760px) max(100vw, clamp(360px, 111vw, 738px))',
+  `(max-width: 1050px) max(calc(74vw - clamp(22px, 5.6vw, 86px)), ${desktopCoverWidth})`,
+  `max(min(972.4px, calc(70vw - clamp(22px, 5.6vw, 86px))), ${desktopCoverWidth})`,
+].join(', ');
 
 export function HomeHero({
   locale,
@@ -22,6 +34,12 @@ export function HomeHero({
   const scrollCue = useRef<HTMLAnchorElement>(null);
   const t = homeContent[locale];
 
+  preload(roadImagePath, {
+    as: 'image',
+    imageSrcSet: roadImageSrcSet,
+    imageSizes: roadImageSizes,
+    fetchPriority: 'high',
+  });
   preload('/fonts/inter-latin.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
   if (locale === 'ru') {
     preload('/fonts/inter-cyrillic.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
@@ -182,12 +200,15 @@ export function HomeHero({
     <section className={styles.hero} data-home-section="hero" ref={hero}>
       <div className={styles.heroStage}>
         <div className={styles.roadFrame} aria-hidden="true">
-          <Image
-            src="/media/home/dawn-convoy.webp"
+          <img
+            srcSet={roadImageSrcSet}
+            sizes={roadImageSizes}
+            src={roadImagePath}
             alt=""
-            fill
-            preload
-            sizes="(max-width: 760px) 100vw, min(69vw, 980px)"
+            width={1536}
+            height={1024}
+            fetchPriority="high"
+            decoding="async"
             className={styles.roadImage}
           />
           <div className={styles.roadLight} data-testid="hero-road-light" />

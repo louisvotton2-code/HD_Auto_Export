@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, App, Avatar, Breadcrumb, Button, Card, Drawer, Form, Grid, Input, Layout, Menu, Modal, Result, Space, Spin, Tag, Typography } from 'antd';
-import { ApiOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, BarChartOutlined, CarOutlined, CheckCircleOutlined, CloseOutlined, DeleteOutlined, HomeOutlined, LockOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SearchOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { StaffLoginSchema, StaffMeResponseSchema, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request, signIn, signOut } from '../../shared/api/client';
 import { Link, Outlet, useLocation } from 'react-router-dom';
@@ -83,10 +83,11 @@ export function Workspace() {
   const pathname = location.pathname;
   const current = pathname.startsWith('/public-catalog') || pathname.startsWith('/external-sources/listings/') ? '/public-catalog'
     : pathname.startsWith('/external-sources') ? '/external-sources'
+    : pathname.startsWith('/analytics') ? '/analytics'
     : pathname.startsWith('/staff') ? '/staff'
     : pathname.startsWith('/home-sections') ? '/home-sections'
     : pathname.startsWith('/recycle-bin') ? '/recycle-bin' : '/vehicles';
-  const pageNames = { '/staff': '员工管理', '/external-sources': '三方 API 状态', '/home-sections': '首页展示配置',
+  const pageNames = { '/analytics': '网站分析', '/staff': '员工管理', '/external-sources': '三方 API 状态', '/home-sections': '首页展示配置',
     '/public-catalog': '三方车源管理', '/recycle-bin': '车辆回收站', '/vehicles': '车辆工作台' };
   const menuItems = [
     { key: '/vehicles', icon: <CarOutlined />, label: <Link to="/vehicles">精品车辆管理</Link> },
@@ -96,7 +97,8 @@ export function Workspace() {
       { key: '/public-catalog', icon: <SearchOutlined />, label: <Link to="/public-catalog">三方车源管理</Link> },
     ] : []),
     ...(staff.permissions.includes('staff:manage') ? [
-      { key: '/staff', className: 'admin-utilities-start', icon: <TeamOutlined />, label: <Link to="/staff">员工管理</Link> },
+      { key: '/analytics', className: 'admin-utilities-start', icon: <BarChartOutlined />, label: <Link to="/analytics">网站分析</Link> },
+      { key: '/staff', icon: <TeamOutlined />, label: <Link to="/staff">员工管理</Link> },
       { key: '/external-sources', icon: <ApiOutlined />, label: <Link to="/external-sources">三方 API 状态</Link> },
     ] : []),
   ];

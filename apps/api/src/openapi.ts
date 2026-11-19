@@ -19,7 +19,7 @@ try {
   if(publicMedia) publicMedia.responses['304']={
     description:'Image unchanged after current publication access and file validation.',
     headers:{
-      ETag:{schema:{type:'string'},description:'Validator for the selected display or thumbnail file.'},
+      ETag:{schema:{type:'string'},description:'Validator for the selected display image or derivative.'},
       'Cache-Control':{schema:{type:'string',example:'private, no-cache'}},
     },
   };

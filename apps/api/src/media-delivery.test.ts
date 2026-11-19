@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApiErrorSchema } from '@hd/contracts/public';
+import { ApiErrorSchema, type PublicMediaQuery } from '@hd/contracts/public';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
 import { ApiError } from './errors.js';
@@ -15,6 +15,8 @@ const previewPath=`/api/v1/admin/media/${id}/preview`;
 const staffCookie='hd-auto.session_token=delivery-test-session';
 const original={body:Buffer.from('authorized-direct-image-body'),etag:'W/"original-media-test"'};
 const thumbnail={body:Buffer.from('authorized-direct-thumbnail-body'),etag:'W/"thumbnail-media-test"'};
+const card={body:Buffer.from('authorized-direct-card-body'),etag:'W/"card-media-test"'};
+const variants={thumb:thumbnail,card};
 const methods=['GET','HEAD'] as const;
 const modes=['nginx','default'] as const;
 
@@ -37,12 +39,12 @@ async function setup(t:TestContext,mode:'nginx'|'default'='nginx',servingModeFil
     return {user:{id:'delivery-test-staff'},session:{id:'delivery-test-session'}};
   });
   const publicDelivery=t.mock.method(runtime.media,'publicDelivery',async(
-    mediaId:string,variant:'thumb'|undefined,options:{ifNoneMatch?:string;readBody:boolean},
+    mediaId:string,variant:PublicMediaQuery['variant'],options:{ifNoneMatch?:string;readBody:boolean},
   )=>{
-    const image=variant==='thumb'?thumbnail:original;
+    const image=variant?variants[variant]:original;
     const notModified=options.ifNoneMatch===image.etag||options.ifNoneMatch==='*';
     return {
-      filename:`${mediaId}${variant==='thumb'?'.thumb':''}.webp`,
+      filename:`${mediaId}${variant?`.${variant}`:''}.webp`,
       byteSize:image.body.length,etag:image.etag,notModified,
       body:options.readBody&&!notModified?image.body:undefined,
     };
@@ -82,12 +84,13 @@ function noRedirect(response:HttpResponse) {
   assert.equal(response.headers['x-accel-expires'],undefined);
 }
 
-test('Nginx public GET and HEAD delegate authorized originals and thumbnails to the public location',async t=>{
+test('Nginx public GET and HEAD delegate authorized originals and derivatives to the public location',async t=>{
   const {app,publicDelivery}=await setup(t);
   for(const method of methods) {
-    for(const [variant,image,suffix] of [[undefined,original,''],['thumb',thumbnail,'.thumb']] as const) {
-      const response=await app.inject({method,url:`${publicPath}${variant?'?variant=thumb':''}`});
-      redirected(response,`/_hd_public_media/${id}${suffix}.webp`);
+    for(const variant of [undefined,'thumb','card'] as const) {
+      const image=variant?variants[variant]:original;
+      const response=await app.inject({method,url:`${publicPath}${variant?`?variant=${variant}`:''}`});
+      redirected(response,`/_hd_public_media/${id}${variant?`.${variant}`:''}.webp`);
       assert.equal(response.headers.etag,image.etag);
       const [mediaId,requestedVariant,options]=publicDelivery.mock.calls.at(-1)!.arguments;
       assert.equal(mediaId,id);
@@ -96,26 +99,27 @@ test('Nginx public GET and HEAD delegate authorized originals and thumbnails to 
       assert.equal(options.ifNoneMatch,undefined);
     }
   }
-  assert.equal(publicDelivery.mock.callCount(),4);
+  assert.equal(publicDelivery.mock.callCount(),6);
 });
 
 test('matching public validators return a bodyless 304 after the service checks delivery',async t=>{
   for(const mode of modes) {
     const {app,publicDelivery}=await setup(t,mode);
-    for(const method of methods) {
-      const response=await app.inject({
-        method,url:`${publicPath}?variant=thumb`,headers:{'if-none-match':thumbnail.etag},
-      });
-      assert.equal(response.statusCode,304);
-      assert.equal(response.body,'');
-      assert.equal(response.headers['content-type'],undefined);
-      publicHeaders(response,thumbnail.etag);
-      noRedirect(response);
-      assert.deepEqual(publicDelivery.mock.calls.at(-1)?.arguments,[
-        id,'thumb',{ifNoneMatch:thumbnail.etag,readBody:mode==='default'&&method==='GET'},
-      ]);
+    for(const variant of ['thumb','card'] as const) {
+      const {etag}=variants[variant];
+      for(const method of methods) {
+        const response=await app.inject({method,url:`${publicPath}?variant=${variant}`,headers:{'if-none-match':etag}});
+        assert.equal(response.statusCode,304);
+        assert.equal(response.body,'');
+        assert.equal(response.headers['content-type'],undefined);
+        publicHeaders(response,etag);
+        noRedirect(response);
+        assert.deepEqual(publicDelivery.mock.calls.at(-1)?.arguments,[
+          id,variant,{ifNoneMatch:etag,readBody:mode==='default'&&method==='GET'},
+        ]);
+      }
     }
-    assert.equal(publicDelivery.mock.callCount(),2);
+    assert.equal(publicDelivery.mock.callCount(),4);
   }
 });
 
@@ -157,25 +161,49 @@ test('Nginx public requests use API decisions for conditional delivery',async t=
   assert.equal(publicDelivery.mock.callCount(),5);
 });
 
-test('a candidate slot can serve the original without caching it at the thumbnail URL',async t=>{
+test('a candidate slot serves the original without caching it at derivative URLs',async t=>{
   const root=await mkdtemp(join(tmpdir(),'hd-media-delivery-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const servingModeFile=join(root,'serving-mode');
   await writeFile(servingModeFile,'candidate',{mode:0o600});
   const {app,publicDelivery}=await setup(t,'nginx',servingModeFile);
-  for(const method of methods) {
-    const response=await app.inject({
-      method,url:`${publicPath}?variant=thumb`,headers:{'if-none-match':original.etag},
-    });
-    assert.equal(response.statusCode,200);
-    if(method==='GET') assert.deepEqual(response.rawPayload,original.body);
-    else assert.equal(response.body,'');
-    assert.equal(response.headers['content-type'],'image/webp');
-    noStore(response);
-    noRedirect(response);
-    assert.deepEqual(publicDelivery.mock.calls.at(-1)?.arguments,[id,undefined,{readBody:method==='GET'}]);
+  for(const variant of ['thumb','card'] as const) {
+    for(const method of methods) {
+      const response=await app.inject({
+        method,url:`${publicPath}?variant=${variant}`,headers:{'if-none-match':original.etag},
+      });
+      assert.equal(response.statusCode,200);
+      if(method==='GET') assert.deepEqual(response.rawPayload,original.body);
+      else assert.equal(response.body,'');
+      assert.equal(response.headers['content-type'],'image/webp');
+      noStore(response);
+      noRedirect(response);
+      assert.deepEqual(publicDelivery.mock.calls.at(-1)?.arguments,[id,undefined,{readBody:method==='GET'}]);
+    }
   }
-  assert.equal(publicDelivery.mock.callCount(),2);
+  assert.equal(publicDelivery.mock.callCount(),4);
+});
+
+test('a busy card generator serves authorized originals without validators in both delivery modes',async t=>{
+  for(const mode of modes) {
+    const {app,publicDelivery}=await setup(t,mode);
+    publicDelivery.mock.mockImplementation(async(mediaId,variant,{readBody})=>{
+      if(variant==='card') throw new MediaStorageError('MEDIA_DERIVATIVE_BUSY','Card preparation is busy.');
+      assert.equal(variant,undefined);
+      return {filename:`${mediaId}.webp`,byteSize:original.body.length,etag:original.etag,
+        notModified:false,body:readBody?original.body:undefined};
+    });
+    for(const method of methods) {
+      const response=await app.inject({method,url:`${publicPath}?variant=card`,headers:{'if-none-match':'*'}});
+      assert.equal(response.statusCode,200);
+      assert.deepEqual(response.rawPayload,method==='GET'?original.body:Buffer.alloc(0));
+      assert.equal(Number(response.headers['content-length']),original.body.length);
+      noStore(response);
+      noRedirect(response);
+      assert.deepEqual(publicDelivery.mock.calls.at(-1)?.arguments,[id,undefined,{readBody:method==='GET'}]);
+    }
+    assert.equal(publicDelivery.mock.callCount(),4);
+  }
 });
 
 test('Nginx preview requires a staff session for both GET and HEAD before issuing a redirect',async t=>{
@@ -246,7 +274,7 @@ test('invalid internal filenames and URLs fail closed for public images and auth
 test('unknown media variants and invalid IDs are rejected before file authorization',async t=>{
   const {app,publicDelivery}=await setup(t);
   for(const url of [`${publicPath}?variant=original`,`${publicPath}?variant=THUMB`,
-    `${publicPath}?variant=thumb&variant=thumb`,'/api/v1/media/not-a-uuid']) {
+    `${publicPath}?variant=thumb&variant=card`,`${publicPath}?variant=card&width=360`,'/api/v1/media/not-a-uuid']) {
     const response=await app.inject({method:'GET',url,headers:{'if-none-match':original.etag}});
     assert.equal(response.statusCode,400);
     noRedirect(response);
@@ -260,9 +288,9 @@ test('default direct public delivery returns bytes for GET and metadata for HEAD
   const {app,config,publicDelivery}=await setup(t,'default');
   assert.equal(config.mediaDelivery,'direct');
   for(const method of methods) {
-    for(const [variant,image,validator] of [[undefined,original,thumbnail.etag],['thumb',thumbnail,original.etag]] as const) {
+    for(const [variant,image,validator] of [[undefined,original,thumbnail.etag],['thumb',thumbnail,original.etag],['card',card,thumbnail.etag]] as const) {
       const response=await app.inject({
-        method,url:`${publicPath}${variant?'?variant=thumb':''}`,headers:{'if-none-match':validator},
+        method,url:`${publicPath}${variant?`?variant=${variant}`:''}`,headers:{'if-none-match':validator},
       });
       assert.equal(response.statusCode,200);
       if(method==='GET') assert.deepEqual(response.rawPayload,image.body);
@@ -276,7 +304,7 @@ test('default direct public delivery returns bytes for GET and metadata for HEAD
       ]);
     }
   }
-  assert.equal(publicDelivery.mock.callCount(),4);
+  assert.equal(publicDelivery.mock.callCount(),6);
 });
 
 test('conditional staff preview sends authorized bytes with no-store in both modes',async t=>{

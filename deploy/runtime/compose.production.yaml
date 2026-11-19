@@ -22,6 +22,7 @@ services:
       HD_DATABASE_NAME: ${HD_DATABASE_NAME:?set the reviewed new logical release database}
       HD_DEPLOYMENT_ENV: ${HD_DEPLOYMENT_ENV:?set production/local/test explicitly}
       HD_RELEASE_ID: ${RELEASE_ID:?use the immutable release identity}
+      ANALYTICS_ORIGINS: ${ANALYTICS_ORIGINS:-}
       NODE_OPTIONS: --max-old-space-size=384
       EXTERNAL_CATALOG_MODE: disabled
       CATALOG_READ_MODE: combined
