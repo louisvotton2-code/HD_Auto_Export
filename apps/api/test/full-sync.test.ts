@@ -41,7 +41,16 @@ test('formal full synchronization has durable independent receipt/application an
   };
   await t.test('raw page durable before application, replay idempotent and withdrawal wins',async()=>{
    await worker!.receiveDelta();let s=await fullSyncStatus(database);assert.equal(s.receivedEvents,2);assert.equal(s.appliedEvents,0);
+   // Model a restart before the page checkpoint advanced: replay the very same event IDs.
+   await database.pool.query('UPDATE external_full_sync SET receive_cursor=NULL WHERE id=1');
    await worker!.receiveDelta();assert.equal((await fullSyncStatus(database)).receivedEvents,2);
+   await database.pool.query('UPDATE external_full_sync SET receive_cursor=NULL WHERE id=1');
+   const first=feed[0]!;
+   feed[0]={...first,vehicleId:'999'};
+   await assert.rejects(worker!.receiveDelta(),/SYNC_EVENT_CONFLICT/);
+   assert.equal((await worker!.state()).receive_cursor,null);
+   feed[0]=first;
+   await worker!.receiveDelta();
    assert.equal(await worker!.applyEvents(true),1);
    const pending=(await database.pool.query(`SELECT operation FROM external_full_events WHERE applied_at IS NULL ORDER BY event_id`)).rows;
    assert.deepEqual(pending,[{operation:'upsert'}]);
@@ -73,6 +82,36 @@ test('formal full synchronization has durable independent receipt/application an
    assert.deepEqual(await withdrawalState(),{business_order:'4',withdrawn:false});
    assert.equal((await database.pool.query("SELECT state FROM external_full_members WHERE source='che168' AND external_id='123'")).rows[0].state,'pending');
    assert.equal((await database.pool.query("SELECT count(*)::int AS n FROM external_full_work WHERE source='che168' AND external_id='123' AND kind='detail'")).rows[0].n,1);
+  });
+  await t.test('a due daily export starts alongside an exhausted detail from the previous snapshot',async ctx=>{
+   const before=await worker!.state();
+   const scheduled=ctx.mock.method(worker!,'snapshot',async()=>0);
+   ctx.mock.method(worker!,'details',async()=>0);
+   ctx.mock.method(worker!,'report',async()=>0);
+   ctx.mock.method(worker!,'capacityGate',async()=>{});
+   ctx.mock.method(worker!,'rotate',async()=>{});
+   ctx.mock.method(worker!,'pruneStaging',async()=>{});
+   await database.pool.query(`UPDATE external_full_work SET attempts=5 WHERE source='che168' AND external_id='123' AND kind='detail'`);
+   try {
+    await database.pool.query(`UPDATE external_full_sync SET mode='continuous',next_delta_at=now()+interval '1 day',
+     next_maintenance_at=now()+interval '1 day',next_snapshot_at=now()+interval '1 day' WHERE id=1`);
+    await worker!.tick();
+    assert.equal(scheduled.mock.callCount(),0);
+    await database.pool.query("UPDATE external_full_sync SET next_snapshot_at=now()-interval '1 minute' WHERE id=1");
+    await worker!.tick();
+    assert.equal(scheduled.mock.callCount(),1);
+    await database.pool.query("UPDATE external_full_sync SET mode='full' WHERE id=1");
+    await worker!.tick();
+    assert.equal(scheduled.mock.callCount(),1);
+    await database.pool.query('UPDATE external_full_sync SET since_at=NULL WHERE id=1');
+    await worker!.tick();
+    assert.equal(scheduled.mock.callCount(),2);
+    assert.equal((await database.pool.query("SELECT attempts FROM external_full_work WHERE source='che168' AND external_id='123' AND kind='detail'")).rows[0].attempts,5);
+   } finally {
+    await database.pool.query(`UPDATE external_full_sync SET mode=$1,next_delta_at=$2,next_maintenance_at=$3,next_snapshot_at=$4,since_at=$5 WHERE id=1`,
+     [before.mode,before.next_delta_at,before.next_maintenance_at,before.next_snapshot_at,before.since_at]);
+    await database.pool.query(`UPDATE external_full_work SET attempts=0 WHERE source='che168' AND external_id='123' AND kind='detail'`);
+   }
   });
   await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async()=>{
    const snapshotId=randomUUID(),archivePath=path.join(directory,`${snapshotId}.csv.gz`),archive=Buffer.alloc(8192,1);
@@ -219,6 +258,12 @@ test('formal full synchronization has durable independent receipt/application an
    assert.deepEqual(repairs,['zh','en','ru']);assert.deepEqual(reportRepairs,['100003']);
    assert.equal(recovered.capacity_pending,false);assert.equal(recovered.capacity_estimate.withdrawnSampleRows,1);
    assert.equal(recovered.capacity_estimate.threeLocaleCompleted,9999);assert.equal(recovered.capacity_estimate.confirmedNoReport,9999);
+
+   // A later-received event with an older business time cannot undo that relist.
+   feed.push({id:11,source:'dongchedi',vehicleId:'100003',type:'removed',at:'2026-11-14T00:00:08.500Z'});
+   await worker!.receiveDelta();assert.equal(await worker!.applyEvents(true),1);
+   assert.deepEqual((await database.pool.query("SELECT state,event_order::text FROM external_full_members WHERE source='dongchedi' AND external_id='100003'")).rows[0],
+    {state:'active',event_order:'10'});
 
    // Even a wholly withdrawn cohort can be reevaluated conservatively; no active member/report is invented.
    await rejectBudget();await database.pool.query("UPDATE external_full_members SET state='withdrawn' WHERE sampled");
