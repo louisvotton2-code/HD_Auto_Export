@@ -23,7 +23,7 @@ describe('hero statistics server content', () => {
       expect(metricHtml(html, 'parts')).toContain(`>${partsLabel}</dt>`);
       for (const [metric, finalText] of [['catalog', catalog], ['parts', format.format(48_689)], ['years', years]]) {
         const markup = metricHtml(html, metric);
-        expect(markup).toContain('data-counter-value="0">0</span>');
+        expect(markup).toContain('data-counter-value="0">0</hd-home-count>');
         expect(markup).toContain(`>${finalText}</span>`);
         expect(markup).toContain('class="sr-only"');
       }

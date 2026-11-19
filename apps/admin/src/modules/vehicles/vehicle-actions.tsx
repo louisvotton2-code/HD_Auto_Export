@@ -2,20 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Alert, App, Button, Card, Descriptions, Form, Select, Space, Tag, Typography } from 'antd';
 import { CloudUploadOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
-import { AdminVehicleResponseSchema, type AdminVehicle, type Availability, type ConfirmPublicationPreviewRequest, type PublicationIssue, type StaffMe } from '@hd/contracts/admin';
-import type { Locale } from '@hd/contracts/public';
+import { AdminVehicleResponseSchema, type AdminVehicle, type Availability, type PublicationIssue, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request } from '../../shared/api/client';
 import { readVehicleLifecycle } from '../../shared/api/vehicle-lifecycle';
 import { availabilityLabels, formatTime, publicationLabels } from './draft-form';
 import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, publicationIssueDetail, type PublishIntent } from './vehicle-actions-model';
 import styles from './vehicle-actions.module.css';
-import { publicationReceiptMatches, usePublicationReadiness } from './use-publication-readiness';
+import { usePublicationReadiness } from './use-publication-readiness';
 
 type Props = {
   vehicle: AdminVehicle;
   publicationTabActive: boolean;
-  previewLocale: Locale;
-  previewReceipt: ConfirmPublicationPreviewRequest | null;
   hasUnsavedChanges: boolean;
   disabled?: boolean;
   onUpdated: (vehicle: AdminVehicle) => void;
@@ -31,7 +28,7 @@ function proposedAvailability(vehicle: AdminVehicle): Availability {
   return vehicle.publicationState === 'draft' && vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null ? 'available' : vehicle.availability;
 }
 
-export function VehicleActions({ publicationTabActive, previewLocale, previewReceipt, vehicle, hasUnsavedChanges, disabled = false, onUpdated, onConflict, onIssue, onBusyChange }: Props) {
+export function VehicleActions({ publicationTabActive, vehicle, hasUnsavedChanges, disabled = false, onUpdated, onConflict, onIssue, onBusyChange }: Props) {
   const staff = useOutletContext<StaffMe>();
   const { modal, message: toast } = App.useApp();
   const canWrite = staff.permissions.includes('vehicles:write');
@@ -54,17 +51,15 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   parentBusy.current = onBusyChange;
   const confirmation = useRef<{ cancel(): void } | null>(null);
   const readiness = usePublicationReadiness({
-    vehicleId: vehicle.id, version: vehicle.version, locale: previewLocale,
+    vehicleId: vehicle.id, version: vehicle.version, locale: 'zh',
     onConflict: () => {
       // A read can see our inventory write before its receipt arrives. The read
       // still invalidates publication readiness, but must leave reconciliation available.
       if (inventoryWriteVersion.current !== vehicle.version) onConflict?.();
     },
   });
-  const receiptKey = previewReceipt ? JSON.stringify([vehicle.id, previewReceipt.version, previewReceipt.publicContentRevision, previewReceipt.fingerprint, previewReceipt.locale]) : null;
-  const currentAction = useRef({ vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive, receiptKey });
-  currentAction.current = { vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive, receiptKey };
-  const lastReceipt = useRef<string | null>(null);
+  const currentAction = useRef({ vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive });
+  currentAction.current = { vehicle, disabled, hasUnsavedChanges, canPublish, publicationTabActive };
   const isDemo = String(vehicle.draft.source.kind) === 'demo';
   const isExternal = vehicle.draft.source.kind === 'external';
   const allowsPending = isDemo || isExternal;
@@ -74,12 +69,6 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; confirmation.current?.cancel(); parentBusy.current?.(false); }; }, []);
   useEffect(() => { parentBusy.current?.(busy || confirming || locked || readiness.confirming); }, [busy, confirming, locked, readiness.confirming]);
-  useEffect(() => {
-    if (receiptKey && lastReceipt.current !== receiptKey) {
-      void readiness.reload();
-    }
-    lastReceipt.current = receiptKey;
-  }, [receiptKey, readiness.reload]);
   useEffect(() => { setAvailability(proposedAvailability(vehicle)); }, [vehicle.id, vehicle.availability, vehicle.availabilityCheckedAt, vehicle.publicationState, vehicle.version]);
 
   async function confirmAction(title: string, content: string, danger = false): Promise<boolean> {
@@ -112,7 +101,7 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
 
   async function perform(operation: Operation) {
     if (operation === 'publish' && !currentAction.current.publicationTabActive) {
-      setError('请先进入发布预览检查后再发布'); return;
+      setError('请在最后一步核对资料并确认发布。'); return;
     }
     // This synchronous latch covers confirmation as well as the subsequent HTTP request.
     if (actionGuard.current) return;
@@ -132,27 +121,27 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
       if (wasUncertain && !publishIntent.current) {
         setError('原发布请求已不可用，请先读取当前状态核对结果；没有创建新的发布请求。'); return;
       }
-      if (!wasUncertain && (!publishAllowed || !previewReceipt)) return;
+      if (!wasUncertain && (!publishAllowed || !confirmationInput)) return;
       if (!publishIntent.current) publishIntent.current = makePublishIntent(vehicle, crypto.randomUUID(), Date.now());
       if (publicationAttemptExpired(publishIntent.current, Date.now())) {
         setError('本次发布请求已超过 24 小时，请先读取当前状态核对结果，再决定下一步。');
         setUnconfirmed('publish'); void toast.warning('原发布请求已超过24小时，请先读取当前状态。'); return;
       }
-      if (!wasUncertain && previewReceipt) {
+      if (!wasUncertain && confirmationInput) {
         start('publish');
         let proceed = false;
         try {
-          const result = await readiness.confirm(previewReceipt);
+          const result = await readiness.confirm(confirmationInput);
           const current = currentAction.current;
           if (!mounted.current) return;
           if (!result.ok) {
-            setError(result.error ?? '预览确认未完成，请重新检查后再发布。');
+            setError(result.error ?? '发布确认未完成，请重新检查后再发布。');
             return;
           }
           if (!current.publicationTabActive || current.disabled || current.hasUnsavedChanges || !current.canPublish ||
               current.vehicle.id !== vehicle.id || current.vehicle.version !== publishIntent.current?.version ||
-              current.receiptKey !== receiptKey || publicationControlState(current.vehicle).blocked || !readiness.isPublishReady(previewReceipt)) {
-            setError('草稿或预览已变化，请检查当前预览后再发布。');
+              publicationControlState(current.vehicle).blocked || !readiness.isPublishReady(confirmationInput)) {
+            setError('草稿已变化，请核对最新资料后再发布。');
             return;
           }
           proceed = true;
@@ -240,9 +229,11 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
   }
 
   const ready = readiness.ready;
-  const receiptMatches = Boolean(ready && previewReceipt && previewReceipt.version === vehicle.version && publicationReceiptMatches(ready, previewReceipt));
+  const confirmationInput = ready?.vehicleVersion === vehicle.version && ready.requiredFieldsReady && ready.localizationReady
+    ? { version: ready.vehicleVersion, publicContentRevision: ready.publicContentRevision, fingerprint: ready.fingerprint, locale: ready.locale }
+    : null;
   const publishAllowed = publicationTabActive && canPublish && !unavailable && !publicationStatus.blocked &&
-    !readiness.loading && !readiness.error && receiptMatches && !!ready?.requiredFieldsReady && !!ready.localizationReady;
+    !readiness.loading && !readiness.error && confirmationInput !== null;
 
 
   const pending = ready?.issues.filter(issue => issue.stage !== 'preview') ?? [];
@@ -279,8 +270,9 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
               {reason && <Typography.Text type="secondary">{reason}</Typography.Text>}
             </div></li>;
           })}</ul>
-          : !receiptMatches && <Typography.Paragraph>请完整载入当前草稿预览后再发布。</Typography.Paragraph>}
-        {(readiness.error || (previewReceipt && !receiptMatches && !readiness.loading)) && <Button icon={<ReloadOutlined />} disabled={unavailable} onClick={() => void readiness.reload()}>重新检查发布条件</Button>}
+          : confirmationInput && <Typography.Text type="secondary">资料检查通过。</Typography.Text>}
+        {(readiness.error || (!readiness.loading && ready && !confirmationInput)) &&
+          <Button icon={<ReloadOutlined />} disabled={unavailable} onClick={() => void readiness.reload()}>重新检查发布条件</Button>}
       </section>}
       {canWrite && !allowsPending && <div className={styles.inventory}>
         <div className={styles.inventoryControls}>
@@ -297,7 +289,7 @@ export function VehicleActions({ publicationTabActive, previewLocale, previewRec
               disabled={!publishAllowed} loading={busy && activeOperation === 'publish'} onClick={() => void perform('publish')}>{publishLabel}</Button>}
             {canWrite && <Button danger size="large" icon={<StopOutlined />} loading={busy && activeOperation === 'archive'} disabled={unavailable || vehicle.publicationState === 'archived'} onClick={() => void perform('archive')}>下架车辆</Button>}
           </Space>
-          <Typography.Text type="secondary">确认发布前请核对预览中的图片、价格和文字。下架立即撤销公开访问。</Typography.Text>
+          <Typography.Text type="secondary">发布以当前已保存资料为准。下架会立即撤销公开访问。</Typography.Text>
         </div>}
     </Card>
   </section>;

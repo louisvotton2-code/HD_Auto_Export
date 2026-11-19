@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 test.skip(
   !process.env.PUBLIC_FIXTURE_API_URL,
@@ -192,7 +192,7 @@ test('all hero counters grow from their server-rendered zero to the exact values
 }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   // Keep scripting enabled, but simulate delayed styles and JavaScript at first paint.
-  const assets = /\/_next\/static\/.*\.(?:css|js)(?:\?|$)/;
+  const assets = /\/(?:_next\/static\/.*\.(?:css|js)|media\/home\/hero-counts\.js)(?:\?|$)/;
   await page.route(assets, (route) => route.abort());
   await page.goto('/en/');
   const metrics = ['catalog', 'parts', 'years'] as const;
@@ -259,8 +259,121 @@ test('all hero counters grow from their server-rendered zero to the exact values
   const plainCatalog = plain.getByTestId('hero-stat-catalog').locator('strong');
   await expect(plainCatalog).toHaveText('26', { useInnerText: true });
   await expect(plainCatalog.locator('[data-counter-value]')).toBeHidden();
-  await expect(plain.getByTestId('hero-stat-years').locator('strong')).toHaveText('23年', { useInnerText: true });
+  const plainYears = plain.getByTestId('hero-stat-years').locator('strong');
+  await expect(plainYears).toHaveText(/^23\s*年$/, { useInnerText: true });
+  // The inline grid can introduce a newline in innerText even when the unit stays beside the number.
+  expect(await plainYears.evaluate((node) => {
+    const count = node.querySelector('[data-counter-value] + span')!.getBoundingClientRect();
+    const unit = node.lastElementChild!.getBoundingClientRect();
+    return unit.left >= count.right - 1 && unit.top < count.bottom && unit.bottom > count.top;
+  })).toBe(true);
   await noScript.close();
+});
+
+const homeCountScript = /\/media\/home\/hero-counts\.js(?:\?|$)/;
+const nextScripts = /\/_next\/static\/.*\.js(?:\?|$)/;
+const homeFonts = /\/fonts\/inter-(?:latin|cyrillic)\.woff2$/;
+
+async function measureFirstPaint(page: Page) {
+  return page.evaluate(() => {
+    const box = (element: Element | null) => {
+      const { x, y, width, height } = element!.getBoundingClientRect();
+      return [x, y, width, height];
+    };
+    return {
+      stats: box(document.querySelector('[data-testid="hero-stats"]')),
+      digits: box(document.querySelector('[data-hero-stat="parts"] strong')),
+      unit: box(document.querySelector('[data-hero-stat="years"] strong > span:last-child')),
+      cards: [...document.querySelectorAll('#home-shortcuts a')].map((card) => {
+        const text = document.createRange();
+        text.selectNodeContents(card.querySelector('strong')!);
+        return { frame: box(card), titleWidth: text.getBoundingClientRect().width };
+      }),
+    };
+  });
+}
+
+test('the homepage counts before hydration and keeps the first paint stable under slow fonts', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /hydrat|react error #(?:418|423|425)/i.test(message.text())) errors.push(message.text());
+  });
+  let allowCount!: () => void;
+  let allowFonts!: () => void;
+  let allowNext!: () => void;
+  const countGate = new Promise<void>((resolve) => { allowCount = resolve; });
+  const fontsGate = new Promise<void>((resolve) => { allowFonts = resolve; });
+  const nextGate = new Promise<void>((resolve) => { allowNext = resolve; });
+  await page.route(homeCountScript, async (route) => { await countGate; await route.continue(); });
+  await page.route(homeFonts, async (route) => { await fontsGate; await route.continue(); });
+  await page.route(nextScripts, async (route) => { await nextGate; await route.continue(); });
+  try {
+    await page.goto('/ru/', { waitUntil: 'domcontentloaded' });
+    const number = page.getByTestId('hero-stat-catalog').locator('[data-counter-value]');
+    await expect(number).toHaveText('0');
+    const firstPaint = await measureFirstPaint(page);
+    allowCount();
+    await expect(number).toHaveText('26', { timeout: 1500 });
+    expect(await measureFirstPaint(page)).toEqual(firstPaint);
+
+    allowFonts();
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    await page.evaluate(() => {
+      const catalog = document.querySelector('[data-hero-stat="catalog"] [data-counter-value]')!;
+      const cards = [...document.querySelectorAll('#home-shortcuts a')];
+      const observations = { rewound: false, cardAnimated: false };
+      Reflect.set(window, '__homeHydrationObservations', observations);
+      const observer = new MutationObserver(() => {
+        if (!catalog.isConnected || catalog.textContent !== '26') observations.rewound = true;
+      });
+      observer.observe(document.querySelector('[data-testid="hero-stats"]')!, { subtree: true, childList: true, characterData: true });
+      cards.forEach((card) => card.addEventListener('animationstart', () => { observations.cardAnimated = true; }));
+    });
+    allowNext();
+    await expect(page.locator('[data-home-section="hero"]')).toHaveAttribute('style', /--drive-progress/);
+    expect(await measureFirstPaint(page)).toEqual(firstPaint);
+    expect(await page.evaluate(() => Reflect.get(window, '__homeHydrationObservations'))).toEqual({
+      rewound: false, cardAnimated: false,
+    });
+    expect(errors).toEqual([]);
+  } finally {
+    allowCount();
+    allowFonts();
+    allowNext();
+  }
+});
+
+test('a delayed counter asset reveals the real numbers and does not rewind on arrival', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  let allowCount!: () => void;
+  const countGate = new Promise<void>((resolve) => { allowCount = resolve; });
+  await page.route(homeCountScript, async (route) => { await countGate; await route.continue(); });
+  try {
+    await page.goto('/zh/', { waitUntil: 'domcontentloaded' });
+    const stat = page.getByTestId('hero-stat-parts');
+    const counter = stat.locator('[data-counter-value]');
+    await expect(stat.locator('strong')).toHaveText('48,689', { useInnerText: true });
+    await expect(counter).toBeHidden();
+    allowCount();
+    await expect(counter).toHaveText('48,689');
+    await expect(stat.locator('strong')).toHaveText('48,689', { useInnerText: true });
+  } finally {
+    allowCount();
+  }
+});
+
+test('the counters work when opening the homepage through a site link for the first time', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/en/parts/');
+  expect(await page.evaluate(() => Boolean(customElements.get('hd-home-count')))).toBe(false);
+  await page.evaluate(() => { Reflect.set(window, '__sameNavigationDocument', true); });
+  await page.locator('a.hd-brand[href="/en/"]').click();
+  await expect(page).toHaveURL(/\/en\/$/);
+  await expect(page.getByTestId('hero-stat-parts').locator('[data-counter-value]')).toHaveText('48,689');
+  expect(await page.evaluate(() => Reflect.get(window, '__sameNavigationDocument'))).toBe(true);
 });
 
 for (const locale of ['zh', 'en', 'ru']) {

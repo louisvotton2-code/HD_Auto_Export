@@ -118,7 +118,9 @@ test('report public and preview projections accept presence only and strictly re
   await installApi(page, { items: [item], publicationPreviews: [preview] }); const externalRequests = await preventExternalRequests(page);
   await page.goto(`/admin/vehicles/${item.id}`); await expectPrivateLink(page);
   const response = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publication-preview'));
-  await tab(page, '发布预览'); const projection = PublicationPreviewSchema.parse((await (await response).json()).data);
+  await tab(page, '发布预览');
+  await page.getByRole('button', { name: '打开预览', exact: true }).click();
+  const projection = PublicationPreviewSchema.parse((await (await response).json()).data);
   expect(projection.vehicle.report).toEqual({ hasReport: true }); expect(JSON.stringify(projection)).not.toContain(reportUrl);
   expect(externalRequests).toEqual([]);
 });

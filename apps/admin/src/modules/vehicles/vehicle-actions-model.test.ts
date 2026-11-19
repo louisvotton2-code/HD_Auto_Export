@@ -87,7 +87,7 @@ describe('server-confirmed pending publication state', () => {
 
 describe('后台发布缺项中文提示', () => {
   it('不把服务端英文诊断或内部值直接显示给操作员', () => {
-    expect(publicationReadinessIssueLabel({ stage: 'preview', path: 'publicationPreview', code: 'PREVIEW_CONFIRMATION_REQUIRED', message: 'Confirm the current publication preview before publishing.' })).toBe('发布预览：请检查并确认当前内容');
+    expect(publicationReadinessIssueLabel({ stage: 'preview', path: 'publicationPreview', code: 'PREVIEW_CONFIRMATION_REQUIRED', message: 'Confirm the current publication preview before publishing.' })).toBe('发布确认：请核对当前已保存资料');
     expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.internal.purchaseCost.amount', code: 'REQUIRED_FOR_PUBLICATION', message: 'PRIVATE_DIAGNOSTIC_VALUE' })).toBe('采购成本：请填写正数金额并核对币种');
     expect(publicationReadinessIssueLabel({ stage: 'localization', path: 'draft.content.title.translations.en', code: 'REQUIRED_FOR_PUBLICATION', message: 'A reviewed translation is required.' })).toBe('英文标题：请完善当前原文的译文');
     expect(publicationReadinessIssueLabel({ stage: 'required_fields', path: 'draft.facts.trim', code: 'REQUIRED_FOR_PUBLICATION', message: 'Trim is required.' })).toBe('配置名称：请填写车型配置名称');

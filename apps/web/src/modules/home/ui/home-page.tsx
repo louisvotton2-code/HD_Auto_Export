@@ -216,20 +216,6 @@ export function HomePage({
   onRetry?: () => void;
 }) {
   const t = homeContent[locale];
-  const shortcuts = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const section = shortcuts.current;
-    if (!section || !('IntersectionObserver' in window)) return;
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.intersectionRatio < .25) return;
-      section.dataset.homeRevealed = 'true';
-      observer.disconnect();
-    }, { threshold: .25 });
-    observer.observe(section);
-    return () => observer.disconnect();
-  }, []);
   const visibleSections = unavailable
     ? []
     : sections.filter((section) => section.vehicles.length > 0);
@@ -265,7 +251,7 @@ export function HomePage({
   return (
     <main id="main" className={styles.home} data-testid="home-page">
       <HomeHero locale={locale} catalogTotal={catalogTotal}>
-        <section ref={shortcuts} className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
+        <section className={styles.shortcuts} id="home-shortcuts" data-home-section="shortcuts">
           <Link href="/cars/" className={`${styles.shortcut} ${styles.catalogShortcut}`}>
             <Icon name="car" size={30} />
             <strong>{t.shortcuts[0]}</strong>

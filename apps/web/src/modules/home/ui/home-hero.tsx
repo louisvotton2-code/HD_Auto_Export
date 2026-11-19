@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, type ReactNode } from 'react';
+import { preload } from 'react-dom';
 import Image from 'next/image';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
@@ -20,6 +21,11 @@ export function HomeHero({
   const hero = useRef<HTMLElement>(null);
   const scrollCue = useRef<HTMLAnchorElement>(null);
   const t = homeContent[locale];
+
+  preload('/fonts/inter-latin.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
+  if (locale === 'ru') {
+    preload('/fonts/inter-cyrillic.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
+  }
 
   useEffect(() => {
     const node = hero.current;

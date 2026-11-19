@@ -14,9 +14,9 @@ function confirmationDeadline(ready: PublishReadiness) {
 export function publicationConfirmationIsCurrent(ready: PublishReadiness, now = Date.now()) {
   return ready.previewConfirmed && ready.confirmation?.locale === ready.locale && confirmationDeadline(ready) > now;
 }
-export function publicationReceiptMatches(ready: PublishReadiness, receipt: ConfirmPublicationPreviewRequest | null) {
-  return Boolean(receipt && receipt.version === ready.vehicleVersion && receipt.publicContentRevision === ready.publicContentRevision
-    && receipt.fingerprint === ready.fingerprint && receipt.locale === ready.locale);
+function matchesConfirmation(ready: PublishReadiness, input: ConfirmPublicationPreviewRequest) {
+  return input.version === ready.vehicleVersion && input.publicContentRevision === ready.publicContentRevision
+    && input.fingerprint === ready.fingerprint && input.locale === ready.locale;
 }
 type Snapshot = {
   key: string; data: PublishReadiness | null; loading: boolean; confirming: boolean; error: string;
@@ -43,16 +43,15 @@ export function usePublicationReadiness(options: Options) {
     const target = current.current;
     const confirming = receipt !== undefined;
     if (confirmationInFlight.current) {
-      // A rendered receipt or visibility event may change while confirmation is in flight.
-      // Keep that refresh, but do not abort a mutation whose result would become unknown.
+      // Defer visibility refreshes so they do not abort a confirmation in flight.
       if (!confirming) refreshPending.current = true;
-      return { ok: false, error: '正在确认当前预览，请等待结果。' };
+      return { ok: false, error: '正在确认当前发布资料，请等待结果。' };
     }
     if (confirming) {
       const ready = snapshotRef.current;
       if (!ConfirmPublicationPreviewRequestSchema.safeParse(receipt).success || ready.key !== target.key || ready.loading || ready.error || !ready.data
-        || !ready.data.requiredFieldsReady || !ready.data.localizationReady || receipt.version !== target.version || !publicationReceiptMatches(ready.data, receipt)) {
-        return { ok: false, error: '预览与当前已保存资料不一致，请重新读取发布检查和预览后确认。' };
+        || !ready.data.requiredFieldsReady || !ready.data.localizationReady || receipt.version !== target.version || !matchesConfirmation(ready.data, receipt)) {
+        return { ok: false, error: '已保存资料版本已变化，请重新检查发布条件后确认。' };
       }
     }
     controller.current?.abort();
@@ -77,8 +76,8 @@ export function usePublicationReadiness(options: Options) {
         return { ok: false, error: '服务端车辆版本已变化，请核对最新车辆资料。' };
       }
       if (ready.locale !== target.locale || (ready.confirmation && ready.confirmation.locale !== target.locale)
-        || (confirming && (!publicationReceiptMatches(ready, receipt) || !publicationConfirmationIsCurrent(ready)))) {
-        throw new Error('服务端返回的预览确认与当前内容或语言不一致，请重新读取核对。');
+        || (confirming && (!matchesConfirmation(ready, receipt) || !publicationConfirmationIsCurrent(ready)))) {
+        throw new Error('服务端确认的发布资料与当前版本不一致，请重新读取核对。');
       }
       update({ key: target.key, data: ready, loading: false, confirming: false, error: '' });
       return { ok: true };
@@ -134,7 +133,7 @@ export function usePublicationReadiness(options: Options) {
   function isPublishReady(receipt: ConfirmPublicationPreviewRequest) {
     const latest = snapshotRef.current;
     return latest.key === current.current.key && !latest.error && !!latest.data?.canPublish
-      && publicationReceiptMatches(latest.data, receipt) && publicationConfirmationIsCurrent(latest.data);
+      && matchesConfirmation(latest.data, receipt) && publicationConfirmationIsCurrent(latest.data);
   }
   return {
     ready, loading: snapshot.key !== key || snapshot.loading, confirming: snapshot.key === key && snapshot.confirming,

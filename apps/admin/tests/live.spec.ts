@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { ActivityResponseSchema, StaffMeResponseSchema, AdminVehicleResponseSchema, AdminVehicleListSchema, BulkVehicleMutationResponseSchema, AdminHomeSectionsResponseSchema, AdminVehicleFiltersResponseSchema, MediaAssetResponseSchema, MediaUploadRequestSchema, type AdminVehicle, type VehicleDraftInput } from '@hd/contracts/admin';
 import { PublicVehicleResponseSchema, PublicVehicleListSchema, PublicHomeSectionsSchema } from '@hd/contracts/public';
 import { newName, notes, select, tab } from './ui-helpers';
-import { waitForPublicationPreview, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
+import { openOptionalPublicationPreview, waitForPublishReady, chooseYear, chooseUtcDateTime } from './publication-test-helpers';
 import { mkdir, copyFile, writeFile } from 'node:fs/promises';
 import { ExternalBatchRecordsResponseSchema, ExternalTrialResponseSchema } from '@hd/contracts/admin';
 import { makeDemoVehicleDraftFixture, makeExternalImportFixture, makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
@@ -152,7 +152,7 @@ async function contentAndImage(page: Page, vehicle: AdminVehicle) {
 }
 async function operation(page: Page, id: string, button: string, route: string) {
   await tab(page, '发布预览');
-  if (route === 'publish') await waitForPublicationPreview(page);
+  if (route === 'publish') await waitForPublishReady(page);
   const response = page.waitForResponse(r => r.url().endsWith(`/api/v1/admin/vehicles/${id}/${route}`) && r.request().method() === 'POST');
   if (route === 'publish') await page.getByTestId('vehicle-publish').click();
   else {
@@ -777,7 +777,7 @@ test('translation disabled real API keeps Chinese source intact when an import p
   expect(mutations).toEqual([importPath]);
 });
 
-test('real publication preview rejects private image failures until a new load succeeds', async ({ page }, testInfo) => {
+test('real publication preview reports private image failures and publishing remains available', async ({ page }, testInfo) => {
   // Requires the reviewed FE image-decode fix; the older FE build must fail this regression.
   test.setTimeout(240_000);
   expect(process.env.ADMIN_LIVE_TRANSLATION_PROVIDER).toBe('disabled');
@@ -875,7 +875,8 @@ test('real publication preview rejects private image failures until a new load s
   }
   async function expectFailed() {
     await expect(frame.getByTestId('publication-preview-media-error')).toBeVisible();
-    await expect(publish).toBeDisabled();
+    await expect(page.getByText('预览未就绪', { exact: true })).toBeVisible();
+    await expect(publish).toBeEnabled();
     expectNoWrites();
   }
   async function expectDecoded(mediaId: string) {
@@ -890,6 +891,7 @@ test('real publication preview rejects private image failures until a new load s
       return current.complete && current.naturalWidth > 0;
     })).toBe(true);
     await expect(frame.getByTestId('publication-preview-media-error')).toHaveCount(0);
+    await expect(page.getByText('已显示当前草稿', { exact: true })).toBeVisible();
     await expect(publish).toBeEnabled();
     expectNoWrites();
   }
@@ -903,6 +905,9 @@ test('real publication preview rejects private image failures until a new load s
     await expectFailed();
   }
   try {
+    await expect(iframe).toHaveCount(0);
+    await openOptionalPublicationPreview(page);
+    await expectDecoded(cover.id);
     for (const result of [401, 403, 500, 'abort'] as const) {
       fault = { mediaId: cover.id, result };
       const failedLoadId = await reloadPreview(`cover-${result}`);
@@ -934,6 +939,9 @@ test('real publication preview rejects private image failures until a new load s
     expect(PublishReadinessResponseSchema.parse(await beforeConfirmation.json()).data).toMatchObject({
       requiredFieldsReady: true, localizationReady: true, previewConfirmed: false, canPublish: false, confirmation: null,
     });
+    fault = { mediaId: cover.id, result: 500 };
+    await reloadPreview('cover-failed-before-publish');
+    await expectFailed();
     stage = 'explicit-confirm-and-publish';
     const publishedResponse = await operation(page, initial.id, '确认并发布', 'publish');
     expect(publishedResponse.status()).toBe(200);

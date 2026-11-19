@@ -4,7 +4,7 @@ const actions: Record<string, string> = {
   'vehicle.create': '创建车辆', 'vehicle.save': '保存草稿', 'vehicle.publish': '发布车辆',
   'vehicle.archive': '下架车辆', 'vehicle.availability': '更新库存状态', 'vehicle.delete': '删除车辆',
   'vehicle.restore': '恢复车辆', 'vehicle.translationBundle.save': '保存公开多语',
-  'vehicle.localization.save': '保存展示译文', 'vehicle.preview.confirm': '确认发布预览',
+  'vehicle.localization.save': '保存展示译文', 'vehicle.preview.confirm': '确认发布资料',
   'media.create': '申请图片上传', 'media.upload': '图片文件上传完成',
   'media.complete': '图片处理完成', 'media.delete': '删除图片',
   'vehicle.media.add': '添加图片', 'vehicle.media.remove': '移除图片', 'vehicle.media.reorder': '调整图片顺序',
