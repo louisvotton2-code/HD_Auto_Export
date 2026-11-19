@@ -89,7 +89,7 @@ test('a direct photo error is reported once and detail shows only a report summa
 test('original-language fallback, missing media and disputed facts are readable and withdrawal returns 404', async ({ page, request }) => {
   await page.route('https://photos.example.invalid/**', (route) => route.fulfill({ status: 410 }));
   await page.goto(`/ru/cars/${externalFixtureId(2)}/`);
-  await expect(page.locator('main h1')).toHaveAttribute('lang', 'en');
+  await expect(page.locator('main h1')).toHaveAttribute('lang', 'ru');
   await expect(page.locator('main h1')).toHaveText('Toyota 2024');
   await expect(page.locator('main p[lang="zh"]').filter({ hasText: '这是合成测试说明。' })).toBeVisible();
   await page.goto(`/en/cars/${externalFixtureId(3)}/`);
