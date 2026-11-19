@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { Link, useBlocker, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Alert, App, Badge, Breadcrumb, Button, Card, Col, DatePicker, Descriptions, Empty, Form, Input, Modal, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, CloudUploadOutlined, FileTextOutlined, PlusOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { AdminVehicleResponseSchema, VehicleDraftWriteSchema, type AdminVehicle, type ConfirmPublicationPreviewRequest, type PublicationIssue, type VehicleDraftInput } from '@hd/contracts/admin';
+import { AdminVehicleResponseSchema, VehicleDraftWriteSchema, type AdminVehicle, type PublicationIssue, type VehicleDraftInput } from '@hd/contracts/admin';
 import type { Locale } from '@hd/contracts/public';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
@@ -70,7 +70,6 @@ export function VehicleEditorPage() {
   const dictionary = useVehicleDictionary();
   const [record, setRecord] = useState<AdminVehicle | null>(null);
   const [previewLocale, setPreviewLocale] = useState<Locale>('zh');
-  const [previewReceipt, setPreviewReceipt] = useState<ConfirmPublicationPreviewRequest | null>(null);
   const [importIssue, setImportIssue] = useState<PublicationIssue | null>(null);
   const acceptedRecord = useRef<AdminVehicle | null>(null);
   const reportRefresh = useRef<AbortController | null>(null);
@@ -150,7 +149,7 @@ export function VehicleEditorPage() {
     return () => { window.removeEventListener('beforeunload', beforeUnload); window.dispatchEvent(new CustomEvent('admin:dirty', { detail: false })); };
   }, [dirty, saving, mediaBusy, actionsBusy, lifecycleBusy, importGuard.busy]);
 
-  useEffect(() => { setPreviewReceipt(null); setImportIssue(null); }, [id]);
+  useEffect(() => { setImportIssue(null); }, [id]);
 
   function accept(vehicle: AdminVehicle) {
     if (acceptedRecord.current?.id === vehicle.id && acceptedRecord.current.version > vehicle.version) return;
@@ -484,12 +483,13 @@ export function VehicleEditorPage() {
   </div>;
   const images = <div data-editor-section="images" tabIndex={-1}>{externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}{record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} value={extras.media} savedMediaIds={base.media.map(media => media.id)} onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }} onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || importLocked || conflict || externalSourceChanged} /> : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}</div>;
   const review = <div className={styles.sectionStack} data-editor-section="review" tabIndex={-1}>
-    {record && activeTab === 'review' && <PublicationPreviewPanel vehicleId={record.id} version={record.version} locale={previewLocale} onLocaleChange={setPreviewLocale} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || importLocked || conflict} onRendered={setPreviewReceipt} />}
-    {record ? <VehicleActions key={record.id} publicationTabActive={activeTab === 'review'} previewLocale={previewLocale} previewReceipt={previewReceipt}
+    {record ? <VehicleActions key={record.id} publicationTabActive={activeTab === 'review'}
       onIssue={focusPublicationIssue} vehicle={record} hasUnsavedChanges={dirty}
       disabled={saving || mediaBusy || lifecycleBusy || importLocked || conflict} onUpdated={acceptMutation}
       onConflict={() => { setConflict(true); void loadRemote(); }} onBusyChange={setActionsBusy} />
-      : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、多语和库存信息完善后，在这里检查预览并发布。" />}
+      : <Alert type="info" showIcon title="先保存草稿，再完成发布" description="图片、多语和库存信息完善后，在这里核对资料并发布。" />}
+    {record && activeTab === 'review' && <PublicationPreviewPanel key={record.id} vehicleId={record.id} version={record.version} locale={previewLocale}
+      onLocaleChange={setPreviewLocale} hasUnsavedChanges={dirty} disabled={saving || mediaBusy || actionsBusy || lifecycleBusy || importLocked || conflict} />}
   </div>;
 
   return <section className={styles.page}>

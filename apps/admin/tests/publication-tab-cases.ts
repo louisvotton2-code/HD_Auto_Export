@@ -1,7 +1,7 @@
 /** Tab boundaries are exercised with a synthetic authenticated iframe, not real FE evidence. */
 import { expect, test, type Page } from '@playwright/test';
 import { envelope, installApi, reply, vehicle } from './api-fixture';
-import { waitForPublicationPreview } from './publication-test-helpers';
+import { openOptionalPublicationPreview, waitForPublishReady } from './publication-test-helpers';
 import { tab } from './ui-helpers';
 
 const id = '60000000-0000-4000-8000-000000000011';
@@ -14,20 +14,21 @@ async function expectNoPublicationControls(page: Page) {
   await expect(page.getByRole('button', { name: /重试原发布请求$/ })).toHaveCount(0);
 }
 
-test('publication tab only exposes confirm and publish controls in the rendered preview tab', async ({ page }) => {
+test('publication tab only exposes publication controls in the final step', async ({ page }) => {
   const item = { ...vehicle(), id }; const api = await installApi(page, { items: [item], publicationDefaultConfirmed: false }); let writes = 0;
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => { writes++; return reply(route, envelope(item)); });
   await page.goto(`/admin/vehicles/${id}`); await expectNoPublicationControls(page);
   for (const name of ['车辆配置', '价格与内部信息', '图片管理']) { await tab(page, name); await expectNoPublicationControls(page); }
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
+  await expect(page.locator('iframe[title="中文车辆发布预览"]')).toHaveCount(0);
   expect(api.previewConfirmations).toEqual([]);
   await tab(page, '基础资料'); await expectNoPublicationControls(page);
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
   expect(writes).toBe(0);
   expect(api.previewConfirmations).toEqual([]);
 });
 
-test('publication tab does not publish when the frame is invalidated during confirmation', async ({ page }) => {
+test('publication tab completes explicit publishing when the optional frame is invalidated during confirmation', async ({ page }) => {
   const item = { ...vehicle(), id }; const api = await installApi(page, { items: [item] }); let writes = 0;
   let release!: () => void;
   const pause = new Promise<void>(resolve => { release = resolve; });
@@ -39,7 +40,8 @@ test('publication tab does not publish when the frame is invalidated during conf
   });
   await page.route(`**/api/v1/admin/vehicles/${id}/publish`, route => { writes++; return reply(route, envelope(item)); });
   await page.goto(`/admin/vehicles/${id}`);
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
+  await openOptionalPublicationPreview(page);
   const iframe = await page.locator('iframe[title="中文车辆发布预览"]').elementHandle();
   const src = await iframe!.getAttribute('src');
   const loadId = new URL(src!, page.url()).searchParams.get('loadId');
@@ -50,10 +52,10 @@ test('publication tab does not publish when the frame is invalidated during conf
     await child!.evaluate(({ id, loadId }) => window.parent.postMessage({
       schemaVersion: 1, type: 'hd:auto:publication-preview', event: 'disposed', vehicleId: id, locale: 'zh', loadId,
     }, window.location.origin), { id, loadId });
+    await expect(page.getByText('预览已关闭，请重新载入。', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /重新载入预览$/ })).toBeDisabled();
   } finally { release(); }
-  await expect(page.locator('.ant-alert-error').filter({ hasText: '草稿或预览已变化' })).toBeVisible();
-  expect(writes).toBe(0);
+  await expect.poll(() => writes).toBe(1);
   expect(api.previewConfirmations).toHaveLength(1);
 });
 

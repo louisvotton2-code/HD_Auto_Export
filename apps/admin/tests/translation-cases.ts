@@ -4,7 +4,7 @@ import type { AdminVehicle } from '@hd/contracts/admin';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
 import { notes, select, tab } from './ui-helpers';
 import { captureFixtureEvidence } from './fixture-evidence';
-import { waitForPublicationPreview, chooseYear } from './publication-test-helpers';
+import { waitForPublishReady, chooseYear } from './publication-test-helpers';
 
 const id = '30000000-0000-4000-8000-000000000001';
 function publishedVehicle(): AdminVehicle {
@@ -105,7 +105,7 @@ test('publication recovers verified inventory when a newer readiness read arrive
   await page.getByRole('button', { name: '保存草稿' }).click();
   await expect.poll(() => api.saves.length).toBe(1);
   expect(api.saves[0]).toMatchObject({ version: stockVersion });
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
   await publishButton(page).click();
   await expect(publishButton(page)).toHaveText('已发布，暂无待发布修改');
   expect(api.previewConfirmations).toHaveLength(1);
@@ -141,7 +141,7 @@ test('publication saved public changes remain publishable after a successful inv
   await chooseYear(page, '年款', 2025);
   await page.getByRole('button', { name: /保存草稿$/ }).click(); await expect.poll(() => api.saves.length).toBe(1);
   expect(record.hasUnpublishedChanges).toBe(true);
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
   await select(page, '核验后的库存状态', '已预订');
   await page.getByRole('button', { name: /核验并更新库存$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();

@@ -1,10 +1,13 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { tab } from './ui-helpers';
 
-/** Requires the real FE preview or installApi's explicitly synthetic iframe. Never fabricates a receipt. */
-export async function waitForPublicationPreview(page: Page) {
+export async function waitForPublishReady(page: Page) {
   await tab(page, '发布预览');
   await expect(page.getByTestId('vehicle-publish')).toBeEnabled();
+}
+
+export async function openOptionalPublicationPreview(page: Page) {
+  await page.getByRole('button', { name: '打开预览', exact: true }).click();
 }
 
 async function openPicker(page: Page, label: string) {

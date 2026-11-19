@@ -44,7 +44,7 @@ export function publicationIssueLabel(path: string): string {
 
 /** Staff UI uses Chinese guidance, independent of diagnostic text returned by the API. */
 export function publicationReadinessIssueLabel(issue: PublicationIssue): string {
-  if (issue.stage === 'preview') return '发布预览：请检查并确认当前内容';
+  if (issue.stage === 'preview') return '发布确认：请核对当前已保存资料';
   return publicationIssueLabel(issue.path);
 }
 

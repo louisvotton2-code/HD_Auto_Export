@@ -75,6 +75,8 @@ test('publication preview omits the public content card for a published vehicle'
   await installApi(page, { items: [item] });
   await page.goto(`/admin/vehicles/${item.id}`);
   await tab(page, '发布预览');
+  await expect(page.locator('iframe[title="中文车辆发布预览"]')).toHaveCount(0);
+  await page.getByRole('button', { name: '打开预览', exact: true }).click();
   await expect(page.locator('iframe[title="中文车辆发布预览"]')).toBeVisible();
   await expect(page.getByRole('heading', { name: '库存与发布' })).toBeVisible();
   await expect(page.getByText('官网公开内容', { exact: true })).toHaveCount(0);

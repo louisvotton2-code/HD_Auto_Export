@@ -2,7 +2,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { makeExternalVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply, vehicle } from './api-fixture';
-import { waitForPublicationPreview } from './publication-test-helpers';
+import { waitForPublishReady } from './publication-test-helpers';
 import { fillRequiredVehicleBasics, notes, select, tab } from './ui-helpers';
 
 const deletedTime = '2026-11-08T09:00:00Z';
@@ -278,7 +278,7 @@ test('publishing clears the earlier draft-only save notice after accepting the c
   await page.getByRole('button', { name: /保存草稿$/ }).click();
   const draftOnlyNotice = page.getByText('草稿已保存，尚未发布这些修改。', { exact: true });
   await expect(draftOnlyNotice).toBeVisible();
-  await waitForPublicationPreview(page);
+  await waitForPublishReady(page);
   await expect(draftOnlyNotice).toBeVisible();
   expect(api.previewConfirmations).toEqual([]);
   expect(publications).toBe(0);
