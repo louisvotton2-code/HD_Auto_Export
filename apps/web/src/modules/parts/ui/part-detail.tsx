@@ -39,8 +39,8 @@ export function PartDetail({ part, related, locale, knownPartIds, initialQuantit
             <small>{t.quantityHelp}</small>{invalid && <p className={styles.error} role="alert">{t.invalidQuantity}</p>}
           </form>
           <div className={styles.detailContacts} data-part-contacts={part.slug}>
-            <a href={invalid ? undefined : links.telegram} aria-disabled={invalid || undefined} tabIndex={invalid ? -1 : undefined} target="_blank" rel="noopener noreferrer"><SocialIcon platform="telegram" size={20} />{t.telegram}</a>
-            <a href={invalid ? undefined : links.whatsapp} aria-disabled={invalid || undefined} tabIndex={invalid ? -1 : undefined} target="_blank" rel="noopener noreferrer"><SocialIcon platform="whatsapp" size={20} />{t.whatsapp}</a>
+            <a href={invalid ? undefined : links.telegram} data-analytics-contact={invalid ? undefined : 'telegram'} aria-disabled={invalid || undefined} tabIndex={invalid ? -1 : undefined} target="_blank" rel="noopener noreferrer"><SocialIcon platform="telegram" size={20} />{t.telegram}</a>
+            <a href={invalid ? undefined : links.whatsapp} data-analytics-contact={invalid ? undefined : 'whatsapp'} aria-disabled={invalid || undefined} tabIndex={invalid ? -1 : undefined} target="_blank" rel="noopener noreferrer"><SocialIcon platform="whatsapp" size={20} />{t.whatsapp}</a>
           </div>
           <p className={styles.note}>{t.contactNote}</p>
           <section className={styles.fitment}><h2>{t.fitment}</h2><p>{t.fitmentBody}</p></section>

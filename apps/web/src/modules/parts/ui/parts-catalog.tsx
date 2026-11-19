@@ -115,7 +115,7 @@ function PartsSupport({ locale }: { locale: Locale }) {
             <dl>
               <div><dt>{t.phoneLabel}</dt><dd><a href={phone.href}>{phone.display}</a></dd></div>
               <div><dt>{t.phoneLabel}</dt><dd><a href={phone2.href}>{phone2.display}</a></dd></div>
-              <div><dt>Telegram</dt><dd><a href={telegram.href} target="_blank" rel="noopener noreferrer">{telegram.display}</a></dd></div>
+              <div><dt>Telegram</dt><dd><a href={telegram.href} data-analytics-contact="telegram" target="_blank" rel="noopener noreferrer">{telegram.display}</a></dd></div>
             </dl>
           </div>
           <div className={styles.quotePanel}>
@@ -125,8 +125,8 @@ function PartsSupport({ locale }: { locale: Locale }) {
               <li><Icon name="box" size={18} />{t.quantity}</li>
             </ul>
             <div className={styles.quoteActions}>
-              <a className={styles.primary} href={telegram.href} target="_blank" rel="noopener noreferrer"><SocialIcon platform="telegram" size={18} />{t.telegram}</a>
-              <a className={styles.primary} href={whatsapp.href} target="_blank" rel="noopener noreferrer"><SocialIcon platform="whatsapp" size={18} />{t.whatsapp}</a>
+              <a className={styles.primary} href={telegram.href} data-analytics-contact="telegram" target="_blank" rel="noopener noreferrer"><SocialIcon platform="telegram" size={18} />{t.telegram}</a>
+              <a className={styles.primary} href={whatsapp.href} data-analytics-contact="whatsapp" target="_blank" rel="noopener noreferrer"><SocialIcon platform="whatsapp" size={18} />{t.whatsapp}</a>
             </div>
           </div>
         </div>

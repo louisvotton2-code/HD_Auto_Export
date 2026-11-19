@@ -27,6 +27,7 @@ export function PublicVehicleCard({
   const t = publicVehicleMessages(locale),
     cover = publicVehicleCover(vehicle);
   const title = publicVehicleTitle(vehicle, locale);
+  const analyticsVehicle = vehicle.source.kind === 'demo' ? undefined : vehicle.id;
   return (
     <div className={styles.cardSlot}>
       <article
@@ -37,7 +38,7 @@ export function PublicVehicleCard({
       >
         <div className={styles.cardLight} aria-hidden="true" />
         <div className={styles.cardImage}>
-          <PublicCatalogLink locale={locale} href={vehicle.detailPath} tabIndex={-1} aria-hidden="true">
+          <PublicCatalogLink locale={locale} href={vehicle.detailPath} data-analytics-vehicle={analyticsVehicle} tabIndex={-1} aria-hidden="true">
             <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} />
             {vehicle.facts.modelYear !== null && (
               <span className={styles.year}>{vehicle.facts.modelYear}</span>
@@ -53,7 +54,7 @@ export function PublicVehicleCard({
         />
         <div className={styles.cardBody}>
           <h2 lang={title.lang} title={title.text}>
-            <PublicCatalogLink locale={locale} href={vehicle.detailPath}>
+            <PublicCatalogLink locale={locale} href={vehicle.detailPath} data-analytics-vehicle={analyticsVehicle}>
               {title.text}
             </PublicCatalogLink>
           </h2>
@@ -80,6 +81,7 @@ export function PublicVehicleCard({
               locale={locale}
               className={styles.detailsButton}
               href={vehicle.detailPath}
+              data-analytics-vehicle={analyticsVehicle}
             >
               {t.details} <Icon name="diagonal" size={16} />
             </PublicCatalogLink>

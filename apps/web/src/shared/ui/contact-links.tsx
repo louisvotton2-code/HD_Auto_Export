@@ -83,6 +83,7 @@ export function ContactLinks() {
             href={siteConfig.contacts[key].href}
             target="_blank"
             rel="noopener noreferrer"
+            data-analytics-contact={key === 'whatsapp' || key === 'telegram' ? key : undefined}
           >
             <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
               <SocialIcon platform={key} size={18} />

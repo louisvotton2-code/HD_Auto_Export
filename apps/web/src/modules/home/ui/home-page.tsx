@@ -111,6 +111,7 @@ function VehicleRail({
       >
         {vehicles.map((v) => {
           const links = buildPublicVehicleContactLinks(v, locale);
+          const analyticsVehicle = v.source.kind === 'demo' ? undefined : v.id;
           const image = publicVehicleCover(v);
           const { text: name, lang } = publicVehicleTitle(v, locale);
           return (
@@ -123,8 +124,8 @@ function VehicleRail({
               >
                 <div className={styles.cardLight} aria-hidden="true" />
                 <div className={styles.vehicleImage}>
-                  <PublicCatalogLink locale={locale} href={v.detailPath} tabIndex={-1} aria-hidden="true">
-                    <VehiclePhoto image={image} locale={locale} alt={image?.alt || name} />
+                  <PublicCatalogLink locale={locale} href={v.detailPath} data-analytics-vehicle={analyticsVehicle} tabIndex={-1} aria-hidden="true">
+                    <VehiclePhoto image={image} locale={locale} alt={image?.alt || name} layout="rail" />
                   </PublicCatalogLink>
                   <FavoriteVehicleButton
                     className={styles.save}
@@ -163,6 +164,8 @@ function VehicleRail({
                   <div className={styles.cardContact} data-vehicle-contacts={v.id}>
                     <a
                       href={trusted ? links.telegram : undefined}
+                      data-analytics-contact={trusted ? 'telegram' : undefined}
+                      data-analytics-contact-vehicle={trusted ? analyticsVehicle : undefined}
                       aria-disabled={!trusted || undefined}
                       tabIndex={trusted ? undefined : -1}
                       aria-label={`${vehicleCopy.contactTelegram} — ${name}`}
@@ -173,6 +176,8 @@ function VehicleRail({
                     </a>
                     <a
                       href={trusted ? links.whatsapp : undefined}
+                      data-analytics-contact={trusted ? 'whatsapp' : undefined}
+                      data-analytics-contact-vehicle={trusted ? analyticsVehicle : undefined}
                       aria-disabled={!trusted || undefined}
                       tabIndex={trusted ? undefined : -1}
                       aria-label={`${vehicleCopy.contactWhatsapp} — ${name}`}
@@ -181,7 +186,7 @@ function VehicleRail({
                     >
                       <SocialIcon platform="whatsapp" size={20} />
                     </a>
-                    <PublicCatalogLink locale={locale} className={styles.details} href={v.detailPath}>
+                    <PublicCatalogLink locale={locale} className={styles.details} href={v.detailPath} data-analytics-vehicle={analyticsVehicle}>
                       {t.details}
                       <Icon name="arrow" size={14} />
                     </PublicCatalogLink>

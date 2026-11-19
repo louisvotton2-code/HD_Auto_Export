@@ -188,7 +188,7 @@ export function HomeSections({
                   key={`${model.brand}-${model.name}-${index}`}
                 >
                   <span className={styles.modelPhoto}>
-                    <VehiclePhoto image={model.image} locale={locale} alt={model.image.alt} />
+                    <VehiclePhoto image={model.image} locale={locale} alt={model.image.alt} layout="rail" />
                   </span>
                   <span className={styles.modelBody}>
                     <span className={styles.modelBrand}>{model.brand}</span>
@@ -391,6 +391,7 @@ export function HomeSections({
           <a
             className={styles.contactButton}
             href={siteConfig.contacts.whatsapp.href}
+            data-analytics-contact="whatsapp"
             target="_blank"
             rel="noopener noreferrer"
           >

@@ -24,7 +24,7 @@ export function PartCard({ part, locale }: { part: Part; locale: Locale }) {
       <h3><Link href={partHref(locale, part.slug)} prefetch={false}>{part.name[locale]}</Link></h3>
       <div className={styles.cardFoot}>
         <div><small>{t.referencePrice}</small><strong>{part.referencePriceUsd === null ? t.priceOnRequest : `$${part.referencePriceUsd.toLocaleString(locale)}`}</strong></div>
-        <a className={styles.cardContact} href={buildPartContactLinks(part, locale).whatsapp} target="_blank" rel="noopener noreferrer" aria-label={`${t.whatsapp} · ${part.oem}`}>
+        <a className={styles.cardContact} href={buildPartContactLinks(part, locale).whatsapp} data-analytics-contact="whatsapp" target="_blank" rel="noopener noreferrer" aria-label={`${t.whatsapp} · ${part.oem}`}>
           <SocialIcon platform="whatsapp" size={16} />
         </a>
       </div>
