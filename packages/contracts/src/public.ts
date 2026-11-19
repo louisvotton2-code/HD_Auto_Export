@@ -23,7 +23,7 @@ export * from './catalog.js';
 export * from './external-public.js';
 
 export const MediaUrlSchema = z.string().max(2048).refine((value) => {
-  if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+(?:\?variant=thumb)?$/.test(value)) return true;
+  if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+(?:\?variant=(?:thumb|card))?$/.test(value)) return true;
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; }
   catch { return false; }
 }, 'Expected a local public media path or an HTTPS URL');
@@ -46,7 +46,7 @@ export const PublicMediaSchema = z.strictObject({
   }
 });
 export type PublicMedia = z.infer<typeof PublicMediaSchema>;
-export const PublicMediaQuerySchema = z.strictObject({ variant: z.literal('thumb').optional() });
+export const PublicMediaQuerySchema = z.strictObject({ variant: z.enum(['thumb', 'card']).optional() });
 export type PublicMediaQuery = z.infer<typeof PublicMediaQuerySchema>;
 const ManualSourceSchema = z.strictObject({ kind: z.literal('manual') });
 const DemoSourceSchema = z.strictObject({ kind: z.literal('demo') });

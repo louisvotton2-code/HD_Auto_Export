@@ -3,6 +3,7 @@ import { activityChanges } from '../activity/changes.js';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { MediaAssetSchema, type MediaUploadRequest, type MediaRights } from '@hd/contracts/admin';
+import type { PublicMediaQuery } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { LocalMediaStore, type PublicMediaDeliveryOptions } from './storage.js';
@@ -99,7 +100,7 @@ export class MediaService {
     await this.authorizePreview(id);
     return this.store.prepareDelivery(id);
   }
-  async publicDelivery(id:string,variant:'thumb'|undefined,options:PublicMediaDeliveryOptions) {
+  async publicDelivery(id:string,variant:PublicMediaQuery['variant'],options:PublicMediaDeliveryOptions) {
     await this.authorizePublic(id);
     return this.store.preparePublicDelivery(id,variant,options);
   }

@@ -89,8 +89,8 @@ export function instrumentPoolCapacity(pool: pg.Pool, now: () => number = () => 
     waitingAcquires: pool.waitingCount });
 }
 
-export function createDatabase(url: string, max = 5, diagnostics = false) {
-  const pool = new pg.Pool({ connectionString: url, max, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000,
+export function createDatabase(url: string, max = 5, diagnostics = false, connectionTimeoutMillis = 5000) {
+  const pool = new pg.Pool({ connectionString: url, max, connectionTimeoutMillis, idleTimeoutMillis: 30000,
     statement_timeout: 15000, idle_in_transaction_session_timeout: 15000 });
   const capacityMetrics = diagnostics ? instrumentPoolCapacity(pool) : () => null;
   // An idle connection failure must not become an uncaught process exception.

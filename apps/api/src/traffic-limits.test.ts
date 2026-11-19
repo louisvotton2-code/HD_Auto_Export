@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
-import { ApiErrorSchema, type PublicVehicleQuery } from '@hd/contracts/public';
+import { ApiErrorSchema, type PublicMediaQuery, type PublicVehicleQuery } from '@hd/contracts/public';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
 import type { PublicMediaDeliveryOptions } from './media/storage.js';
@@ -57,8 +57,8 @@ async function setup(t:TestContext,trustProxy='false') {
   }));
   t.mock.method(runtime.inventory,'publicHome',async()=>({sections:[]}));
   const mediaBody=Buffer.from('traffic-limit-test-media');
-  t.mock.method(runtime.media,'publicDelivery',async(id:string,variant:'thumb'|undefined,options:PublicMediaDeliveryOptions)=>({
-    filename:`${id}${variant?'.thumb':''}.webp`,byteSize:mediaBody.length,etag:'W/"test-public"',
+  t.mock.method(runtime.media,'publicDelivery',async(id:string,variant:PublicMediaQuery['variant'],options:PublicMediaDeliveryOptions)=>({
+    filename:`${id}${variant?`.${variant}`:''}.webp`,byteSize:mediaBody.length,etag:'W/"test-public"',
     notModified:false,body:options.readBody?mediaBody:undefined,
   }));
   return {...runtime,authRequests,list,query,getSession};
@@ -73,14 +73,15 @@ function limited(response:{statusCode:number;headers:Record<string,unknown>;json
   assert.equal(problem.error.retryable,true);
 }
 
-test('all media IDs, thumbnails and HEAD share 120 requests without exhausting JSON, admin, health or auth',async t=>{
+test('all media IDs, variants and HEAD share 120 requests without exhausting JSON, admin, health or auth',async t=>{
   const {app}=await setup(t);
+  const variants=['','?variant=thumb','?variant=card'];
   for(let count=0;count<120;count++) {
     const response=await app.inject({method:count%3===0?'HEAD':'GET',remoteAddress:visitor,
-      url:`/api/v1/media/${ids[count%2]}${count%2?'?variant=thumb':''}`});
+      url:`/api/v1/media/${ids[count%2]}${variants[count%3]}`});
     assert.equal(response.statusCode,200);
   }
-  for(const id of ids) for(const variant of ['','?variant=thumb']) {
+  for(const id of ids) for(const variant of variants) {
     limited(await app.inject({method:'GET',url:`/api/v1/media/${id}${variant}`,remoteAddress:visitor}));
     // HEAD has no JSON body, but must still receive the same exhausted budget.
     const head=await app.inject({method:'HEAD',url:`/api/v1/media/${id}${variant}`,remoteAddress:visitor});

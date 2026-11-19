@@ -274,6 +274,77 @@ test('delivery creates a fixed private thumbnail once and cached delivery does n
   assert.deepEqual((await readdir(directory)).sort(), [`${id}.thumb.webp`, `${id}.webp`].sort());
 });
 
+test('cards are lazy private WebP derivatives bounded on both axes and keep their own validators', async (t) => {
+  const { directory, store } = await setup(t);
+  for (const [width, height, cardWidth, cardHeight] of [
+    [1600, 1200, 800, 600], [1200, 1600, 600, 800], [96, 140, 96, 140],
+  ] as const) {
+    const id = randomUUID();
+    await store.put(id, await png(width, height), 'image/png');
+    assert.deepEqual(await readdir(directory), [`${id}.webp`]);
+    const original = await store.preparePublicDelivery(id, undefined, { readBody: true });
+    const thumb = await store.preparePublicDelivery(id, 'thumb', { readBody: false });
+    const card = await store.preparePublicDelivery(id.toUpperCase(), 'card', { readBody: true, ifNoneMatch: original.etag });
+    assert.equal(card.filename, `${id}.card.webp`);
+    assert.notEqual(card.etag, original.etag);
+    assert.notEqual(card.etag, thumb.etag);
+    assert.equal(card.notModified, false);
+    assert.ok(card.body);
+    const metadata = await sharp(card.body).metadata();
+    assert.deepEqual([metadata.format, metadata.width, metadata.height], ['webp', cardWidth, cardHeight]);
+    assert.equal(metadata.exif, undefined);
+    assert.equal(metadata.icc, undefined);
+    const file = await lstat(path.join(directory, card.filename));
+    assert.equal(file.mode & 0o777, 0o600);
+    assert.equal(file.nlink, 1);
+    assert.equal(file.size, card.byteSize);
+    assert.deepEqual(await store.read(id), original.body);
+    const warm = await new LocalMediaStore(directory).preparePublicDelivery(id, 'card', { readBody: true, ifNoneMatch: card.etag });
+    assert.equal(warm.etag, card.etag);
+    assert.equal(warm.notModified, true);
+    assert.equal(warm.body, undefined);
+    assert.deepEqual((await readdir(directory)).sort(), [`${id}.card.webp`, `${id}.thumb.webp`, `${id}.webp`]);
+    await store.remove(id);
+    assert.deepEqual(await readdir(directory), []);
+  }
+});
+
+test('concurrent card misses coalesce and cap work without rejecting warm cards', async (t) => {
+  const { directory, store } = await setup(t);
+  const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()] as const;
+  const [first, second, overflow, warm] = ids;
+  const upload = await png(920, 610);
+  for (const id of ids) await store.put(id, upload, 'image/png');
+  const warmDelivery = await store.prepareDelivery(warm, 'card');
+  const bodyReader = store as unknown as { readFile(filename: string): Promise<Buffer> };
+  const readFile = bodyReader.readFile.bind(store);
+  let signalReady!: () => void;
+  let resumeReads!: () => void;
+  const ready = new Promise<void>(resolve => { signalReady = resolve; });
+  const resume = new Promise<void>(resolve => { resumeReads = resolve; });
+  let started = 0;
+  const reads = t.mock.method(bodyReader, 'readFile', async (filename: string) => {
+    started++;
+    if (started === 2) signalReady();
+    await resume;
+    return readFile(filename);
+  });
+  const ongoing = [store.prepareDelivery(first, 'card'), store.prepareDelivery(second, 'card')];
+  await ready;
+  const reopened = new LocalMediaStore(directory);
+  const sameCard = reopened.prepareDelivery(first, 'card');
+  try {
+    await assert.rejects(reopened.prepareDelivery(overflow, 'card'), errorCode('MEDIA_DERIVATIVE_BUSY'));
+    assert.deepEqual(await reopened.prepareDelivery(warm, 'card'), warmDelivery);
+    assert.equal(reads.mock.callCount(), 2);
+  } finally {
+    resumeReads();
+    await Promise.allSettled([...ongoing, sameCard]);
+  }
+  assert.deepEqual(await sameCard, await ongoing[0]);
+  assert.equal((await reopened.prepareDelivery(overflow, 'card')).filename, `${overflow}.card.webp`);
+});
+
 test('delivery rejects invalid identifiers and variants instead of deriving arbitrary paths', async (t) => {
   const { store } = await setup(t);
   for (const id of ['../secret', '/etc/passwd', `${randomUUID()}.webp`, 'not-an-id']) {
@@ -330,15 +401,15 @@ test('public media revalidates each file and does not reuse a validator after a 
   await assert.rejects(store.preparePublicDelivery(id, 'thumb', { ifNoneMatch: thumb.etag, readBody: false }), errorCode('MEDIA_STORAGE_ERROR'));
 });
 
-test('delivery applies the same private-file checks to original and cached thumbnails', async (t) => {
-  for (const variant of [undefined, 'thumb'] as const) {
+test('delivery applies the same private-file checks to originals and cached derivatives', async (t) => {
+  for (const variant of [undefined, 'thumb', 'card'] as const) {
     for (const unsafe of ['symlink', 'hardlink', 'oversize', 'public-mode', 'directory'] as const) {
       await t.test(`${variant ?? 'original'}: ${unsafe}`, async (subtest) => {
         const { temporary, directory, store } = await setup(subtest);
         const id = randomUUID();
         await store.put(id, await png(), 'image/png');
         if (variant) await store.prepareDelivery(id, variant);
-        const target = path.join(directory, `${id}${variant ? '.thumb' : ''}.webp`);
+        const target = path.join(directory, `${id}${variant ? `.${variant}` : ''}.webp`);
         if (unsafe === 'symlink' || unsafe === 'hardlink') {
           const outside = path.join(temporary, 'outside');
           await writeFile(outside, 'private outside fixture', { mode: 0o600 });
@@ -361,31 +432,36 @@ test('delivery applies the same private-file checks to original and cached thumb
   }
 });
 
-test('delivery refuses an orphan thumbnail after its original is removed', async (t) => {
+test('delivery refuses orphan derivatives after their original is removed', async (t) => {
   const { directory, store } = await setup(t);
   const id = randomUUID();
   await store.put(id, await png(), 'image/png');
-  await store.prepareDelivery(id, 'thumb');
+  const variants = ['thumb', 'card'] as const;
+  for (const variant of variants) await store.prepareDelivery(id, variant);
   await rm(path.join(directory, `${id}.webp`));
-  assert.ok((await lstat(path.join(directory, `${id}.thumb.webp`))).isFile());
   await assert.rejects(store.prepareDelivery(id), errorCode('MEDIA_NOT_FOUND'));
-  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
+  for (const variant of variants) {
+    assert.ok((await lstat(path.join(directory, `${id}.${variant}.webp`))).isFile());
+    await assert.rejects(store.prepareDelivery(id, variant), errorCode('MEDIA_NOT_FOUND'));
+  }
 });
 
-test('an original removed during first thumbnail generation fails delivery without a fallback path', async (t) => {
+test('physical removal during first derivative generation leaves neither original nor derivative', async (t) => {
   const { directory, store } = await setup(t);
-  const id = randomUUID();
-  await store.put(id, await png(), 'image/png');
   const bodyReader = store as unknown as { readFile(filename: string): Promise<Buffer> };
   const read = bodyReader.readFile.bind(store);
   t.mock.method(bodyReader, 'readFile', async (filename: string) => {
     const bytes = await read(filename);
-    await rm(filename);
+    await store.remove(path.basename(filename, '.webp'));
     return bytes;
   });
-  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
-  assert.ok((await lstat(path.join(directory, `${id}.thumb.webp`))).isFile());
-  await assert.rejects(store.prepareDelivery(id, 'thumb'), errorCode('MEDIA_NOT_FOUND'));
+  for (const variant of ['thumb', 'card'] as const) {
+    const id = randomUUID();
+    await store.put(id, await png(), 'image/png');
+    await assert.rejects(store.prepareDelivery(id, variant), errorCode('MEDIA_NOT_FOUND'));
+    assert.deepEqual(await readdir(directory), []);
+    await assert.rejects(store.prepareDelivery(id, variant), errorCode('MEDIA_NOT_FOUND'));
+  }
 });
 
 test('unlink or cross-process replacement between open and fstat is missing, never a weakened private-file check', async (t) => {

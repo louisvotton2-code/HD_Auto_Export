@@ -361,16 +361,19 @@ test('media source evidence supports unverified local metadata without exposing 
   assert.equal(publicContract.PublicMediaSchema.safeParse({ ...makePublicExternalVehicleFixture().images[0], rights }).success, false);
 });
 
-test('public thumbnails permit only the fixed variant and exact local URL form', () => {
+test('public media permits only fixed variants and exact local URL forms', () => {
   assert.deepEqual(publicContract.PublicMediaQuerySchema.parse({}), {});
-  assert.deepEqual(publicContract.PublicMediaQuerySchema.parse({ variant: 'thumb' }), { variant: 'thumb' });
-  for (const query of [{ variant: '' }, { variant: 'original' }, { variant: 'THUMB' }, { variant: ['thumb'] }, { width: 240 }, { variant: 'thumb', width: 240 }]) {
+  for (const variant of ['thumb', 'card']) {
+    assert.deepEqual(publicContract.PublicMediaQuerySchema.parse({ variant }), { variant });
+  }
+  for (const query of [{ variant: '' }, { variant: 'original' }, { variant: 'CARD' }, { variant: ['thumb', 'card'] }, { width: 240 }, { variant: 'card', width: 240 }]) {
     assert.equal(publicContract.PublicMediaQuerySchema.safeParse(query).success, false);
   }
   const path = '/api/v1/media/fixture_media_1';
   assert(publicContract.MediaUrlSchema.safeParse(path).success);
   assert(publicContract.MediaUrlSchema.safeParse(`${path}?variant=thumb`).success);
-  for (const query of ['?variant=original', '?width=240', '?variant=thumb&width=240', '?variant=thumb&variant=thumb', '?variant=thumb#fragment']) {
+  assert(publicContract.MediaUrlSchema.safeParse(`${path}?variant=card`).success);
+  for (const query of ['?variant=original', '?width=240', '?variant=card&width=240', '?variant=thumb&variant=card', '?variant=card#fragment']) {
     assert.equal(publicContract.MediaUrlSchema.safeParse(path + query).success, false, query);
   }
   assert.equal(makePublicExternalVehicleFixture().images[0].url, path);

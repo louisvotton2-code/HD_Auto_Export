@@ -3,15 +3,21 @@ import { constants, type BigIntStats } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, unlink, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import sharp, { type OutputInfo } from 'sharp';
+import type { PublicMediaQuery } from '@hd/contracts/public';
 import { matchesIfNoneMatch } from './conditional.js';
 
 export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 export const MAX_MEDIA_PIXELS = 40_000_000;
 const MAX_DISPLAY_DIMENSION = 2_400;
 const THUMBNAIL_WIDTH = 240;
+const CARD_DIMENSION = 800;
+const MAX_CARD_PREPARATIONS = 2;
+type MediaVariant = NonNullable<PublicMediaQuery['variant']>;
 // Share an in-flight derivative across store instances in this API process.
-// Otherwise concurrent cache misses can replace a file another reader opened.
-const thumbnailPreparations = new Map<string, Promise<void>>();
+const derivativePreparations: Record<MediaVariant, Map<string, Promise<void>>> = {
+  thumb: new Map(),
+  card: new Map(),
+};
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const formats: Readonly<Record<string, string>> = {
   'image/jpeg': 'jpeg',
@@ -26,6 +32,7 @@ export type MediaStorageErrorCode =
   | 'INVALID_MEDIA'
   | 'MEDIA_NOT_FOUND'
   | 'MEDIA_ALREADY_EXISTS'
+  | 'MEDIA_DERIVATIVE_BUSY'
   | 'MEDIA_STORAGE_ERROR';
 
 export class MediaStorageError extends Error {
@@ -248,12 +255,12 @@ export class LocalMediaStore {
   }
 
   /** Authorize at the service on every request before preparing this filename. */
-  async prepareDelivery(id: string, variant?: 'thumb'): Promise<MediaDeliveryFile> {
+  async prepareDelivery(id: string, variant?: MediaVariant): Promise<MediaDeliveryFile> {
     const { filename, target } = await this.deliveryLocation(id, variant);
     return { filename, byteSize: await this.inspectFile(target) };
   }
 
-  async preparePublicDelivery(id: string, variant: 'thumb' | undefined,
+  async preparePublicDelivery(id: string, variant: MediaVariant | undefined,
     { ifNoneMatch, readBody }: PublicMediaDeliveryOptions): Promise<PublicMediaDelivery> {
     const { filename, target } = await this.deliveryLocation(id, variant);
     return this.withPrivateFile(target, async (file, stat) => {
@@ -274,9 +281,9 @@ export class LocalMediaStore {
     });
   }
 
-  private async deliveryLocation(id: string, variant?: 'thumb') {
+  private async deliveryLocation(id: string, variant?: MediaVariant) {
     const safeId = canonicalId(id);
-    if (variant !== undefined && variant !== 'thumb') {
+    if (variant !== undefined && variant !== 'thumb' && variant !== 'card') {
       throw new MediaStorageError('INVALID_MEDIA_ID', 'The media variant is invalid.');
     }
     const root = await this.root(false);
@@ -284,12 +291,12 @@ export class LocalMediaStore {
     if (!variant) return { filename: `${safeId}.webp`, target: originalPath };
     await this.inspectFile(originalPath);
 
-    const filename = `${safeId}.thumb.webp`;
+    const filename = `${safeId}.${variant}.webp`;
     const target = path.join(root, filename);
     try { await this.inspectFile(target); }
     catch (error) {
       if (!(error instanceof MediaStorageError) || error.code !== 'MEDIA_NOT_FOUND') throw error;
-      await this.ensureThumbnail(root, safeId);
+      await this.ensureDerivative(root, safeId, variant, target);
     }
     // A removed original must not be replaced by an orphaned cached derivative.
     // The final checks also cover a removal while the derivative was generated.
@@ -297,10 +304,13 @@ export class LocalMediaStore {
     return { filename, target };
   }
 
-  private async ensureThumbnail(root: string, safeId: string): Promise<void> {
-    const target = path.join(root, `${safeId}.thumb.webp`);
-    const existing = thumbnailPreparations.get(target);
+  private async ensureDerivative(root: string, safeId: string, variant: MediaVariant, target: string): Promise<void> {
+    const preparations = derivativePreparations[variant];
+    const existing = preparations.get(target);
     if (existing) return existing;
+    if (variant === 'card' && preparations.size >= MAX_CARD_PREPARATIONS) {
+      throw new MediaStorageError('MEDIA_DERIVATIVE_BUSY', 'Card image preparation is temporarily busy.');
+    }
     const preparation = (async () => {
       // A previously awaited metadata check may have missed a cache that was
       // completed before this task started. Do not replace that valid file.
@@ -308,38 +318,47 @@ export class LocalMediaStore {
       catch (error) {
         if (!(error instanceof MediaStorageError) || error.code !== 'MEDIA_NOT_FOUND') throw error;
       }
-      await this.createThumbnail(root, safeId);
+      await this.createDerivative(root, safeId, variant, target);
     })();
-    thumbnailPreparations.set(target, preparation);
+    preparations.set(target, preparation);
     try { await preparation; }
-    finally {
-      if (thumbnailPreparations.get(target) === preparation) thumbnailPreparations.delete(target);
-    }
+    finally { preparations.delete(target); }
   }
 
-  private async createThumbnail(root: string, safeId: string): Promise<void> {
-    const original = await this.readFile(path.join(root, `${safeId}.webp`));
-    let thumbnail: Buffer;
+  private async createDerivative(root: string, safeId: string, variant: MediaVariant, target: string): Promise<void> {
+    const originalPath = path.join(root, `${safeId}.webp`);
+    const original = await this.readFile(originalPath);
+    const dimensions = variant === 'card'
+      ? { width: CARD_DIMENSION, height: CARD_DIMENSION, fit: 'inside' as const }
+      : { width: THUMBNAIL_WIDTH };
+    let derivative: Buffer;
     try {
-      thumbnail = await sharp(original, { failOn: 'warning', limitInputPixels: MAX_MEDIA_PIXELS })
-        .resize({ width: THUMBNAIL_WIDTH, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+      derivative = await sharp(original, { failOn: 'warning', limitInputPixels: MAX_MEDIA_PIXELS })
+        .resize({ ...dimensions, withoutEnlargement: true }).webp({ quality: variant === 'card' ? 80 : 75 }).toBuffer();
     } catch {
       throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The display image cannot be resized.');
     }
-    const temporary = path.join(root, `.${safeId}.${randomUUID()}.thumb.tmp`);
+    const temporary = path.join(root, `.${safeId}.${randomUUID()}.${variant}.tmp`);
     try {
       const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try { await file.writeFile(thumbnail); await file.sync(); }
+      try { await file.writeFile(derivative); await file.sync(); }
       finally { await file.close(); }
       // Atomically expose a complete fixed derivative of immutable input,
       // without a transient hard-link count that private-file checks reject.
-      await rename(temporary, path.join(root, `${safeId}.thumb.webp`));
+      await rename(temporary, target);
+      // Physical removal unlinks the source before its derivatives. If it
+      // won that race, do not leave a newly generated derivative behind.
+      try { await this.inspectFile(originalPath); }
+      catch (error) {
+        await removeFileIfPresent(target);
+        throw error;
+      }
     } catch (error) {
       if (error instanceof MediaStorageError) throw error;
-      throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The thumbnail could not be stored safely.');
+      throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The image derivative could not be stored safely.');
     } finally {
-      await unlink(temporary).catch((error: unknown) => {
-        if (!hasCode(error, 'ENOENT')) throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The temporary thumbnail could not be removed.');
+      await removeFileIfPresent(temporary).catch(() => {
+        throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The temporary image derivative could not be removed.');
       });
     }
   }
@@ -348,22 +367,27 @@ export class LocalMediaStore {
     const safeId = canonicalId(id);
     try {
       const root = await this.root(false);
-      for (const filename of [`${safeId}.thumb.webp`, `${safeId}.webp`]) {
-        const target = path.join(root, filename);
+      const targets = [`${safeId}.webp`, `${safeId}.thumb.webp`, `${safeId}.card.webp`].map(filename => path.join(root, filename));
+      for (const target of targets) {
         try {
           const stat = await lstat(target);
           if (!stat.isFile() || stat.isSymbolicLink()) {
             throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The media file cannot be removed safely.');
           }
-          await unlink(target);
         } catch (error) {
           if (!hasCode(error, 'ENOENT')) throw error;
         }
       }
+      for (const target of targets) await removeFileIfPresent(target);
     } catch (error) {
       if (hasCode(error, 'ENOENT') || error instanceof MediaStorageError && error.code === 'MEDIA_NOT_FOUND') return;
       if (error instanceof MediaStorageError) throw error;
       throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The media file could not be removed.');
     }
   }
+}
+
+async function removeFileIfPresent(filename: string): Promise<void> {
+  try { await unlink(filename); }
+  catch (error) { if (!hasCode(error, 'ENOENT')) throw error; }
 }
