@@ -39,6 +39,29 @@
   white-space: nowrap;
 }
 
+.digits {
+  display: inline-grid;
+  justify-items: center;
+}
+/* Both inline items share the final width; only one number is visible. */
+.digits > * { grid-area: 1 / 1; display: inline; }
+[data-hero-stat='years'] .digits { justify-items: end; }
+
+/* Keep a timed fallback even when the browser doesn't support the motion media feature. */
+.animatedValue:where(:not([data-count-started])) {
+  animation: hide-initial-count .8s step-end forwards;
+}
+.animatedValue:where(:not([data-count-started])) + .finalValue {
+  animation: show-final-count .8s step-end forwards;
+}
+@keyframes hide-initial-count { to { visibility: hidden; } }
+@keyframes show-final-count { to { visibility: visible; } }
+
+@media (prefers-reduced-motion: reduce), (scripting: none) {
+  .animatedValue { display: none; animation: none; }
+  .animatedValue + .finalValue { visibility: visible !important; animation: none; }
+}
+
 .suffix {
   font-size: .6em;
   letter-spacing: -.02em;

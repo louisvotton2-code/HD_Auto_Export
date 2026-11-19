@@ -77,19 +77,6 @@
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .shortcuts[data-home-revealed] .shortcut {
-    animation: shortcut-in .55s cubic-bezier(.22, 1, .36, 1) backwards;
-  }
-  .shortcuts[data-home-revealed] .shortcut:nth-child(2) { animation-delay: .08s; }
-  .shortcuts[data-home-revealed] .shortcut:nth-child(3) { animation-delay: .16s; }
-}
-
-@keyframes shortcut-in {
-  from { opacity: .72; transform: translateY(15px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 .brandSection {
   padding: 72px var(--home-gutter) 0;
   max-width: var(--home-shell);
