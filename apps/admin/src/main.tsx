@@ -8,6 +8,7 @@ import { createBrowserRouter, Navigate, RouterProvider, useOutletContext, usePar
 import type { StaffMe, StaffPermission } from '@hd/contracts/admin';
 import { Workspace, AccessDenied } from './modules/auth';
 import { StaffManagementPage } from './modules/staff/staff-management-page';
+import { SiteAnalyticsPage } from './modules/analytics/site-analytics-page';
 import { VehiclesPage, VehicleEditorPage, PublicCatalogPage } from './modules/vehicles';
 import type { ReactNode } from 'react';
 import './styles.css';
@@ -31,6 +32,7 @@ const router = createBrowserRouter([{
     { path: 'home-sections', element: <RequirePermission permission="home:write"><HomeSectionsPage /></RequirePermission> },
     { path: 'public-catalog', element: <RequirePermission permission="vehicles:read"><ExternalCatalogPage /></RequirePermission> },
     { path: 'public-catalog/verification', element: <RequirePermission permission="vehicles:read"><PublicCatalogPage /></RequirePermission> },
+    { path: 'analytics', element: <RequirePermission permission="staff:manage"><SiteAnalyticsPage /></RequirePermission> },
     { path: 'staff', element: <RequirePermission permission="staff:manage"><StaffManagementPage /></RequirePermission> },
     { path: 'external-sources', element: <RequirePermission permission="vehicles:read"><ExternalWorkspace /></RequirePermission>, children: [
       { index: true, element: <RequirePermission permission="staff:manage"><ExternalStatusPage /></RequirePermission> },

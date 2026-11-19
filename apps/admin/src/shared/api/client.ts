@@ -59,7 +59,7 @@ async function send(path: string, options: RequestInit = {}): Promise<unknown> {
   }
   const value: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith('/api/auth/')) {
+    if (response.status === 401 && !options.signal?.aborted && !path.startsWith('/api/auth/')) {
       if (typeof window !== 'undefined') window.dispatchEvent(new Event('admin:unauthorized'));
     }
     const parsed = ApiErrorSchema.safeParse(value);

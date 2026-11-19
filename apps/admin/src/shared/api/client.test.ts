@@ -51,6 +51,18 @@ describe('staff HTTP boundary', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}')));
     await expect(request('/api/v1/admin/me', {parse(){ throw new Error('schema'); }})).rejects.toMatchObject({code:'INVALID_RESPONSE'});
   });
+  it('does not expire the session for a cancelled read with a late 401', async () => {
+    const controller = new AbortController();
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 401, async json() { controller.abort(); return null; },
+    }));
+    await expect(request('/api/v1/admin/me', schema, { signal: controller.signal })).rejects.toMatchObject({ status: 401 });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+    await expect(request('/api/v1/admin/me', schema)).rejects.toMatchObject({ status: 401 });
+    expect(dispatchEvent).toHaveBeenCalledOnce();
+  });
   it('supports native auth envelopes without a business data wrapper', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('{"user":{"id":"test"}}'));
     vi.stubGlobal('fetch', fetcher);

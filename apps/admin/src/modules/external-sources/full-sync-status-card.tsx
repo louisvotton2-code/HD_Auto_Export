@@ -28,37 +28,57 @@ export function FullSyncStatusCard() {
         <Tag color={status.state === 'error' ? 'error' : status.state === 'complete' ? 'success' : undefined}>{states[status.state]}</Tag>
         <Tag color={status.paused ? 'warning' : undefined}>{status.paused ? '重任务暂停中' : '重任务未暂停'}</Tag>
       </Space>
-      <Typography.Paragraph type="secondary" className={styles.note}>数据时点：{formatTime(status.asOf)}。刷新可读取最新进度；启动同步不代表全量资料已经补齐。</Typography.Paragraph>
-      <IngestionCounts items={[
-        { key: 'raw', label: '来源记录', value: status.counts.raw },
-        { key: 'canonical', label: '去重车辆', value: status.counts.canonical },
-        { key: 'public', label: '当前公开车辆', value: status.counts.public },
-        { key: 'withdrawn', label: '来源撤回', value: status.counts.withdrawn },
-        { key: 'failed', label: '失败记录', value: status.counts.failed },
+      <Descriptions column={{ xs: 1, md: 2 }} size="small" className={styles.overview} items={[
+        { key: 'lastSuccess', label: '最后成功同步', children: status.lastSuccessAt ? <time dateTime={status.lastSuccessAt}>{formatTime(status.lastSuccessAt)}</time> : '尚无成功记录' },
+        { key: 'asOf', label: '数据时点', children: formatTime(status.asOf) },
       ]} />
-      <Typography.Paragraph type="secondary" className={styles.note}>一辆车可关联多条来源记录；公开数量不等于资料、三语和报告全部补齐。</Typography.Paragraph>
-      <section aria-label="资料补齐情况" className={styles.pending}>
-        <Typography.Text strong>待补齐资料</Typography.Text>
+      {status.lastError && <Alert type="error" showIcon title={`最近错误：${status.lastError.code || '未分类错误'}`} description={<div className={styles.long}>{status.lastError.message}<div>{formatTime(status.lastError.at)}</div></div>} />}
+      <section aria-labelledby="full-sync-initial" className={styles.section}>
+        <Typography.Title level={3} id="full-sync-initial" className={styles.sectionTitle}>首次入库与全量快照</Typography.Title>
+        <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
+          { key: 'initial', label: '首次入库进度', children: '暂无独立记录' },
+          { key: 'snapshot', label: '最新来源快照', children: status.snapshot
+            ? <span className={styles.long}>{status.snapshot.id} · {status.snapshot.complete ? '快照处理完成' : '快照处理尚未完成'}</span>
+            : '暂无快照' },
+          ...(status.snapshot ? [
+            { key: 'generated', label: '快照生成时间', children: formatTime(status.snapshot.generatedAt) },
+            { key: 'rows', label: '快照行数', children: status.snapshot.complete || status.snapshot.rows > 0
+              ? status.snapshot.rows.toLocaleString('zh-CN') : '待核定' },
+            { key: 'staged', label: '已暂存行数', children: status.snapshot.staged.toLocaleString('zh-CN') },
+          ] : []),
+        ]} />
+        <IngestionCounts items={[
+          { key: 'raw', label: '同步已登记来源记录', value: status.counts.raw },
+          { key: 'canonical', label: '去重车辆', value: status.counts.canonical },
+          { key: 'public', label: '当前公开车辆', value: status.counts.public },
+        ]} />
+        <Typography.Paragraph type="secondary" className={styles.note}>一辆车可关联多条来源记录。公开车辆的详情、语言或报告仍可能待补齐。</Typography.Paragraph>
+      </section>
+      <section aria-labelledby="full-sync-delta" className={styles.section}>
+        <Typography.Title level={3} id="full-sync-delta" className={styles.sectionTitle}>增量同步</Typography.Title>
+        <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
+          { key: 'received', label: '已接收事件', children: status.receivedEvents.toLocaleString('zh-CN') },
+          { key: 'applied', label: '已处理事件', children: status.appliedEvents.toLocaleString('zh-CN') },
+          { key: 'next', label: '下次增量计划时间', children: status.nextRunAt ? formatTime(status.nextRunAt) : '暂无计划时点' },
+        ]} />
+      </section>
+      <section aria-labelledby="full-sync-changes" className={styles.section}>
+        <Typography.Title level={3} id="full-sync-changes" className={styles.sectionTitle}>撤回与改价</Typography.Title>
+        <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
+          { key: 'withdrawn', label: '当前已撤回来源记录', children: status.counts.withdrawn.toLocaleString('zh-CN') },
+          { key: 'price', label: '改价事件', children: '暂无独立统计' },
+        ]} />
+      </section>
+      <section aria-labelledby="full-sync-pending" className={styles.section}>
+        <Typography.Title level={3} id="full-sync-pending" className={styles.sectionTitle}>待补齐资料</Typography.Title>
         <IngestionCounts items={[
           { key: 'details', label: '待补详情', value: status.counts.pendingDetails },
           { key: 'locales', label: '待补语言项', value: status.counts.pendingLocales },
           { key: 'reports', label: '待补报告', value: status.counts.pendingReports },
+          { key: 'failed', label: '失败记录', value: status.counts.failed },
         ]} />
-        <Typography.Text type="secondary">这些分类可能重叠，不能相加当作未完成车辆总数。</Typography.Text>
+        <Typography.Paragraph type="secondary" className={styles.note}>这些分类可能重叠，且统计单位不同。</Typography.Paragraph>
       </section>
-      <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
-        { key: 'lastSuccess', label: '最后成功同步', children: status.lastSuccessAt ? formatTime(status.lastSuccessAt) : '尚无成功记录' },
-        { key: 'next', label: '下次计划运行', children: status.nextRunAt ? formatTime(status.nextRunAt) : '暂无计划时点' },
-        { key: 'received', label: '已接收事件', children: status.receivedEvents.toLocaleString('zh-CN') },
-        { key: 'applied', label: '已应用事件', children: status.appliedEvents.toLocaleString('zh-CN') },
-        { key: 'snapshot', label: '来源快照', children: status.snapshot ? <span className={styles.long}>{status.snapshot.id} · {status.snapshot.complete ? '快照已完成校验' : '快照仍在处理'}</span> : '暂无快照' },
-        ...(status.snapshot ? [
-          { key: 'generated', label: '快照生成时间', children: formatTime(status.snapshot.generatedAt) },
-          { key: 'rows', label: '快照行数', children: status.snapshot.rows.toLocaleString('zh-CN') },
-          { key: 'staged', label: '已暂存行数', children: status.snapshot.staged.toLocaleString('zh-CN') },
-        ] : []),
-      ]} />
-      {status.lastError && <Alert type="error" showIcon title={`最近错误：${status.lastError.code || '未分类错误'}`} description={<div className={styles.long}>{status.lastError.message}<div>{formatTime(status.lastError.at)}</div></div>} />}
     </>}</ResourceContent>
     {/* Keep original intent alive across safe reads, errors and same-account reauthentication. */}
     {staff.role === 'admin' && <FullSyncControls status={status ?? null} disabled={resource.loading || !!resource.error} onRefresh={reload} onBusyChange={setControlBusy} />}

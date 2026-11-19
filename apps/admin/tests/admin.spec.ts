@@ -1,5 +1,6 @@
 import './sync-cases';
 import './staff-management-cases';
+import './site-analytics-cases';
 import './activity-cases';
 import './report-cases';
 import './configuration-cases';
