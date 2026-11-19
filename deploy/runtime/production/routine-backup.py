@@ -164,10 +164,10 @@ def regular_files(roots, profile='controls', selected=None):
             raise ValueError('Configured archive root is missing or is a symlink')
         for path in ([root, *root.rglob('*')] if root.is_dir() else [root]):
             if path != root and profile != 'controls':
-                # Only known in-flight names and regenerable thumbnails are
+                # Only known in-flight names and regenerable image derivatives are
                 # omitted. Unknown files/directories fail closed.
                 if profile == 'media':
-                    if re.fullmatch(rf'\.{uuid}\.{uuid}(?:\.thumb)?\.tmp|{uuid}\.thumb\.webp', path.name):
+                    if re.fullmatch(rf'\.{uuid}\.{uuid}(?:\.(?:thumb|card))?\.tmp|{uuid}\.(?:thumb|card)\.webp', path.name):
                         continue
                     valid = re.fullmatch(rf'{uuid}\.webp', path.name)
                 else:

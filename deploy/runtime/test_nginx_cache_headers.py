@@ -5,17 +5,21 @@ HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
 CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
+ANALYTICS_PATH='/api/v1/analytics/events'
+ANALYTICS_BODY=json.dumps({'events':[{'eventId':'11111111-1111-4111-8111-111111111111',
+                                      'type':'page_view','pageType':'home','locale':'zh'}]}).encode()
 MEDIA_ID='11111111-1111-4111-8111-111111111111'
 MEDIA_PATH='/api/v1/media/'+MEDIA_ID
 MEDIA_PREVIEW='/api/v1/admin/media/'+MEDIA_ID+'/preview'
-MEDIA_REPRESENTATIONS={'original': ('.webp',b'original WebP fixture'), 'thumb': ('.thumb.webp',b'thumbnail WebP fixture')}
+MEDIA_REPRESENTATIONS={'original': ('.webp',b'original WebP fixture'), 'thumb': ('.thumb.webp',b'thumbnail WebP fixture'),
+                       'card': ('.card.webp',b'card WebP fixture')}
 CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-Key', 'X-HD-HTML-Nonce', 'X-HD-HTML-Proof',
                        'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket']
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
     def media_reply(self, preview):
-        variant='thumb' if self.path.endswith('?variant=thumb') else 'original'
+        variant=self.path.rsplit('?variant=',1)[-1] if '?variant=' in self.path else 'original'
         suffix,image=MEDIA_REPRESENTATIONS[variant]
         validator='"test-'+variant+'"'
         visible=not preview and self.media_visible
@@ -58,6 +62,15 @@ class Origin(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length',str(len(body) if status!=304 else 0));self.end_headers()
         if status!=304 and self.command!='HEAD':self.wfile.write(body)
     do_HEAD=do_GET
+    def do_POST(self):
+        self.calls.append(self.path)
+        request_body=self.rfile.read(int(self.headers['Content-Length']))
+        body=json.dumps({'headers':dict(self.headers.items()),'data':json.loads(request_body)}).encode()
+        self.send_response(200)
+        self.send_header('Cache-Control','public, max-age=600')
+        self.send_header('Content-Length',str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
     def log_message(self,*args):pass
 
 class CacheOrigin(Origin):
@@ -124,18 +137,68 @@ class DomainCacheHeaders(unittest.TestCase):
             if (r/'tls.sock').is_socket():break
             time.sleep(.05)
         else:raise RuntimeError('Isolated nginx socket did not start')
-    def request(self,host,path,headers=None,tls=True,method='GET',paced=True):
+    def request(self,host,path,headers=None,tls=True,method='GET',paced=True,body=None):
         # Exercise routing without overrunning the unchanged 8r/s production
         # SSR limiter as the independent boundary cases share one Unix peer.
         if paced:time.sleep(.14)
         r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(r/('tls.sock' if tls else 'http.sock')))
         if tls:s=ssl.create_default_context(cafile=str(r/'cert.pem')).wrap_socket(s,server_hostname=host)
         with s:
-            values={'Host':host,'Connection':'close',**(headers or {})};s.sendall((method+' '+path+' HTTP/1.1\r\n'+''.join(k+': '+v+'\r\n' for k,v in values.items())+'\r\n').encode());res=http.client.HTTPResponse(s,method=method);res.begin()
+            values={'Host':host,'Connection':'close',**(headers or {})}
+            if body is not None:
+                values['Content-Length']=str(len(body))
+            message=(method+' '+path+' HTTP/1.1\r\n'+''.join(k+': '+v+'\r\n' for k,v in values.items())+'\r\n').encode()
+            s.sendall(message+(body or b''))
+            res=http.client.HTTPResponse(s,method=method);res.begin()
             headers={k.lower():v for k,v in res.getheaders()}
             if res.headers.get_all('Cache-Control'):
                 headers['cache-control']=', '.join(res.headers.get_all('Cache-Control'))
             return res.status,headers,res.read()
+    def test_analytics_accepts_only_the_exact_public_same_origin_post(self):
+        host='cars.hongdingauto.com'
+        headers={'Origin':'https://'+host,'Content-Type':'application/json'}
+        private={'Cookie':'synthetic-session=private','Authorization':'synthetic-auth',
+                 'Referer':'https://'+host+'/zh/?private=1','X-HD-SSR-Key':'synthetic-forgery'}
+        Origin.calls.clear()
+        status,response,body=self.request(host,ANALYTICS_PATH,{**headers,**private},method='POST',body=ANALYTICS_BODY)
+        self.assertEqual((status,response['cache-control']),(200,'no-store'))
+        upstream=json.loads(body)
+        self.assertEqual(upstream['data'],json.loads(ANALYTICS_BODY))
+        self.assertEqual(upstream['headers']['Origin'],headers['Origin'])
+        self.assertTrue({name.lower() for name in private}.isdisjoint(name.lower() for name in upstream['headers']))
+        for domain,path,method,origin,amount,expected in (
+            (host,ANALYTICS_PATH,'GET',headers['Origin'],None,405),
+            (host,ANALYTICS_PATH,'OPTIONS','https://outside.invalid',None,405),
+            (host,ANALYTICS_PATH,'POST','https://outside.invalid',ANALYTICS_BODY,403),
+            (host,ANALYTICS_PATH,'POST',None,ANALYTICS_BODY,403),
+            (host,ANALYTICS_PATH+'?ignored=1','POST',headers['Origin'],ANALYTICS_BODY,400),
+            (host,ANALYTICS_PATH,'POST',headers['Origin'],b' '*8193,413),
+            (host,ANALYTICS_PATH+'/','POST',headers['Origin'],ANALYTICS_BODY,404),
+            ('admin.hongdingauto.com',ANALYTICS_PATH,'POST',headers['Origin'],ANALYTICS_BODY,404),
+            (host,'/api/v1/admin/analytics/overview?days=7','GET',None,None,404),
+        ):
+            with self.subTest(domain=domain,path=path,method=method,origin=origin):
+                request_headers={'Origin':origin} if origin else {}
+                response=self.request(domain,path,request_headers,method=method,body=amount)
+                self.assertEqual(response[0],expected)
+        self.assertEqual(Origin.calls,[ANALYTICS_PATH])
+
+    def test_analytics_limit_uses_the_direct_peer_and_keeps_catalog_available(self):
+        host='cars.hongdingauto.com'
+        headers={'Origin':'https://'+host,'Content-Type':'application/json'}
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            replies=list(pool.map(lambda i:self.request(host,ANALYTICS_PATH,
+                {**headers,'X-Forwarded-For':f'203.0.113.{i}'},method='POST',paced=False,body=ANALYTICS_BODY),range(36)))
+        self.assertEqual({status for status,_,_ in replies},{200,429})
+        self.assertTrue(all(response['cache-control']=='no-store' for _,response,_ in replies))
+        self.assertEqual(self.request(host,'/api/v1/vehicles')[0],200)
+
+    def test_admin_robots_disallows_all_paths(self):
+        status,headers,body=self.request('admin.hongdingauto.com','/robots.txt')
+        self.assertEqual((status,body),(200,b'User-agent: *\nDisallow: /\n'))
+        self.assertEqual(headers['content-type'],'text/plain')
+        self.assertEqual(headers['cache-control'],'no-store')
+
     def test_public_media_preserves_validator_across_redirect_and_rechecks_visibility(self):
         host='cars.hongdingauto.com'
         validators={}

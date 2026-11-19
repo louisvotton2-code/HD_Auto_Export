@@ -37,7 +37,7 @@ def main():
     hashes={}
     with tarfile.open(stage/'media.tar','w') as tar:
         for file in sorted(media.iterdir()):
-            if not re.fullmatch(r'[0-9a-f-]{36}(?:\.thumb)?\.webp',file.name) or file.is_symlink() or not file.is_file() or file.stat().st_mode&0o077 or file.stat().st_nlink!=1: raise ValueError('Unexpected or non-private media entry; reconcile before capture')
+            if not re.fullmatch(r'[0-9a-f-]{36}(?:\.(?:thumb|card))?\.webp',file.name) or file.is_symlink() or not file.is_file() or file.stat().st_mode&0o077 or file.stat().st_nlink!=1: raise ValueError('Unexpected or non-private media entry; reconcile before capture')
             hashes[file.name]=digest(file);tar.add(file,arcname=file.name,recursive=False)
     ensure_api_stopped(int(env.get('PORT','3320')))
     manifest={'format':1,'createdAt':datetime.now(timezone.utc).isoformat(),'release':a.release_id,'platform':'source-local','media':hashes,'databaseSha256':digest(stage/'database.dump'),'mediaTarSha256':digest(stage/'media.tar')}

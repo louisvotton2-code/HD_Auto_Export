@@ -12,7 +12,7 @@ spec=importlib.util.spec_from_file_location('hd_runtime',HERE.parent/'runtime.py
 runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
 os.umask(0o077)
 SHA=re.compile(r'[a-f0-9]{40}')
-MEDIA=re.compile(r'[0-9a-f-]{36}(?:\.thumb)?\.webp')
+MEDIA=re.compile(r'[0-9a-f-]{36}(?:\.(?:thumb|card))?\.webp')
 
 def private_file(path):
     info=path.lstat()

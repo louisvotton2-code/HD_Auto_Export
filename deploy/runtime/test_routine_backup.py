@@ -86,12 +86,13 @@ class RoutineBackupTests(unittest.TestCase):
 
 
 class OnlineInputs(unittest.TestCase):
-    def test_known_temporaries_and_thumbnails_are_not_archived(self):
+    def test_known_temporaries_and_derivatives_are_not_archived(self):
         uid='12345678-1234-1234-1234-123456789abc'
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)/'media';root.mkdir()
             (root/(uid+'.webp')).write_bytes(b'original')
-            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp',uid+'.thumb.webp']:
+            for name in ['.'+uid+'.'+uid+'.tmp','.'+uid+'.'+uid+'.thumb.tmp','.'+uid+'.'+uid+'.card.tmp',
+                         uid+'.thumb.webp',uid+'.card.webp']:
                 (root/name).write_bytes(b'changing')
             files=routine.pack_roots(Path(temp)/'media.tar.gz',[root],'media')
             self.assertEqual({Path(p).name for p in files},{'media',uid+'.webp'})

@@ -157,19 +157,23 @@ class RuntimeFailureTests(unittest.TestCase):
             self.calls.append(args);return subprocess.CompletedProcess(args,0,stdout='\n')
         with patch.object(r,'run',side_effect=empty): self.invoke('restore')
         self.assertTrue(any('pg_restore' in c for c in self.calls))
-    def test_thumbnail_restore_and_link_rejection(self):
+    def test_image_derivative_restore_and_link_rejection(self):
         self.backup.mkdir();(self.backup/'database.dump').write_bytes(b'fixture')
-        name='01234567-0123-4123-8123-012345678901.thumb.webp';body=b'thumbnail-fixture'
+        names={f'01234567-0123-4123-8123-012345678901.{variant}.webp': bytes(variant,'ascii')
+               for variant in ('thumb','card')}
         with r.tarfile.open(self.backup/'media.tar','w') as tar:
-            entry=r.tarfile.TarInfo(name);entry.size=len(body);tar.addfile(entry,io.BytesIO(body))
-        manifest={'format':1,'databaseSha256':r.digest(self.backup/'database.dump'),'mediaTarSha256':r.digest(self.backup/'media.tar'),'media':{name:r.hashlib.sha256(body).hexdigest()}}
+            for name,body in names.items():
+                entry=r.tarfile.TarInfo(name);entry.size=len(body);tar.addfile(entry,io.BytesIO(body))
+        manifest={'format':1,'databaseSha256':r.digest(self.backup/'database.dump'),'mediaTarSha256':r.digest(self.backup/'media.tar'),
+                  'media':{name:r.hashlib.sha256(body).hexdigest() for name,body in names.items()}}
         (self.backup/'manifest.json').write_text(json.dumps(manifest))
         def empty(args,**kw):return subprocess.CompletedProcess(args,0,stdout='\n')
         with patch.object(r,'run',side_effect=empty):self.invoke('restore')
-        self.assertEqual((self.root/'media'/name).read_bytes(),body)
-        (self.root/'media'/name).unlink()
+        for name,body in names.items():
+            self.assertEqual((self.root/'media'/name).read_bytes(),body)
+            (self.root/'media'/name).unlink()
         with r.tarfile.open(self.backup/'media.tar','w') as tar:
-            entry=r.tarfile.TarInfo(name);entry.type=r.tarfile.SYMTYPE;entry.linkname='/etc/passwd';tar.addfile(entry)
+            entry=r.tarfile.TarInfo(next(iter(names)));entry.type=r.tarfile.SYMTYPE;entry.linkname='/etc/passwd';tar.addfile(entry)
         manifest['mediaTarSha256']=r.digest(self.backup/'media.tar');(self.backup/'manifest.json').write_text(json.dumps(manifest))
         with patch.object(r,'run',side_effect=empty),self.assertRaises(ValueError):self.invoke('restore')
     def test_hardlinked_media_cannot_produce_successful_backup(self):

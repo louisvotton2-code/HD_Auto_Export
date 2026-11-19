@@ -152,7 +152,13 @@ API和Nginx worker使用相同 `APP_UID/APP_GID`，目录0700、文件0600无需
 
 ## 双域部署与证书（新服务器，实施前核对最终SHA）
 
-用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域和双域沿用同一份入口约束。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网域仅开放白名单内的公开 GET／HEAD 和精确的坏图 POST，坏图 POST 转给官网 BFF。其余 API 和后台入口返回 404。两域均要求 SNI 与 Host 匹配，未知 SNI 拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
+用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域和双域沿用同一份入口约束。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网域开放白名单内的公开 GET／HEAD、坏图 POST 与精确的同源统计 POST。坏图 POST 转给官网 BFF。其余 API 和后台入口返回 404。两域均要求 SNI 与 Host 匹配，未知 SNI 拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
+
+官网统计经 `POST /api/v1/analytics/events` 发送。网关验证官网 Origin，限制请求体为 8 KiB，按直接连接地址独立限流，并清除 Cookie、Authorization 与 Referer。生产 API 启用时将 `ANALYTICS_ORIGINS` 设置为 `https://cars.hongdingauto.com`。复制现行槽配置生成候选时也核对该变量。后台汇总使用原后台域及管理员授权。合成统计事件在隔离环境验证。
+
+公开自录车卡片图走原媒体授权入口 `?variant=card`。通过 API 核验后，Nginx 内部读取同一私有目录下的 `<id>.card.webp`。每日备份保留原图，缩略图和卡片图按需重建。启用卡片图生成前先安装识别卡片图的备份脚本。应用回退后继续使用该向下兼容的备份脚本，直到媒体目录中的派生图由正式生命周期处理。维护窗口旧格式归档和恢复同时支持三种文件名。
+
+公开上线前，官网构建与运行均设置 `SITE_INDEXABLE=false`，核对 `robots.txt` 禁止全站、sitemap 为空及页面 `noindex, nofollow`。后台独立返回全站禁止抓取。正式运营开放抓取时，单独授权并将官网构建、运行同步设为 `SITE_INDEXABLE=true` 后发布，复核官网 robots、三语 canonical／hreflang、sitemap 中每个入口返回 200，以及后台、员工预览和私有接口原保护，再提交公开 sitemap。Meta 接入待品牌确认授权后单独设计与发布，默认加载路径没有 Meta 请求。
 
 本机3430/3431以历史冻结应用及临时双域证书验证了域名隔离、后台登录Secure/HttpOnly/host-only cookie、官网canonical、ACME webroot、未知和错配SNI；2026-11-08两次本机自签证书原子切换/reload及运维脚本测试在本机非root环境16项通过、1项root专测跳过；独立Linux root容器17项全通过。该结果并非最终应用SHA、真实证书或Linux/amd64目标机上线验收；具体证据见[OPS记录](../../docs/日志/2026-11-08/运维-OPS-02-新服务器准备.md)。Docker发布端口可能绕过UFW，必须核对阿里云安全策略、Docker监听和主机规则；DB/API/web不可映射公网。HTTP 80仅响应ACME路径或重定向至对应HTTPS主机。默认Compose绑定127.0.0.1；公网监听仅在明确部署授权和安全策略核验后配置。
 

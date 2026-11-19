@@ -155,7 +155,7 @@ def main():
                 media={}
                 with tarfile.open(stage/'media.tar','w') as tar:
                     for item in sorted(media_root.iterdir()):
-                        if not re.fullmatch(r'[0-9a-f-]{36}(?:\.thumb)?\.webp',item.name) or item.is_symlink() or not item.is_file() or item.stat().st_nlink!=1: raise ValueError('Unexpected media entry; reconcile before backup')
+                        if not re.fullmatch(r'[0-9a-f-]{36}(?:\.(?:thumb|card))?\.webp',item.name) or item.is_symlink() or not item.is_file() or item.stat().st_nlink!=1: raise ValueError('Unexpected media entry; reconcile before backup')
                         media[item.name]=digest(item); tar.add(item,arcname=item.name,recursive=False)
                 manifest={'format':1,'createdAt':datetime.now(timezone.utc).isoformat(),'release':values['RELEASE_ID'],'platform':values.get('TARGET_PLATFORM'),'media':media,'databaseSha256':digest(stage/'database.dump'),'mediaTarSha256':digest(stage/'media.tar')}
                 manifest['sourceDatabase']=database
@@ -187,7 +187,7 @@ def main():
             with tarfile.open(backup/'media.tar') as tar, tempfile.TemporaryDirectory(dir=root) as tmp:
                 names=set()
                 for member in tar.getmembers():
-                    if not member.isfile() or not re.fullmatch(r'[0-9a-f-]{36}(?:\.thumb)?\.webp',member.name) or member.name in names: raise ValueError('Invalid media archive')
+                    if not member.isfile() or not re.fullmatch(r'[0-9a-f-]{36}(?:\.(?:thumb|card))?\.webp',member.name) or member.name in names: raise ValueError('Invalid media archive')
                     names.add(member.name)
                     target=pathlib.Path(tmp)/member.name
                     with tar.extractfile(member) as src, target.open('wb') as dst: shutil.copyfileobj(src,dst)
