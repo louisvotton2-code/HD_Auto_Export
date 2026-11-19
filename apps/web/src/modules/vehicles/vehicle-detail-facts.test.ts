@@ -95,6 +95,23 @@ describe('vehicle detail facts and configuration', () => {
     expect(rows.some((row) => row.id === 'powerHp')).toBe(false);
   });
 
+  it('keeps structured displacement authoritative and skips ambiguous or incompatible configuration', () => {
+    const vehicle = makeLocalizedPublicVehicleFixture('zh');
+    const row = (id: string, name: string, value: string) =>
+      ({ id, semanticKey: null, name: ready(name, 'zh'), value: ready(value, 'zh') });
+    const milliliters = row('ml', '排量（mL）', '1197');
+    const read = (items: Array<typeof milliliters>) => publicVehicleFacts({
+      ...vehicle, configurationInline: items,
+    }, 'zh').find(({ id }) => id === 'displacementCc');
+
+    vehicle.facts.engineCc = 0;
+    expect(read([milliliters])).toMatchObject({ value: '0 cm³' });
+    vehicle.facts.engineCc = null;
+    expect(read([row('explicit', '发动机排量', '1197毫升')])?.value).toMatch(/^1[\s,]?197 cm³$/);
+    expect(read([milliliters, row('cc', '发动机排量(cc)', '1200')])).toBeUndefined();
+    expect(read([row('invalid', '排量(mL)', '1.2 L'), row('tank', '油箱容积(mL)', '1197')])).toBeUndefined();
+  });
+
   it.each([
     ['zh', '驱动形式', '全轮驱动', '电动机总功率(kW)', '330 kW'],
     ['en', 'Drive configuration', 'All-wheel drive', 'Total traction motor power (kW)', '330 kW'],

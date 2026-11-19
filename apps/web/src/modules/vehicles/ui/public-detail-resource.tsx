@@ -27,7 +27,7 @@ export function PublicDetailResource({
   id: string;
   destinations: VehicleDestination[];
   initialRetryAfter?: number;
-  renderBudget?: (vehicle: PublicVehicleInline, current: boolean) => ReactNode;
+  renderBudget?: (vehicle: PublicVehicleInline, current: boolean, engineCc: number | null) => ReactNode;
 }) {
   const initial = useMemo(
     () => (vehicle ? { data: vehicle, meta: { requestId: 'server-rendered' } } : null),
@@ -40,6 +40,7 @@ export function PublicDetailResource({
     initialRetryAfter,
     cooldown,
   });
+  const detailVehicle = resource.data?.data;
   const segmentContext = useMemo(() => ({ cooldown, onMissing: resource.markMissing }), [resource.markMissing]);
   useEffect(() => {
     if (!resource.missing) return;
@@ -55,7 +56,7 @@ export function PublicDetailResource({
   return (
     <PublicFreshnessBoundary url={url} phase={resource.phase}>
       <VehicleSegmentContext value={segmentContext}>
-      {resource.missing || !resource.data ? (
+      {resource.missing || !detailVehicle ? (
         <main
           id="main"
           className="public-resource-missing"
@@ -78,10 +79,10 @@ export function PublicDetailResource({
       ) : (
         <PublicVehicleDetail
           locale={locale}
-          vehicle={resource.data.data}
-          detailTitle={publicDetailTitle(resource.data.data, locale)}
+          vehicle={detailVehicle}
+          detailTitle={publicDetailTitle(detailVehicle, locale)}
           destinations={destinations}
-          budget={renderBudget?.(resource.data.data, resource.phase === 'fresh')}
+          renderBudget={renderBudget && ((engineCc) => renderBudget(detailVehicle, resource.phase === 'fresh', engineCc))}
         />
       )}
       <PublicResourceStatus

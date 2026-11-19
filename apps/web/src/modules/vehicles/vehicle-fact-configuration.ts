@@ -56,7 +56,7 @@ const labels: Partial<Record<VehicleFactId, readonly string[]>> = {
 
 const units: Partial<Record<VehicleFactId, readonly string[]>> = {
   mileageKm: ['km', 'км', '公里', '千米'],
-  displacementCc: ['cc', 'cm3', 'см3', 'куб. см'],
+  displacementCc: ['cc', 'cm3', 'см3', 'куб. см', 'ml', '毫升', 'мл'],
   powerKw: ['kw', 'квт'], engineKw: ['kw', 'квт'], motorKw: ['kw', 'квт'], systemKw: ['kw', 'квт'],
   powerHp: ['hp'], engineHp: ['hp'], motorHp: ['hp'], systemHp: ['hp'],
 };
