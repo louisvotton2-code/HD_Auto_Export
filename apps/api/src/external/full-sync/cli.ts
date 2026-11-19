@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {mkdir} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
-import {createDatabase} from '../../db/index.js';
+import {classifyCapacityFailure,createDatabase} from '../../db/index.js';
 import {readDatabaseEnvironment,readLocalSecret} from '../../local-secrets.js';
 import {protectSourceBackup,releaseSourceReferences} from '../sources/index.js';
 import {FullSyncError} from './types.js';
@@ -44,7 +44,12 @@ async function main(){
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});
    const max=Number(flags.get('--max-ticks')??1);if(!Number.isInteger(max)||max<1||max>10000)throw new FullSyncError('SYNC_USAGE');
    for(let i=0;!stopped&&(command==='serve'||i<max);i++){
-    try{await worker.tick();}catch(error){if(command!=='serve')throw error;console.error(JSON.stringify({code:error instanceof FullSyncError?error.code:'SYNC_FAILED'}));await delay(Math.min(60_000,Math.max(5000,error instanceof FullSyncError?error.retryAfterMs:5000)));}
+    try{await worker.tick();}catch(error){
+     if(command!=='serve')throw error;
+     console.error(JSON.stringify({code:error instanceof FullSyncError?error.code:'SYNC_FAILED',phase:worker.tickPhase,
+      cause:classifyCapacityFailure(error).code}));
+     await delay(Math.min(60_000,Math.max(5000,error instanceof FullSyncError?error.retryAfterMs:5000)));
+    }
     if(command==='serve')await delay(5000);
    }
   }

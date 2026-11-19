@@ -9,7 +9,7 @@ import {migrateDatabase} from '../src/db/migrate.js';
 import {FullSyncWorker,configureFullSync} from '../src/external/full-sync/engine.js';
 import {FullSyncClient} from '../src/external/full-sync/client.js';
 import {fullSyncStatus,setFullSyncPaused} from '../src/external/full-sync/status.js';
-import {catalogColumns} from '../src/external/sources/index.js';
+import {catalogColumns,persistSourceDocument} from '../src/external/sources/index.js';
 import type {Change,FullApply} from '../src/external/full-sync/types.js';
 
 test('formal full synchronization has durable independent receipt/application and safe control',async t=>{
@@ -129,7 +129,7 @@ test('formal full synchronization has durable independent receipt/application an
      measuredAt:new Date(measuredAt).toISOString(),expiresAt:new Date(measuredAt+600000).toISOString(),decision:'allow',reason:'SYNC_CAPACITY_VERIFIED',projectedPeakBytes:500000000,diskTotalBytes:1024**4,currentUsedBytes:0,components:{fixtureMeasuredPeak:500000000}};
     await writeFile(decisionFile+'.next',JSON.stringify(decision),{mode:0o600});await rename(decisionFile+'.next',decisionFile);
    };
-   const waitForDecision=async()=>{await assert.rejects(worker!.tick(),/SYNC_CAPACITY_AWAITING_DECISION/);await approveCurrent();await worker!.tick();};
+   const waitForDecision=async()=>{await assert.rejects(worker!.tick(),/SYNC_CAPACITY_AWAITING_DECISION/);assert.equal(worker!.tickPhase,'capacity');await approveCurrent();await worker!.tick();};
    try{
    process.env.FULL_SYNC_CAPACITY_DECISION_FILE=decisionFile;
    process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=String(1024**4);
@@ -382,6 +382,82 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await database.pool.query("SELECT payload->>'image' AS image FROM external_full_stage WHERE snapshot_id=$1",[id])).rows[0].image,image);
    await applySnapshot('71000',image);
    assert.equal((await database.pool.query("SELECT count(*)::integer AS jobs FROM external_full_work WHERE source='che168' AND external_id=$1 AND kind='detail'",[externalId])).rows[0].jobs,1);
+  });
+  await t.test('report 404 uses the report transaction and retry boundary',async()=>{
+   const failed='812345',healthy='812346',missing='812347',retired='812348',replaced='812349',stale='812350',leaseLost='812351';
+   const calls:string[]=[];
+   const reportClient=new FullSyncClient('synthetic-key',{wait:async()=>{},fetch:async input=>{
+    const url=new URL(String(input)),id=url.pathname.split('/').at(-1)!;
+    assert.equal(url.pathname,`/api/inspection/${id}`);
+    assert.equal(url.searchParams.get('source'),'che168');
+    calls.push(id);
+    if(id===leaseLost){await worker!.close();throw new Error('Synthetic transport interruption after lease loss');}
+    if(id===healthy)return Response.json({id,source:'che168',summary:[{area:'Fixture report',result:'Checked'}]});
+    if(id===retired||id===replaced){
+     await database.pool.query("UPDATE external_full_members SET desired_generation=8 WHERE source='che168' AND external_id=$1",[id]);
+     if(id===replaced)await database.pool.query(`UPDATE external_full_work SET generation=8,due_at=now()+interval '1 day'
+      WHERE source='che168' AND external_id=$1 AND kind='report'`,[id]);
+    }
+    return new Response(null,{status:404});
+   }});
+   const applyReport:FullApply=async(tx,input)=>{
+    for(const document of input.documents)await persistSourceDocument(tx,document);
+    await apply(tx,input);
+    if(input.externalId===failed)throw new Error('Synthetic report projection failure after archive write');
+   };
+   const space=worker!.space;
+   await worker!.close();
+   worker=new FullSyncWorker(database,reportClient,directory,applyReport);
+   worker.space=space;
+   assert.equal(await worker.acquire(),true);
+
+   await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,desired_generation,applied_generation,report_state)
+    SELECT 'che168',id,'report-fixture:'||id,'active',7,7,'pending' FROM unnest($1::text[]) AS ids(id)`,[[failed,healthy,missing,retired,replaced,stale]]);
+   await database.pool.query("UPDATE external_full_members SET desired_generation=8 WHERE source='che168' AND external_id=$1",[stale]);
+   await database.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,due_at)
+    VALUES ('che168',$1,'report',7,105,$7),('che168',$2,'report',7,104,$7),('che168',$3,'report',7,103,$7),
+     ('che168',$4,'report',7,102,$7),('che168',$5,'report',7,101,$7),('che168',$6,'report',7,106,$7)`,[failed,healthy,missing,retired,replaced,stale,at]);
+
+   assert.equal(await worker.report(),1);
+   assert.deepEqual(calls,[]);
+   assert.equal((await database.pool.query("SELECT 1 FROM external_full_work WHERE source='che168' AND external_id=$1 AND kind='report'",[stale])).rowCount,0);
+   assert.equal(await worker.report(),0);
+   const failure=(await database.pool.query(`SELECT w.generation::text,w.attempts,w.last_error_code,
+     w.due_at>now() AND w.due_at<=now()+interval '1 minute' AS backed_off,m.report_state,m.report_checked_at,
+     EXISTS(SELECT 1 FROM external_source_documents d WHERE d.source=w.source AND d.external_id=w.external_id AND d.kind='report') AS documented,
+     EXISTS(SELECT 1 FROM full_test_effects e WHERE e.source=w.source AND e.external_id=w.external_id) AS applied
+    FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+    WHERE w.source='che168' AND w.external_id=$1 AND w.kind='report'`,[failed])).rows[0];
+   assert.deepEqual(failure,{generation:'7',attempts:1,last_error_code:'SYNC_REPORT_404_APPLY_FAILED',backed_off:true,
+    report_state:'pending',report_checked_at:null,documented:false,applied:false});
+
+   assert.equal(await worker.report(),1);
+   assert.equal(await worker.report(),1);
+   const settled=(await database.pool.query(`SELECT m.external_id,m.report_state,m.report_checked_at IS NOT NULL AS checked,
+     EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND w.kind='report') AS queued
+    FROM external_full_members m WHERE m.source='che168' AND m.external_id=ANY($1::text[]) ORDER BY m.external_id`,[[healthy,missing]])).rows;
+   assert.deepEqual(settled,[{external_id:healthy,report_state:'available',checked:true,queued:false},
+    {external_id:missing,report_state:'unavailable',checked:true,queued:false}]);
+   const observation=(await database.pool.query(`SELECT merged_payload->'observation' AS observation FROM external_source_heads
+    WHERE provider='chinacarapi' AND source='che168' AND external_id=$1 AND kind='report' AND locale='en'`,[missing])).rows[0];
+   assert.deepEqual(observation,{observation:{httpStatus:404,kind:'transport_observation'}});
+
+   await worker.report();
+   await worker.report();
+   assert.deepEqual(calls,[failed,healthy,missing,retired,replaced]);
+   const remaining=(await database.pool.query(`SELECT external_id,generation::text,attempts FROM external_full_work
+    WHERE source='che168' AND external_id=ANY($1::text[]) AND kind='report'`,[[retired,replaced]])).rows;
+   assert.deepEqual(remaining,[{external_id:replaced,generation:'8',attempts:0}]);
+   assert.equal((await database.pool.query(`SELECT count(*)::integer AS n FROM external_source_documents
+    WHERE source='che168' AND external_id=ANY($1::text[]) AND kind='report'`,[[retired,replaced]])).rows[0].n,0);
+
+   await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,desired_generation,applied_generation,report_state)
+    VALUES('che168',$1,'report-fixture:'||$1,'active',7,7,'pending')`,[leaseLost]);
+   await database.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,due_at)
+    VALUES('che168',$1,'report',7,999,$2)`,[leaseLost,at]);
+   await assert.rejects(worker.report(),/SYNC_LEASE_LOST/);
+   assert.deepEqual((await database.pool.query(`SELECT attempts,last_error_code FROM external_full_work
+    WHERE source='che168' AND external_id=$1 AND kind='report'`,[leaseLost])).rows[0],{attempts:0,last_error_code:null});
   });
  }finally{await worker?.close();await db?.close();await maintenance.pool.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);await maintenance.close();await rm(directory,{recursive:true,force:true});}
 });
