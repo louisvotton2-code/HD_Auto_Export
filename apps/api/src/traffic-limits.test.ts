@@ -4,6 +4,7 @@ import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { ApiErrorSchema, type PublicVehicleQuery } from '@hd/contracts/public';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
+import type { PublicMediaDeliveryOptions } from './media/storage.js';
 
 const start=Date.parse('2026-11-08T00:00:00Z');
 const proxy='192.0.2.10';
@@ -55,7 +56,11 @@ async function setup(t:TestContext,trustProxy='false') {
     revision:{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'},
   }));
   t.mock.method(runtime.inventory,'publicHome',async()=>({sections:[]}));
-  t.mock.method(runtime.media,'publicRead',async()=>Buffer.from('traffic-limit-test-media'));
+  const mediaBody=Buffer.from('traffic-limit-test-media');
+  t.mock.method(runtime.media,'publicDelivery',async(id:string,variant:'thumb'|undefined,options:PublicMediaDeliveryOptions)=>({
+    filename:`${id}${variant?'.thumb':''}.webp`,byteSize:mediaBody.length,etag:'W/"test-public"',
+    notModified:false,body:options.readBody?mediaBody:undefined,
+  }));
   return {...runtime,authRequests,list,query,getSession};
 }
 

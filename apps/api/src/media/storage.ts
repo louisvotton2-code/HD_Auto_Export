@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants, type BigIntStats } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, unlink, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import sharp, { type OutputInfo } from 'sharp';
+import { matchesIfNoneMatch } from './conditional.js';
 
 export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 export const MAX_MEDIA_PIXELS = 40_000_000;
@@ -45,6 +46,17 @@ export interface StoredMedia {
 export interface MediaDeliveryFile {
   filename: string;
   byteSize: number;
+}
+
+export interface PublicMediaDeliveryOptions {
+  ifNoneMatch?: string;
+  readBody: boolean;
+}
+
+export interface PublicMediaDelivery extends MediaDeliveryFile {
+  etag: string;
+  notModified: boolean;
+  body?: Buffer;
 }
 
 function hasCode(error: unknown, code: string): boolean {
@@ -115,18 +127,18 @@ export class LocalMediaStore {
     }
   }
 
-  private async withPrivateFile<T>(filename: string, action: (file: FileHandle, byteSize: number) => Promise<T>): Promise<T> {
+  private async withPrivateFile<T>(filename: string, action: (file: FileHandle, stat: BigIntStats) => Promise<T>): Promise<T> {
     try {
       const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        const stat = await file.stat();
-        if (stat.nlink === 0) {
+        const stat = await file.stat({ bigint: true });
+        if (stat.nlink === 0n) {
           throw new MediaStorageError('MEDIA_NOT_FOUND', 'The media file no longer exists.');
         }
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_MEDIA_BYTES || (stat.mode & 0o077) !== 0) {
+        if (!stat.isFile() || stat.nlink !== 1n || stat.size === 0n || stat.size > BigInt(MAX_MEDIA_BYTES) || (stat.mode & 0o077n) !== 0n) {
           throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The media file is not a valid private file.');
         }
-        return await action(file, stat.size);
+        return await action(file, stat);
       } finally {
         await file.close();
       }
@@ -140,7 +152,7 @@ export class LocalMediaStore {
   }
 
   private inspectFile(filename: string): Promise<number> {
-    return this.withPrivateFile(filename, async (_file, byteSize) => byteSize);
+    return this.withPrivateFile(filename, async (_file, stat) => Number(stat.size));
   }
 
   private readFile(filename: string): Promise<Buffer> {
@@ -231,21 +243,46 @@ export class LocalMediaStore {
   }
 
   async readThumbnail(id: string): Promise<Buffer> {
-    const delivery = await this.prepareDelivery(id, 'thumb');
-    const root = await this.root(false);
-    return this.readFile(path.join(root, delivery.filename));
+    const delivery = await this.deliveryLocation(id, 'thumb');
+    return this.readFile(delivery.target);
   }
 
   /** Authorize at the service on every request before preparing this filename. */
   async prepareDelivery(id: string, variant?: 'thumb'): Promise<MediaDeliveryFile> {
+    const { filename, target } = await this.deliveryLocation(id, variant);
+    return { filename, byteSize: await this.inspectFile(target) };
+  }
+
+  async preparePublicDelivery(id: string, variant: 'thumb' | undefined,
+    { ifNoneMatch, readBody }: PublicMediaDeliveryOptions): Promise<PublicMediaDelivery> {
+    const { filename, target } = await this.deliveryLocation(id, variant);
+    return this.withPrivateFile(target, async (file, stat) => {
+      // The store publishes immutable files. A replacement or in-place change
+      // changes this fingerprint, which avoids reading bytes on a warm hit.
+      const fingerprint = [filename, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      const etag = `W/"${createHash('sha256').update(fingerprint).digest('base64url')}"`;
+      const notModified = matchesIfNoneMatch(ifNoneMatch, etag);
+      let body:Buffer|undefined;
+      if (readBody && !notModified) {
+        body = await file.readFile();
+        const after = await file.stat({ bigint: true });
+        if (BigInt(body.length) !== stat.size || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
+          throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The image file changed during delivery.');
+        }
+      }
+      return { filename, byteSize: Number(stat.size), etag, notModified, body };
+    });
+  }
+
+  private async deliveryLocation(id: string, variant?: 'thumb') {
     const safeId = canonicalId(id);
     if (variant !== undefined && variant !== 'thumb') {
       throw new MediaStorageError('INVALID_MEDIA_ID', 'The media variant is invalid.');
     }
     const root = await this.root(false);
     const originalPath = path.join(root, `${safeId}.webp`);
-    const originalSize = await this.inspectFile(originalPath);
-    if (!variant) return { filename: `${safeId}.webp`, byteSize: originalSize };
+    if (!variant) return { filename: `${safeId}.webp`, target: originalPath };
+    await this.inspectFile(originalPath);
 
     const filename = `${safeId}.thumb.webp`;
     const target = path.join(root, filename);
@@ -257,8 +294,7 @@ export class LocalMediaStore {
     // A removed original must not be replaced by an orphaned cached derivative.
     // The final checks also cover a removal while the derivative was generated.
     await this.inspectFile(originalPath);
-    const byteSize = await this.inspectFile(target);
-    return { filename, byteSize };
+    return { filename, target };
   }
 
   private async ensureThumbnail(root: string, safeId: string): Promise<void> {

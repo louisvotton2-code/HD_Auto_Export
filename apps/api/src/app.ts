@@ -24,6 +24,7 @@ import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
+import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
@@ -65,12 +66,18 @@ function rateLimitKey(request:FastifyRequest) {
   return `${bucket}:${normalizeIP(request.ip)}`;
 }
 
-function sendInternalMedia(reply:FastifyReply,file:{filename:string}) {
+const publicMediaCacheControl = 'private, no-cache';
+
+function sendInternalMedia(reply:FastifyReply,file:{filename:string},etag?:string) {
   // Only a store-prepared UUID and fixed derivative can become an internal URI.
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.thumb)?\.webp$/.test(file.filename)) {
     throw new MediaStorageError('MEDIA_STORAGE_ERROR','The media delivery target is invalid.');
   }
-  return reply.type('image/webp').header('X-Accel-Redirect',`/_hd_media/${file.filename}`)
+  const prefix=etag?'/_hd_public_media/':'/_hd_media/';
+  if(etag) reply.header('ETag',etag);
+  // X-Accel copies Cache-Control into the internal request. Give the final
+  // location sole ownership of the policy, including static delivery failures.
+  return reply.removeHeader('Cache-Control').type('image/webp').header('X-Accel-Redirect',`${prefix}${file.filename}`)
     .header('X-Accel-Expires','0').send();
 }
 
@@ -347,11 +354,40 @@ export async function buildApp(config:Config=readConfig(), options:{
     const query=request.query as pub.PublicLocaleQuery;return publicResponse('home',query,()=>inventory.publicHome(query.locale,query.view,query.priceView),request);
   });
   }
-  app.get('/api/v1/media/:id',{schema:schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema})},async(request,reply)=>{
-    const id=(request.params as {id:string}).id;const variant=serving.mode()==='active'?(request.query as pub.PublicMediaQuery).variant:undefined;
-    if(config.mediaDelivery==='nginx') return sendInternalMedia(reply,await media.publicFile(id,variant));
-    return reply.type('image/webp').send(await media.publicRead(id,variant));
-  });
+  const publicMediaSchema=schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema});
+  const deliverPublicMedia=async(request:FastifyRequest,reply:FastifyReply)=>{
+    const id=(request.params as {id:string}).id;
+    const {variant}=request.query as pub.PublicMediaQuery;
+    const ifMatch=request.headers['if-match'];
+    const ifNoneMatch=request.headers['if-none-match'];
+    const failedIfMatch=ifMatch!==undefined&&trimHttpWhitespace(ifMatch)!=='*';
+    // A stock static handler would independently evaluate these conditions
+    // against its own metadata. Use the same API delivery rules in both modes.
+    const internal=config.mediaDelivery==='nginx'&&ifMatch===undefined&&request.headers['if-unmodified-since']===undefined;
+    const readBody=request.method==='GET'&&!failedIfMatch;
+    const options={ifNoneMatch,readBody:readBody&&!internal};
+    let delivery:Awaited<ReturnType<MediaService['publicDelivery']>>|undefined;
+    if(variant==='thumb') {
+      await serving.optionalEffect(async()=>{delivery=await media.publicDelivery(id,variant,options);});
+    }
+    // A non-active slot cannot generate a thumbnail. Never cache its original
+    // image under the requested thumbnail URL.
+    const fallback=variant==='thumb'&&delivery===undefined;
+    delivery??=await media.publicDelivery(id,undefined,fallback?{readBody}:options);
+    if(failedIfMatch) throw new ApiError(412,'VERSION_CONFLICT','The media precondition did not match.');
+    if(!fallback) {
+      if(delivery.notModified) {
+        return reply.header('Cache-Control',publicMediaCacheControl).header('ETag',delivery.etag).code(304).send();
+      }
+      if(internal) return sendInternalMedia(reply,delivery,delivery.etag);
+      reply.header('Cache-Control',publicMediaCacheControl).header('ETag',delivery.etag);
+    }
+    reply.type('image/webp').header('Content-Length',delivery.byteSize);
+    return reply.send(delivery.body);
+  };
+  app.get('/api/v1/media/:id',{schema:publicMediaSchema,exposeHeadRoute:false},deliverPublicMedia);
+  // Fastify's automatic HEAD handler rewrites an empty reply's length to zero.
+  app.head('/api/v1/media/:id',{schema:{...publicMediaSchema,hide:true},onSend:async()=>null},deliverPublicMedia);
 
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
   const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
@@ -438,7 +474,10 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
   app.get('/api/v1/admin/media/:id/preview',{schema:adminSchema('previewMedia',{params:IdParams})},async(request,reply)=>{
     const id=(request.params as {id:string}).id;
-    if(config.mediaDelivery==='nginx') return sendInternalMedia(reply,await media.previewFile(id));
+    // The static handler can return 304 for "*" even with ETag generation off.
+    const conditional=['if-none-match','if-match','if-modified-since','if-unmodified-since']
+      .some(header=>request.headers[header]!==undefined);
+    if(config.mediaDelivery==='nginx'&&!conditional) return sendInternalMedia(reply,await media.previewFile(id));
     return reply.type('image/webp').send(await media.preview(id));
   });
   await app.ready();

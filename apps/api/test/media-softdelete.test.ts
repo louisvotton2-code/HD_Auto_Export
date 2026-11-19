@@ -7,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import sharp from 'sharp';
+import {buildApp} from '../src/app.js';
+import {readConfig} from '../src/config.js';
 import {createDatabase,type Database} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
 import {MediaService} from '../src/media/service.js';
@@ -19,13 +21,13 @@ const databaseName=`hd_media_test_${randomBytes(8).toString('hex')}`;
 const maintenance=createDatabase(baseUrl.toString(),2);
 const actor={id:randomUUID(),requestId:randomUUID()};
 const rights={basis:'owned' as const,note:'Synthetic isolated media test image.'};
-let db:Database;let media:MediaService;let store:LocalMediaStore;let root:string;let bytes:Buffer;
+let db:Database;let dbUrl:string;let media:MediaService;let store:LocalMediaStore;let root:string;let bytes:Buffer;
 
 before(async()=>{
   root=await mkdtemp(path.join(os.tmpdir(),'hd-media-softdelete-'));
   await maintenance.pool.query(`CREATE DATABASE "${databaseName}"`);
   const url=new URL(baseUrl);url.pathname=`/${databaseName}`;
-  db=createDatabase(url.toString(),5);await migrateDatabase(db);
+  dbUrl=url.toString();db=createDatabase(dbUrl,5);await migrateDatabase(db);
   await db.pool.query('INSERT INTO staff(id,name,email) VALUES($1,$2,$3)',[actor.id,'Isolated media tester','media@example.invalid']);
   store=new LocalMediaStore(path.join(root,'media'));media=new MediaService(db,store);
   bytes=await sharp({create:{width:24,height:24,channels:3,background:'#334455'}}).png().toBuffer();
@@ -45,6 +47,12 @@ async function ready(vehicleId:string) {
   const uploaded=await media.upload(permit.media.id,permit.media.version,bytes,'image/png',actor);
   return media.complete(uploaded.id,uploaded.version,actor);
 }
+async function publish(vehicleId:string,mediaId:string) {
+  const publication=randomUUID();
+  await db.pool.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,vehicleId,'{}']);
+  await db.pool.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publication,mediaId]);
+  await db.pool.query("UPDATE vehicles SET published_revision_id=$2,publication_state='published',published_at=now() WHERE id=$1",[vehicleId,publication]);
+}
 const hidden=(action:()=>Promise<unknown>)=>assert.rejects(action,(error:unknown)=>error instanceof ApiError&&error.status===404);
 const gate=()=>{
   let release!:()=>void;const promise=new Promise<void>(resolve=>{release=resolve;});
@@ -61,17 +69,15 @@ async function waitForVehicleLock() {
 
 test('deleted owners hide every media operation while retaining files and publication references',async()=>{
   const vehicleId=await vehicle();const image=await ready(vehicleId);
-  await hidden(()=>media.publicRead(image.id,'thumb'));
+  const options={readBody:true};
+  await hidden(()=>media.publicDelivery(image.id,'thumb',options));
   const permit=await media.create({vehicleId,contentType:'image/png',sizeBytes:bytes.length,rights},actor);
-  const publication=randomUUID();
-  await db.pool.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',[publication,vehicleId,'{}']);
-  await db.pool.query('INSERT INTO publication_media(publication_id,media_id) VALUES($1,$2)',[publication,image.id]);
-  await db.pool.query("UPDATE vehicles SET published_revision_id=$2,publication_state='published',published_at=now() WHERE id=$1",[vehicleId,publication]);
-  assert.ok((await media.publicRead(image.id)).length);
-  assert.ok((await media.publicRead(image.id,'thumb')).length);
+  await publish(vehicleId,image.id);
+  assert.ok((await media.publicDelivery(image.id,undefined,options)).body?.length);
+  assert.ok((await media.publicDelivery(image.id,'thumb',options)).body?.length);
   await db.pool.query('UPDATE vehicles SET deleted_at=now(),deleted_by=$2 WHERE id=$1',[vehicleId,actor.id]);
   for(const action of [
-    ()=>media.get(image.id),()=>media.preview(image.id),()=>media.publicRead(image.id),()=>media.publicRead(image.id,'thumb'),
+    ()=>media.get(image.id),()=>media.preview(image.id),()=>media.publicDelivery(image.id,undefined,options),()=>media.publicDelivery(image.id,'thumb',options),
     ()=>media.create({vehicleId,contentType:'image/png',sizeBytes:bytes.length,rights},actor),
     ()=>media.upload(permit.media.id,permit.media.version,bytes,'image/png',actor),
     ()=>media.complete(image.id,image.version,actor),()=>media.remove(image.id,image.version,actor),
@@ -82,6 +88,75 @@ test('deleted owners hide every media operation while retaining files and public
   assert.ok((await store.readThumbnail(image.id)).length);
   assert.equal((await db.pool.query('SELECT 1 FROM publication_media WHERE media_id=$1',[image.id])).rowCount,1);
   assert.equal((await db.pool.query('SELECT 1 FROM media_assets WHERE vehicle_id=$1',[vehicleId])).rowCount,2);
+});
+
+test('public media GET and HEAD revalidate only while the owner remains public',async t=>{
+  for(const mode of ['direct','nginx'] as const) {
+    await t.test(mode,async t=>{
+      const runtime=await buildApp(readConfig({NODE_ENV:'test',DATABASE_URL:dbUrl,
+        AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:path.join(root,'media'),MEDIA_DELIVERY:mode}));
+      t.after(()=>runtime.app.close());
+      const vehicleId=await vehicle();const image=await ready(vehicleId);
+      const url=`/api/v1/media/${image.id}`;
+      const unpublished=await runtime.app.inject({method:'GET',url,headers:{'if-none-match':'*'}});
+      assert.equal(unpublished.statusCode,404);
+      assert.equal(unpublished.headers['cache-control'],'no-store');
+      await publish(vehicleId,image.id);
+
+      const validators=new Map<string,string>();
+      for(const variant of [undefined,'thumb'] as const) {
+        const imageUrl=variant?`${url}?variant=thumb`:url;
+        const get=await runtime.app.inject({method:'GET',url:imageUrl});
+        const etag=get.headers.etag;
+        assert.equal(get.statusCode,200,get.body);
+        assert.equal(get.headers['content-type'],'image/webp');
+        assert.equal(typeof etag,'string');
+        assert.ok(typeof etag==='string'&&etag.startsWith('W/"'));
+        validators.set(imageUrl,etag);
+        const head=await runtime.app.inject({method:'HEAD',url:imageUrl});
+        assert.equal(head.statusCode,200);
+        assert.equal(head.headers.etag,etag);
+        assert.equal(head.rawPayload.length,0);
+        if(mode==='nginx') {
+          const internalPath=`/_hd_public_media/${image.id}${variant?'.thumb':''}.webp`;
+          assert.equal(get.headers['x-accel-redirect'],internalPath);
+          assert.equal(head.headers['x-accel-redirect'],internalPath);
+          assert.equal(get.rawPayload.length,0);
+        } else {
+          assert.equal(get.headers['x-accel-redirect'],undefined);
+          assert.equal(head.headers['x-accel-redirect'],undefined);
+          assert.equal(get.headers['cache-control'],'private, no-cache');
+          assert.equal(head.headers['cache-control'],'private, no-cache');
+          assert.ok(get.rawPayload.length>0);
+          assert.equal(Number(head.headers['content-length']),get.rawPayload.length);
+        }
+        const headers:Record<string,string>={'if-none-match':etag};
+        for(const method of ['GET','HEAD'] as const) {
+          const cached:{statusCode:number;headers:Record<string,unknown>;rawPayload:Buffer}=
+            await runtime.app.inject({method,url:imageUrl,headers});
+          assert.equal(cached.statusCode,304);
+          assert.equal(cached.headers.etag,etag);
+          assert.equal(cached.headers['cache-control'],'private, no-cache');
+          assert.equal(cached.headers['x-accel-redirect'],undefined);
+          assert.equal(cached.rawPayload.length,0);
+        }
+      }
+      assert.equal(new Set(validators.values()).size,2);
+      await db.pool.query('UPDATE vehicles SET deleted_at=now(),deleted_by=$2 WHERE id=$1',[vehicleId,actor.id]);
+      for(const [imageUrl,etag] of validators) {
+        for(const method of ['GET','HEAD'] as const) {
+          const revoked=await runtime.app.inject({method,url:imageUrl,headers:{'if-none-match':etag}});
+          assert.equal(revoked.statusCode,404);
+          assert.equal(revoked.headers['cache-control'],'no-store');
+          assert.equal(revoked.headers.etag,undefined);
+          assert.equal(revoked.headers['x-accel-redirect'],undefined);
+          if(method==='HEAD') assert.equal(revoked.rawPayload.length,0);
+        }
+      }
+      assert.ok((await store.read(image.id)).length);
+      assert.ok((await store.readThumbnail(image.id)).length);
+    });
+  }
 });
 
 test('cleanup candidate selected before vehicle deletion is preserved after waiting for its lock',async()=>{

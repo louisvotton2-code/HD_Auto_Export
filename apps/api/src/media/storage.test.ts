@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type { Stats } from 'node:fs';
-import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import type { BigIntStats } from 'node:fs';
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -284,6 +284,52 @@ test('delivery rejects invalid identifiers and variants instead of deriving arbi
   }
 });
 
+test('public media revalidates each file and does not reuse a validator after a same-size write', async (t) => {
+  const { directory, store } = await setup(t);
+  const id = randomUUID();
+  await store.put(id, await png(800, 600), 'image/png');
+  const target = path.join(directory, `${id}.webp`);
+  const date = new Date('2026-01-01T00:00:00.000Z');
+  await utimes(target, date, date);
+  const before = await lstat(target, { bigint: true });
+  const original = await store.preparePublicDelivery(id, undefined, { readBody: true });
+  const thumb = await store.preparePublicDelivery(id, 'thumb', { readBody: true, ifNoneMatch: original.etag });
+  assert.ok(original.body);
+  assert.ok(thumb.body);
+  assert.notEqual(thumb.etag, original.etag);
+  assert.equal(thumb.notModified, false);
+
+  const reopened = new LocalMediaStore(directory);
+  for (const ifNoneMatch of [original.etag, '"unrelated,token", ' + original.etag.slice(2), '*']) {
+    const matched = await reopened.preparePublicDelivery(id, undefined, { ifNoneMatch, readBody: true });
+    assert.equal(matched.etag, original.etag);
+    assert.equal(matched.notModified, true);
+    assert.equal(matched.body, undefined);
+  }
+  for (const ifNoneMatch of [original.etag + ', invalid', '*, ' + original.etag, '\u00a0*']) {
+    const invalid = await reopened.preparePublicDelivery(id, undefined, { ifNoneMatch, readBody: true });
+    assert.equal(invalid.notModified, false);
+    assert.deepEqual(invalid.body, original.body);
+  }
+
+  const changed = Buffer.from(original.body);
+  const last = changed.length - 1;
+  changed[last] = changed[last]! ^ 1;
+  await writeFile(target, changed);
+  await utimes(target, date, date);
+  const after = await lstat(target, { bigint: true });
+  assert.deepEqual([after.ino, after.size, after.mtimeNs], [before.ino, before.size, before.mtimeNs]);
+  const fresh = await store.preparePublicDelivery(id, undefined, { ifNoneMatch: original.etag, readBody: true });
+  assert.notEqual(fresh.etag, original.etag);
+  assert.equal(fresh.notModified, false);
+  assert.deepEqual(fresh.body, changed);
+
+  await rm(target);
+  await assert.rejects(store.preparePublicDelivery(id, 'thumb', { ifNoneMatch: thumb.etag, readBody: false }), errorCode('MEDIA_NOT_FOUND'));
+  await writeFile(target, '', { mode: 0o600 });
+  await assert.rejects(store.preparePublicDelivery(id, 'thumb', { ifNoneMatch: thumb.etag, readBody: false }), errorCode('MEDIA_STORAGE_ERROR'));
+});
+
 test('delivery applies the same private-file checks to original and cached thumbnails', async (t) => {
   for (const variant of [undefined, 'thumb'] as const) {
     for (const unsafe of ['symlink', 'hardlink', 'oversize', 'public-mode', 'directory'] as const) {
@@ -352,17 +398,17 @@ test('unlink or cross-process replacement between open and fstat is missing, nev
       const replacement = path.join(directory, 'replacement.tmp');
       if (operation === 'replace') await writeFile(replacement, await readFile(target), { mode: 0o600 });
       const probe = await open(target, 'r');
-      const prototype = Object.getPrototypeOf(probe) as { stat(): Promise<Stats> };
+      const prototype = Object.getPrototypeOf(probe) as { stat(options: { bigint: true }): Promise<BigIntStats> };
       const originalStat = prototype.stat;
       await probe.close();
       let interrupted = false;
-      subtest.mock.method(prototype, 'stat', async function (this: typeof prototype) {
+      subtest.mock.method(prototype, 'stat', async function (this: typeof prototype, options: { bigint: true }) {
         if (!interrupted) {
           interrupted = true;
           if (operation === 'replace') await rename(replacement, target);
           else await rm(target);
         }
-        return originalStat.call(this);
+        return originalStat.call(this, options);
       });
       await assert.rejects(store.prepareDelivery(id), errorCode('MEDIA_NOT_FOUND'));
       if (operation === 'replace') {
