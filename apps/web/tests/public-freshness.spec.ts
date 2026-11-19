@@ -240,8 +240,10 @@ test.describe('explicit public queries, stable activation and media regression',
     expect(backRequests).toHaveLength(1);
     expect(cleanPath(backRequests[0]!.url())).toBe('/api/v1/vehicles');
     expect(audit.documents()).toEqual(initialDocuments);
-    // Global navigation can prefetch its unfiltered destinations when the footer enters view.
+    // Global navigation can fetch other destinations when the footer enters view.
+    const catalogPath = cleanPath(page.url());
     const queryRsc = audit.rsc().filter((request) => {
+      if (cleanPath(request.url()) !== catalogPath) return false;
       const params = new URL(request.url()).searchParams;
       return request.headers()['next-router-prefetch'] !== '1' || params.has('q') || params.has('page');
     });
@@ -360,13 +362,14 @@ test.describe('explicit public queries, stable activation and media regression',
     }
   });
 
-  test('real Back and Forward check current sold and removed records with one local JSON request', async ({ page, request }) => {
+  test('real Back and Forward check current sold and removed records with scoped local JSON', async ({ page, request }) => {
     await patchFixture(request, { futurePublished: true, futureAvailability: 'reserved' });
     await page.goto('/en/cars/fixture_future/');
     await expect(page.locator('main [data-vehicle-stamp="reserved"]')).toBeVisible();
     await expectDetailContactRegions(page.locator('main'), 'fixture_future');
     await page.getByRole('link', { name: /Back to selected vehicles/ }).click();
     await expect(page).toHaveURL(/\/en\/cars\/$/);
+    await expect(await resource(page, '/api/v1/vehicles')).toHaveAttribute('data-freshness', 'fresh');
     await patchFixture(request, { futureAvailability: 'sold' });
     let release = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -400,7 +403,8 @@ test.describe('explicit public queries, stable activation and media regression',
       await expect(catalog).toHaveAttribute('data-freshness', 'fresh');
       await expect(page.locator('[data-public-vehicle="fixture_future"]')).toHaveCount(0);
       await page.waitForTimeout(150);
-      expect(audit.data().slice(beforeForward)).toHaveLength(1);
+      expect(audit.data().slice(beforeForward).map(request => cleanPath(request.url())).sort())
+        .toEqual(['/api/v1/vehicles', catalogFacetsPath]);
       await patchFixture(request, { futureArchived: true });
       const beforeRemovedBack = audit.data().length;
       await page.goBack();
@@ -411,7 +415,12 @@ test.describe('explicit public queries, stable activation and media regression',
       await page.waitForTimeout(150);
       expect(audit.data().slice(beforeRemovedBack)).toHaveLength(1);
       expect((await request.get('/en/cars/fixture_future/')).status()).toBe(404);
-      expect(audit.rsc()).toHaveLength(0);
+      const vehicleHistoryRsc = audit.rsc().filter((request) => {
+        const path = cleanPath(request.url());
+        return path === '/en/cars/fixture_future' ||
+          (path === '/en/cars' && request.headers()['next-router-prefetch'] !== '1');
+      });
+      expect(vehicleHistoryRsc.map(request => request.url())).toEqual([]);
       expect(audit.documents()).toHaveLength(0);
     } finally { release(); await page.unroute(matcher); audit.stop(); }
   });

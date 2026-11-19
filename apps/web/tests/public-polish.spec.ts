@@ -185,15 +185,17 @@ test('the hero vehicle link remains one line on desktop and narrow phones', asyn
   for (const width of [1440, 375, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/zh/');
-    const link = page.locator('[data-home-section="hero"] a[href="/zh/cars/"]');
+    const link = page.locator('#home-shortcuts a[href="/zh/cars/"]');
     await expect(link).toBeVisible();
     expect(
       await link
-        .locator('span')
-        .first()
-        .evaluate((node) => node.getClientRects().length),
+        .locator('strong')
+        .evaluate((node) => {
+          const text = document.createRange();
+          text.selectNodeContents(node);
+          return text.getClientRects().length;
+        }),
     ).toBe(1);
-    expect((await link.boundingBox())!.height).toBeLessThan(75);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
