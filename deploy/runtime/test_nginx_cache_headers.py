@@ -106,6 +106,13 @@ class DomainCacheHeaders(unittest.TestCase):
         # Darwin's larger pages require a larger bookkeeping zone; rate/burst/connection limits are identical.
         if os.uname().sysname=='Darwin':edge=edge.replace('zone=hd_edge_total:64k','zone=hd_edge_total:256k')
         rootuser='user root;\n' if os.getuid()==0 else ''
+        single=(HERE/'nginx.conf').read_text().replace('/etc/nginx/hd-domains',str(includes))
+        single=single.replace('/run/tls/server.crt',str(r/'cert.pem')).replace('/run/tls/server.key',str(r/'key.pem'))
+        single=single.replace('listen 8443 ssl',f'listen unix:{r}/single.sock ssl')
+        single_config=r/'single.conf'
+        single_config.write_text(rootuser+f'pid {r}/single.pid; events {{}} http {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy;\n'+edge+'\n'+single+'\n}')
+        subprocess.run([NGINX,'-t','-e',str(r/'single.log'),'-p',str(r)+'/', '-c',str(single_config)],
+                       check=True,capture_output=True,text=True)
         full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n}\n'
         (r/'nginx.conf').write_text(full);cls.log=(r/'nginx.log').open('wb');cls.addClassCleanup(cls.log.close);cls.process=subprocess.Popen([NGINX,'-e',str(r/'bootstrap.log'),'-p',str(r)+'/', '-c',str(r/'nginx.conf'),'-g','daemon off;'],stdout=cls.log,stderr=cls.log)
         def stop():
@@ -138,6 +145,7 @@ class DomainCacheHeaders(unittest.TestCase):
             self.assertEqual((status,body),(200,expected_body))
             self.assertEqual(headers['cache-control'],'private, no-cache')
             self.assertEqual(headers['etag'],'"test-'+variant+'"')
+            self.assertNotIn('last-modified',headers)
             self.assertEqual(headers['x-content-type-options'],'nosniff')
             validators[variant]=headers['etag']
             Origin.calls.clear()
