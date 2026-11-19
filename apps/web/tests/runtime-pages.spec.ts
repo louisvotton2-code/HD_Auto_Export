@@ -153,12 +153,12 @@ test('invalid locale and unknown pages have a branded, usable 404 without JavaSc
   }
 });
 
-test('calculating and navigating use local assets without calling an API or runtime FX service', async ({
+test('calculating and navigating use local assets without a calculation API or runtime FX service', async ({
   page,
 }) => {
   await page.clock.setFixedTime(new Date('2026-10-24T04:00:00Z'));
-  const requests: string[] = [];
-  page.on('request', (request) => requests.push(request.url()));
+  const requests: { url: string; method: string }[] = [];
+  page.on('request', (request) => requests.push({ url: request.url(), method: request.method() }));
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.locator('#displacementCc').fill('1700');
@@ -169,9 +169,14 @@ test('calculating and navigating use local assets without calling an API or runt
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
   await expect(page.getByTestId('manufacture-range-total')).toHaveText('480.00 – 480.00 GEL');
   await page.waitForLoadState('networkidle');
-  expect(requests.filter((url) => new URL(url).pathname.startsWith('/api/'))).toEqual([]);
-  expect(requests.filter((url) => /open\.er-api\.com|exchangerate-api\.com/.test(url))).toEqual([]);
-  expect(requests.filter((url) => new URL(url).pathname.startsWith('/_next/image'))).toEqual([]);
+  const origin = new URL(page.url()).origin;
+  expect(requests.filter(({ url, method }) => {
+    const { origin: requestOrigin, pathname } = new URL(url);
+    const analytics = requestOrigin === origin && pathname === '/api/v1/analytics/events' && method === 'POST';
+    return pathname.startsWith('/api/') && !analytics;
+  })).toEqual([]);
+  expect(requests.filter(({ url }) => /open\.er-api\.com|exchangerate-api\.com/.test(url))).toEqual([]);
+  expect(requests.filter(({ url }) => new URL(url).pathname.startsWith('/_next/image'))).toEqual([]);
 });
 
 test('browser initialization and reset use the Shanghai calendar date and ignore an obsolete stored date', async ({
