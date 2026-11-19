@@ -5,7 +5,7 @@ import type { PoolClient } from 'pg';
 import { MediaAssetSchema, type MediaUploadRequest, type MediaRights } from '@hd/contracts/admin';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
-import { LocalMediaStore } from './storage.js';
+import { LocalMediaStore, type PublicMediaDeliveryOptions } from './storage.js';
 import { audit, type Actor } from '../vehicles/service.js';
 
 type MediaRow = {id:string;vehicle_id:string;version:number;state:'pending'|'uploaded'|'ready'|'failed'|'deleted';content_type:'image/jpeg'|'image/png'|'image/webp';
@@ -99,13 +99,9 @@ export class MediaService {
     await this.authorizePreview(id);
     return this.store.prepareDelivery(id);
   }
-  async publicRead(id:string,variant?:'thumb') {
+  async publicDelivery(id:string,variant:'thumb'|undefined,options:PublicMediaDeliveryOptions) {
     await this.authorizePublic(id);
-    return variant==='thumb'?this.store.readThumbnail(id):this.store.read(id);
-  }
-  async publicFile(id:string,variant?:'thumb') {
-    await this.authorizePublic(id);
-    return this.store.prepareDelivery(id,variant);
+    return this.store.preparePublicDelivery(id,variant,options);
   }
   async remove(id:string,version:number,actor:Actor) {
     const vehicleId=await this.db.transaction(async tx=>{

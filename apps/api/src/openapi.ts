@@ -15,6 +15,14 @@ try {
     const get=document.paths?.[mediaPath]?.get;
     if(get) get.responses={'200':{description:'Processed image; access is checked on every request.',content:{'image/webp':{schema:{type:'string',format:'binary'}}}}};
   }
+  const publicMedia=document.paths?.['/api/v1/media/{id}']?.get;
+  if(publicMedia) publicMedia.responses['304']={
+    description:'Image unchanged after current publication access and file validation.',
+    headers:{
+      ETag:{schema:{type:'string'},description:'Validator for the selected display or thumbnail file.'},
+      'Cache-Control':{schema:{type:'string',example:'private, no-cache'}},
+    },
+  };
   const directory=fileURLToPath(new URL('../openapi/',import.meta.url));await mkdir(directory,{recursive:true});
   for(const audience of ['public','admin'] as const) {
     const copy=structuredClone(document);

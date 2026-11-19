@@ -53,7 +53,16 @@ export function useActiveImageStatus({ imageRef, imageId, imageKey, onStatus }: 
       }
       decoding = true;
       try {
-        await image.decode();
+        if (typeof image.decode === 'function') {
+          await image.decode();
+        } else if (typeof window.createImageBitmap === 'function') {
+          // Older browsers still have to decode the authorized image before it can count.
+          const decoded = await window.createImageBitmap(image);
+          decoded.close?.();
+        } else {
+          failed();
+          return;
+        }
         finish(image.complete && image.naturalWidth > 0 ? 'ready' : 'error');
       } catch {
         failed();
@@ -62,7 +71,8 @@ export function useActiveImageStatus({ imageRef, imageId, imageKey, onStatus }: 
 
     image.addEventListener('load', decodeImage);
     image.addEventListener('error', failed);
-    timer = setTimeout(failed, 15_000);
+    // Leave room for the preview JSON's 15-second request within the admin's 40-second deadline.
+    timer = setTimeout(failed, 24_000);
     // Hydration and a quick return can both encounter an already complete DOM image.
     if (image.complete) void decodeImage();
     return () => {

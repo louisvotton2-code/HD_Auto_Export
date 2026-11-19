@@ -220,6 +220,68 @@ test('a received cover image cannot qualify the frame before its actual decode c
   await waitForPreviewEvent(page, 'ready');
 });
 
+for (const outcome of ['ready', 'error'] as const) {
+  test('a browser without image.decode waits for the native bitmap to report ' + outcome, async ({ page, context, request, baseURL }) => {
+    await page.addInitScript(() => {
+      Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
+      const createBitmap = window.createImageBitmap.bind(window);
+      let finish!: (success: boolean) => void;
+      const released = new Promise<boolean>((resolve) => { finish = resolve; });
+      const bitmapGate = { decoded: false, finish };
+      Reflect.set(window, '__previewBitmapGate', bitmapGate);
+      Reflect.set(window, 'createImageBitmap', async (image: ImageBitmapSource) => {
+        const bitmap = await createBitmap(image);
+        bitmapGate.decoded = true;
+        if (await released) return bitmap;
+        bitmap.close();
+        throw new DOMException('Synthetic bitmap decode failure', 'EncodingError');
+      });
+    });
+    await authorizePreview(context, baseURL!);
+    await installPreviewTransport(page, request);
+    const frame = await openPreviewHost(page, 'en');
+    const image = frame.locator('img[data-gallery-active-image]');
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate(() => Reflect.get(window, '__previewBitmapGate').decoded)).toBe(true);
+    await settlePreviewPaint(page);
+    expect((await previewMessages(page)).filter((entry) => ['ready', 'error'].includes(entry.data.event))).toEqual([]);
+    await image.evaluate((_, success) => Reflect.get(window, '__previewBitmapGate').finish(success), outcome === 'ready');
+    if (outcome === 'ready') {
+      expect(await waitForPreviewEvent(page, 'ready')).toMatchObject({ fromChild: true, bodyRendered: true });
+    } else {
+      await expectTerminalImageFailure(page);
+      expect((await previewMessages(page)).filter((entry) => entry.data.event === 'ready')).toEqual([]);
+    }
+  });
+}
+
+test('a private cover arriving after 16 seconds qualifies once it is decoded', async ({ page, context, request, baseURL }) => {
+  await authorizePreview(context, baseURL!);
+  await page.clock.install();
+  const cover = holdPreviewMedia();
+  const transport = await installPreviewTransport(page, request, { [previewCoverId]: cover });
+  const frame = await openPreviewHost(page, 'zh');
+  await expect(frame.getByTestId('publication-preview-body')).toBeVisible();
+  await expect.poll(() => transport.reads.some((entry) => entry.path.includes(`/media/${previewCoverId}/`))).toBe(true);
+  await page.clock.fastForward(16_001);
+  expect((await previewMessages(page)).filter((entry) => ['ready', 'error'].includes(entry.data.event))).toEqual([]);
+  cover.release();
+  expect(await waitForPreviewEvent(page, 'ready')).toMatchObject({ fromChild: true, bodyRendered: true });
+});
+
+test('a loaded cover cannot qualify when the browser has neither decode API', async ({ page, context, request, baseURL }) => {
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
+    Reflect.set(window, 'createImageBitmap', undefined);
+  });
+  await authorizePreview(context, baseURL!);
+  await installPreviewTransport(page, request);
+  const frame = await openPreviewHost(page, 'en');
+  await expect.poll(() => frame.locator('img[data-gallery-active-image]').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  await expectTerminalImageFailure(page);
+  expect((await previewMessages(page)).filter((entry) => entry.data.event === 'ready')).toEqual([]);
+});
+
 for (const outcome of [401, 403, 500, 'abort', 'corrupt'] as const) {
   test(`cover ${outcome}: private image failure preserves the draft but never qualifies it`, async ({ page, context, request, baseURL }) => {
     await authorizePreview(context, baseURL!);
@@ -425,7 +487,7 @@ test('the undecoded initial cover cannot be skipped through thumbnails or keyboa
   await secondThumbnail.press('ArrowRight');
   await expect(gallery).toHaveAttribute('data-selected-image', previewCoverId);
   expect((await previewMessages(page)).filter((entry) => entry.data.event === 'ready')).toEqual([]);
-  await page.clock.fastForward(14_999);
+  await page.clock.fastForward(23_999);
   expect((await previewMessages(page)).filter((entry) => ['ready', 'error'].includes(entry.data.event))).toEqual([]);
   await page.clock.fastForward(2);
   const terminal = await expectTerminalImageFailure(page);
@@ -438,7 +500,7 @@ test('the undecoded initial cover cannot be skipped through thumbnails or keyboa
   expect((await previewMessages(page)).slice(terminal + 1).filter((entry) => ['ready', 'loading'].includes(entry.data.event))).toEqual([]);
 });
 
-test('the current-image 15 second deadline is terminal even when delayed bytes later arrive', async ({ page, context, request, baseURL }) => {
+test('the current-image 24 second deadline is terminal even when delayed bytes later arrive', async ({ page, context, request, baseURL }) => {
   await authorizePreview(context, baseURL!);
   await setPublicFixtureState(request, { previewImageCount: 2 });
   await page.clock.install();
@@ -450,7 +512,7 @@ test('the current-image 15 second deadline is terminal even when delayed bytes l
   const after = (await previewMessages(page)).length;
   await frame.locator('[data-vehicle-thumbnails] a').nth(1).click();
   await waitForPreviewEvent(page, 'loading', previewLoadId, after);
-  await page.clock.fastForward(14_999);
+  await page.clock.fastForward(23_999);
   expect((await previewMessages(page)).slice(after).filter((entry) => ['ready', 'error'].includes(entry.data.event))).toEqual([]);
   await page.clock.fastForward(2);
   const terminal = await expectTerminalImageFailure(page, after);

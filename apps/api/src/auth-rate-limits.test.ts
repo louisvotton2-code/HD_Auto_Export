@@ -55,7 +55,9 @@ async function setup(t:TestContext,trustProxy='false') {
   const complete=t.mock.method(runtime.media,'complete',async()=>asset);
   t.mock.method(runtime.media,'get',async()=>asset);
   t.mock.method(runtime.media,'preview',async()=>Buffer.from('test-preview'));
-  t.mock.method(runtime.media,'publicRead',async()=>Buffer.from('test-public'));
+  t.mock.method(runtime.media,'publicDelivery',async()=>({
+    filename:`${ids[0]}.webp`,byteSize:11,etag:'W/"test-public"',notModified:false,body:Buffer.from('test-public'),
+  }));
   t.mock.method(runtime.media,'remove',async()=>{});
   const translation=t.mock.method(runtime.inventory,'translationSuggestions',async()=>{
     throw new ApiError(503,'SERVICE_UNAVAILABLE','Synthetic translation dependency unavailable.',undefined,true);

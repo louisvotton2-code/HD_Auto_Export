@@ -1,8 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiClientError, request, signIn } from './client';
+import { ApiClientError, request, requestWithTimeout, signIn } from './client';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 const schema = { parse: (value: unknown) => value };
+
+function fetchUntilAborted() {
+  const fetcher = vi.fn((_path: string, { signal }: RequestInit) => new Promise<never>((_resolve, reject) => {
+    if (!signal) throw new Error('Expected an abort signal');
+    const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  }));
+  vi.stubGlobal('fetch', fetcher);
+  return fetcher;
+}
+
 describe('staff HTTP boundary', () => {
   it('uses same-origin cookies and no-store; retains the idempotency key', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('{"data":{}}', { status: 200 }));
@@ -55,5 +71,31 @@ describe('staff HTTP boundary', () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
     await expect(request('https://other.example/api/test', schema)).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe('staff request timeout', () => {
+  it('reports a timed-out write without retrying it', async () => {
+    vi.useFakeTimers();
+    const fetcher = fetchUntilAborted();
+    const result = requestWithTimeout('/api/v1/admin/vehicles/example/configuration-import', schema, 25, { method: 'PUT' });
+    const rejected = expect(result).rejects.toMatchObject({ status: 0, code: 'REQUEST_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(25);
+    await rejected;
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('forwards caller cancellation and releases the timer and listener', async () => {
+    vi.useFakeTimers();
+    fetchUntilAborted();
+    const parent = new AbortController();
+    const release = vi.spyOn(parent.signal, 'removeEventListener');
+    const result = requestWithTimeout('/api/v1/admin/vehicles/example/translation-bundle', schema, 20_000, { signal: parent.signal });
+    const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    parent.abort();
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(release).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 });

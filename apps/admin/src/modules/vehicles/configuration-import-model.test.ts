@@ -1,7 +1,7 @@
 import { parseConfigurationImportJson, vehicleConfigurationItemId } from '@hd/contracts/admin';
 import { adminVehicleFixture, makeVehicleLocalizationFixture } from '@hd/contracts/fixtures';
 import { describe, expect, it } from 'vitest';
-import { configurationImportPrompt, importExampleText, prepareConfigurationImport, savedImportRows } from './configuration-import-model';
+import { configurationImportIssues, configurationImportPrompt, importExampleText, prepareConfigurationImport, savedImportRows } from './configuration-import-model';
 import { draftToForm, emptyDraft } from './draft-form';
 
 describe('configuration import prompt', () => {
@@ -9,6 +9,7 @@ describe('configuration import prompt', () => {
     const prompt = configurationImportPrompt(draftToForm(emptyDraft()), null);
     expect(prompt).toContain('直接输出成 UTF-8 JSON 文件，文件名为 vehicle-configuration.json，并提供下载');
     expect(prompt).toContain('不要在聊天中逐段输出文件内容');
+    expect(prompt).toContain('不能把语言代号作为占位值');
     const exampleLine = prompt.split('结构示例（只说明格式，不能套用示例值和标识）：\n')[1]!.split('\n')[0]!;
     const { json, document: example } = prepareConfigurationImport(exampleLine);
 
@@ -28,6 +29,21 @@ describe('configuration import prompt', () => {
     expect(prepareConfigurationImport(json).json).toBe(json);
     expect(() => prepareConfigurationImport(importExampleText.replace('"zh": "挡位数"', '"zh": "挡位数", "zh": "档位数"'))).toThrow(/Duplicate JSON property/);
     expect(() => prepareConfigurationImport(json.replace('"zh":"挡位数"', '"zh":"档位数"'))).toThrow(/Item ID must be unique and match its Chinese name/);
+  });
+
+  it.each([
+    { value: { zh: 'zh', en: 'en', ru: 'ru' }, path: 'items[0].value' },
+    { value: { zh: '8', en: '8', ru: '9' }, path: 'items[0].value.ru' },
+  ])('reports the literal mismatch at $path', ({ value, path }) => {
+    const document = JSON.parse(importExampleText);
+    document.items[0].value = value;
+    let failure: unknown;
+    try { prepareConfigurationImport(JSON.stringify(document)); }
+    catch (error) { failure = error; }
+
+    expect(configurationImportIssues(failure)).toEqual([
+      { path, message: expect.stringContaining('避免使用 zh、en、ru 作为占位值') },
+    ]);
   });
 
   it('limits the copied vehicle context to public inputs and existing display refs', () => {
