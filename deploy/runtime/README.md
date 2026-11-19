@@ -141,7 +141,7 @@ python3 deploy/runtime/capture-existing.py \
 
 ## 私有图片由Nginx发送（正式组合）
 
-在包含BE `MEDIA_DELIVERY=nginx`的最终冻结镜像上，同时使用 `-f deploy/runtime/compose.proxy.yaml -f deploy/runtime/compose.media.yaml`。API在发布引用或员工权限检查后返回内部重定向；Nginx只读挂载相同media目录，限制内部UUID文件名并发送图片字节。外部访问 `/_hd_media/` 不可用。原始展示图与`.thumb.webp`均走同一授权边界；未发布、删除和草稿图片不得由公开接口读取。已授权且开始发送的请求可能完成，撤权后的新请求必须拒绝；保留no-store。Range分片关闭，条件请求仍可能返回304/412，但每次都先经过API授权。
+在包含 BE `MEDIA_DELIVERY=nginx` 的镜像上，同时使用 `-f deploy/runtime/compose.proxy.yaml -f deploy/runtime/compose.media.yaml`。API 检查发布可见性或员工权限后，通过内部重定向让 Nginx 从只读媒体目录发送允许的 UUID 文件。外部访问 `/_hd_public_media/` 和 `/_hd_media/` 均返回 404。公开原图与缩略图分别使用 API 校验的 ETag 和 `private, no-cache`。每次重验先检查发布引用和文件，匹配才返回无正文的 304。私有预览及图片错误保持 `no-store`，Range 分片关闭。已授权且开始发送的请求可以完成，撤权后的新请求必须拒绝。
 
 API和Nginx worker使用相同 `APP_UID/APP_GID`，目录0700、文件0600无需放宽；Nginx媒体卷只读。Nginx master以root读取TLS私钥并启动worker，worker实际为该数值身份且不保留能力。该身份能读取整个媒体目录，`internal`保护HTTP访问，但不能防止被攻陷的Nginx worker读取私有文件。仅向可信容器挂载此目录。外部对象存储另行设计，不通过公开整个本地目录替代授权。
 
