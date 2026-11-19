@@ -20,6 +20,8 @@ import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} 
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
 const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC_OPERATION_FAILED';
+type TickPhase='startup'|'withdrawals'|'delta_receive'|'delta_apply'|'space'|'source_maintenance'|
+ 'daily'|'snapshot'|'details'|'reports'|'capacity'|'rotation'|'archive_cleanup'|'finalize';
 export async function configureFullSync(db:Database,actor:Actor,mode:'full'|'continuous'){
  if(!await formalAdmissionInstalled(db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
  return db.transaction(async tx=>{
@@ -44,7 +46,9 @@ async function queue(tx:PoolClient,source:Source,id:string,kind:'detail'|'report
 }
 export class FullSyncWorker{
  private lock:PoolClient|null=null;private lost=false;private fence:string|null=null;
+ private phase:TickPhase='startup';
  constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource){}
+ get tickPhase(){return this.phase;}
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
  async acquire(){
   if(!await formalAdmissionInstalled(this.db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
@@ -354,21 +358,48 @@ export class FullSyncWorker{
    applied++;
   });}catch(error){await this.failWork(job.source,job.external_id,'detail',errorCode(error));}}return applied;
  }
- private async failWork(source:Source,id:string,kind:string,code:string){await this.db.pool.query(`UPDATE external_full_work SET attempts=attempts+1,last_error_code=$4,due_at=now()+least(3600,power(2,attempts+1)*30)*interval '1 second' WHERE source=$1 AND external_id=$2 AND kind=$3`,[source,id,kind,code]);}
+ private async failWork(source:Source,id:string,kind:string,code:string,target?:{tx:PoolClient;generation:string}){
+  await (target?.tx??this.db.pool).query(`UPDATE external_full_work SET attempts=attempts+1,last_error_code=$4,due_at=now()+least(3600,power(2,attempts+1)*30)*interval '1 second'
+   WHERE source=$1 AND external_id=$2 AND kind=$3 AND ($5::bigint IS NULL OR generation=$5)`,[source,id,kind,code,target?.generation??null]);
+ }
  async report(sampleOnly=false){
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
-  await this.heavy(sampleOnly);const job=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+  await this.heavy(sampleOnly);const job=(await this.db.pool.query(`SELECT w.*,w.generation<>m.desired_generation OR m.state='withdrawn' AS stale
+   FROM external_full_work w JOIN external_full_members m USING(source,external_id)
    WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now() AND ($1=false OR (m.sampled AND m.state<>'withdrawn')) ORDER BY w.priority DESC,w.due_at LIMIT 1`,[sampleOnly])).rows[0];if(!job)return 0;
-  try{const response=await this.client.report(job.source,job.external_id);await this.transaction(async tx=>{
-   await tx.query('SELECT pg_advisory_xact_lock(78291332)');const m=await ensureMember(tx,job.source,job.external_id);
-   if(String(m.desired_generation)!==String(job.generation)||m.state==='withdrawn'){await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'report'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='report'",[job.source,job.external_id]);return;}
-   await persistSourceResponse(tx,response.rawResponse);const at=new Date().toISOString();
-   await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:m.canonical_id,operation:'upsert',at,batchId:m.last_snapshot??randomUUID(),documents:[{identity:identity(job.source,job.external_id),kind:'report',locale:'en',observedAt:at,sourceUpdatedAt:null,payload:response.payload,rawResponse:{hash:response.rawResponse.hash}}]});
-   await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='report'",[job.source,job.external_id]);await tx.query('UPDATE external_full_members SET report_checked_at=now(),report_state=$3 WHERE source=$1 AND external_id=$2',[job.source,job.external_id,response.payload&&typeof response.payload==='object'&&'available' in response.payload&&response.payload.available===false?'unavailable':response.payload&&typeof response.payload==='object'&&'hasReport' in response.payload&&response.payload.hasReport===false?'no_report':response.payload&&typeof response.payload==='object'&&['summary','checks','defects','counts'].some(key=>Array.isArray((response.payload as Record<string,unknown>)[key]))?'available':'unavailable']);
-  });return 1;}catch(error){if(error instanceof FullSyncError&&error.code==='SYNC_HTTP_404'){await this.transaction(async tx=>{await tx.query('SELECT pg_advisory_xact_lock(78291332)');const member=await ensureMember(tx,job.source,job.external_id);
-    if(String(member.desired_generation)!==String(job.generation)||member.state==='withdrawn')return;
-    const at=new Date().toISOString();await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:member.canonical_id,operation:'upsert',at,batchId:member.last_snapshot??randomUUID(),documents:[{identity:identity(job.source,job.external_id),kind:'report',locale:'en',observedAt:at,sourceUpdatedAt:null,payload:{source:job.source,id:job.external_id,available:false,observation:{httpStatus:404,kind:'transport_observation'}}}]});
-    await tx.query("UPDATE external_full_members SET report_state='unavailable',report_checked_at=now() WHERE source=$1 AND external_id=$2 AND desired_generation=$3",[job.source,job.external_id,job.generation]);await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='report' AND generation=$3",[job.source,job.external_id,job.generation]);});return 1;}await this.failWork(job.source,job.external_id,'report',errorCode(error));return 0;}
+  let transportMissing=false;
+  try{
+   const response=job.stale?undefined:await this.client.report(job.source,job.external_id).catch((error:unknown)=>{
+    if(!(error instanceof FullSyncError)||error.code!=='SYNC_HTTP_404')throw error;
+    transportMissing=true;
+    return undefined;
+   });
+   await this.transaction(async tx=>{
+    await tx.query('SELECT pg_advisory_xact_lock(78291332)');const member=await ensureMember(tx,job.source,job.external_id);
+    const stale=String(member.desired_generation)!==String(job.generation)||member.state==='withdrawn';
+    if(job.stale&&!stale)return; // This observation was skipped, so keep the now-current job.
+    const removed=(await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='report' AND generation=$3",[job.source,job.external_id,job.generation])).rowCount;
+    if(!removed)return;
+    if(stale){await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'report'));return;}
+    const payload=response?response.payload:{source:job.source,id:job.external_id,available:false,observation:{httpStatus:404,kind:'transport_observation'}};
+    if(response)await persistSourceResponse(tx,response.rawResponse);
+    const data=payload&&typeof payload==='object'?payload as Record<string,unknown>:{};
+    const state=data.available===false?'unavailable':data.hasReport===false?'no_report':
+     ['summary','checks','defects','counts'].some(key=>Array.isArray(data[key]))?'available':'unavailable';
+    const at=new Date().toISOString();
+    await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:member.canonical_id,operation:'upsert',at,batchId:member.last_snapshot??randomUUID(),documents:[{
+     identity:identity(job.source,job.external_id),kind:'report',locale:'en',observedAt:at,sourceUpdatedAt:null,payload,
+     ...(response?{rawResponse:{hash:response.rawResponse.hash}}:{})}]});
+    await tx.query('UPDATE external_full_members SET report_checked_at=now(),report_state=$3 WHERE source=$1 AND external_id=$2',[job.source,job.external_id,state]);
+   });
+   return 1;
+  }catch(error){
+   const code=errorCode(error);
+   if(code==='SYNC_LEASE_LOST')throw error;
+   const reason=transportMissing&&code==='SYNC_OPERATION_FAILED'?'SYNC_REPORT_404_APPLY_FAILED':code;
+   await this.transaction(tx=>this.failWork(job.source,job.external_id,'report',reason,{tx,generation:String(job.generation)}));
+   return 0;
+  }
  }
  async rotate(){
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
@@ -439,20 +470,29 @@ export class FullSyncWorker{
   });
  }
  async tick(){
+  this.phase='startup';
   await this.alive();await mkdir(this.directory,{recursive:true,mode:0o700});const s=await this.state();if(!s.enabled)return;
   try{
    // Withdrawal application is first and remains available when heavy work is paused or disk usage is high.
+   this.phase='withdrawals';
    await this.applyEvents(true);
+   this.phase='delta_receive';
    if(s.since_at&&new Date(s.next_delta_at).getTime()<=Date.now())try{await this.receiveDelta();}catch(e){if(e instanceof FullSyncError&&e.code==='SYNC_CURSOR_EXPIRED')await this.recover();else throw e;}
-   await this.applyEvents();const disk=await this.space(),current=await this.state();if(current.paused||disk.used>=.70)return;
+   this.phase='delta_apply';await this.applyEvents();
+   this.phase='space';const disk=await this.space(),current=await this.state();if(current.paused||disk.used>=.70)return;
+   this.phase='source_maintenance';
    await runSourceMaintenance(this.db);
    if(current.capacity_pending){
     // New events may invalidate the sample after a failed estimate. Repair only that sample before rechecking.
+    this.phase='daily';
     if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily(true);
-    await this.details(true);for(let reports=0;reports<20;reports++){if(!await this.report(true))break;}
-    await this.capacityGate();return; // New identities/snapshots resume on a later tick only after the gate passes.
+    this.phase='details';await this.details(true);
+    this.phase='reports';for(let reports=0;reports<20;reports++){if(!await this.report(true))break;}
+    this.phase='capacity';await this.capacityGate();return; // New identities/snapshots resume on a later tick only after the gate passes.
    }
+   this.phase='daily';
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
+   this.phase='snapshot';
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();
    // Detail work can outlive a snapshot. A continuous export follows its own schedule after the prior snapshot completes.
@@ -461,8 +501,12 @@ export class FullSyncWorker{
     const bootstrapDetailPending=current.since_at&&(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
     if(!bootstrapDetailPending)await this.snapshot();
    }
-   await this.details();for(let reports=0;reports<20;reports++){if(!await this.report())break;}
-   await this.capacityGate();await this.rotate();await this.pruneStaging();
+   this.phase='details';await this.details();
+   this.phase='reports';for(let reports=0;reports<20;reports++){if(!await this.report())break;}
+   this.phase='capacity';await this.capacityGate();
+   this.phase='rotation';await this.rotate();
+   this.phase='archive_cleanup';await this.pruneStaging();
+   this.phase='finalize';
    const pending=(await this.db.pool.query("SELECT 1 FROM external_full_work UNION ALL SELECT 1 FROM external_full_events WHERE applied_at IS NULL UNION ALL SELECT 1 FROM external_full_members WHERE state<>'withdrawn' AND (applied_generation<desired_generation OR cardinality(locales)<3 OR verification_pending) LIMIT 1")).rowCount;
    const building=(await this.db.pool.query("SELECT 1 FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rowCount;
    if(!pending&&!building)await this.db.pool.query('UPDATE external_full_sync SET last_success_at=now(),last_error_code=NULL,last_error_at=NULL WHERE id=1');
