@@ -149,6 +149,43 @@ def archive_selection(paths, root):
     return selected
 
 
+def snapshot_backup_pins(psql, reference, acquire):
+    """Pin retained CSVs while the persistent global GC lease protects all source rows."""
+    if not re.fullmatch(r'backup:ext07:daily-[0-9TZ.]+', reference):
+        raise ValueError('Invalid routine backup reference')
+    change = (
+        """INSERT INTO external_full_archive_pins(snapshot_id,reference)
+        SELECT s.id,lease.reference FROM external_full_snapshots s CROSS JOIN lease
+        WHERE s.archive_pruned_at IS NULL
+        ON CONFLICT DO NOTHING RETURNING 1"""
+        if acquire else
+        """DELETE FROM external_full_archive_pins p USING lease
+        WHERE p.reference=lease.reference RETURNING 1"""
+    )
+    # Same lock order as snapshot pruning. The shared lock keeps an operator's
+    # lease release from racing this checked pin change.
+    sql = f"""BEGIN;
+SET LOCAL lock_timeout='5s';
+SET LOCAL statement_timeout='10s';
+SELECT pg_advisory_xact_lock_shared(78291335);
+SELECT pg_advisory_xact_lock(78291334);
+WITH lease AS MATERIALIZED (
+  SELECT reference FROM backup_gc_leases WHERE reference=:'backup_reference'
+), changed AS (
+  {change}
+)
+SELECT (SELECT count(*) FROM lease), (SELECT count(*) FROM changed);
+COMMIT;"""
+    output = subprocess.check_output(
+        [*psql, '-v', 'ON_ERROR_STOP=1', '-v', 'backup_reference='+reference, '-f', '-'],
+        input=sql, text=True, timeout=20,
+    )
+    matches = re.fullmatch(r'1\|([0-9]+)', output.strip())
+    if not matches:
+        raise ValueError('Exact persistent backup lease is required for snapshot pins')
+    return int(matches[1])
+
+
 def regular_files(roots, profile='controls', selected=None):
     if profile not in ('controls', 'media', 'archive'):
         raise ValueError('Unknown archive profile')
@@ -351,14 +388,14 @@ def main():
     with log_path.open('x') as log:
         def call(argv):
             subprocess.run(argv, check=True, stdout=log, stderr=subprocess.STDOUT)
-        def archive_control(operation, ref):
-            call(compose+['run', '--rm', '-T', '--no-deps', 'full-worker', 'full-sync', operation, '--reference', ref])
+        psql = compose+['exec', '-T', 'postgres', 'psql', '-X', '-U', 'postgres',
+                        '-d', config['database'], '-Atq']
         running = subprocess.check_output(compose+['ps', '--status', 'running', '--services'], text=True).split()
         if 'worker' in running or 'migrate' in running:
             raise ValueError('Stop other maintenance/ingestion writers first')
         # Fail before pausing any service if a full recovery point could exceed
         # budget. Existing points are never deleted to make this preflight pass.
-        database_bytes = int(subprocess.check_output(compose+['exec', '-T', 'postgres', 'psql', '-X', '-U', 'postgres', '-d', config['database'], '-Atqc', 'SELECT pg_database_size(current_database())'], text=True))
+        database_bytes = int(subprocess.check_output(psql+['-c', 'SELECT pg_database_size(current_database())'], text=True))
         media_roots = config['mediaRoots']
         if not isinstance(media_roots, list) or not media_roots:
             raise ValueError('Explicit existing media paths required')
@@ -382,87 +419,77 @@ def main():
         state.update(phase='acquiring-protection', ownerPid=os.getpid())
         atomic_json(point/'routine.json', state)
         call(lease+['acquire', '--reference', reference])
-        pinned = False
-        archive_finished = False
+        pins = snapshot_backup_pins(psql, reference, acquire=True)
+        state['archiveProtection'] = dict(mode='persistent-global-lease', snapshotPins=pins)
+        state['phase'] = 'dump-and-pack'
+        atomic_json(point/'routine.json', state)
+        # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
+        # comparison. The archive manifest belongs to this dump, not later SQL.
+        with (point/'database.dump').open('xb') as dump:
+            copy_dump(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
+                '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
+                '--lock-wait-timeout=5000'],dump,log,backup_root)
+        with (point/'database.dump').open('rb') as dump:
+            subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
+                check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
+        media = pack_roots(point/'media.tar.gz', media_roots, 'media', filesystem=backup_root)
+        paths = json.loads(subprocess.check_output(psql+['-v', 'ON_ERROR_STOP=1', '-c',
+            "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
+        selected = archive_selection(paths, archive_root)
+        archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected, filesystem=backup_root)
+        controls_manifest = pack_roots(point/'controls.tar.gz', controls, filesystem=backup_root)
+        manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
+            createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
+            files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
+                   for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
+        atomic_json(point/'manifest.json', manifest)
+        # Stream the outer tar directly into encryption: do not write another
+        # full plaintext container. Inputs remain until ciphertext is complete.
+        state['phase'] = 'encrypting'
+        atomic_json(point/'routine.json', state)
+        cipher = point/'recovery.cms'
+        total, used = check_disk_budget(backup_root, OVERHEAD)
+        cipher_limit = (7*total-10*(used+OVERHEAD)-1)//10
+
+        def constrain_cipher():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (cipher_limit, cipher_limit))
+
+        encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
+            '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
+            stdout=log, stderr=log, preexec_fn=constrain_cipher)
         try:
-            archive_control('archive-pin', reference)
-            pinned = True
-            state['phase'] = 'dump-and-pack'
-            atomic_json(point/'routine.json', state)
-            # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
-            # comparison. The archive manifest belongs to this dump, not later SQL.
-            with (point/'database.dump').open('xb') as dump:
-                copy_dump(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
-                    '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
-                    '--lock-wait-timeout=5000'],dump,log,backup_root)
-            with (point/'database.dump').open('rb') as dump:
-                subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
-                    check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
-            media = pack_roots(point/'media.tar.gz', media_roots, 'media', filesystem=backup_root)
-            paths = json.loads(subprocess.check_output(compose+['exec', '-T', 'postgres', 'psql', '-X',
-                '-U', 'postgres', '-d', config['database'], '-Atq', '-v', 'ON_ERROR_STOP=1', '-c',
-                "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
-            selected = archive_selection(paths, archive_root)
-            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected, filesystem=backup_root)
-            controls_manifest = pack_roots(point/'controls.tar.gz', controls, filesystem=backup_root)
-            manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
-                createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
-                files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
-                       for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
-            atomic_json(point/'manifest.json', manifest)
-            archive_finished = True
-            # Stream the outer tar directly into encryption: do not write another
-            # full plaintext container. Inputs remain until ciphertext is complete.
-            state['phase'] = 'encrypting'
-            atomic_json(point/'routine.json', state)
-            cipher = point/'recovery.cms'
-            total, used = check_disk_budget(backup_root, OVERHEAD)
-            cipher_limit = (7*total-10*(used+OVERHEAD)-1)//10
-
-            def constrain_cipher():
-                resource.setrlimit(resource.RLIMIT_FSIZE, (cipher_limit, cipher_limit))
-
-            encryption = subprocess.Popen(['openssl', 'cms', '-encrypt', '-binary', '-outform', 'DER',
-                '-aes-256-gcm', '-stream', '-out', str(cipher), str(config['certificate'])], stdin=subprocess.PIPE,
-                stdout=log, stderr=log, preexec_fn=constrain_cipher)
-            try:
-                with tarfile.open(fileobj=BudgetWriter(encryption.stdin,backup_root), mode='w|') as tar:
-                    for name in [*manifest['files'], 'manifest.json']:
-                        tar.add(point/name, arcname=name, recursive=False)
-                encryption.stdin.close()
-                if encryption.wait(timeout=300) != 0:
-                    raise ValueError('Encryption failed')
-            finally:
-                if encryption.stdin and not encryption.stdin.closed:
-                    encryption.stdin.close()
-                if encryption.poll() is None:
-                    encryption.terminate()
-                    try: encryption.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        encryption.kill(); encryption.wait(timeout=10)
-            if cipher.stat().st_size <= 0:
-                raise ValueError('Empty encrypted point')
-            with cipher.open('rb') as persisted:
-                os.fsync(persisted.fileno())
-            state.update(complete=True, phase='encrypted', archiveValidation='checksums-and-dump-directory',
-                restoreValidation='not-run', offsite='pending', format=2,
-                plaintextRetention='temporary-for-one-time-restore' if args.retain_for_restore else 'remove-after-encryption',
-                ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size,
-                completedAt=datetime.now(timezone.utc).isoformat())
-            atomic_json(point/'routine.json', state)
-            # Successful ciphertext + independently checked source archive is a
-            # creation proof, NOT a decrypt/restore proof. Keep known baseline.
-            if not args.retain_for_restore:
-                remove_verified_components(point, manifest)
+            with tarfile.open(fileobj=BudgetWriter(encryption.stdin,backup_root), mode='w|') as tar:
+                for name in [*manifest['files'], 'manifest.json']:
+                    tar.add(point/name, arcname=name, recursive=False)
+            encryption.stdin.close()
+            if encryption.wait(timeout=300) != 0:
+                raise ValueError('Encryption failed')
         finally:
-            # Release only our lease; stale references from an interrupted job
-            # require explicit recovery, never automatic expiry during a dump.
-            if archive_finished:
-                call(lease+['release', '--reference', reference])
-        # Retained point embeds the sources. Pins can now be released; failed
-        # jobs retain their archive pin until partial recovery material is handled.
-        if pinned:
-            archive_control('archive-release', reference)
+            if encryption.stdin and not encryption.stdin.closed:
+                encryption.stdin.close()
+            if encryption.poll() is None:
+                encryption.terminate()
+                try: encryption.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    encryption.kill(); encryption.wait(timeout=10)
+        if cipher.stat().st_size <= 0:
+            raise ValueError('Empty encrypted point')
+        with cipher.open('rb') as persisted:
+            os.fsync(persisted.fileno())
+        state.update(complete=True, phase='encrypted', archiveValidation='checksums-and-dump-directory',
+            restoreValidation='not-run', offsite='pending', format=2,
+            plaintextRetention='temporary-for-one-time-restore' if args.retain_for_restore else 'remove-after-encryption',
+            ciphertextSha256=digest(cipher), ciphertextBytes=cipher.stat().st_size,
+            completedAt=datetime.now(timezone.utc).isoformat())
+        atomic_json(point/'routine.json', state)
+        # Successful ciphertext + independently checked source archive is a
+        # creation proof, NOT a decrypt/restore proof. Keep known baseline.
+        if not args.retain_for_restore:
+            remove_verified_components(point, manifest)
+        # Failed or interrupted jobs retain protection for explicit recovery.
+        # The encrypted point now owns the archived data. Release only this job's pins and lease.
+        snapshot_backup_pins(psql, reference, acquire=False)
+        call(lease+['release', '--reference', reference])
         state['phase'] = 'finalized'
         atomic_json(point/'routine.json', state)
         # Retention is narrow: failed/incomplete/unknown and release points stay.

@@ -90,6 +90,24 @@ class RoutineBackupTests(unittest.TestCase):
 
 
 class OnlineInputs(unittest.TestCase):
+    def test_snapshot_pin_changes_require_the_same_durable_lease(self):
+        reference='backup:ext07:daily-20261119T042000Z'
+        command=['psql','-Atq']
+        with patch.object(routine.subprocess, 'check_output', return_value='\n\n1|2\n') as run:
+            self.assertEqual(routine.snapshot_backup_pins(command,reference,acquire=True),2)
+            self.assertEqual(routine.snapshot_backup_pins(command,reference,acquire=False),2)
+            pin, release = run.call_args_list
+            self.assertEqual(pin.args[0],command+['-v','ON_ERROR_STOP=1','-v','backup_reference='+reference,'-f','-'])
+            self.assertIn("SELECT reference FROM backup_gc_leases WHERE reference=:'backup_reference'",pin.kwargs['input'])
+            self.assertIn('INSERT INTO external_full_archive_pins',pin.kwargs['input'])
+            self.assertIn('DELETE FROM external_full_archive_pins p USING lease',release.kwargs['input'])
+            self.assertLess(pin.kwargs['input'].index('78291335'),pin.kwargs['input'].index('78291334'))
+        with patch.object(routine.subprocess,'check_output',return_value='0|0\n'):
+            with self.assertRaisesRegex(ValueError,'persistent backup lease'):
+                routine.snapshot_backup_pins(command,reference,acquire=True)
+        with self.assertRaisesRegex(ValueError,'routine backup reference'):
+            routine.snapshot_backup_pins(command,'backup:other',acquire=True)
+
     def test_known_temporaries_and_derivatives_are_not_archived(self):
         uid='12345678-1234-1234-1234-123456789abc'
         with tempfile.TemporaryDirectory() as temp:
