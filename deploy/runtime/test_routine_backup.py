@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import os
 import sys
 from types import SimpleNamespace
@@ -14,6 +15,12 @@ spec.loader.exec_module(routine)
 
 
 class RoutineBackupTests(unittest.TestCase):
+    def test_dump_budget_leaves_finalization_time_in_two_hour_service(self):
+        dump_timeout = inspect.signature(routine.copy_dump).parameters['timeout'].default
+        unit = (Path(__file__).parent/'production/hd-auto-ext07-backup.service').read_text()
+        self.assertEqual(dump_timeout, 90*60)
+        self.assertIn('TimeoutStartSec=2h\n', unit)
+
     def test_transient_peak_includes_components_container_and_cipher(self):
         self.assertEqual(routine.reserve_bytes(1000, 1000), 4000+256*1024**2)
         for invalid in [-1, True, '100']:

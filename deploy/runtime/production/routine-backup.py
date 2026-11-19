@@ -284,7 +284,7 @@ class BudgetWriter:
         return getattr(self.stream, name)
 
 
-def copy_dump(argv, output, log, filesystem, timeout=1800):
+def copy_dump(argv, output, log, filesystem, timeout=5400):
     deadline = time.monotonic()+timeout
     with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log) as process:
         try:
