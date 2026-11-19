@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { configurationImportExample, ConfigurationImportPreviewRequestSchema, ConfigurationImportSaveRequestSchema, parseConfigurationImportJson, vehicleConfigurationItemId, type DisplayField, type TranslatableField } from '@hd/contracts/admin';
 import { envelope, error, installApi, localization, reply, translationBundle, vehicle } from './api-fixture';
-import { tab } from './ui-helpers';
+import { fillRequiredVehicleBasics, tab } from './ui-helpers';
 
 const id = '30000000-0000-4000-8000-000000000020';
 const path = `/api/v1/admin/vehicles/${id}/configuration-import`;
@@ -10,7 +10,25 @@ const json = JSON.stringify({ ...configurationImportExample,
   items: configurationImportExample.items?.map(({ name, value }) => ({ name, value })),
 }, null, 2);
 
-test('configuration import uploads, shows trilingual changes and binds one save to reviewed JSON', async ({ page }) => {
+test('configuration import opens step two from a new draft without AbortSignal.any', async ({ page }) => {
+  await page.addInitScript(() => { Reflect.deleteProperty(AbortSignal, 'any'); });
+  const api = await installApi(page, { createdId: id });
+  await page.goto('/admin/vehicles/new');
+  expect(await page.evaluate(() => typeof AbortSignal.any)).toBe('undefined');
+  await fillRequiredVehicleBasics(page, '兼容性测试草稿');
+  await page.getByRole('button', { name: '下一步：车辆配置' }).click();
+  await expect(page).toHaveURL(`/admin/vehicles/${id}`);
+  await expect(page.getByRole('button', { name: '复制三语 JSON 提示词' })).toBeEnabled();
+  await expect(page.getByLabel('三语 JSON', { exact: true })).toBeEnabled();
+  expect(api.creates).toHaveLength(1);
+  expect(api.bundleReads).toContain(id);
+});
+
+test('configuration import uploads, reviews and saves JSON without AbortSignal static helpers', async ({ page }) => {
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(AbortSignal, 'any');
+    Reflect.deleteProperty(AbortSignal, 'timeout');
+  });
   const item = { ...vehicle(), id };
   item.draft.configuration = { version: 1, items: [{ name: '旧配置项', value: '8' }] };
   const model = { ref: 'model', text: { zh: '合成车型', en: 'Synthetic model', ru: 'Тестовая модель' } };
@@ -62,6 +80,7 @@ test('configuration import uploads, shows trilingual changes and binds one save 
   });
 
   await page.goto(`/admin/vehicles/${id}`); await tab(page, '车辆配置');
+  expect(await page.evaluate(() => typeof AbortSignal.timeout)).toBe('undefined');
   const input = page.getByLabel('三语 JSON', { exact: true });
   const preview = page.getByRole('button', { name: '预览导入变更' });
   const save = page.getByRole('button', { name: '确认并保存三语资料' });
@@ -225,6 +244,13 @@ test('configuration import reports exact invalid paths and preserves pasted inpu
   const duplicate = json.replace('"name": {', '"name": { "zh": "重复项",');
   await source.fill(duplicate); await preview.click();
   await expect(page.getByText('items[0].name.zh', { exact: true })).toBeVisible();
+  expect(previews).toBe(0);
+  const placeholder = JSON.parse(json);
+  placeholder.items[0].value = { zh: 'zh', en: 'en', ru: 'ru' };
+  await source.fill(JSON.stringify(placeholder)); await preview.click();
+  const validation = page.getByRole('alert').filter({ hasText: '请检查标出的 JSON 字段。' });
+  await expect(validation.locator('code')).toHaveText(['items[0].value']);
+  await expect(validation).toContainText('避免使用 zh、en、ru 作为占位值');
   expect(previews).toBe(0);
   await source.fill(json); await preview.click();
   await expect(save).toBeEnabled(); await save.click();

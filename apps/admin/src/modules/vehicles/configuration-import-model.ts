@@ -192,6 +192,8 @@ export function configurationImportPrompt(
 
 每个配置只出现一次，name 和 value 分别使用对象，各自只包含 zh（简体中文）、ru（俄文）、en（英文），三种语言都是非空字符串。name.zh 和 value.zh 使用中文标准字段名称和标准值。不要拼接多种语言或为每种语言生成单独的条目。
 
+zh、en、ru 只用于属性名。每个 value 都要填写已核实的实际内容，不能把语言代号作为占位值。缺少可靠数值或型号时，省略整项。
+
 三语名称和值必须表达同一事实，保持配置状态、数量、单位、方向及适用范围一致。数值、发动机型号、轮胎规格、技术代码等无需翻译的值保留原样；value.zh 不含汉字时，三语的值必须完全相同。“标配”“选装”“已安装”“未配备”分别译为俄文“Стандартное оснащение”“Опция”“Установлено”“Не предусмотрено”，以及英文“Standard”“Optional”“Installed”“Not equipped”。采用准确自然的汽车行业用语，保留仿皮与真皮、车道偏离预警与车道保持辅助、定速巡航与自适应巡航、前排侧气囊与侧气帘的差别。
 
 同时翻译基础资料中的标题和车况描述，分别放到 content.title、content.description，使用同样的三语对象。原文是中文时逐字保留 zh，已标注其他原文语言时按实际含义译成中文、俄文和英文。不通过车型资料推断实车车况、记录或卖点，不添加承诺或检测结论。只翻译已有原文，未提供的字段省略。
@@ -245,7 +247,7 @@ function issueDetail(message: string) {
   if (message.includes('Duplicate JSON property')) return '对象内有重复属性。';
   if (message.includes('strict JSON')) return '请粘贴完整标准 JSON，移除代码块和说明文字。';
   if (message.includes('Item ID')) return 'ID 必须唯一，并与中文名称一致。';
-  if (message.includes('same literal')) return '数值、单位或型号请在三语中保留相同文字。';
+  if (message.includes('same literal')) return '请填写实际数值、单位或型号，三种语言须完全一致。缺少依据时请省略该项，避免使用 zh、en、ru 作为占位值。';
   if (message.includes('nonblank') || message.includes('regex')) return '请填写非空字符串，检查首尾空格。';
   if (message.includes('names must be unique')) return '中文配置名称不能重复。';
   if (message.includes('At least one')) return '请提供配置、标题／车况或其他公开字段中的至少一项。';
@@ -253,10 +255,18 @@ function issueDetail(message: string) {
 }
 
 export function configurationImportIssues(failure: unknown): { path: string; message: string }[] {
-  if (failure && typeof failure === 'object' && 'issues' in failure && Array.isArray(failure.issues)) {
-    return failure.issues.map(({ path, message }: { path: IssuePath; message: string }) => ({ path: importPath(path), message: issueDetail(message) }));
+  if (!failure || typeof failure !== 'object' || !('issues' in failure) || !Array.isArray(failure.issues)) return [];
+  const issues = new Map<string, { path: string; message: string }>();
+  for (const { path, message } of failure.issues as { path: IssuePath; message: string }[]) {
+    const sameValue = path[0] === 'items' && path[2] === 'value' && path.length === 4 && message.includes('same literal');
+    const exactPath = importPath(path);
+    const groupPath = sameValue ? importPath(path.slice(0, 3)) : exactPath;
+    const detail = issueDetail(message);
+    const key = JSON.stringify([groupPath, detail]);
+    const previous = issues.get(key);
+    issues.set(key, { path: previous && previous.path !== exactPath ? groupPath : exactPath, message: detail });
   }
-  return [];
+  return [...issues.values()];
 }
 
 export function editImportItem(document: ConfigurationImportDocument, index: number, key: 'name' | 'value', locale: ImportLocale, text: string) {

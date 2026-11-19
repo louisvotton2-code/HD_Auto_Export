@@ -8,7 +8,7 @@ import {
   type AdminVehicle, type ConfigurationImportDocument, type ConfigurationImportPreview, type ConfigurationImportPreviewRequest, type DisplayField,
   type VehicleTranslationBundle,
 } from '@hd/contracts/admin';
-import { ApiClientError, request } from '../../shared/api/client';
+import { ApiClientError, requestWithTimeout } from '../../shared/api/client';
 import {
   configurationImportIssues, importExampleText, importLocaleLabels, prepareConfigurationImport, previewImportRows, savedImportRows,
   type ImportComparisonRow,
@@ -104,8 +104,7 @@ export function VehicleConfigurationImport({ vehicle, active, prompt, disabled, 
   useEffect(() => {
     if (!active || !vehicleId || version === undefined || hasUnsavedChanges) return;
     const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
-    void request(`${path}/translation-bundle`, VehicleTranslationBundleResponseSchema, { signal })
+    void requestWithTimeout(`${path}/translation-bundle`, VehicleTranslationBundleResponseSchema, 20_000, { signal: controller.signal })
       .then(({ data }) => {
         if (controller.signal.aborted) return;
         if (data.vehicle.id !== vehicleId || data.vehicle.deletedAt) throw new ApiClientError(0, 'INVALID_RESPONSE');
@@ -168,7 +167,7 @@ export function VehicleConfigurationImport({ vehicle, active, prompt, disabled, 
   }
 
   async function loadBundle() {
-    const { data } = await request(`${path}/translation-bundle`, VehicleTranslationBundleResponseSchema, { signal: AbortSignal.timeout(20_000) });
+    const { data } = await requestWithTimeout(`${path}/translation-bundle`, VehicleTranslationBundleResponseSchema, 20_000);
     if (data.vehicle.id !== vehicle?.id || data.vehicle.deletedAt || data.localization.vehicleId !== data.vehicle.id ||
         data.localization.vehicleVersion !== data.vehicle.version || data.vehicle.version < vehicle.version)
       throw new ApiClientError(0, 'INVALID_RESPONSE');
@@ -190,8 +189,8 @@ export function VehicleConfigurationImport({ vehicle, active, prompt, disabled, 
       const input = ConfigurationImportPreviewRequestSchema.parse({
         version: current.vehicle.version, localizationRevision: current.localization.revision, json,
       });
-      const { data } = await request(`${path}/configuration-import/preview`, ConfigurationImportPreviewResponseSchema, {
-        method: 'POST', body: JSON.stringify(input), signal: AbortSignal.timeout(25_000),
+      const { data } = await requestWithTimeout(`${path}/configuration-import/preview`, ConfigurationImportPreviewResponseSchema, 25_000, {
+        method: 'POST', body: JSON.stringify(input),
       });
       if (!mounted.current) return;
       if (data.version !== input.version || data.localizationRevision !== input.localizationRevision)
@@ -210,8 +209,8 @@ export function VehicleConfigurationImport({ vehicle, active, prompt, disabled, 
         (!currentPreview.output.changes.length && !currentPreview.output.itemOrder) || !start('saving')) return;
     try {
       const body = ConfigurationImportSaveRequestSchema.parse({ ...currentPreview.input, previewToken: currentPreview.output.previewToken });
-      const { data } = await request(`${path}/configuration-import`, VehicleTranslationBundleResponseSchema, {
-        method: 'PUT', body: JSON.stringify(body), signal: AbortSignal.timeout(35_000),
+      const { data } = await requestWithTimeout(`${path}/configuration-import`, VehicleTranslationBundleResponseSchema, 35_000, {
+        method: 'PUT', body: JSON.stringify(body),
       });
       if (!mounted.current) return;
       if (data.vehicle.id !== vehicle.id || data.vehicle.deletedAt || data.localization.vehicleId !== vehicle.id ||

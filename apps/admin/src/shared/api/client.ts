@@ -30,6 +30,7 @@ const messages: Record<string, string> = {
   SERVICE_UNAVAILABLE: '服务暂时不可用，请稍后重试。',
   INTERNAL_ERROR: '服务处理失败，请稍后重试。',
   NETWORK_ERROR: '连接中断，尚不能确认操作结果。请保留当前页面后重试。',
+  REQUEST_TIMEOUT: '请求超时，请稍后重试。',
   INVALID_RESPONSE: '服务返回的数据无法识别，请联系维护人员。',
 };
 
@@ -72,6 +73,30 @@ async function send(path: string, options: RequestInit = {}): Promise<unknown> {
 export async function request<T>(path: string, schema: { parse(data: unknown): T }, options?: RequestInit): Promise<T> {
   const value = await send(path, options);
   try { return schema.parse(value); } catch { throw new ApiClientError(0, 'INVALID_RESPONSE'); }
+}
+
+export async function requestWithTimeout<T>(path: string, schema: { parse(data: unknown): T }, timeoutMs: number, options: RequestInit = {}): Promise<T> {
+  const controller = new AbortController();
+  const parent = options.signal;
+  const cancel = () => controller.abort();
+  if (parent?.aborted) cancel();
+  else parent?.addEventListener('abort', cancel, { once: true });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    if (controller.signal.aborted) return;
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await request(path, schema, { ...options, signal: controller.signal });
+  } catch (failure) {
+    if (timedOut) throw new ApiClientError(0, 'REQUEST_TIMEOUT');
+    throw failure;
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener('abort', cancel);
+  }
 }
 
 // Better Auth responses deliberately do not use the business envelope.
