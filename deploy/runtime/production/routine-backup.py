@@ -60,6 +60,29 @@ def verify_completed_points(root, points):
             raise ValueError('Completed recovery point failed checksum; retain all points')
 
 
+def retire_completed_points(root, points, psql):
+    verify_completed_points(root, points)
+    retired = selected_old_points(points)
+    for point in retired:
+        reference = point['reference']
+        sql = """BEGIN READ ONLY;
+SET LOCAL statement_timeout='5s';
+SELECT EXISTS (
+    SELECT 1 FROM backup_gc_leases WHERE reference=:'backup_reference'
+    UNION ALL SELECT 1 FROM external_full_archive_pins WHERE reference=:'backup_reference'
+    UNION ALL SELECT 1 FROM external_source_blob_refs WHERE kind='backup' AND reference=:'backup_reference'
+    UNION ALL SELECT 1 FROM external_source_document_refs WHERE kind='backup' AND reference=:'backup_reference'
+);
+COMMIT;"""
+        if recovery_point_sql(psql, reference, sql) != 'f':
+            raise ValueError('An older recovery point still has protection; retain all points')
+    for point in retired:
+        path = root/point['name']
+        if digest(path/'recovery.cms') != point['ciphertextSha256']:
+            raise ValueError('Retained recovery point checksum changed; refuse deletion')
+        shutil.rmtree(path)
+
+
 def remove_verified_components(point, manifest):
     """Remove only known, checksum-matching temporary components, never proofs."""
     allowed = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz'}
@@ -149,10 +172,17 @@ def archive_selection(paths, root):
     return selected
 
 
-def snapshot_backup_pins(psql, reference, acquire):
-    """Pin retained CSVs while the persistent global GC lease protects all source rows."""
+def recovery_point_sql(psql, reference, sql):
     if not re.fullmatch(r'backup:ext07:daily-[0-9TZ.]+', reference):
         raise ValueError('Invalid routine backup reference')
+    return subprocess.check_output(
+        [*psql, '-v', 'ON_ERROR_STOP=1', '-v', 'backup_reference='+reference, '-f', '-'],
+        input=sql, text=True, timeout=20,
+    ).strip()
+
+
+def snapshot_backup_pins(psql, reference, acquire):
+    """Pin retained CSVs while the persistent global GC lease protects all source rows."""
     change = (
         """INSERT INTO external_full_archive_pins(snapshot_id,reference)
         SELECT s.id,lease.reference FROM external_full_snapshots s CROSS JOIN lease
@@ -176,11 +206,7 @@ WITH lease AS MATERIALIZED (
 )
 SELECT (SELECT count(*) FROM lease), (SELECT count(*) FROM changed);
 COMMIT;"""
-    output = subprocess.check_output(
-        [*psql, '-v', 'ON_ERROR_STOP=1', '-v', 'backup_reference='+reference, '-f', '-'],
-        input=sql, text=True, timeout=20,
-    )
-    matches = re.fullmatch(r'1\|([0-9]+)', output.strip())
+    matches = re.fullmatch(r'1\|([0-9]+)', recovery_point_sql(psql, reference, sql))
     if not matches:
         raise ValueError('Exact persistent backup lease is required for snapshot pins')
     return int(matches[1])
@@ -503,15 +529,7 @@ def main():
                         points.append(item)
         # Verify every survivor before considering an old point for deletion. A
         # complete flag alone must never retire the last usable recovery point.
-        verify_completed_points(backup_root, points)
-        for old in selected_old_points(points):
-            old_point = backup_root/old['name']
-            if digest(old_point/'recovery.cms') != old['ciphertextSha256']:
-                raise ValueError('Retained recovery point checksum changed; refuse deletion')
-            shutil.rmtree(old_point)
-            # Release pins only after the point is actually deleted. If this
-            # operation fails, excess pins remain protective and are reported.
-            archive_control('archive-release', old['reference'])
+        retire_completed_points(backup_root, points, psql)
     print(json.dumps({k: state[k] for k in ['name', 'complete', 'offsite', 'ciphertextBytes', 'ciphertextSha256']}))
 
 

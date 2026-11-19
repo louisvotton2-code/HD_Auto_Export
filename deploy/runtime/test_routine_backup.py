@@ -179,6 +179,30 @@ class IncompleteJobs(unittest.TestCase):
 
 
 class Envelope(unittest.TestCase):
+    def test_retention_keeps_two_verified_points_and_preserves_any_protected_old_point(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            points=[]
+            for n in range(3):
+                path=root/f'daily-20261119T04200{n}Z'
+                path.mkdir()
+                cipher=path/'recovery.cms'
+                cipher.write_bytes(f'point-{n}'.encode())
+                points.append(dict(kind='daily',name=path.name,complete=True,createdAt=path.name,
+                                   reference='backup:ext07:'+path.name,ciphertextSha256=routine.digest(cipher)))
+            release=root/'release-protected'
+            release.mkdir()
+            with patch.object(routine.subprocess,'check_output',return_value='t\n'):
+                with self.assertRaisesRegex(ValueError,'still has protection'):
+                    routine.retire_completed_points(root,points,['psql','-Atq'])
+                self.assertTrue(all((root/p['name']).is_dir() for p in points))
+            with patch.object(routine.subprocess,'check_output',return_value='f\n') as run:
+                routine.retire_completed_points(root,points,['psql','-Atq'])
+                self.assertIn('backup_reference='+points[0]['reference'],run.call_args.args[0])
+            self.assertFalse((root/points[0]['name']).exists())
+            self.assertTrue(all((root/p['name']).is_dir() for p in points[1:]))
+            self.assertTrue(release.is_dir())
+
     def test_corrupt_survivor_blocks_retention(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); point=root/'daily-20261114T000000Z'; point.mkdir()
