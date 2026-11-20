@@ -97,6 +97,32 @@ class RoutineBackupTests(unittest.TestCase):
 
 
 class OnlineInputs(unittest.TestCase):
+    def test_scoped_dump_and_supplement_import_the_same_export(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            psql = ['psql', '-Atq']
+            snapshot = '00000001-000000FF-1'
+            retained = {'vehicles': {'rows': 2, 'sha256': 'a'*64}}
+            with (patch.object(routine,'exported_snapshot',return_value=nullcontext(snapshot)) as export,
+                  patch.object(routine,'check_disk_budget',return_value=(1000,500)),
+                  patch.object(routine,'write_supplement',return_value=retained) as supplement,
+                  patch.object(routine,'dump_options',return_value=['--exclude-table-data=public.external_catalog']),
+                  patch.object(routine,'copy_dump') as dump):
+                self.assertEqual(routine.dump_database(['pg_dump'],psql,root,None,root,routine.SCOPE),retained)
+                export.assert_called_once_with(psql,None)
+                supplement.assert_called_once_with(psql,snapshot,root/'first-party.sql',None,max_bytes=199)
+                self.assertEqual(dump.call_args.args[0],[
+                    'pg_dump','--snapshot='+snapshot,'--exclude-table-data=public.external_catalog'])
+            (root/'database.dump').unlink()
+            with (patch.object(routine,'exported_snapshot') as export,
+                  patch.object(routine,'write_supplement') as supplement,
+                  patch.object(routine,'copy_dump') as dump):
+                self.assertIsNone(routine.dump_database(['pg_dump'],psql,root,None,root,routine.FULL_SCOPE))
+                export.assert_not_called()
+                supplement.assert_not_called()
+                self.assertEqual(dump.call_args.args[0],['pg_dump'])
+
     def test_snapshot_pin_changes_require_the_same_durable_lease(self):
         reference='backup:ext07:daily-20261119T042000Z'
         command=['psql','-Atq']
@@ -184,6 +210,43 @@ class IncompleteJobs(unittest.TestCase):
             (point/'routine.json').write_text(json.dumps(dict(kind='daily',name=point.name,complete=True)))
             routine.require_no_incomplete_points(root)
 
+    def test_scoped_rotation_requires_checksum_bound_first_restore(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = 'hd_release_'+'a'*16
+            created = '2026-01-01T00:00:00+00:00'
+            def point(number, **extra):
+                path = root/f'daily-20260101T00000{number}Z'
+                path.mkdir()
+                state = dict(kind='daily',name=path.name,complete=True,phase='finalized',format=2,
+                             createdAt=created,**extra)
+                routine.atomic_json(path/'routine.json',state)
+                return path,state
+            _, _ = point(0)
+            _, _ = point(1)
+            routine.require_no_incomplete_points(root,backup_scope=routine.SCOPE,retain_for_restore=True)
+            with self.assertRaisesRegex(ValueError,'Restore verification'):
+                routine.require_no_incomplete_points(root,backup_scope=routine.SCOPE,database=database)
+            pilot,state = point(2,backupScope=routine.SCOPE,restoreValidation='verified')
+            files = {name:{'sha256':'b'*64,'bytes':10} for name in routine.backup_components(routine.SCOPE)}
+            manifest = dict(format=2,backupScope=routine.SCOPE,sourceDatabase=database,createdAt=created,files=files)
+            routine.atomic_json(pilot/'manifest.json',manifest)
+            receipt=dict(backupScope=routine.SCOPE,input='plaintext-components',allRetainedDataMatched=True,
+                         databaseSha256=files['database.dump']['sha256'],verifiedAt='2026-01-01T00:01:00+00:00',
+                         manifestSha256=routine.digest(pilot/'manifest.json'))
+            routine.atomic_json(pilot/'routine-restore-proof.json',receipt)
+            state['restoreProofSha256'] = routine.digest(pilot/'routine-restore-proof.json')
+            routine.atomic_json(pilot/'routine.json',state)
+            routine.require_no_incomplete_points(root,backup_scope=routine.SCOPE,database=database)
+            self.assertEqual(len(list(root.iterdir())),3)
+            with self.assertRaisesRegex(ValueError,'Restore verification'):
+                routine.require_no_incomplete_points(root,backup_scope=routine.SCOPE,database=database+'x')
+            receipt['allRetainedDataMatched'] = False
+            routine.atomic_json(pilot/'routine-restore-proof.json',receipt)
+            with self.assertRaisesRegex(ValueError,'Restore verification'):
+                routine.require_no_incomplete_points(root,backup_scope=routine.SCOPE,database=database)
+
 
 class Envelope(unittest.TestCase):
     def test_retention_keeps_two_verified_points_and_preserves_any_protected_old_point(self):
@@ -249,6 +312,30 @@ class Envelope(unittest.TestCase):
             routine.remove_verified_components(root/'restore',manifest)
             self.assertTrue((root/'restore/manifest.json').exists())
             self.assertFalse((root/'restore/database.dump').exists())
+
+    def test_scoped_envelope_rejects_mixed_scope_and_cleans_its_components(self):
+        import tarfile
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            names = routine.backup_components(routine.SCOPE)
+            for name in names:
+                (root/name).write_bytes(name.encode())
+            files = {name:{'bytes':len(name),'sha256':routine.digest(root/name)} for name in names}
+            manifest=dict(format=2,backupScope=routine.SCOPE,files=files)
+            routine.atomic_json(root/'manifest.json',manifest)
+            with tarfile.open(root/'narrow.tar','w') as archive:
+                for name in (*names,'manifest.json'):
+                    archive.add(root/name,arcname=name)
+            destination=root/'verified'
+            self.assertEqual(routine.unpack_verified_bundle(root/'narrow.tar',destination),manifest)
+            routine.remove_verified_components(destination,manifest)
+            self.assertEqual(list(destination.iterdir()),[destination/'manifest.json'])
+            routine.atomic_json(root/'manifest.json',{**manifest,'backupScope':routine.FULL_SCOPE})
+            with tarfile.open(root/'mixed.tar','w') as archive:
+                for name in (*names,'manifest.json'):
+                    archive.add(root/name,arcname=name)
+            with self.assertRaisesRegex(ValueError,'Invalid recovery envelope'):
+                routine.unpack_verified_bundle(root/'mixed.tar',root/'mixed')
 
 
 if __name__ == '__main__':
