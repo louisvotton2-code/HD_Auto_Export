@@ -12,7 +12,7 @@ import { readConfig, type Config } from './config.js';
 import { classifyCapacityFailure, createDatabase, type PublicFailureDiagnostic } from './db/index.js';
 import { LoginAccountLimiter } from './login-account-limiter.js';
 import { createAuth, authHeaders, requireStaff, requireTrustedOrigin, staffSignInCredential } from './auth.js';
-import { InventoryService, type Actor, type HomeModelFilterPhase } from './vehicles/service.js';
+import { InventoryService, type Actor, type HomeModelFilterPhase, type PublicListReadPhase } from './vehicles/service.js';
 import { staffUploadStats } from './vehicles/upload-attribution.js';
 import { StaffManagement } from './staff-management.js';
 import { TranslationPlanService } from './vehicles/translation-plans.js';
@@ -20,6 +20,7 @@ import { PgTranslationBudget } from './vehicles/translation-budget.js';
 import { VehicleEvidence } from './vehicles/evidence.js';
 import {markFullSyncAccess} from './external/full-sync/engine.js';
 import {listingUuid} from './external/catalog.js';
+import { externalInquiryNumber } from './external/inquiry-code.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { analyticsEventsPath, registerAnalyticsRoutes } from './analytics/routes.js';
@@ -88,6 +89,7 @@ function sendInternalMedia(reply:FastifyReply,file:{filename:string},etag?:strin
 }
 
 const capacityRoutes = new Set<string>(['/api/v1/vehicles','/api/v1/vehicle-filters','/api/v1/vehicles/:id','/api/v1/home/vehicles']);
+const isCatalogTextSearch=(query:{q?:string})=>Boolean(query.q&&!externalInquiryNumber(query.q));
 
 export async function buildApp(config:Config=readConfig(), options:{
   logger?:boolean;translator?:VehicleTranslator;onPublicFailure?:(event:PublicFailureDiagnostic)=>void;
@@ -126,19 +128,30 @@ export async function buildApp(config:Config=readConfig(), options:{
   const staff=new WeakMap<object,adm.StaffMe>();
   const requestSignals=new WeakMap<object,AbortSignal>();
   const longCacheRequests=new WeakSet<object>();
-  type HomeModelRequestPhase=HomeModelFilterPhase|'cache_lookup_or_shared'|'cache_validate';
-  type HomeModelTiming={
-    phase:HomeModelRequestPhase; started:number; stageMs:Partial<Record<HomeModelRequestPhase,number>>;
+  type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
+  type CatalogReadTiming={
+    kind:'home-models'|'list'|'filters'; phase:CatalogReadPhase; started:number;
+    stageMs:Partial<Record<CatalogReadPhase,number>>;
   };
-  const homeModelTimings=new WeakMap<object,HomeModelTiming>();
-  const homeModelDiagnostics=(request:FastifyRequest)=>{
-    const timing=homeModelTimings.get(request);
-    if(!timing)return {};
-    const {phase,stageMs,started}=timing;
-    return {
-      projection:'home-models',homeModelsPhase:phase,
-      homeModelsStageMs:{...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)},
+  const catalogReadTimings=new WeakMap<FastifyRequest,CatalogReadTiming>();
+  const beginCatalogTiming=(request:FastifyRequest,kind:CatalogReadTiming['kind'])=>{
+    const timing:CatalogReadTiming={kind,phase:'cache_lookup_or_shared',started:performance.now(),stageMs:{}};
+    catalogReadTimings.set(request,timing);
+    return (phase:CatalogReadPhase)=>{
+      const now=performance.now();
+      timing.stageMs[timing.phase]=(timing.stageMs[timing.phase]??0)+now-timing.started;
+      timing.phase=phase;
+      timing.started=now;
     };
+  };
+  const catalogReadDiagnostics=(request:FastifyRequest)=>{
+    const timing=catalogReadTimings.get(request);
+    if(!timing)return {};
+    const {kind,phase,stageMs,started}=timing;
+    const elapsed={...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)};
+    return kind==='home-models'
+      ? {projection:'home-models',homeModelsPhase:phase,homeModelsStageMs:elapsed}
+      : {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed};
   };
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
@@ -205,7 +218,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.addHook('onResponse',async(request,reply)=>{
     serving.response(request);
     app.log.info({requestId:request.id,method:request.method,route:request.routeOptions.url,statusCode:reply.statusCode,elapsedMs:reply.elapsedTime,
-      ...(reply.statusCode<400&&reply.elapsedTime>=750?homeModelDiagnostics(request):{}),
+      ...(reply.statusCode<400&&reply.elapsedTime>=750?catalogReadDiagnostics(request):{}),
     },'Request completed');
   });
   app.setErrorHandler((error,request,reply)=>{
@@ -238,7 +251,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     if(problem.status>=500) {
       const catalogError=error instanceof PublicCatalogUnavailableError?error:undefined;
       const metrics=catalogError&&catalogCache.metrics();
-      app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,...homeModelDiagnostics(request),
+      app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,...catalogReadDiagnostics(request),
         ...(metrics&&catalogError?{catalogReason:catalogError.reason,
           activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
           timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,oversizedValues:metrics.oversizedValues,
@@ -349,10 +362,13 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([cardList,list]),...errorResponses}})},
     async request=>{
       const query=request.query as pub.PublicVehicleQuery;
+      const advance=isCatalogTextSearch(query)?beginCatalogTiming(request,'list'):undefined;
       const {value:loaded,stamp}=await cached('list',query,async()=>{
-        const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id);
+        const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance);
+        advance?.('cache_validate');
         return {data,meta};
       },request);
+      advance?.('response');
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([detail,inline]),...errorResponses}})},
@@ -368,15 +384,8 @@ export async function buildApp(config:Config=readConfig(), options:{
     // Previous Web releases still compare the filter response with the global version.
     const legacy=internal&&request.headers['x-hd-catalog-scope']!=='filters';
     const usd=query.priceView==='usd', signal=requestSignals.get(request), protocol=cacheProtocol(request);
-    const timing:HomeModelTiming|undefined=
-      query.projection==='home-models'?{phase:'cache_lookup_or_shared',started:performance.now(),stageMs:{}}:undefined;
-    if(timing)homeModelTimings.set(request,timing);
-    const advance=timing?(phase:HomeModelRequestPhase)=>{
-      const now=performance.now();
-      timing.stageMs[timing.phase]=(timing.stageMs[timing.phase]??0)+now-timing.started;
-      timing.phase=phase;
-      timing.started=now;
-    }:undefined;
+    const advance=query.projection==='home-models'?beginCatalogTiming(request,'home-models')
+      :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
     const {value,stamp}=legacy
       ? await catalogCache.getBoundedVersioned('filters',query,async()=>{
         const result=await inventory.filterResult(query,advance);
@@ -388,6 +397,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         advance?.('cache_validate');
         return result;
       },usd,signal,protocol);
+    advance?.('response');
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   });
   app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:home,...errorResponses}})},async request=>{
