@@ -5,6 +5,7 @@ import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { createHtmlCacheServer, readHtmlCacheKey } from './production/html-cache.mjs';
 
 const start = Date.parse('2026-11-18T00:00:00Z');
@@ -33,8 +34,11 @@ function read(origin, headers, path, method) {
       response.on('data', chunk => chunks.push(chunk));
       response.once('end', () => {
         if (!response.complete) reject(new Error('incomplete HTTP response'));
-        else resolve({ status: response.statusCode, headers: response.headers,
-          trailers: response.trailers, body: Buffer.concat(chunks).toString() });
+        else {
+          const bytes = Buffer.concat(chunks);
+          resolve({ status: response.statusCode, headers: response.headers,
+            trailers: response.trailers, body: bytes.toString(), bytes });
+        }
       });
       response.once('error', reject);
     });
@@ -51,7 +55,7 @@ async function fixture(t, edgeIp = '127.0.0.1') {
     renderHeaders: {}, actualFilters: null, fxUntil: null, fxVersion: '11111111-1111-4111-8111-111111111111',
     omitProof: false, proofSource: 'header', nonceMismatch: false, scopeOmitted: false,
     duplicateScope: false, rewindWhenRendering: 0,
-    oversized: false, truncate: false,
+    oversized: false, truncate: false, dynamicGzip: false, pauseRender: null,
   };
   const counts = { version: 0, render: 0 };
   const origin = createServer((req, res) => {
@@ -96,6 +100,7 @@ async function fixture(t, edgeIp = '127.0.0.1') {
       assert.equal(req.headers['accept-encoding'], 'identity');
     }
     if (isPrivate && state.renderConfirm) headers[control] = state.renderConfirm;
+    if (!isPrivate && state.dynamicGzip) headers['Content-Encoding'] = 'gzip';
     if (!state.omitProof && isPrivate) {
       const encoded = Buffer.from(JSON.stringify({ ...value,
         nonce: state.nonceMismatch ? 'a'.repeat(32) : value.nonce, healthy: state.healthy,
@@ -111,7 +116,13 @@ async function fixture(t, edgeIp = '127.0.0.1') {
       res.write(body.slice(0, 5), () => res.destroy());
       return;
     }
-    res.end(body);
+    if (isPrivate && state.pauseRender) {
+      const pauseRender = state.pauseRender;
+      state.pauseRender = null;
+      pauseRender(() => res.end(body));
+      return;
+    }
+    res.end(!isPrivate && state.dynamicGzip ? gzipSync(body) : body);
   });
   const remote = await listen(origin);
   const cache = createHtmlCacheServer({ origin: remote, siteHost: site, edgeIp, release, secret,
@@ -153,6 +164,60 @@ test('hits require a fresh v2 live version; proof, nonce and request identity st
   }
 });
 
+test('normal reload validates the current revision and negotiates cached gzip and identity', async t => {
+  const { get, state, calls, counts } = await fixture(t);
+  state.renderHeaders.Vary = 'RSC, Next-Router-Prefetch';
+  const identity = await get();
+  const gzip = await get({ 'Cache-Control': 'max-age=0', 'Accept-Encoding': 'br, gzip' });
+  assert.deepEqual(calls.map(call => call.path), [versionUrl, renderUrl, versionUrl]);
+  assert.equal(gzip.headers['content-encoding'], 'gzip');
+  assert.equal(gzip.headers['content-length'], String(gzip.bytes.length));
+  assert.equal(identity.headers['content-length'], String(identity.bytes.length));
+  assert.deepEqual(gunzipSync(gzip.bytes), identity.bytes);
+  for (const response of [identity, gzip]) {
+    assert.equal(response.headers.vary, 'RSC, Next-Router-Prefetch, Accept-Encoding');
+    assert.equal(response.headers.etag, undefined);
+    assert.equal(response.headers['cache-control'], 'no-store');
+  }
+  for (const value of ['', 'identity', 'gzip;q=0, *;q=1', 'gzip;q=0.4, identity;q=0.9', 'gzip, GZIP;q=0']) {
+    const result = await get({ 'Cache-Control': 'max-age=0', 'Accept-Encoding': value });
+    assert.equal(result.headers['content-encoding'], undefined);
+    assert.deepEqual(result.bytes, identity.bytes);
+  }
+  assert.deepEqual(counts, { version: 7, render: 1 });
+  state.catalog = 'c';
+  state.renderHeaders.Vary = 'RSC, aCcEpT-EnCoDiNg';
+  const changed = await get({ 'Cache-Control': 'max-age=0', 'Accept-Encoding': '*;q=1' });
+  assert.equal(changed.headers.vary, 'RSC, aCcEpT-EnCoDiNg');
+  assert.equal(changed.headers['content-encoding'], 'gzip');
+  assert.notDeepEqual(gunzipSync(changed.bytes), identity.bytes);
+  state.versionStatus = 503;
+  const degraded = await get({ 'Cache-Control': 'max-age=0', 'Accept-Encoding': 'gzip' });
+  assert.equal(degraded.headers['content-encoding'], undefined);
+  assert.equal(calls.at(-1).path, '/zh/');
+  assert.notDeepEqual(degraded.bytes, gunzipSync(changed.bytes));
+});
+
+test('hard reload, no-store, no-transform and conditional documents keep the origin response', async t => {
+  const { get, state, calls, counts } = await fixture(t);
+  await get({ 'Accept-Encoding': 'gzip' });
+  state.dynamicGzip = true;
+  for (const headers of [
+    { 'Cache-Control': 'no-cache' }, { Pragma: 'no-cache' }, { 'Cache-Control': 'max-age=0, no-store' },
+    { 'Cache-Control': 'no-transform' }, { 'Cache-Control': 'max-age=0', 'If-None-Match': '"old"' },
+    { 'Accept-Encoding': 'gzip, identity;q=0' }, { 'Cache-Control': 'max-age=0', Cookie: 'private=token' },
+    { 'Cache-Control': 'max-age=0', RSC: '1' },
+  ]) {
+    const response = await get({ 'Accept-Encoding': 'gzip', ...headers });
+    const upstream = calls.at(-1);
+    assert.equal(upstream.path, '/zh/');
+    assert.equal(upstream.headers[nonce], undefined);
+    assert.equal(response.headers['content-encoding'], 'gzip');
+    assert.deepEqual(response.bytes, gzipSync('<html><body>render ' + counts.render + '</body></html>'));
+  }
+  assert.deepEqual(counts, { version: 1, render: 9 });
+});
+
 test('all live dependency changes invalidate immediately and mixed renders never write', async t => {
   const { get, state, counts } = await fixture(t);
   const first = await get();
@@ -172,10 +237,28 @@ test('all live dependency changes invalidate immediately and mixed renders never
   assert.equal(counts.render, beforeFx + 1);
   state.filters = 'f';
   state.actualFilters = 'e';
-  assert.notEqual((await get()).body, (await get()).body);
+  const mixed = await get({ 'Accept-Encoding': 'gzip' });
+  assert.equal(mixed.headers['content-encoding'], undefined);
+  assert.notEqual((await get()).body, mixed.body);
   state.actualFilters = null;
   const healthy = await get();
   assert.equal((await get()).body, healthy.body);
+});
+
+test('an older in-flight gzip render cannot overwrite a later cached revision', async t => {
+  const { get, state, counts } = await fixture(t);
+  const encoding = { 'Accept-Encoding': 'gzip' };
+  const paused = new Promise(resolve => { state.pauseRender = resolve; });
+  const earlierRequest = get(encoding);
+  const finishRender = await paused;
+  state.catalog = 'c';
+  const recent = await get(encoding);
+  assert.equal(recent.headers['content-encoding'], 'gzip');
+  finishRender();
+  const earlier = await earlierRequest;
+  assert.equal(earlier.headers['content-encoding'], undefined);
+  assert.deepEqual((await get(encoding)).bytes, recent.bytes);
+  assert.deepEqual(counts, { version: 3, render: 3 });
 });
 
 test('300 second maximum never extends from a hit and expiry stays closed on clock rollback', async t => {
@@ -204,12 +287,14 @@ test('earliest live, rendered and FX deadlines bound a hit', async t => {
     await t.test(deadline, async testContext => {
       const { get, state, advance } = await fixture(testContext);
       state[deadline] = deadline === 'fxUntil' ? start + 5000 : 5000;
-      const first = await get();
+      const encoding = { 'Accept-Encoding': 'gzip' };
+      const first = await get(encoding);
+      assert.equal(first.headers['content-encoding'], 'gzip');
       advance(4999);
-      assert.equal((await get()).body, first.body);
+      assert.deepEqual((await get(encoding)).bytes, first.bytes);
       advance(1);
       if (deadline === 'fxUntil') state.fxUntil = start + 20_000;
-      assert.notEqual((await get()).body, first.body);
+      assert.notDeepEqual((await get(encoding)).bytes, first.bytes);
     });
   }
 });
@@ -276,6 +361,7 @@ test('unhealthy, private, personalized, oversized and incomplete HTML is never a
     noProof: { omitProof: true }, unhealthy: { healthy: false }, replay: { nonceMismatch: true },
     trailerOnly: { proofSource: 'trailer' }, noNegotiation: { renderConfirm: '' },
     private: { renderHeaders: { 'Cache-Control': 'private, no-store' } },
+    noTransform: { renderHeaders: { 'Cache-Control': 'no-store, no-transform' } },
     cookie: { renderHeaders: { 'Set-Cookie': 'private=token' } },
     vary: { renderHeaders: { Vary: 'User-Agent' } },
     rsc: { renderHeaders: { 'Content-Type': 'text/x-component' } },
@@ -292,7 +378,7 @@ test('unhealthy, private, personalized, oversized and incomplete HTML is never a
         if (state.oversized) assert.equal(result.body.length, 513 * 1024);
         if (state.truncate) assert.match(result.body, /<\/html>$/);
       }
-      const dynamicRerender = ['noNegotiation', 'private', 'cookie', 'vary', 'rsc', 'oversized',
+      const dynamicRerender = ['noNegotiation', 'private', 'noTransform', 'cookie', 'vary', 'rsc', 'oversized',
         'truncated', 'true404', 'unavailable'].includes(name);
       assert.deepEqual(counts, { version: 2, render: dynamicRerender ? 4 : 2 });
     });

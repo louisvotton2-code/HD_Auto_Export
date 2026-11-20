@@ -4,6 +4,8 @@ import { createServer, Agent, request as requestHttp } from 'node:http';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 
 const MAX_AGE = 300_000;
 const MAX_HTML = 512 * 1024;
@@ -38,6 +40,7 @@ const time = (value) => ascii(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3
 const hexVersion = (value) => ascii(value, /^[a-f0-9]{64}$/);
 const uuid = (value) => ascii(value, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
 const privateKey = /^[\x21-\x7e]{32,256}$/;
+const compressHtml = promisify(gzip);
 
 export function readHtmlCacheKey(file) {
   let fd;
@@ -69,12 +72,31 @@ function forwarded(headers) {
     .filter(([name]) => !blocked.has(name) && !controlHeader(name)));
 }
 
-function eligible(request) {
+function encodingPreferences(value) {
+  const weights = new Map();
+  for (const term of parts(value)) {
+    const coding = term.split(';', 1)[0].trim();
+    if (coding !== 'gzip' && coding !== 'identity' && coding !== '*') continue;
+    const quality = /^(?:gzip|identity|\*)\s*(?:;\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?))?$/.exec(term);
+    const weight = quality ? Number(quality[1] ?? 1) : 0;
+    weights.set(coding, Math.min(weights.get(coding) ?? 1, weight));
+  }
+  const wildcard = weights.get('*');
+  return {
+    identity: weights.get('identity') ?? (wildcard === 0 ? 0 : 1),
+    gzip: weights.get('gzip') ?? wildcard ?? 0,
+  };
+}
+
+function eligible(request, encoding) {
   const headers = request.headers;
+  // A normal reload can use the same live version check as a navigation. Hard
+  // reloads still go directly to the origin, which also owns conditional responses.
   return !bypassHeaders.some(name => Object.hasOwn(headers, name)) &&
     parts(headers.accept).some(term => /^text\/html(?:\s*;|$)/.test(term) && !/;\s*q=0(?:\.0*)?(?:;|$)/.test(term)) &&
-    !parts(headers['accept-encoding']).some(term => /^(?:identity|\*)\s*;\s*q=0(?:\.0*)?$/.test(term)) &&
-    !parts(headers['cache-control']).some(term => /^(?:no-cache|no-store|max-age=0)$/.test(term)) &&
+    encoding.identity > 0 &&
+    !parts(headers['cache-control']).some(term => /^(?:no-cache|no-store|no-transform)(?:\s*=|$)/.test(term)) &&
+    !parts(headers.pragma).includes('no-cache') &&
     isIP(headers['x-hd-visitor-ip']) > 0;
 }
 
@@ -129,7 +151,7 @@ function cacheable(response) {
   return response.statusCode === 200 && /^text\/html(?:;|$)/i.test(h['content-type'] ?? '') &&
     !Object.hasOwn(h, 'set-cookie') && !h['content-range'] &&
     (!h['content-encoding'] || h['content-encoding'] === 'identity') &&
-    !parts(h['cache-control']).some(part => /^private(?:\s*=|$)/.test(part)) &&
+    !parts(h['cache-control']).some(part => /^(?:private|no-transform)(?:\s*=|$)/.test(part)) &&
     parts(h.vary).every(name => !name || varyHeaders.has(name)) &&
     !/['"]nonce-/i.test((h['content-security-policy'] ?? '') + (h['content-security-policy-report-only'] ?? '')) &&
     (!h['content-length'] || Number(h['content-length']) <= MAX_HTML);
@@ -217,8 +239,13 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     return { stamp, headers: { ...headers, 'cache-control': 'no-store' }, body };
   }
 
-  function sendPage(reply, page) {
-    reply.writeHead(200, { ...page.headers, 'content-length': page.body.length }).end(page.body);
+  function sendPage(reply, page, preferGzip = false) {
+    if (reply.destroyed) return;
+    const compressed = preferGzip && page.gzipBody;
+    const body = compressed || page.body;
+    const headers = { ...page.headers, 'content-length': body.length };
+    if (compressed) headers['content-encoding'] = 'gzip';
+    reply.writeHead(200, headers).end(body);
   }
 
   function sendLimit(reply, limit) {
@@ -240,7 +267,9 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     reply.once('close', () => { if (!reply.writableFinished) disconnect.abort(); });
     const initialTick = tick();
     const visitor = request.headers['x-hd-visitor-ip'];
-    const lookup = request.url === path && eligible(request) && activeLookups < MAX_LOOKUPS;
+    const encoding = encodingPreferences(request.headers['accept-encoding']);
+    const preferGzip = encoding.gzip > 0 && encoding.gzip >= encoding.identity;
+    const lookup = request.url === path && eligible(request, encoding) && activeLookups < MAX_LOOKUPS;
     if (lookup) activeLookups++;
     try {
       if (lookup) {
@@ -256,7 +285,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
           if (cached && cached.signature === live.signature &&
               Math.min(cached.deadline, live.deadline) > now() &&
               Math.min(cached.elapsedDeadline, live.elapsedDeadline) > tick()) {
-            sendPage(reply, cached);
+            sendPage(reply, cached, preferGzip);
             return;
           }
 
@@ -272,11 +301,23 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
             if (stamp?.signature === live.signature) {
               const deadline = Math.min(live.deadline, stamp.deadline);
               const elapsedDeadline = Math.min(initialTick + MAX_AGE, live.elapsedDeadline, stamp.elapsedDeadline);
-              if (deadline > now() && elapsedDeadline > tick())
-                pages.set(path, { signature: stamp.signature, deadline, elapsedDeadline, headers: rendered.headers, body: rendered.body });
+              const gzipBody = await compressHtml(rendered.body, { level: 4 }).catch(() => null);
+              const latest = pages.get(path);
+              // Another lookup may publish a newer revision while this request renders or compresses.
+              if ((!latest || latest === cached || latest.signature === stamp.signature) &&
+                  deadline > now() && elapsedDeadline > tick()) {
+                const vary = rendered.headers.vary;
+                const headers = { ...rendered.headers, vary: parts(vary).includes('accept-encoding')
+                  ? vary : [vary, 'Accept-Encoding'].filter(Boolean).join(', ') };
+                const page = { signature: stamp.signature, deadline, elapsedDeadline, headers, body: rendered.body, gzipBody };
+                pages.set(path, page);
+                sendPage(reply, page, preferGzip);
+                return;
+              }
+            } else {
+              sendPage(reply, rendered);
+              return;
             }
-            sendPage(reply, rendered);
-            return;
           }
         }
       }
