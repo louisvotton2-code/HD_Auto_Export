@@ -15,15 +15,17 @@ test('source evidence, sparse enrichment, obsolete events and all gallery/config
  try{
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;url.pathname=`/${name}`;db=createDatabase(url.toString(),2);await migrateDatabase(db);
   if(!(await db.pool.query("SELECT to_regclass('external_source_documents') AS relation")).rows[0].relation)await db.pool.query(await readFile(new URL('../migrations/0020_sources.sql',import.meta.url),'utf8'));
-  const identity={provider:'chinacarapi' as const,source:'che168' as const,externalId:'1001'},at='2026-11-13T12:00:00.000Z';
+  const fixtureStart=Date.now()-24*60*60_000;
+  const observedAfter=(minutes:number)=>new Date(fixtureStart+minutes*60_000).toISOString();
+  const identity={provider:'chinacarapi' as const,source:'che168' as const,externalId:'1001'},at=observedAfter(0);
   const row={source:'che168',id:'1001',status:'active',updatedAt:at,url:'https://www.che168.com/dealer/1/1001.html',title:'Example vehicle',make:{id:'1',name:'Example'},model:{id:'2',name:'Model'},trim:{id:'3',name:'Variant'},specs:{displacementCc:1998},photos:Array.from({length:45},(_,i)=>`https://erscglobal2.autoimg.cn/photo/${i}.jpg`),equipment:[{items:Array.from({length:601},(_,i)=>({name:`ABS`,value:'Standard'}))}],unknownPrivate:{raw:'preserved'}};
   const doc:SourceDocument={identity,kind:'detail',locale:'en',observedAt:at,sourceUpdatedAt:at,payload:row};
   const responseBody=JSON.stringify({results:[row],notFound:[],unknownWrapper:'preserve'});doc.rawResponse={hash:createHash('sha256').update(responseBody).digest('hex'),body:responseBody};
-  await db.transaction(async tx=>{await persistSourceDocument(tx,doc);await persistSourceDocument(tx,doc);await persistSourceDocument(tx,{...doc,observedAt:'2026-11-13T12:01:00Z',payload:{specs:{powerKw:100}}});});
+  await db.transaction(async tx=>{await persistSourceDocument(tx,doc);await persistSourceDocument(tx,doc);await persistSourceDocument(tx,{...doc,observedAt:observedAfter(1),payload:{specs:{powerKw:100}}});});
   assert.equal((await db.pool.query('SELECT count(*)::int AS count FROM external_source_documents')).rows[0].count,2);
   const stored=(await db.pool.query('SELECT * FROM external_source_blobs WHERE hash=$1',[doc.rawResponse.hash])).rows[0];assert.equal(stored.payload,null);assert.ok(Buffer.isBuffer(stored.compressed));assert.equal((decodeSourceBlob(stored).payload as {unknownWrapper:string}).unknownWrapper,'preserve');
   let loaded=await db.transaction(tx=>loadSourceDocuments(tx,identity));assert.equal((loaded[0]!.payload as typeof row).photos.length,45);assert.equal((loaded[0]!.payload as typeof row).specs.displacementCc,1998);
-  await db.transaction(tx=>persistSourceDocument(tx,{...doc,observedAt:'2026-11-13T13:00:00Z',payload:{photos:[]}},false));
+  await db.transaction(tx=>persistSourceDocument(tx,{...doc,observedAt:observedAfter(60),payload:{photos:[]}},false));
   loaded=await db.transaction(tx=>loadSourceDocuments(tx,identity));assert.equal((loaded[0]!.payload as typeof row).photos.length,45);
   await db.transaction(async tx=>{await persistTrimDocument(tx,'3','en',{summary:{displacementCc:1998}},at);await persistTrimDocument(tx,'3','en',{summary:{displacementCc:1998}},at);});
   assert.equal((await db.pool.query('SELECT count(*)::int AS count FROM external_trim_documents')).rows[0].count,1);
@@ -40,7 +42,7 @@ test('source evidence, sparse enrichment, obsolete events and all gallery/config
   await db.transaction(tx=>releaseSourceReferences(tx,'backup','retained-backup'));await db.transaction(tx=>pruneSourceHistory(tx));
   await assert.rejects(db.transaction(tx=>loadSourceDocumentRefs(tx,oldRefs)),/missing/);
   const refs=await db.transaction(tx=>archiveSourceDocuments(tx,[doc],'test-pending'));
-  await db.transaction(tx=>persistSourceDocument(tx,{...doc,observedAt:'2026-11-13T14:00:00Z'},false));
+  await db.transaction(tx=>persistSourceDocument(tx,{...doc,observedAt:observedAfter(120)},false));
   await db.transaction(tx=>pruneSourceHistory(tx));
   const queued=await db.transaction(tx=>loadSourceDocumentRefs(tx,refs));assert.equal(queued[0]!.observedAt,at);assert.deepEqual(queued[0]!.payload,row);
   await db.transaction(tx=>releaseSourceReferences(tx,'pending','test-pending'));
