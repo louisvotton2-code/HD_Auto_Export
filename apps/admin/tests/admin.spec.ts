@@ -13,6 +13,7 @@ import './home-order-cases';
 import './external-inline-cases';
 import './ux-cases';
 import './lifecycle-cases';
+import './media-recovery-cases';
 import './translation-cases';
 import './brand-cases';
 import './localization-cases';

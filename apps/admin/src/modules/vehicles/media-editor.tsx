@@ -7,7 +7,9 @@ import {
   type DraftMedia, type MediaAsset, type MediaRights, type MediaContentType, type VehicleDraftSource,
 } from '@hd/contracts/admin';
 import { ApiClientError, request } from '../../shared/api/client';
-import { appendReadyMedia, finishMediaUpload, MAX_MEDIA_COUNT, normalizeMedia, recycleMediaAsset, validateMediaFile } from './media-upload';
+import { usePrivateResource } from '../../shared/api/use-private-resource';
+import { appendReadyMedia, finishMediaUpload, MAX_MEDIA_COUNT, mediaIdKey, mediaQuotaMessage, normalizeMedia, recycleMediaAsset, validateMediaFile, type MediaTransport } from './media-upload';
+import { MediaUploadRecovery, recoverableUploadsResponse } from './media-upload-recovery';
 import styles from './media-editor.module.css';
 import { uploadRightsForFiles } from './media-source';
 
@@ -23,6 +25,7 @@ type UploadTask = {
 };
 type Props = {
   vehicleId: string;
+  draftVersion: number;
   value: DraftMedia[];
   onChange: (media: DraftMedia[]) => void;
   disabled?: boolean;
@@ -33,7 +36,9 @@ type Props = {
 
 const stageText = { waiting: '等待上传', permit: '正在准备上传', upload: '正在上传并核验图片', complete: '正在确认图片处理结果', ready: '上传完成，已加入当前草稿', error: '上传未完成' };
 
-export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
+const mediaPath = (id: string) => `/api/v1/admin/media/${encodeURIComponent(mediaIdKey(id))}`;
+
+export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
   const { message } = App.useApp();
   const external = source.kind === 'external';
   const [basis, setBasis] = useState<MediaRights['basis']>(external ? 'unverified' : 'owned');
@@ -49,6 +54,11 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
   const [seenMedia, setSeenMedia] = useState<DraftMedia[]>(value);
   const [recycledIds, setRecycledIds] = useState<string[]>([]);
   const [recycleSuccess, setRecycleSuccess] = useState('');
+  const [uploadRevision, setUploadRevision] = useState(0);
+  const uploads = usePrivateResource(`/api/v1/admin/vehicles/${encodeURIComponent(vehicleId)}/media-uploads`, recoverableUploadsResponse,
+    `${draftVersion}:${uploadRevision}`, 12_000);
+  const quota = uploads.data?.data;
+  const listUnavailable = uploads.errorStatus === 404 || uploads.errorStatus === 405;
   const mounted = useRef(true);
   const active = useRef(false);
   const currentMedia = useRef(value);
@@ -67,8 +77,9 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
   }, []);
   useEffect(() => {
     setSeenMedia(previous => {
-      const added = value.filter(item => !previous.some(known => known.id === item.id));
-      return added.length ? [...previous, ...added] : previous;
+      const seenById = new Map(previous.map(item => [mediaIdKey(item.id), item]));
+      for (const item of value) seenById.set(mediaIdKey(item.id), item);
+      return [...seenById.values()];
     });
   }, [value]);
 
@@ -79,6 +90,41 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
     currentMedia.current = next;
     changed.current(next);
   }
+  function refreshUploads() {
+    setUploadRevision(current => current + 1);
+    uploads.resume();
+  }
+  function startOperation() {
+    if (active.current || disabled) return null;
+    const aborter = new AbortController();
+    controller.current = aborter;
+    active.current = true;
+    setBusy(true); busyChanged.current?.(true); setError(''); setRecycleSuccess('');
+    return aborter;
+  }
+  function finishOperation(aborter: AbortController) {
+    active.current = false;
+    if (!mounted.current) return;
+    setBusy(false); busyChanged.current?.(false);
+    if (!aborter.signal.aborted) setUploadRevision(current => current + 1);
+  }
+  function mediaTransport(signal: AbortSignal, taskKey?: string): MediaTransport {
+    return {
+      get: async id => (await request(mediaPath(id), MediaAssetResponseSchema, { signal })).data,
+      upload: async (asset, file, contentType: MediaContentType) => {
+        if (taskKey) updateTask(taskKey, { stage: 'upload' });
+        return (await request(`${mediaPath(asset.id)}/content`, MediaAssetResponseSchema, {
+          method: 'PUT', signal, body: file, headers: { 'Content-Type': contentType, 'If-Match': String(asset.version) },
+        })).data;
+      },
+      complete: async asset => {
+        if (taskKey) updateTask(taskKey, { stage: 'complete' });
+        return (await request(`${mediaPath(asset.id)}/complete`, MediaAssetResponseSchema, {
+          method: 'POST', signal, body: JSON.stringify({ version: asset.version }),
+        })).data;
+      },
+    };
+  }
   async function runTask(task: UploadTask, signal: AbortSignal) {
     let asset = task.asset;
     try {
@@ -88,26 +134,12 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
           method: 'POST', signal,
           body: JSON.stringify({ vehicleId, filename: task.file.name, contentType: task.file.type, sizeBytes: task.file.size, rights: task.rights }),
         });
+        if (permit.data.media.vehicleId !== vehicleId) throw new Error('上传许可与当前车辆不一致，请重新核对。');
         asset = permit.data.media;
-        if (asset.vehicleId !== vehicleId) throw new Error('上传许可与当前车辆不一致，请重新核对。');
         updateTask(task.key, { asset });
       }
-      const final = await finishMediaUpload(asset, task.file, Boolean(task.asset), {
-        get: async id => (await request(`/api/v1/admin/media/${encodeURIComponent(id)}`, MediaAssetResponseSchema, { signal })).data,
-        upload: async (current, file, contentType: MediaContentType) => {
-          updateTask(task.key, { stage: 'upload' });
-          return (await request(`/api/v1/admin/media/${encodeURIComponent(current.id)}/content`, MediaAssetResponseSchema, {
-            method: 'PUT', signal, body: file,
-            headers: { 'Content-Type': contentType, 'If-Match': String(current.version) },
-          })).data;
-        },
-        complete: async current => {
-          updateTask(task.key, { stage: 'complete' });
-          return (await request(`/api/v1/admin/media/${encodeURIComponent(current.id)}/complete`, MediaAssetResponseSchema, {
-            method: 'POST', signal, body: JSON.stringify({ version: current.version }),
-          })).data;
-        },
-      }, next => { asset = next; updateTask(task.key, { asset: next }); });
+      const final = await finishMediaUpload(asset, task.file, Boolean(task.asset), mediaTransport(signal, task.key),
+        next => { asset = next; updateTask(task.key, { asset: next }); });
       if (!mounted.current || signal.aborted) return;
       updateMedia(appendReadyMedia(currentMedia.current, final));
       updateTask(task.key, { stage: 'ready', retryable: false });
@@ -117,35 +149,38 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       // Upload permits have no idempotency key. A lost create response must not reserve another slot blindly.
       const definiteRejection = failure instanceof ApiClientError && [400, 401, 403, 404, 413, 422, 429].includes(failure.status);
       const unknownPermit = !asset && !definiteRejection;
+      const quotaFull = !asset && failure instanceof ApiClientError && failure.status === 422 && failure.code === 'PUBLISH_VALIDATION_FAILED';
       const terminalAsset = asset?.status === 'failed' || asset?.status === 'deleted';
       const message = unknownPermit
-        ? '未能确认上传许可是否已经创建。请勿重复选择这张图片；保留此页面并联系维护人员核对，未使用的许可到期后会回收。'
+        ? '未能确认上传许可是否已经创建。请勿重复选择这张图片，先核对待处理上传任务。列表无法读取时请联系维护人员。'
+        : quotaFull ? '释放图片名额后，可重试这张图片。'
         : failure instanceof Error ? failure.message : '图片上传未完成，请稍后重试。';
+      if (quotaFull) setError(mediaQuotaMessage);
       updateTask(task.key, { asset, stage: 'error', error: message, retryable: !unknownPermit && !terminalAsset, permitUnknown: unknownPermit });
       return false;
     }
   }
   async function recycle(id: string, taskKey?: string) {
-    if (active.current || disabled) return;
-    active.current = true; setBusy(true); busyChanged.current?.(true); setError(''); setRecycleSuccess('');
-    const aborter = new AbortController(); controller.current = aborter;
+    const aborter = startOperation();
+    if (!aborter) return;
     try {
       await recycleMediaAsset(id, vehicleId, currentMedia.current.map(item => item.id), persistedMedia.current, {
         get: async mediaId => {
-          try { return (await request(`/api/v1/admin/media/${encodeURIComponent(mediaId)}`, MediaAssetResponseSchema, { signal: aborter.signal })).data; }
+          try { return (await request(mediaPath(mediaId), MediaAssetResponseSchema, { signal: aborter.signal })).data; }
           catch (failure) { if (failure instanceof ApiClientError && failure.status === 404) return null; throw failure; }
         },
         remove: async asset => {
           try {
-            await request(`/api/v1/admin/media/${encodeURIComponent(asset.id)}`, { parse(value: unknown) { if (value !== null) throw new Error('Expected empty response'); return undefined; } }, {
+            await request(mediaPath(asset.id), { parse(value: unknown) { if (value !== null) throw new Error('Expected empty response'); return undefined; } }, {
               method: 'DELETE', signal: aborter.signal, body: JSON.stringify({ version: asset.version }),
             });
           } catch (failure) { if (!(failure instanceof ApiClientError && failure.status === 404)) throw failure; }
         },
       });
       if (!mounted.current || aborter.signal.aborted) return;
-      setRecycledIds(current => current.includes(id) ? current : [...current, id]);
-      setTasks(current => current.filter(task => task.key !== taskKey && task.asset?.id !== id));
+      const key = mediaIdKey(id);
+      setRecycledIds(current => current.includes(key) ? current : [...current, key]);
+      setTasks(current => current.filter(task => task.key !== taskKey && (!task.asset || mediaIdKey(task.asset.id) !== key)));
       setRecycleSuccess('图片已回收，上传名额已释放。');
       void message.success('图片已回收，上传名额已释放。');
     } catch (failure) {
@@ -153,10 +188,24 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
       setError(failure instanceof ApiClientError && failure.code === 'MEDIA_IN_USE'
         ? '这张图片仍被草稿或发布历史使用，无法回收。已发布历史中的图片受保护，不能删除。'
         : failure instanceof Error ? failure.message : '尚未确认图片回收结果，请重试核对状态。');
-    } finally {
-      active.current = false;
-      if (mounted.current) { setBusy(false); busyChanged.current?.(false); }
-    }
+    } finally { finishOperation(aborter); }
+  }
+  async function restore(asset: MediaAsset) {
+    const key = mediaIdKey(asset.id);
+    if (asset.vehicleId !== vehicleId || currentMedia.current.some(item => mediaIdKey(item.id) === key)
+      || persistedMedia.current.some(id => mediaIdKey(id) === key)) return;
+    if (currentMedia.current.length >= MAX_MEDIA_COUNT) { setError(mediaQuotaMessage); return; }
+    const aborter = startOperation();
+    if (!aborter) return;
+    try {
+      const ready = await finishMediaUpload(asset, null, true, mediaTransport(aborter.signal));
+      if (!mounted.current || aborter.signal.aborted) return;
+      const previous = seenMedia.find(item => mediaIdKey(item.id) === key);
+      updateMedia(appendReadyMedia(currentMedia.current, previous ? { ...ready, id: previous.id } : ready, previous?.alt));
+      void message.success('图片已加入当前草稿，请保存草稿。');
+    } catch (failure) {
+      if (mounted.current && !aborter.signal.aborted) setError(failure instanceof Error ? failure.message : '图片恢复失败，请重新读取任务。');
+    } finally { finishOperation(aborter); }
   }
   function cancelTask(task: UploadTask) {
     if (active.current || disabled || task.permitUnknown) return;
@@ -164,9 +213,8 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
     else { setTasks(current => current.filter(item => item.key !== task.key)); setRecycleSuccess('已取消尚未分配上传许可的任务。'); }
   }
   async function runTasks(selected: UploadTask[]) {
-    if (active.current || disabled) return;
-    active.current = true; setBusy(true); busyChanged.current?.(true);
-    const aborter = new AbortController(); controller.current = aborter;
+    const aborter = startOperation();
+    if (!aborter) return;
     let completed = 0;
     try {
       for (const task of selected) {
@@ -181,18 +229,20 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
         else if (completed) void message.warning(summary);
         else void message.error(summary);
       }
-    } finally {
-      active.current = false;
-      if (mounted.current) { setBusy(false); busyChanged.current?.(false); }
-    }
+    } finally { finishOperation(aborter); }
   }
   function chooseFiles(files: File[]) {
     if (!files.length || active.current || disabled) return;
     setError('');
     setBatchNotice('');
     if (source.kind !== 'manual' && !note.trim()) { setError('请先填写图片来源或授权依据。'); return; }
-    const outstanding = tasks.filter(task => task.stage !== 'ready' && !value.some(item => item.id === task.asset?.id)).length;
-    if (value.length + outstanding + files.length > MAX_MEDIA_COUNT) { setError('每辆车最多 30 张图片，待完成的上传也占用名额。请减少本次选择。'); return; }
+    const outstanding = tasks.filter(task => task.stage !== 'ready' && (!task.asset || !draftIds.has(mediaIdKey(task.asset.id)))).length;
+    const used = quota?.used ?? value.length + outstanding;
+    if (Math.max(value.length, used) + files.length > MAX_MEDIA_COUNT) {
+      setError(used >= MAX_MEDIA_COUNT ? mediaQuotaMessage : '本次选择超过剩余图片名额，请减少图片数量或回收不需要的任务。');
+      if (quota) refreshUploads();
+      return;
+    }
     for (const file of files) {
       const invalid = validateMediaFile(file);
       if (invalid) { setError(`${file.name}：${invalid}`); return; }
@@ -213,11 +263,29 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
     updateMedia(normalizeMedia(next));
   }
   const locked = disabled || busy;
-  const removedMedia = seenMedia.filter(item => !value.some(current => current.id === item.id) && !recycledIds.includes(item.id));
-  const completed = tasks.filter(task => task.stage === 'ready').length;
+  const draftIds = new Set(value.map(item => mediaIdKey(item.id)));
+  const savedIds = new Set(savedMediaIds.map(mediaIdKey));
+  const excludedIds = new Set([...savedIds, ...recycledIds, ...draftIds]);
+  for (const task of tasks) if (task.asset && task.stage !== 'ready') excludedIds.add(mediaIdKey(task.asset.id));
+  const recoverable = new Map<string, MediaAsset>();
+  for (const asset of quota?.items ?? []) {
+    const key = mediaIdKey(asset.id);
+    if (asset.vehicleId === vehicleId && asset.status !== 'deleted' && !excludedIds.has(key)) recoverable.set(key, asset);
+  }
+  const removedMedia = seenMedia.filter(item => {
+    const key = mediaIdKey(item.id);
+    return !draftIds.has(key) && !recycledIds.includes(key) && !recoverable.has(key);
+  });
+  const localTasks = tasks.filter(task => !task.asset || !recoverable.has(mediaIdKey(task.asset.id)));
+  const completed = localTasks.filter(task => task.stage === 'ready').length;
   return <section className={styles.editor} aria-labelledby="vehicle-media-title">
     <Card title={<Space><CloudUploadOutlined /><Typography.Title level={4} id="vehicle-media-title" style={{ margin: 0 }}>车辆图片</Typography.Title></Space>} extra={<Tag color={value.length ? 'green' : 'default'}>{value.length} / 30 张</Tag>}>
       <Typography.Paragraph type="secondary">先上传清晰的车辆照片，再选封面、调整顺序。完成后保存草稿；重新发布后才会更新线上图片。</Typography.Paragraph>
+      {!listUnavailable && <div className={styles.quota}>
+        <Typography.Text type="secondary">{quota ? `图片名额 ${quota.used} / ${quota.limit}` : uploads.loading ? '正在读取图片名额…' : '图片名额暂不可用'}</Typography.Text>
+        <Button size="small" icon={<ReloadOutlined />} loading={uploads.loading} disabled={locked} onClick={refreshUploads}>重新读取上传任务</Button>
+      </div>}
+      {!listUnavailable && uploads.error && <Alert className={styles.recoveryHint} type="warning" showIcon title="读取待处理上传任务失败" description={uploads.error} />}
       {source.kind !== 'manual' && <div className={styles.uploadFields}>
         <Form.Item label="图片使用依据" htmlFor="media-rights-basis">
           <Select id="media-rights-basis" aria-label="图片使用依据" value={basis} onChange={setBasis} disabled={locked} options={[{ value: 'owned', label: '自有图片' }, { value: 'permission', label: '已获授权' }, ...(external ? [{ value: 'unverified', label: '使用许可待核验（本地资料）' }] : [])]} />
@@ -248,18 +316,19 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
         {recycleSuccess && <Alert showIcon type="success" title={recycleSuccess} />}
         {busy && <Alert showIcon type="info" title="正在处理图片" description="请等待当前处理完成，再保存草稿或进行其它操作。" />}
       </Space>
-      {tasks.length > 0 && <Collapse className={styles.tasksCollapse} defaultActiveKey={['uploads']} items={[{ key: 'uploads', label: `本次上传 · ${completed} / ${tasks.length} 已完成`, children: <ul className={styles.tasks} aria-label="图片上传进度">{tasks.map(task => <li key={task.key}>
-        <div className={styles.taskHeading}><Typography.Text strong ellipsis={{ tooltip: task.file.name }}>{task.file.name}</Typography.Text><Tag color={task.stage === 'ready' ? 'success' : task.stage === 'error' ? 'error' : 'processing'}>{task.stage === 'ready' && !value.some(item => item.id === task.asset?.id) ? '已从当前草稿移除' : stageText[task.stage]}</Tag></div>
+      {localTasks.length > 0 && <Collapse className={styles.tasksCollapse} defaultActiveKey={['uploads']} items={[{ key: 'uploads', label: `本次上传 · ${completed} / ${localTasks.length} 已完成`, children: <ul className={styles.tasks} aria-label="图片上传进度">{localTasks.map(task => <li key={task.key}>
+        <div className={styles.taskHeading}><Typography.Text strong ellipsis={{ tooltip: task.file.name }}>{task.file.name}</Typography.Text><Tag color={task.stage === 'ready' ? 'success' : task.stage === 'error' ? 'error' : 'processing'}>{task.stage === 'ready' && task.asset && !draftIds.has(mediaIdKey(task.asset.id)) ? '已从当前草稿移除' : stageText[task.stage]}</Tag></div>
         <Progress percent={task.stage === 'ready' ? 100 : task.stage === 'complete' ? 85 : task.stage === 'upload' ? 55 : task.stage === 'permit' ? 20 : 0} status={task.stage === 'error' ? 'exception' : task.stage === 'ready' ? 'success' : 'active'} showInfo={false} size="small" />
         {task.error && <Alert type="error" showIcon title={task.error} />}
         <Space wrap>
           {task.stage === 'error' && task.retryable && <Button icon={<ReloadOutlined />} disabled={locked} onClick={() => void runTasks([task])}>确认状态并重试上传</Button>}
-          {task.stage === 'error' && !task.permitUnknown && <Button danger disabled={locked || (Boolean(task.asset) && (value.some(item => item.id === task.asset!.id) || savedMediaIds.includes(task.asset!.id)))} onClick={() => cancelTask(task)}>{task.asset ? '取消并回收上传任务' : '取消上传任务'}</Button>}
+          {task.stage === 'error' && !task.permitUnknown && <Button danger disabled={locked || (task.asset !== undefined && (draftIds.has(mediaIdKey(task.asset.id)) || savedIds.has(mediaIdKey(task.asset.id))))} onClick={() => cancelTask(task)}>{task.asset ? '取消并回收上传任务' : '取消上传任务'}</Button>}
         </Space>
       </li>)}</ul> }]} />}
+      {recoverable.size > 0 && <MediaUploadRecovery items={[...recoverable.values()]} disabled={locked} onRestore={asset => void restore(asset)} onRecycle={id => void recycle(id)} />}
       {value.length === 0 ? <Empty className={styles.empty} image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有车辆图片。上传后选择一张作为封面。" /> : <ol className={styles.gallery}>{value.map((media, index) => <li key={media.id}>
         <Card size="small" className={styles.imageCard} cover={<div className={styles.preview}>
-          {previewErrors[media.id] ? <div className={styles.previewFallback}><Typography.Text type="secondary">预览暂不可用</Typography.Text><Button type="link" icon={<ReloadOutlined />} onClick={() => { setPreviewErrors(current => ({ ...current, [media.id]: false })); setPreviewAttempt(current => current + 1); }}>重新读取预览</Button></div> : <Image key={`${media.id}-${previewAttempt}`} src={`/api/v1/admin/media/${encodeURIComponent(media.id)}/preview`} alt={media.alt || `车辆图片 ${index + 1}`} onError={() => setPreviewErrors(current => ({ ...current, [media.id]: true }))} />}
+          {previewErrors[media.id] ? <div className={styles.previewFallback}><Typography.Text type="secondary">预览暂不可用</Typography.Text><Button type="link" icon={<ReloadOutlined />} onClick={() => { setPreviewErrors(current => ({ ...current, [media.id]: false })); setPreviewAttempt(current => current + 1); }}>重新读取预览</Button></div> : <Image key={`${media.id}-${previewAttempt}`} src={`${mediaPath(media.id)}/preview`} alt={media.alt || `车辆图片 ${index + 1}`} onError={() => setPreviewErrors(current => ({ ...current, [media.id]: true }))} />}
           <div className={styles.imageTags}><Tag>{String(index + 1).padStart(2, '0')}</Tag>{media.isCover && <Tag color="green" icon={<StarFilled />}>封面</Tag>}</div>
         </div>}>
           <Form.Item label={`图片 ${index + 1} 说明`} htmlFor={`media-alt-${media.id}`}>
@@ -276,8 +345,8 @@ export function VehicleMediaEditor({ vehicleId, value, onChange, disabled = fals
         </Card>
       </li>)}</ol>}
       {removedMedia.length > 0 && <Collapse className={styles.removed} items={[{ key: 'removed', label: `已移除图片 · ${removedMedia.length} 张待回收`, children: <section aria-label="已移除图片回收"><Alert type="info" showIcon title="保存移除后可以回收上传名额" description="已发布历史仍使用的图片会受到保护，无法回收。" /><ul className={styles.tasks}>{removedMedia.map((media, index) => <li key={media.id}>
-        <div className={styles.taskHeading}><Typography.Text>{media.alt || `已移除图片 ${index + 1}`}</Typography.Text><Button size="small" icon={<DeleteOutlined />} disabled={locked || savedMediaIds.includes(media.id)} onClick={() => void recycle(media.id)}>回收已移除图片</Button></div>
-        {savedMediaIds.includes(media.id) && <Typography.Text type="secondary">请先保存草稿，使移除生效。</Typography.Text>}
+        <div className={styles.taskHeading}><Typography.Text>{media.alt || `已移除图片 ${index + 1}`}</Typography.Text><Button size="small" icon={<DeleteOutlined />} disabled={locked || savedIds.has(mediaIdKey(media.id))} onClick={() => void recycle(media.id)}>回收已移除图片</Button></div>
+        {savedIds.has(mediaIdKey(media.id)) && <Typography.Text type="secondary">请先保存草稿，使移除生效。</Typography.Text>}
       </li>)}</ul></section> }]} />}
       <Typography.Paragraph className={styles.footerNote} type="secondary"><CheckCircleOutlined /> 发布历史图片受到保护。从草稿移除后，当前线上版本会继续使用原图片，直至再次发布。</Typography.Paragraph>
     </Card>

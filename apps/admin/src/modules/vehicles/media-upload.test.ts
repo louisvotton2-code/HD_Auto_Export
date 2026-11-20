@@ -50,6 +50,20 @@ describe('vehicle media edits and upload recovery', () => {
     expect(api.upload).not.toHaveBeenCalled();
     expect(api.complete).not.toHaveBeenCalled();
   });
+  it('finishes recovered uploaded media without the original file', async () => {
+    const api = transport();
+    vi.mocked(api.get).mockResolvedValue(media('uploaded', 7));
+    const ready = await finishMediaUpload(media('uploaded', 2), null, true, api);
+    expect(ready.status).toBe('ready');
+    expect(api.upload).not.toHaveBeenCalled();
+    expect(api.complete).toHaveBeenCalledWith(media('uploaded', 7));
+  });
+  it('does not attempt to upload or complete a recovered permit without a file', async () => {
+    const api = transport();
+    await expect(finishMediaUpload(media(), null, true, api)).rejects.toThrow('缺少原始文件');
+    expect(api.upload).not.toHaveBeenCalled();
+    expect(api.complete).not.toHaveBeenCalled();
+  });
   it('refuses another vehicle or a terminal media record before writing', async () => {
     const api = transport();
     vi.mocked(api.get).mockResolvedValue({ ...media(), vehicleId: 'other-vehicle' });
