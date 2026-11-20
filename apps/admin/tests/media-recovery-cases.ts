@@ -8,6 +8,16 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR
 const localImage = { name: 'synthetic-recovery.png', mimeType: 'image/png', buffer: png };
 const mediaPath = '/api/v1/admin/media';
 const quotaError = '图片名额已满。每辆车最多 30 张，待处理的上传也占名额。请先回收不需要的上传任务。';
+const failurePrefix = 'hd-admin:media-upload-failure:v1:';
+const uploadRequestId = 'a60490e1-3d54-4f32-8ce6-adf43def8329';
+const rejectedImage = { ...localImage, name: 'fixture-local-only.png' };
+const rawMessage = `Synthetic validation detail for ${rejectedImage.name}`;
+const rawPath = 'fixture-private-validation-path';
+const invalidUpload = {
+  error: { code: 'INVALID_REQUEST', message: rawMessage, retryable: false,
+    fields: [{ path: rawPath, code: 'INVALID_FIELD', message: rawMessage }] },
+  meta: { requestId: uploadRequestId },
+};
 const limit = 30;
 const databaseId = (id: string) => {
   const match = id.toLowerCase().replace(/-/g, '').match(/^([\da-f]{8})([\da-f]{4})([\da-f]{4})([\da-f]{4})([\da-f]{12})$/);
@@ -35,7 +45,8 @@ async function installMediaApi(page: Page, item: AdminVehicle, uploads: MediaAss
   const writes: { method: string; id: string; version: number }[] = [];
   const listingReads: string[][] = [];
   const listPath = `/api/v1/admin/vehicles/${item.id}/media-uploads`;
-  const fixture = { api, records, permits, writes, protectedIds, listingReads, listPath, loseNextPermit: false };
+  const fixture = { api, records, permits, writes, protectedIds, listingReads, listPath, loseNextPermit: false,
+    rejectUploadAt: null as 'permit' | 'content' | null };
   const saved = (id: string) => item.draft.media.some(asset => databaseId(asset.id) === id);
   const activeAssets = () => [...records.values()].filter(asset => !protectedIds.has(asset.id) || saved(asset.id));
 
@@ -52,6 +63,7 @@ async function installMediaApi(page: Page, item: AdminVehicle, uploads: MediaAss
     if (request.method() !== 'POST') return route.fallback();
     const input = MediaUploadRequestSchema.parse(request.postDataJSON());
     permits.push(input);
+    if (fixture.rejectUploadAt === 'permit') return reply(route, invalidUpload, 400);
     if (activeAssets().length >= limit) return reply(route, error('PUBLISH_VALIDATION_FAILED'), 422);
     const asset = media(input.vehicleId, `new-fixture-${permits.length}`, 'pending');
     records.set(asset.id, asset);
@@ -85,6 +97,7 @@ async function installMediaApi(page: Page, item: AdminVehicle, uploads: MediaAss
       return route.fulfill({ status: 204 });
     }
     if (method === 'PUT' && action === 'content' && asset.status === 'pending') {
+      if (fixture.rejectUploadAt === 'content') return reply(route, invalidUpload, 400);
       if (!request.postDataBuffer()?.equals(png)) return reply(route, error('INVALID_REQUEST'), 400);
       const uploaded = media(asset.vehicleId, asset.id, 'uploaded', version + 1);
       records.set(id, uploaded);
@@ -102,9 +115,11 @@ async function installMediaApi(page: Page, item: AdminVehicle, uploads: MediaAss
 }
 
 const quota = (page: Page, used: number) => page.getByText(`图片名额 ${used} / ${limit}`, { exact: true });
+const quotaFull = (page: Page) => page.getByText(quotaError, { exact: true });
 const pendingList = (page: Page) => page.getByLabel('待处理上传任务', { exact: true });
-const chooseImage = (page: Page) => page.locator('input[type=file][accept*="image/png"]').setInputFiles(localImage);
+const chooseImage = (page: Page, file = localImage) => page.locator('input[type=file][accept*="image/png"]').setInputFiles(file);
 const saveDraft = (page: Page) => page.getByRole('button', { name: /保存草稿$/ }).click();
+const lastFailure = (page: Page) => page.getByRole('alert').filter({ hasText: '上次上传失败' });
 
 test('media recovery reclaims a lost upload permit after reload and uploads the file again', async ({ page }) => {
   const item = vehicle();
@@ -126,8 +141,10 @@ test('media recovery reclaims a lost upload permit after reload and uploads the 
   const pending = pendingList(page).getByRole('listitem').filter({ hasText: '待上传文件' });
   await expect(pending.getByRole('button')).toHaveCount(1);
   await expect(quota(page, 30)).toBeVisible();
+  await expect(quotaFull(page)).toBeVisible();
   await pending.getByRole('button', { name: /回收上传任务$/ }).click();
   await expect(quota(page, 29)).toBeVisible();
+  await expect(quotaFull(page)).toHaveCount(0);
   await expect(pending).toHaveCount(0);
   await expect(page.getByRole('img', { name: original[0].alt, exact: true })).toBeVisible();
 
@@ -321,7 +338,8 @@ for (const status of [404, 405]) {
   });
 }
 
-test('media recovery labels an upload permit 422 as exhausted image quota', async ({ page }) => {
+test('media recovery reads current quota after an upload permit 422, reload and expiration', async ({ page }) => {
+  await page.clock.install();
   const item = vehicle();
   const fixture = await installMediaApi(page, item);
   await page.goto(`/admin/vehicles/${item.id}`);
@@ -332,10 +350,230 @@ test('media recovery labels an upload permit 422 as exhausted image quota', asyn
     const asset = media(item.id, `fixture_other_upload_${index}`, 'pending');
     fixture.records.set(asset.id, asset);
   }
+  const rejected = page.waitForResponse(response => response.url().endsWith(`${mediaPath}/uploads`)
+    && response.request().method() === 'POST' && response.status() === 422);
   await chooseImage(page);
+  await rejected;
 
-  await expect(page.getByText(quotaError, { exact: true })).toBeVisible();
+  await expect(quota(page, 30)).toBeVisible();
+  await expect(quotaFull(page)).toBeVisible();
   await expect(page.getByText(/尚未满足发布条件/)).toHaveCount(0);
+
+  await page.reload();
+  await tab(page, '图片管理');
+  await expect(quota(page, 30)).toBeVisible();
+  await expect(quotaFull(page)).toBeVisible();
+
+  // An unavailable read should not stop checking for expiring permits.
+  await page.route(`**${fixture.listPath}`, route => reply(route, error('SERVICE_UNAVAILABLE'), 503), { times: 1 });
+  await page.clock.fastForward(60_000);
+  await expect(page.getByText('读取待处理上传任务失败', { exact: true })).toBeVisible();
+  // The server has collected an expired permit since the last successful read.
+  fixture.records.delete('fixture_other_upload_1');
+  await page.clock.fastForward(60_000);
+  await expect(quota(page, 29)).toBeVisible();
+  await expect(quotaFull(page)).toHaveCount(0);
   expect(fixture.permits).toHaveLength(1);
   expect(fixture.writes).toEqual([]);
+});
+
+for (const scenario of [
+  { step: 'permit', method: 'POST', path: `${mediaPath}/uploads`, quotaUsed: 1,
+    reason: 'permitRejected', text: '上传许可申请未通过校验' },
+  { step: 'content', method: 'PUT', path: `${mediaPath}/new-fixture-1/content`, quotaUsed: 2,
+    reason: 'contentRejected', text: '发送图片时未通过校验' },
+] as const) {
+  test(`media recovery keeps a safe reference across reload after upload ${scenario.method} 400`, async ({ page }) => {
+    const item = vehicle();
+    const original = structuredClone(item.draft.media);
+    const fixture = await installMediaApi(page, item);
+    fixture.rejectUploadAt = scenario.step;
+    await page.goto(`/admin/vehicles/${item.id}`);
+    await tab(page, '图片管理');
+    await expect(quota(page, 1)).toBeVisible();
+    const rejected = page.waitForResponse(response => response.url().endsWith(scenario.path)
+      && response.request().method() === scenario.method && response.status() === 400);
+    await chooseImage(page, rejectedImage);
+    await rejected;
+    await expect(page.getByText('上传未完成', { exact: true })).toBeVisible();
+
+    await page.reload();
+    await tab(page, '图片管理');
+    await expect(quota(page, scenario.quotaUsed)).toBeVisible();
+    const history = lastFailure(page);
+    await expect(history).toContainText(scenario.text);
+    await expect(history).toContainText('参考编号');
+    await expect(history).toContainText(uploadRequestId);
+    const privateDetails = [rawMessage, rawPath, rejectedImage.name, png.toString('base64')];
+    const stored = await page.evaluate(prefix => Object.entries(sessionStorage).filter(([key]) => key.startsWith(prefix)), failurePrefix);
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0][1])).toEqual({ reason: scenario.reason, reference: uploadRequestId });
+    for (const detail of privateDetails) {
+      expect(JSON.stringify(stored)).not.toContain(detail);
+      await expect(page.getByText(detail, { exact: false })).toHaveCount(0);
+    }
+    await expect(page.getByRole('img', { name: original[0].alt, exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: /图片 \d+ 说明/ })).toHaveCount(1);
+    expect(item.draft.media).toEqual(original);
+    expect(fixture.api.saves).toEqual([]);
+    expect(fixture.permits).toHaveLength(1);
+    expect(fixture.writes).toEqual(scenario.step === 'content' ? [{ method: 'PUT', id: 'new-fixture-1', version: 1 }] : []);
+
+    if (scenario.step === 'content') {
+      await expect(pendingList(page).getByText('待上传文件', { exact: true })).toBeVisible();
+      fixture.rejectUploadAt = null;
+      await chooseImage(page);
+      await expect(page.getByText('上传完成，已加入当前草稿', { exact: true })).toBeVisible();
+      return;
+    }
+
+    await expect(pendingList(page)).toHaveCount(0);
+    const otherVehicle = { ...vehicle(), id: 'fixture_other_vehicle', stockCode: 'FIXTURE-OTHER' };
+    otherVehicle.draft.facts.model!.name = 'Other sample vehicle';
+    fixture.api.items.push(otherVehicle);
+    await page.route(`**/api/v1/admin/vehicles/${otherVehicle.id}/media-uploads`, route => reply(route, envelope({ items: [], used: 1, limit })));
+    await page.getByRole('button', { name: /返回车辆列表$/ }).click();
+    await page.getByRole('link', { name: 'Example Other sample vehicle', exact: true }).click();
+    await tab(page, '图片管理');
+    await expect(quota(page, 1)).toBeVisible();
+    await expect(history).toHaveCount(0);
+
+    await page.getByRole('button', { name: /返回车辆列表$/ }).click();
+    await page.getByRole('link', { name: 'Example Sample vehicle', exact: true }).click();
+    await tab(page, '图片管理');
+    await expect(history).toContainText(uploadRequestId);
+    const staffId = fixture.api.me.id;
+    fixture.api.me.id = 'fixture_other_staff';
+    await page.reload();
+    await tab(page, '图片管理');
+    await expect(quota(page, 1)).toBeVisible();
+    await expect(history).toHaveCount(0);
+
+    fixture.api.me.id = staffId;
+    await page.reload();
+    await tab(page, '图片管理');
+    await expect(history).toContainText(uploadRequestId);
+
+    await page.getByRole('button', { name: /返回车辆列表$/ }).click();
+    fixture.api.me.id = 'fixture_other_staff';
+    await page.getByRole('link', { name: 'Example Sample vehicle', exact: true }).click();
+    await tab(page, '图片管理');
+    await expect(page.getByRole('dialog')).toContainText('登录已失效');
+    await expect(history).toHaveCount(0);
+    fixture.api.me.id = staffId;
+    await page.reload();
+    await tab(page, '图片管理');
+    await expect(history).toContainText(uploadRequestId);
+
+    const [popup] = await Promise.all([
+      page.waitForEvent('popup'),
+      page.evaluate(() => { window.open('about:blank'); }),
+    ]);
+    const tabEntry = await page.evaluate(() => ['hd-admin:media-upload-feedback-tab:v1', sessionStorage.getItem('hd-admin:media-upload-feedback-tab:v1')!] as const);
+    expect(tabEntry[1]).toBeTruthy();
+    const duplicatedTabs = [];
+    for (const navigation of ['back_forward', 'reload']) {
+      const duplicated = await page.context().newPage();
+      await duplicated.addInitScript(({ entries, navigation }) => {
+        for (const [key, value] of entries) sessionStorage.setItem(key, value);
+        const getEntries = performance.getEntriesByType.bind(performance);
+        performance.getEntriesByType = type => type === 'navigation'
+          ? [{ type: navigation } as PerformanceNavigationTiming] : getEntries(type);
+      }, { entries: [...stored, tabEntry], navigation });
+      duplicatedTabs.push(duplicated);
+    }
+    for (const otherTab of [popup, await page.context().newPage(), ...duplicatedTabs]) {
+      try {
+        const otherFixture = await installMediaApi(otherTab, structuredClone(item));
+        await otherTab.goto(`/admin/vehicles/${item.id}`);
+        await tab(otherTab, '图片管理');
+        await expect(quota(otherTab, 1)).toBeVisible();
+        await expect(lastFailure(otherTab)).toHaveCount(0);
+        expect(otherFixture.permits).toEqual([]);
+        expect(otherFixture.writes).toEqual([]);
+      } finally { await otherTab.close(); }
+    }
+
+    await expect(history).toContainText(uploadRequestId);
+    await history.getByRole('button', { name: '关闭上次上传提示', exact: true }).click();
+    await expect(history).toHaveCount(0);
+    await page.reload();
+    await tab(page, '图片管理');
+    await expect(quota(page, 1)).toBeVisible();
+    await expect(history).toHaveCount(0);
+    expect(fixture.permits).toHaveLength(1);
+    expect(fixture.writes).toEqual([]);
+  });
+}
+
+test('media recovery does not count a rejected permit as a slot on an older API', async ({ page }) => {
+  const item = vehicle();
+  item.draft.media.push(...Array.from({ length: 28 }, (_, index) => ({
+    id: `fixture_saved_${index}`, alt: `合成已保存图 ${index + 2}`, sortOrder: index + 1, isCover: false,
+  })));
+  const fixture = await installMediaApi(page, item);
+  fixture.rejectUploadAt = 'permit';
+  await page.route(`**${fixture.listPath}`, route => reply(route, error('NOT_FOUND'), 404));
+  await page.goto(`/admin/vehicles/${item.id}`);
+  await tab(page, '图片管理');
+  await expect(page.getByText('图片名额暂不可用', { exact: true })).toHaveCount(0);
+  await chooseImage(page);
+  await expect(page.getByText(/上传许可申请未通过校验/)).toBeVisible();
+  expect(fixture.permits).toHaveLength(1);
+  expect(fixture.writes).toEqual([]);
+
+  fixture.rejectUploadAt = null;
+  await chooseImage(page);
+  await expect(page.getByText('上传完成，已加入当前草稿', { exact: true })).toBeVisible();
+  await expect(quotaFull(page)).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: /图片 \d+ 说明/ })).toHaveCount(30);
+  expect(fixture.permits).toHaveLength(2);
+});
+
+test('media recovery discards the failure reference when the shared login changed before the editor updated', async ({ page }) => {
+  const item = vehicle();
+  const fixture = await installMediaApi(page, item);
+  fixture.rejectUploadAt = 'permit';
+  await page.goto(`/admin/vehicles/${item.id}`);
+  await tab(page, '图片管理');
+  await expect(quota(page, 1)).toBeVisible();
+  const originalStaffId = fixture.api.me.id;
+  // A different tab can replace the active session cookie without changing this tab's editor state.
+  fixture.api.me.id = 'fixture_staff_in_another_tab';
+  await chooseImage(page);
+  await expect(page.getByRole('dialog')).toContainText('登录已失效');
+  const stored = await page.evaluate(prefix => Object.keys(sessionStorage).filter(key => key.startsWith(prefix)), failurePrefix);
+  expect(stored).toEqual([]);
+  expect(fixture.permits).toHaveLength(1);
+  expect(fixture.writes).toEqual([]);
+
+  fixture.api.me.id = originalStaffId;
+  await page.reload();
+  await tab(page, '图片管理');
+  await expect(quota(page, 1)).toBeVisible();
+  await expect(lastFailure(page)).toHaveCount(0);
+});
+
+test('media recovery keeps a known permit recoverable after the same employee signs in again on an older API', async ({ page }) => {
+  const item = vehicle();
+  const fixture = await installMediaApi(page, item);
+  fixture.rejectUploadAt = 'content';
+  await page.route(`**${fixture.listPath}`, route => reply(route, error('NOT_FOUND'), 404));
+  await page.goto(`/admin/vehicles/${item.id}`);
+  await tab(page, '图片管理');
+  await page.route('**/api/v1/admin/me', route => reply(route, error('UNAUTHENTICATED'), 401), { times: 1 });
+  await chooseImage(page);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('登录已失效');
+  await dialog.getByLabel('账号或工作邮箱').fill('fixture-editor');
+  await dialog.getByLabel('密码', { exact: true }).fill('synthetic-fixture-password');
+  await dialog.getByRole('button', { name: /登录工作台$/ }).click();
+  await expect(dialog).toHaveCount(0);
+  const uploads = page.getByLabel('图片上传进度', { exact: true });
+  await expect(uploads.getByRole('button', { name: /确认状态并重试上传$/ })).toBeEnabled();
+  await uploads.getByRole('button', { name: '取消并回收上传任务', exact: true }).click();
+  await expect(uploads).toHaveCount(0);
+  expect(fixture.permits).toHaveLength(1);
+  expect(fixture.writes).toEqual([{ method: 'PUT', id: 'new-fixture-1', version: 1 }, { method: 'DELETE', id: 'new-fixture-1', version: 1 }]);
+  await expect(page.getByRole('img', { name: item.draft.media[0]!.alt, exact: true })).toBeVisible();
 });

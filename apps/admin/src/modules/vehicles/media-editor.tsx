@@ -2,13 +2,15 @@ import { UtcDateTimeField } from '../../shared/ui/utc-date-time-field';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Card, Collapse, Empty, Form, Image, Input, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CheckCircleOutlined, CloudUploadOutlined, DeleteOutlined, ReloadOutlined, StarFilled, StarOutlined } from '@ant-design/icons';
+import { useOutletContext } from 'react-router-dom';
 import {
   MediaAssetResponseSchema, MediaUploadResponseSchema,
-  type DraftMedia, type MediaAsset, type MediaRights, type MediaContentType, type VehicleDraftSource,
+  type DraftMedia, type MediaAsset, type MediaRights, type MediaContentType, type VehicleDraftSource, type StaffMe,
 } from '@hd/contracts/admin';
 import { ApiClientError, request } from '../../shared/api/client';
 import { usePrivateResource } from '../../shared/api/use-private-resource';
 import { appendReadyMedia, finishMediaUpload, MAX_MEDIA_COUNT, mediaIdKey, mediaQuotaMessage, normalizeMedia, recycleMediaAsset, validateMediaFile, type MediaTransport } from './media-upload';
+import { confirmUploadFailureOwner, describeUploadFailure, readUploadFailure, saveUploadFailure, uploadFailureKey, uploadFailureReasons, type UploadFailureNotice, type UploadStep } from './media-upload-feedback';
 import { MediaUploadRecovery, recoverableUploadsResponse } from './media-upload-recovery';
 import styles from './media-editor.module.css';
 import { uploadRightsForFiles } from './media-source';
@@ -26,6 +28,7 @@ type UploadTask = {
 type Props = {
   vehicleId: string;
   draftVersion: number;
+  activeTab: boolean;
   value: DraftMedia[];
   onChange: (media: DraftMedia[]) => void;
   disabled?: boolean;
@@ -37,9 +40,12 @@ type Props = {
 const stageText = { waiting: '等待上传', permit: '正在准备上传', upload: '正在上传并核验图片', complete: '正在确认图片处理结果', ready: '上传完成，已加入当前草稿', error: '上传未完成' };
 
 const mediaPath = (id: string) => `/api/v1/admin/media/${encodeURIComponent(mediaIdKey(id))}`;
+const formatFailureNotice = ({ reason, reference }: UploadFailureNotice) => `${uploadFailureReasons[reason]}${reference ? `（参考编号：${reference}）` : ''}`;
 
-export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
+export function VehicleMediaEditor({ vehicleId, draftVersion, activeTab, value, onChange, disabled = false, onBusyChange, savedMediaIds = [], source = { kind: 'manual' } }: Props) {
   const { message } = App.useApp();
+  const staff = useOutletContext<StaffMe>();
+  const failureKey = uploadFailureKey(staff.id, vehicleId);
   const external = source.kind === 'external';
   const [basis, setBasis] = useState<MediaRights['basis']>(external ? 'unverified' : 'owned');
   const [imageUrls, setImageUrls] = useState('');
@@ -48,6 +54,9 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [quotaRejected, setQuotaRejected] = useState(false);
+  const [checkExpiringPermits, setCheckExpiringPermits] = useState(false);
+  const [previousFailure, setPreviousFailure] = useState<{ key: string; notice: UploadFailureNotice } | null>(null);
   const [batchNotice, setBatchNotice] = useState('');
   const [previewErrors, setPreviewErrors] = useState<Record<string, boolean>>({});
   const [previewAttempt, setPreviewAttempt] = useState(0);
@@ -58,6 +67,8 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
   const uploads = usePrivateResource(`/api/v1/admin/vehicles/${encodeURIComponent(vehicleId)}/media-uploads`, recoverableUploadsResponse,
     `${draftVersion}:${uploadRevision}`, 12_000);
   const quota = uploads.data?.data;
+  const quotaFull = quota !== undefined && quota.used >= quota.limit;
+  const pendingPermits = quota?.items.some(asset => asset.status === 'pending') ?? false;
   const listUnavailable = uploads.errorStatus === 404 || uploads.errorStatus === 405;
   const mounted = useRef(true);
   const active = useRef(false);
@@ -66,6 +77,7 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
   const changed = useRef(onChange);
   const busyChanged = useRef(onBusyChange);
   const controller = useRef<AbortController | null>(null);
+  const previousFailureRead = useRef<AbortController | null>(null);
   currentMedia.current = value;
   persistedMedia.current = savedMediaIds;
   changed.current = onChange;
@@ -73,7 +85,7 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; controller.current?.abort(); busyChanged.current?.(false); };
+    return () => { mounted.current = false; controller.current?.abort(); previousFailureRead.current?.abort(); busyChanged.current?.(false); };
   }, []);
   useEffect(() => {
     setSeenMedia(previous => {
@@ -82,6 +94,49 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
       return [...seenById.values()];
     });
   }, [value]);
+  useEffect(() => {
+    setPreviousFailure(null);
+    if (!activeTab) return;
+    function hideHistory() {
+      previousFailureRead.current?.abort();
+      setPreviousFailure(null);
+    }
+    async function verifyHistory() {
+      hideHistory();
+      if (document.visibilityState !== 'visible' || active.current) return;
+      const aborter = new AbortController();
+      previousFailureRead.current = aborter;
+      const notice = await readUploadFailure(failureKey);
+      if (!notice || aborter.signal.aborted) return;
+      const owner = await confirmUploadFailureOwner(staff.id, aborter.signal);
+      if (aborter.signal.aborted) return;
+      if (owner === 'same') setPreviousFailure({ key: failureKey, notice });
+      else if (owner === 'changed') window.dispatchEvent(new Event('admin:unauthorized'));
+    }
+    void verifyHistory();
+    document.addEventListener('visibilitychange', verifyHistory);
+    window.addEventListener('admin:unauthorized', hideHistory);
+    return () => {
+      previousFailureRead.current?.abort();
+      document.removeEventListener('visibilitychange', verifyHistory);
+      window.removeEventListener('admin:unauthorized', hideHistory);
+    };
+  }, [activeTab, failureKey, staff.id]);
+  useEffect(() => {
+    if (quota) {
+      setQuotaRejected(false);
+      setCheckExpiringPermits(quotaFull && pendingPermits);
+    } else if (listUnavailable || uploads.errorStatus === 401 || uploads.errorStatus === 403) {
+      setCheckExpiringPermits(false);
+    }
+  }, [quota, quotaFull, pendingPermits, listUnavailable, uploads.errorStatus]);
+  useEffect(() => {
+    if (!activeTab || busy || disabled || !checkExpiringPermits) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setUploadRevision(current => current + 1);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, busy, disabled, checkExpiringPermits]);
 
   function updateTask(key: string, patch: Partial<UploadTask>) {
     if (mounted.current) setTasks(current => current.map(task => task.key === key ? { ...task, ...patch } : task));
@@ -94,12 +149,30 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
     setUploadRevision(current => current + 1);
     uploads.resume();
   }
+  function rememberUploadFailure(notice: UploadFailureNotice | null) {
+    previousFailureRead.current?.abort();
+    setPreviousFailure(null);
+    return saveUploadFailure(failureKey, notice);
+  }
+  async function clearUploadFailureForCurrentStaff(signal: AbortSignal) {
+    if (!await readUploadFailure(failureKey) || signal.aborted) return;
+    const owner = await confirmUploadFailureOwner(staff.id, signal);
+    if (signal.aborted) return;
+    if (owner === 'same') await rememberUploadFailure(null);
+    else if (owner === 'changed') window.dispatchEvent(new Event('admin:unauthorized'));
+  }
+  function dismissUploadFailure() {
+    previousFailureRead.current?.abort();
+    const aborter = new AbortController();
+    previousFailureRead.current = aborter;
+    void clearUploadFailureForCurrentStaff(aborter.signal);
+  }
   function startOperation() {
     if (active.current || disabled) return null;
     const aborter = new AbortController();
     controller.current = aborter;
     active.current = true;
-    setBusy(true); busyChanged.current?.(true); setError(''); setRecycleSuccess('');
+    setBusy(true); busyChanged.current?.(true); setError(''); setRecycleSuccess(''); setQuotaRejected(false);
     return aborter;
   }
   function finishOperation(aborter: AbortController) {
@@ -108,17 +181,17 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
     setBusy(false); busyChanged.current?.(false);
     if (!aborter.signal.aborted) setUploadRevision(current => current + 1);
   }
-  function mediaTransport(signal: AbortSignal, taskKey?: string): MediaTransport {
+  function mediaTransport(signal: AbortSignal, onStep?: (step: 'upload' | 'complete') => void): MediaTransport {
     return {
       get: async id => (await request(mediaPath(id), MediaAssetResponseSchema, { signal })).data,
       upload: async (asset, file, contentType: MediaContentType) => {
-        if (taskKey) updateTask(taskKey, { stage: 'upload' });
+        onStep?.('upload');
         return (await request(`${mediaPath(asset.id)}/content`, MediaAssetResponseSchema, {
           method: 'PUT', signal, body: file, headers: { 'Content-Type': contentType, 'If-Match': String(asset.version) },
         })).data;
       },
       complete: async asset => {
-        if (taskKey) updateTask(taskKey, { stage: 'complete' });
+        onStep?.('complete');
         return (await request(`${mediaPath(asset.id)}/complete`, MediaAssetResponseSchema, {
           method: 'POST', signal, body: JSON.stringify({ version: asset.version }),
         })).data;
@@ -127,6 +200,7 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
   }
   async function runTask(task: UploadTask, signal: AbortSignal) {
     let asset = task.asset;
+    let step: UploadStep = !asset ? 'permit' : asset.status === 'pending' ? 'upload' : 'complete';
     try {
       updateTask(task.key, { error: undefined, stage: asset ? 'complete' : 'permit' });
       if (!asset) {
@@ -138,7 +212,10 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
         asset = permit.data.media;
         updateTask(task.key, { asset });
       }
-      const final = await finishMediaUpload(asset, task.file, Boolean(task.asset), mediaTransport(signal, task.key),
+      const final = await finishMediaUpload(asset, task.file, Boolean(task.asset), mediaTransport(signal, next => {
+        step = next;
+        updateTask(task.key, { stage: next });
+      }),
         next => { asset = next; updateTask(task.key, { asset: next }); });
       if (!mounted.current || signal.aborted) return;
       updateMedia(appendReadyMedia(currentMedia.current, final));
@@ -149,13 +226,29 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
       // Upload permits have no idempotency key. A lost create response must not reserve another slot blindly.
       const definiteRejection = failure instanceof ApiClientError && [400, 401, 403, 404, 413, 422, 429].includes(failure.status);
       const unknownPermit = !asset && !definiteRejection;
-      const quotaFull = !asset && failure instanceof ApiClientError && failure.status === 422 && failure.code === 'PUBLISH_VALIDATION_FAILED';
+      const rejectedForQuota = !asset && failure instanceof ApiClientError && failure.status === 422 && failure.code === 'PUBLISH_VALIDATION_FAILED';
       const terminalAsset = asset?.status === 'failed' || asset?.status === 'deleted';
+      const notice = rejectedForQuota ? null : describeUploadFailure(failure, step);
+      // Another tab can replace the shared login cookie while the editor still shows the old identity.
+      const owner = failure instanceof ApiClientError && failure.status === 401 ? 'changed'
+        : notice ? await confirmUploadFailureOwner(staff.id, signal) : 'same';
+      if (!mounted.current || signal.aborted) return;
+      if (owner === 'changed') {
+        updateTask(task.key, { asset, stage: 'error', error: '登录已变更或失效，请重新登录后核对上传状态。',
+          retryable: !!asset && !terminalAsset, permitUnknown: !asset });
+        setTasks(current => current.filter(item => item.stage !== 'waiting'));
+        controller.current?.abort();
+        window.dispatchEvent(new Event('admin:unauthorized'));
+        return false;
+      }
       const message = unknownPermit
         ? '未能确认上传许可是否已经创建。请勿重复选择这张图片，先核对待处理上传任务。列表无法读取时请联系维护人员。'
-        : quotaFull ? '释放图片名额后，可重试这张图片。'
+        : rejectedForQuota ? '申请许可时图片名额已满。请按最新名额核对后重试。'
+        : owner === 'unavailable' && notice ? uploadFailureReasons[notice.reason]
+        : failure instanceof ApiClientError && failure.status === 400 && notice ? formatFailureNotice(notice)
         : failure instanceof Error ? failure.message : '图片上传未完成，请稍后重试。';
-      if (quotaFull) setError(mediaQuotaMessage);
+      if (rejectedForQuota) setQuotaRejected(true);
+      else if (notice && owner === 'same') await rememberUploadFailure(notice);
       updateTask(task.key, { asset, stage: 'error', error: message, retryable: !unknownPermit && !terminalAsset, permitUnknown: unknownPermit });
       return false;
     }
@@ -215,6 +308,8 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
   async function runTasks(selected: UploadTask[]) {
     const aborter = startOperation();
     if (!aborter) return;
+    previousFailureRead.current?.abort();
+    setPreviousFailure(null);
     let completed = 0;
     try {
       for (const task of selected) {
@@ -225,7 +320,7 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
         const failed = selected.length - completed;
         const summary = failed ? `本次完成${completed}张，${failed}张未完成，请查看上传进度核对并重试。` : `${completed}张图片已上传，请保存草稿；发布后才会更新公开图片。`;
         setBatchNotice(summary);
-        if (!failed) void message.success(summary);
+        if (!failed) { await clearUploadFailureForCurrentStaff(aborter.signal); void message.success(summary); }
         else if (completed) void message.warning(summary);
         else void message.error(summary);
       }
@@ -235,11 +330,16 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
     if (!files.length || active.current || disabled) return;
     setError('');
     setBatchNotice('');
-    if (source.kind !== 'manual' && !note.trim()) { setError('请先填写图片来源或授权依据。'); return; }
-    const outstanding = tasks.filter(task => task.stage !== 'ready' && (!task.asset || !draftIds.has(mediaIdKey(task.asset.id)))).length;
+    if (source.kind !== 'manual' && !note.trim()) {
+      setError('请先填写图片来源或授权依据。'); return;
+    }
+    const outstanding = tasks.filter(task => task.stage !== 'ready' && task.asset && task.asset.status !== 'deleted'
+      && !draftIds.has(mediaIdKey(task.asset.id))).length;
     const used = quota?.used ?? value.length + outstanding;
     if (Math.max(value.length, used) + files.length > MAX_MEDIA_COUNT) {
-      setError(used >= MAX_MEDIA_COUNT ? mediaQuotaMessage : '本次选择超过剩余图片名额，请减少图片数量或回收不需要的任务。');
+      if (!quotaFull) {
+        setError('本次选择超过剩余图片名额，请减少图片数量或回收不需要的任务。');
+      }
       if (quota) refreshUploads();
       return;
     }
@@ -251,7 +351,10 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
     try {
       if (source.kind !== 'manual') rights = uploadRightsForFiles(source, files.length, basis, note, imageUrls, collectedAt);
     }
-    catch (failure) { setError(failure instanceof Error ? failure.message : '请检查每张图片的来源资料。'); return; }
+    catch (failure) {
+      setError(failure instanceof Error ? failure.message : '请检查每张图片的来源资料。');
+      return;
+    }
     const selected: UploadTask[] = files.map((file, index) => ({ key: crypto.randomUUID(), file, ...(rights[index] ? { rights: rights[index] } : {}), stage: 'waiting', retryable: false }));
     setTasks(current => [...current, ...selected]);
     if (external) setImageUrls('');
@@ -286,6 +389,17 @@ export function VehicleMediaEditor({ vehicleId, draftVersion, value, onChange, d
         <Button size="small" icon={<ReloadOutlined />} loading={uploads.loading} disabled={locked} onClick={refreshUploads}>重新读取上传任务</Button>
       </div>}
       {!listUnavailable && uploads.error && <Alert className={styles.recoveryHint} type="warning" showIcon title="读取待处理上传任务失败" description={uploads.error} />}
+      {quotaFull && <Alert className={styles.recoveryHint} type="warning" showIcon title={mediaQuotaMessage}
+        description={pendingPermits ? '未上传的许可过期后会释放名额。也可点击「重新读取上传任务」核对。'
+          : quota && !quota.items.length ? '若名额被草稿图片占用，请先移除不需要的图片并保存草稿，再回收。' : undefined} />}
+      {!quota && quotaRejected && <Alert className={styles.recoveryHint} type="warning" showIcon
+        title="本次申请上传许可时图片名额已满" description="请核对当前名额并回收不需要的任务。" />}
+      {previousFailure?.key === failureKey && <Alert className={styles.recoveryHint} type="info" showIcon title="上次上传失败"
+        description={<div className={styles.failureDetails}>
+          <span>{formatFailureNotice(previousFailure.notice)}</span>
+          <Typography.Text type="secondary">此为上次记录，请以当前任务和名额为准。</Typography.Text>
+          <Button type="link" size="small" onClick={dismissUploadFailure}>关闭上次上传提示</Button>
+        </div>} />}
       {source.kind !== 'manual' && <div className={styles.uploadFields}>
         <Form.Item label="图片使用依据" htmlFor="media-rights-basis">
           <Select id="media-rights-basis" aria-label="图片使用依据" value={basis} onChange={setBasis} disabled={locked} options={[{ value: 'owned', label: '自有图片' }, { value: 'permission', label: '已获授权' }, ...(external ? [{ value: 'unverified', label: '使用许可待核验（本地资料）' }] : [])]} />

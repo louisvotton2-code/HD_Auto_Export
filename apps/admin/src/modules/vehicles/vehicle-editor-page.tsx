@@ -483,7 +483,7 @@ export function VehicleEditorPage() {
   </div>;
   const images = <div data-editor-section="images" tabIndex={-1}>
     {externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}
-    {record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} draftVersion={record.version}
+    {record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} draftVersion={record.version} activeTab={activeTab === 'images'}
       value={extras.media} savedMediaIds={base.media.map(media => media.id)}
       onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }}
       onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || importLocked || conflict || externalSourceChanged} />

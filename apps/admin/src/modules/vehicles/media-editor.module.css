@@ -4,6 +4,8 @@
 .note { min-width: 0; }
 .quota { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
 .recoveryHint { margin-bottom: 12px; }
+.failureDetails { display: grid; gap: 6px; overflow-wrap: anywhere; }
+.failureDetails button { justify-self: start; padding-inline: 0; }
 .recoveryList { max-height: min(50vh, 420px); overflow-y: auto; padding: 2px 8px 2px 2px; }
 .externalSources { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 18px; }
 .externalSources :global(.ant-form-item) { min-width: 0; margin-bottom: 0; }
