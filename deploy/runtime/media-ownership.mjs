@@ -3,8 +3,8 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const temporary=new RegExp(`^\\.${uuid}\\.${uuid}(?:\\.thumb)?\\.tmp$`);
-const formal=new RegExp(`^${uuid}(?:\\.thumb)?\\.webp$`);
+const temporary=new RegExp(`^\\.${uuid}\\.${uuid}(?:\\.(?:thumb|card))?\\.tmp$`);
+const formal=new RegExp(`^${uuid}(?:\\.(?:thumb|card))?\\.webp$`);
 // Concurrent uploads own temporary files; never open/chown them. Formal files
 // are checked through an O_NOFOLLOW descriptor, so a path replacement cannot
 // turn the ownership adjustment into a write outside the media directory.
