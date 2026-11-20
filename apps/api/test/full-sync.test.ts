@@ -113,6 +113,69 @@ test('formal full synchronization has durable independent receipt/application an
     await database.pool.query(`UPDATE external_full_work SET attempts=0 WHERE source='che168' AND external_id='123' AND kind='detail'`);
    }
   });
+  await t.test('daily export cadence skips elapsed slots and leaves a minimum gap after completion',async()=>{
+   const before=await worker!.state();
+   const detail=(await database.pool.query("SELECT due_at FROM external_full_work WHERE source='che168' AND external_id='123' AND kind='detail'")).rows[0]!;
+   const member=(await database.pool.query("SELECT last_snapshot FROM external_full_members WHERE source='che168' AND external_id='123'")).rows[0]!;
+   try{
+    await database.pool.query("UPDATE external_full_work SET due_at='infinity' WHERE source='che168' AND external_id='123' AND kind='detail'");
+    for(const fixture of [
+     {mode:'continuous',age:'6 hours',offset:'24 hours',anchor:'start'},
+     {mode:'continuous',age:'60 hours',offset:'72 hours',anchor:'start'},
+     {mode:'continuous',age:'23 hours 58 minutes',offset:'5 minutes',anchor:'completion'},
+     {mode:'full',age:'6 hours',offset:'24 hours',anchor:'completion'},
+    ]){
+     const id=randomUUID();
+     try{
+      await database.pool.query('UPDATE external_full_sync SET mode=$1 WHERE id=1',[fixture.mode]);
+      await database.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,created_at)
+       VALUES($1,$2,'verified',$3,1,1,now()-$4::interval)`,[id,at,path.join(directory,`${id}.csv.gz`),fixture.age]);
+      await database.pool.query("INSERT INTO external_full_stage VALUES($1,1,'che168','123','{}')",[id]);
+      assert.equal(await worker!.promoteSnapshot(id),1);
+      const row=(await database.pool.query(`SELECT s.state,
+       abs(extract(epoch FROM(f.next_snapshot_at-(CASE WHEN $2='start' THEN s.created_at ELSE s.completed_at END+$3::interval))))<1 AS scheduled
+       FROM external_full_snapshots s CROSS JOIN external_full_sync f WHERE s.id=$1 AND f.id=1`,[id,fixture.anchor,fixture.offset])).rows[0];
+      assert.deepEqual(row,{state:'complete',scheduled:true},`${fixture.mode} export started ${fixture.age} ago`);
+     }finally{
+      await database.pool.query('DELETE FROM external_full_stage WHERE snapshot_id=$1',[id]);
+      await database.pool.query('DELETE FROM external_full_snapshots WHERE id=$1',[id]);
+     }
+    }
+   }finally{
+    await database.pool.query('UPDATE external_full_sync SET mode=$1,next_snapshot_at=$2 WHERE id=1',[before.mode,before.next_snapshot_at]);
+    await database.pool.query("UPDATE external_full_work SET due_at=$1 WHERE source='che168' AND external_id='123' AND kind='detail'",[detail.due_at]);
+    await database.pool.query("UPDATE external_full_members SET last_snapshot=$1 WHERE source='che168' AND external_id='123'",[member.last_snapshot]);
+   }
+  });
+  await t.test('rotation treats observations in the complete and active exports as present',async()=>{
+   const complete=randomUUID(),active=randomUUID(),ids=['800001','800002','800003','800004'];
+   try{
+    await database.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,created_at,completed_at) VALUES
+     ($1,$3,'complete',$4,now()-interval '1 day',now()-interval '1 day'),($2,$3,'verified',$5,now(),NULL)`,
+     [complete,active,at,path.join(directory,`${complete}.csv.gz`),path.join(directory,`${active}.csv.gz`)]);
+    await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,last_snapshot,last_detail_at,desired_generation)
+     VALUES ('che168',$1,$1,'active',$5,now(),7),('che168',$2,$2,'active',$6,now(),7),
+      ('che168',$3,$3,'active',NULL,now(),7),('che168',$4,$4,'active',$6,now()-interval '8 days',7)`,[...ids,complete,active]);
+
+    assert.equal(await worker!.rotate(),2);
+    await database.pool.query("UPDATE external_full_snapshots SET state='applying' WHERE id=$1",[active]);
+    assert.equal(await worker!.rotate(),0);
+    const rows=(await database.pool.query(`SELECT m.desired_generation::text,m.verification_pending,w.generation::text AS queued
+     FROM external_full_members m LEFT JOIN external_full_work w ON w.source=m.source AND w.external_id=m.external_id AND w.kind='detail'
+     WHERE m.source='che168' AND m.external_id=ANY($1::text[]) ORDER BY m.external_id`,[ids])).rows;
+    assert.deepEqual(rows,[{desired_generation:'7',verification_pending:false,queued:null},
+     {desired_generation:'7',verification_pending:false,queued:null},{desired_generation:'8',verification_pending:true,queued:'8'},
+     {desired_generation:'8',verification_pending:false,queued:'8'}]);
+   }finally{
+    await database.transaction(async tx=>{
+     await tx.query("DELETE FROM external_full_work WHERE source='che168' AND external_id=ANY($1::text[])",[ids]);
+     await tx.query("DELETE FROM external_full_members WHERE source='che168' AND external_id=ANY($1::text[])",[ids]);
+     await tx.query(`WITH removed AS (DELETE FROM external_formal_admissions WHERE source='che168' AND external_id=ANY($1::text[]) RETURNING 1)
+      UPDATE external_formal_admission_state SET admitted_count=admitted_count-(SELECT count(*) FROM removed) WHERE id=1`,[ids]);
+     await tx.query('DELETE FROM external_full_snapshots WHERE id=ANY($1::uuid[])',[[complete,active]]);
+    });
+   }
+  });
   await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async()=>{
    const snapshotId=randomUUID(),archivePath=path.join(directory,`${snapshotId}.csv.gz`),archive=Buffer.alloc(8192,1);
    await writeFile(archivePath,archive);
