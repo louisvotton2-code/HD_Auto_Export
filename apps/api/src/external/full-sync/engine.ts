@@ -307,7 +307,9 @@ export class FullSyncWorker{
    if(atLimit&&rows.length<100)last=snap.rows;
    const complete=BigInt(last)>=BigInt(snap.rows);
    await tx.query("UPDATE external_full_snapshots SET state=$2,apply_cursor=$3,completed_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1",[id,complete?'complete':'applying',last,complete]);
-   if(complete)await tx.query("UPDATE external_full_sync SET next_snapshot_at=now()+interval '1 day' WHERE id=1");
+   if(complete)await tx.query(`UPDATE external_full_sync SET next_snapshot_at=CASE WHEN mode='continuous' THEN
+    greatest(date_bin(interval '24 hours',statement_timestamp(),$1::timestamptz)+interval '24 hours',
+     statement_timestamp()+interval '5 minutes') ELSE now()+interval '1 day' END WHERE id=1`,[snap.created_at]);
    return processed;
   });
  }
@@ -404,11 +406,16 @@ export class FullSyncWorker{
  async rotate(){
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
    // Missing in one complete export is a high-priority verification, never a removal signal.
-   const latest=(await tx.query("SELECT id FROM external_full_snapshots WHERE state='complete' ORDER BY created_at DESC LIMIT 1")).rows[0]?.id;
-   const rows=(await tx.query(`SELECT m.* FROM external_full_members m WHERE state<>'withdrawn' AND NOT EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND kind='detail') AND
-    (last_detail_at IS NULL OR last_detail_at<now()-interval '7 days' OR last_accessed_at>last_detail_at OR photo_expires_at<now()+interval '1 day' OR ($1::uuid IS NOT NULL AND last_snapshot IS DISTINCT FROM $1 AND NOT verification_pending))
-    ORDER BY (last_accessed_at>last_detail_at) DESC NULLS LAST,(photo_expires_at<now()+interval '1 day') DESC NULLS LAST,last_detail_at NULLS FIRST,source,external_id LIMIT 100`,[latest])).rows;
-   for(const m of rows){const next=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,verification_pending=verification_pending OR ($3::uuid IS NOT NULL AND last_snapshot IS DISTINCT FROM $3) WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[m.source,m.external_id,latest])).rows[0]!;
+   const exports=(await tx.query<{completed:string|null;applying:string|null}>(`SELECT
+    (SELECT id FROM external_full_snapshots WHERE state='complete' ORDER BY created_at DESC,id DESC LIMIT 1) AS completed,
+    (SELECT id FROM external_full_snapshots WHERE state IN ('verified','applying') LIMIT 1) AS applying`)).rows[0]!;
+   const rows=(await tx.query(`SELECT m.*,e.missing_from_export FROM external_full_members m
+    CROSS JOIN LATERAL (SELECT $1::uuid IS NOT NULL AND m.last_snapshot IS DISTINCT FROM $1
+     AND ($2::uuid IS NULL OR m.last_snapshot IS DISTINCT FROM $2) AS missing_from_export) e
+    WHERE m.state<>'withdrawn' AND NOT EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND kind='detail') AND
+    (last_detail_at IS NULL OR last_detail_at<now()-interval '7 days' OR last_accessed_at>last_detail_at OR photo_expires_at<now()+interval '1 day' OR (e.missing_from_export AND NOT verification_pending))
+    ORDER BY (last_accessed_at>last_detail_at) DESC NULLS LAST,(photo_expires_at<now()+interval '1 day') DESC NULLS LAST,last_detail_at NULLS FIRST,source,external_id LIMIT 100`,[exports.completed,exports.applying])).rows;
+   for(const m of rows){const next=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,verification_pending=verification_pending OR $3::boolean WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[m.source,m.external_id,m.missing_from_export])).rows[0]!;
     await queue(tx,m.source,m.external_id,'detail',next.desired_generation,m.last_accessed_at||m.photo_expires_at?30:0);}
    return rows.length;
   });

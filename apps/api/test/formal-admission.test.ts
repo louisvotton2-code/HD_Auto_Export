@@ -360,6 +360,16 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.equal(await worker.acquire(),true);
    await event(201,'che168','154','upsert');
    assert.equal(await worker.applyEvents(),0);
+   await event(199,'che168','112','upsert');
+   assert.equal(await worker.applyEvents(),1);
+   assert.equal((await database.pool.query(`SELECT priority FROM external_full_work
+    WHERE source='che168' AND external_id='112' AND kind='detail'`)).rows[0].priority,100);
+   await event(200,'che168','112','withdraw');
+   assert.equal(await worker.applyEvents(true),1);
+   assert.equal((await database.pool.query(`SELECT state FROM external_full_members
+    WHERE source='che168' AND external_id='112'`)).rows[0].state,'withdrawn');
+   assert.equal((await database.pool.query(`SELECT 1 FROM external_full_work
+    WHERE source='che168' AND external_id='112'`)).rowCount,0);
    await assert.rejects(worker.promoteSnapshot(snapshot),/SYNC_CAPACITY_PENDING/);
    // An active CSV identity can withdraw after the target is bound. The freed planned slot
    // is available to the delta only after the CSV has applied.
