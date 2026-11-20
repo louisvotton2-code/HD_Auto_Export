@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiClientError, request, requestWithTimeout } from './client';
 
-export function usePrivateResource<T>(path: string | null, schema: { parse(value: unknown): T }, revision = 0, timeoutMs?: number) {
+export function usePrivateResource<T>(path: string | null, schema: { parse(value: unknown): T }, revision: number | string = 0, timeoutMs?: number) {
   const key = JSON.stringify([path, revision]);
   const [state, setState] = useState<{ key: string; data?: T; error?: string; errorStatus?: number }>({ key: '' });
   const [expired, setExpired] = useState(false);
