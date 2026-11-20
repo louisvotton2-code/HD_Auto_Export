@@ -14,6 +14,7 @@ import time
 import uuid
 
 from backup_space import projected_dump_bytes, recovery_point_bytes, recovery_samples
+from first_party_data import FULL_SCOPE, SCOPE, measurement_sql, scope as backup_scope
 
 ROOT = Path('/srv/hd-auto')
 STATE = ROOT/'data/full-sync-capacity'
@@ -29,9 +30,10 @@ SYSTEM_CONTROL_ROOTS = frozenset(map(Path, (
 )))
 
 
-def private_json(path):
+def private_json(path, *, private=False):
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 65536:
+    unsafe_mode = 0o077 if private else 0o022
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & unsafe_mode or info.st_size > 65536:
         raise ValueError('Invalid private measurement file')
     return json.loads(path.read_text())
 
@@ -56,9 +58,23 @@ def evidence(c):
     return sql(c,'SELECT capacity_estimate FROM external_full_sync WHERE id=1')
 
 
-def allocated(path):
+def backup_policy(c):
+    # Read the same root-owned configuration used by the routine backup unit.
+    policy = private_json(ROOT/'secrets/ext07/backup.json', private=True)
+    root = ROOT/'backups/ext07'
+    if (policy['database'] != c['database'] or policy['filesystemUuid'] != c['filesystemUuid'] or
+            Path(policy['backupRoot']) != root or root.resolve() != root or not root.is_dir()):
+        raise ValueError('Capacity and backup policies do not describe the same database and disk')
+    backup_scope(policy.get('backupScope'))
+    return policy
+
+
+def allocated(path, *, backup_control=False):
     path=Path(path)
     trusted = ROOT in path.parents or path in SYSTEM_CONTROL_ROOTS
+    if backup_control:
+        trusted = trusted or any(root in path.parents for root in (Path('/etc/hd-auto'), Path('/etc/letsencrypt'))) or (
+            path == Path('/etc/systemd/system/hd-auto-ext07-backup.service.d/20-card-media.conf'))
     if not path.is_absolute() or '..' in path.parts or not trusted or not path.exists() or path.resolve() != path:
         raise ValueError('Invalid measurement root')
     # du's default physical traversal counts links themselves, never targets.
@@ -89,7 +105,8 @@ def stream_size(argv, timeout=600, maximum=2*1024**3):
             except subprocess.TimeoutExpired: os.killpg(p.pid,signal.SIGKILL); p.wait()
 
 
-def project(e, *, used, total, available_reserve, media, controls, daily, database, wal_on_disk, wal_configured, samples):
+def project(e, *, used, total, available_reserve, media, controls, daily, database, wal_on_disk, wal_configured, samples,
+            backup_database=None, backup_files=None):
     n=e['distinctProcessed']; target=e['targetRows']
     if not e.get('sampleEvidenceSufficient') or n<=0 or target<=0:
         raise ValueError('Insufficient sample')
@@ -105,8 +122,16 @@ def project(e, *, used, total, available_reserve, media, controls, daily, databa
     csv_peak=3*csv
     wal=max(wal_on_disk,wal_configured,2*1024**3)
     protected=max(0,used-database-csv-media-wal_on_disk-daily)
-    dump=projected_dump_bytes(business+stage_peak,database,samples)
-    point=recovery_point_bytes(dump,csv_peak+media+controls)
+    if backup_database is None and backup_files is None:
+        dump=projected_dump_bytes(business+stage_peak,database,samples)
+        point=recovery_point_bytes(dump,csv_peak+media+controls)
+        scoped={}
+    else:
+        if type(backup_database) is not int or backup_database <= 0 or type(backup_files) is not int or backup_files < 0:
+            raise ValueError('Invalid first-party backup measurement')
+        dump=projected_dump_bytes(backup_database,backup_database,samples)
+        point=recovery_point_bytes(dump,backup_files)
+        scoped=dict(firstPartyDatabaseBytes=backup_database,firstPartyFilesBytes=backup_files)
     retained=max(daily,2*point)
     # Two existing ciphertexts plus the next point's compressed components
     # and streaming ciphertext. The latter contain the same dump exactly once each.
@@ -117,7 +142,7 @@ def project(e, *, used, total, available_reserve, media, controls, daily, databa
                     recoveryPointBytes=point,recoveryDumpBytes=dump)
     peak=max(used+available_reserve,sum(v for k,v in components.items()
                                   if k not in ('recoveryPointBytes','recoveryDumpBytes')))
-    return dict(projectedPeakBytes=peak,diskTotalBytes=total,currentUsedBytes=used,components=components)
+    return dict(projectedPeakBytes=peak,diskTotalBytes=total,currentUsedBytes=used,components=components|scoped)
 
 
 def daily_bytes():
@@ -148,6 +173,8 @@ def measure():
     e = evidence(c)
     if not bounded_evidence(c, e):
         return None
+    policy = backup_policy(c)
+    selected = backup_scope(policy.get('backupScope'))
     fs = os.statvfs(ROOT/'data')
     total = fs.f_blocks * fs.f_frsize
     used = (fs.f_blocks-fs.f_bfree) * fs.f_frsize
@@ -156,14 +183,24 @@ def measure():
         'walOnDisk', (SELECT coalesce(sum(size),0) FROM pg_ls_waldir()),
         'walConfigured', pg_size_bytes(current_setting('max_wal_size'))
                          + pg_size_bytes(current_setting('wal_keep_size')))""")
+    scoped = {}
+    if selected == SCOPE:
+        media_roots = policy['mediaRoots']
+        control_roots = policy['controlRoots']
+        if not isinstance(media_roots,list) or not media_roots or not isinstance(control_roots,list):
+            raise ValueError('Invalid first-party backup file roots')
+        scoped = dict(backup_database=sql(c,measurement_sql()),
+                      backup_files=sum(allocated(p) for p in media_roots)
+                                   +sum(allocated(p,backup_control=True) for p in control_roots))
     result = project(e, used=used, total=total, available_reserve=(fs.f_bfree-fs.f_bavail)*fs.f_frsize,
                      media=sum(allocated(p) for p in c['mediaRoots']),
                      controls=sum(allocated(p) for p in c['controlRoots']),
                      daily=daily_bytes(), database=sizes['database'],
                      wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'],
-                     samples=recovery_samples(ROOT/'backups/ext07',c['database']))
+                     samples=recovery_samples(ROOT/'backups/ext07',c['database'],scope=selected), **scoped)
     latest = evidence(c)
-    if not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash']:
+    if (not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash'] or
+            backup_policy(c) != policy):
         return None
     return {**e, **result}
 
@@ -219,6 +256,7 @@ def probe():
         c=config(); e=evidence(c)
         if not bounded_evidence(c, e): return
         if c.get('admissionTargetRows') is not None: return
+        if backup_scope(backup_policy(c).get('backupScope')) != FULL_SCOPE: return
         image=dump_target(c)
         business=compressed_dump(c,image,['--exclude-table=public.external_full_stage'])
         raw=compressed_dump(c,image,['--table=public.external_source_blobs','--table=public.external_source_documents'])

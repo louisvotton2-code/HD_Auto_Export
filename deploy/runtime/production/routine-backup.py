@@ -5,6 +5,7 @@ arrays and public encryption certificate. No password values belong in this file
 Off-host transfer is explicitly pending until separately verified by OPS.
 """
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -21,8 +22,11 @@ import tarfile
 import time
 
 from backup_space import (OVERHEAD, check_disk_budget, projected_dump_bytes, recovery_point_bytes, recovery_samples)
+from first_party_data import FULL_SCOPE, SCOPE, dump_options, measurement_sql, scope, write_supplement
 
 ROOT = Path('/srv/hd-auto')
+DUMP_TIMEOUT = 5400
+MAX_MANIFEST_BYTES = 8 * 1024**2
 
 
 def digest(path):
@@ -83,9 +87,14 @@ COMMIT;"""
         shutil.rmtree(path)
 
 
+def backup_components(backup_scope):
+    supplement = 'first-party.sql' if backup_scope == SCOPE else 'source-archives.tar.gz'
+    return 'database.dump', 'media.tar.gz', supplement, 'controls.tar.gz'
+
+
 def remove_verified_components(point, manifest):
     """Remove only known, checksum-matching temporary components, never proofs."""
-    allowed = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz'}
+    allowed = set(backup_components(scope(manifest.get('backupScope'))))
     if manifest.get('format') != 2 or set(manifest.get('files', {})) != allowed:
         raise ValueError('Invalid cleanup manifest')
     # Validate all first: a failure preserves every remaining component.
@@ -103,19 +112,26 @@ def unpack_verified_bundle(bundle, destination):
     Does not restore DB or unpack root-addressed nested archives. Those require
     an isolated restore target; never extract these directly over production.
     """
-    names = {'database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz', 'manifest.json'}
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     with tarfile.open(bundle, 'r:*') as archive:
         members = archive.getmembers()
-        if len(members) != len(names) or {m.name for m in members} != names or any(not m.isfile() for m in members):
+        by_name = {member.name: member for member in members}
+        if len(members) != len(by_name) or any(not member.isfile() for member in members):
             raise ValueError('Invalid recovery envelope')
+        descriptor = by_name.get('manifest.json')
+        if descriptor is None or descriptor.size > MAX_MANIFEST_BYTES:
+            raise ValueError('Invalid recovery manifest')
+        with archive.extractfile(descriptor) as source:
+            manifest = json.load(source)
+        files = set(backup_components(scope(manifest.get('backupScope'))))
+        if set(by_name) != files | {'manifest.json'}:
+            raise ValueError('Invalid recovery envelope')
+        if manifest.get('format') != 2 or set(manifest.get('files', {})) != files:
+            raise ValueError('Unsupported recovery manifest')
         for member in members:
             with archive.extractfile(member) as src, (destination/member.name).open('xb') as dst:
                 shutil.copyfileobj(src, dst)
-    manifest = json.loads((destination/'manifest.json').read_text())
-    if manifest.get('format') != 2 or set(manifest.get('files', {})) != names-{'manifest.json'}:
-        raise ValueError('Unsupported recovery manifest')
     for name, expected in manifest['files'].items():
         path = destination/name
         if path.stat().st_size != expected['bytes'] or digest(path) != expected['sha256']:
@@ -123,14 +139,41 @@ def unpack_verified_bundle(bundle, destination):
     return manifest
 
 
-def require_no_incomplete_points(root):
+def verified_scoped_restore(point, state, database):
+    if state.get('restoreValidation') != 'verified' or state.get('backupScope') != SCOPE:
+        return False
+    receipt_path, manifest_path = point/'routine-restore-proof.json', point/'manifest.json'
+    try:
+        for path, limit in ((receipt_path, 65536), (manifest_path, MAX_MANIFEST_BYTES)):
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077 or metadata.st_size > limit:
+                return False
+        receipt, manifest = (json.loads(path.read_bytes()) for path in (receipt_path, manifest_path))
+        return (
+            state.get('restoreProofSha256') == digest(receipt_path)
+            and receipt.get('manifestSha256') == digest(manifest_path)
+            and receipt.get('databaseSha256') == manifest['files']['database.dump']['sha256']
+            and receipt.get('allRetainedDataMatched') is True
+            and receipt.get('backupScope') == manifest.get('backupScope') == SCOPE
+            and receipt.get('input') == 'plaintext-components'
+            and manifest.get('format') == state.get('format') == 2
+            and set(manifest['files']) == set(backup_components(SCOPE))
+            and manifest.get('createdAt') == state.get('createdAt')
+            and manifest.get('sourceDatabase') == database
+            and datetime.fromisoformat(state['createdAt']) <= datetime.fromisoformat(receipt['verifiedAt']) <= datetime.now(timezone.utc)
+        )
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
+def require_no_incomplete_points(root, *, backup_scope=FULL_SCOPE, retain_for_restore=False, database=None):
     """Lock must be held. Never pile a new dump on an unresolved failed job.
 
     Do not infer that a timed-out docker exec's server-side dump has stopped.
     Operator recovery must verify processes/FDs, clean only owned components,
     then release that exact pin/lease and archive the failed job evidence.
     """
-    completed_count = 0
+    completed = []
     for point in root.iterdir():
         if not re.fullmatch(r'daily-[0-9TZ.]+(?:\.partial)?', point.name):
             continue
@@ -150,8 +193,17 @@ def require_no_incomplete_points(root):
         if state.get('plaintextRetention') == 'temporary-for-one-time-restore':
             # An intentionally retained verification copy must be resolved too.
             raise ValueError('One-time restore components still require explicit cleanup')
-        completed_count += 1
-    if completed_count > 2:
+        completed.append((point, state))
+    if backup_scope == SCOPE and not retain_for_restore:
+        scoped = [(point, state) for point, state in completed if scope(state.get('backupScope')) == SCOPE]
+        if len(scoped) == len(completed) == 2 and any(state.get('scopeActivationVerified') is True for _, state in scoped):
+            return
+        if not any(verified_scoped_restore(point, state, database) for point, state in scoped):
+            raise ValueError('Restore verification of the first-party recovery point is required')
+        if len(completed) == 3 and len(scoped) == 1:
+            # One verified scoped pilot may coexist with the two existing full points.
+            return
+    if len(completed) > 2:
         raise ValueError('Previous retention incomplete; resolve before creating another point')
 
 
@@ -284,7 +336,7 @@ class BudgetWriter:
         return getattr(self.stream, name)
 
 
-def copy_dump(argv, output, log, filesystem, timeout=5400):
+def copy_dump(argv, output, log, filesystem, timeout=DUMP_TIMEOUT):
     deadline = time.monotonic()+timeout
     with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log) as process:
         try:
@@ -308,6 +360,53 @@ def copy_dump(argv, output, log, filesystem, timeout=5400):
             if process.poll() is None:
                 process.kill()
                 process.wait()
+
+
+@contextmanager
+def exported_snapshot(psql, log):
+    """Keep the pg_dump and first-party component on the same checked snapshot."""
+    command = [*psql, '-v', 'ON_ERROR_STOP=1', '-f', '-']
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True) as holder:
+        try:
+            holder.stdin.write(
+                "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+                "SET LOCAL statement_timeout='10s';\n"
+                "SET LOCAL idle_in_transaction_session_timeout='100min';\n"
+                "SELECT pg_export_snapshot();\n"
+            )
+            holder.stdin.flush()
+            with selectors.DefaultSelector() as selector:
+                selector.register(holder.stdout, selectors.EVENT_READ)
+                if not selector.select(15):
+                    raise subprocess.TimeoutExpired(command, 15)
+                snapshot = holder.stdout.readline().strip()
+            if not re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{8}-[0-9]+', snapshot):
+                raise ValueError('Unable to verify exported backup snapshot')
+            yield snapshot
+        finally:
+            # EOF on the controlled psql session releases its read transaction.
+            holder.stdin.close()
+            try:
+                returncode = holder.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait()
+                raise
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, command)
+
+
+def dump_database(command, psql, point, log, backup_root, backup_scope):
+    with (point/'database.dump').open('xb') as dump:
+        if backup_scope != SCOPE:
+            copy_dump(command, dump, log, backup_root)
+            return None
+        with exported_snapshot(psql, log) as snapshot:
+            total, used = check_disk_budget(backup_root)
+            cap = (7 * total - 10 * used - 1) // 10
+            retained = write_supplement(psql, snapshot, point/'first-party.sql', log, max_bytes=cap)
+            copy_dump([*command, '--snapshot='+snapshot, *dump_options()], dump, log, backup_root)
+            return retained
 
 
 def pack_roots(output, roots, profile='controls', selected=None, filesystem=None):
@@ -379,6 +478,8 @@ def main():
     if os.getuid() != 0 or not stat.S_ISREG(config_stat.st_mode) or config_stat.st_uid != 0 or stat.S_IMODE(config_stat.st_mode) & 0o077:
         raise ValueError('Use a root-owned private regular configuration')
     config = json.loads(args.config.read_text())
+    backup_scope = scope(config.get('backupScope'))
+    scoped = backup_scope == SCOPE
     if not re.fullmatch(r'hd_release_[a-f0-9]{16}', config['database']):
         raise ValueError('Explicit current production database required')
     if not re.fullmatch(r'[a-f0-9]{40}', config.get('releaseId', '')):
@@ -386,9 +487,10 @@ def main():
     backup_root = Path(config['backupRoot'])
     if backup_root != ROOT/'backups/ext07' or backup_root.is_symlink():
         raise ValueError('Use the dedicated EXT07 backup root')
-    archive_root = Path(config['archiveRoot'])
-    if archive_root != ROOT/'data/full-sync' or archive_root.is_symlink():
-        raise ValueError('Use the dedicated full-sync archive root')
+    if not scoped:
+        archive_root = Path(config['archiveRoot'])
+        if archive_root != ROOT/'data/full-sync' or archive_root.is_symlink():
+            raise ValueError('Use the dedicated full-sync archive root')
     for path in [ROOT/'data', ROOT/'backups', ROOT/'staging']:
         actual = subprocess.check_output(['findmnt', '--mountpoint', str(path), '-n', '-o', 'UUID'], text=True).strip()
         if actual != config['filesystemUuid']:
@@ -403,7 +505,8 @@ def main():
     backup_root.mkdir(mode=0o700, exist_ok=True)
     lock = (backup_root/'routine.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    require_no_incomplete_points(backup_root)
+    require_no_incomplete_points(backup_root, backup_scope=backup_scope,
+                                 retain_for_restore=args.retain_for_restore, database=config['database'])
     point_name = args.kind+'-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     point = backup_root/point_name
     if point.exists() or point.with_suffix('.partial').exists():
@@ -411,6 +514,10 @@ def main():
     reference = 'backup:ext07:'+point_name
     log_path = backup_root/(point_name+'.log')
     state = dict(kind=args.kind, name=point_name, reference=reference, createdAt=datetime.now(timezone.utc).isoformat(), complete=False, offsite='pending')
+    if scoped:
+        state['backupScope'] = backup_scope
+        if not args.retain_for_restore:
+            state['scopeActivationVerified'] = True
     with log_path.open('x') as log:
         def call(argv):
             subprocess.run(argv, check=True, stdout=log, stderr=subprocess.STDOUT)
@@ -419,20 +526,21 @@ def main():
         running = subprocess.check_output(compose+['ps', '--status', 'running', '--services'], text=True).split()
         if 'worker' in running or 'migrate' in running:
             raise ValueError('Stop other maintenance/ingestion writers first')
-        # Fail before pausing any service if a full recovery point could exceed
-        # budget. Existing points are never deleted to make this preflight pass.
-        database_bytes = int(subprocess.check_output(psql+['-c', 'SELECT pg_database_size(current_database())'], text=True))
+        # Existing points are never deleted to make the preflight pass.
+        size_query = measurement_sql() if scoped else 'SELECT pg_database_size(current_database())'
+        database_bytes = int(subprocess.check_output(psql+['-v', 'ON_ERROR_STOP=1', '-c', size_query],
+                                                     text=True, timeout=30))
         media_roots = config['mediaRoots']
         if not isinstance(media_roots, list) or not media_roots:
             raise ValueError('Explicit existing media paths required')
-        measured_roots = [archive_root, *controls]
+        measured_roots = list(controls) if scoped else [archive_root, *controls]
         for media in media_roots:
             path = Path(media)
             if not path.is_absolute() or '..' in path.parts or ROOT/'data' not in path.parents or path.is_symlink() or not path.is_dir():
                 raise ValueError('Media must use an existing stable data directory')
             measured_roots.append(path)
         file_bytes = sum(int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)], text=True).split()[0]) for path in measured_roots)
-        samples=recovery_samples(backup_root,config['database'])
+        samples = recovery_samples(backup_root, config['database'], scope=backup_scope)
         reserve=reserve_bytes(database_bytes,file_bytes,samples)
         total, used=check_disk_budget(backup_root,reserve)
         state['preflight'] = dict(databaseBytes=database_bytes, fileBytes=file_bytes, reserveBytes=reserve, diskUsedBytes=used, diskTotalBytes=total)
@@ -445,29 +553,31 @@ def main():
         state.update(phase='acquiring-protection', ownerPid=os.getpid())
         atomic_json(point/'routine.json', state)
         call(lease+['acquire', '--reference', reference])
-        pins = snapshot_backup_pins(psql, reference, acquire=True)
+        pins = 0 if scoped else snapshot_backup_pins(psql, reference, acquire=True)
         state['archiveProtection'] = dict(mode='persistent-global-lease', snapshotPins=pins)
         state['phase'] = 'dump-and-pack'
         atomic_json(point/'routine.json', state)
-        # pg_dump owns one MVCC snapshot; no web/API/worker stop or live-table
-        # comparison. The archive manifest belongs to this dump, not later SQL.
-        with (point/'database.dump').open('xb') as dump:
-            copy_dump(compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
-                '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl',
-                '--lock-wait-timeout=5000'],dump,log,backup_root)
+        dump_command = compose+['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres',
+            '-d', config['database'], '-Fc', '-Z', '6', '--no-owner', '--no-acl', '--lock-wait-timeout=5000']
+        retained = dump_database(dump_command, psql, point, log, backup_root, backup_scope)
         with (point/'database.dump').open('rb') as dump:
             subprocess.run(compose+['exec', '-T', 'postgres', 'pg_restore', '--list'],
                 check=True, stdin=dump, stdout=log, stderr=log, timeout=120)
         media = pack_roots(point/'media.tar.gz', media_roots, 'media', filesystem=backup_root)
-        paths = json.loads(subprocess.check_output(psql+['-v', 'ON_ERROR_STOP=1', '-c',
-            "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
-        selected = archive_selection(paths, archive_root)
-        archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected, filesystem=backup_root)
+        if not scoped:
+            paths = json.loads(subprocess.check_output(psql+['-v', 'ON_ERROR_STOP=1', '-c',
+                "SELECT coalesce(json_agg(json_build_object('path',path,'state',state)),'[]'::json) FROM external_full_snapshots WHERE archive_pruned_at IS NULL"], text=True, timeout=30))
+            selected = archive_selection(paths, archive_root)
+            archives = pack_roots(point/'source-archives.tar.gz', [archive_root], 'archive', selected, filesystem=backup_root)
         controls_manifest = pack_roots(point/'controls.tar.gz', controls, filesystem=backup_root)
         manifest = dict(format=2, sourceDatabase=config['database'], release=config['releaseId'], snapshot='pg_dump-mvcc',
-            createdAt=state['createdAt'], media=media, archives=archives, controls=controls_manifest,
+            createdAt=state['createdAt'], media=media, controls=controls_manifest,
             files={name: dict(sha256=digest(point/name), bytes=(point/name).stat().st_size)
-                   for name in ['database.dump', 'media.tar.gz', 'source-archives.tar.gz', 'controls.tar.gz']})
+                   for name in backup_components(backup_scope)})
+        if scoped:
+            manifest.update(backupScope=backup_scope, snapshot='pg_dump-exported-mvcc', retainedData=retained)
+        else:
+            manifest['archives'] = archives
         atomic_json(point/'manifest.json', manifest)
         # Stream the outer tar directly into encryption: do not write another
         # full plaintext container. Inputs remain until ciphertext is complete.
@@ -514,22 +624,23 @@ def main():
             remove_verified_components(point, manifest)
         # Failed or interrupted jobs retain protection for explicit recovery.
         # The encrypted point now owns the archived data. Release only this job's pins and lease.
-        snapshot_backup_pins(psql, reference, acquire=False)
+        if not scoped:
+            snapshot_backup_pins(psql, reference, acquire=False)
         call(lease+['release', '--reference', reference])
         state['phase'] = 'finalized'
         atomic_json(point/'routine.json', state)
-        # Retention is narrow: failed/incomplete/unknown and release points stay.
-        points = []
-        for child in backup_root.iterdir():
-            if child.is_dir() and not child.is_symlink() and re.fullmatch(r'daily-[0-9TZ.]+', child.name):
-                proof = child/'routine.json'
-                if proof.is_file() and not proof.is_symlink():
-                    item = json.loads(proof.read_text())
-                    if item.get('name') == child.name and item.get('reference') == 'backup:ext07:'+child.name:
-                        points.append(item)
-        # Verify every survivor before considering an old point for deletion. A
-        # complete flag alone must never retire the last usable recovery point.
-        retire_completed_points(backup_root, points, psql)
+        if not (scoped and args.retain_for_restore):
+            # The first scoped point retains the old recoveries during its restore.
+            points = []
+            for child in backup_root.iterdir():
+                if child.is_dir() and not child.is_symlink() and re.fullmatch(r'daily-[0-9TZ.]+', child.name):
+                    proof = child/'routine.json'
+                    if proof.is_file() and not proof.is_symlink():
+                        item = json.loads(proof.read_text())
+                        if item.get('name') == child.name and item.get('reference') == 'backup:ext07:'+child.name:
+                            points.append(item)
+            # Verify every survivor before considering an old point for deletion.
+            retire_completed_points(backup_root, points, psql)
     print(json.dumps({k: state[k] for k in ['name', 'complete', 'offsite', 'ciphertextBytes', 'ciphertextSha256']}))
 
 

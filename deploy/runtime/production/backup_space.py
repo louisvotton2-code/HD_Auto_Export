@@ -6,6 +6,8 @@ import os
 import re
 import stat
 
+from first_party_data import FULL_SCOPE, SCOPE, scope as backup_scope
+
 OVERHEAD = 128 * 1024**2
 
 
@@ -16,8 +18,9 @@ def _read_private(path, limit):
     return json.loads(path.read_text())
 
 
-def recovery_samples(root, database, now=None):
-    """Use finalized, matching routine points whose encrypted artifact is present."""
+def recovery_samples(root, database, now=None, *, scope=FULL_SCOPE):
+    """Use finalized points for the same database and backup scope."""
+    scope = backup_scope(scope)
     now = now or datetime.now(timezone.utc)
     samples = []
     for point in sorted(Path(root).glob('daily-*')):
@@ -35,8 +38,18 @@ def recovery_samples(root, database, now=None):
             if (manifest.get('format') != 2 or manifest.get('sourceDatabase') != database or
                     manifest.get('createdAt') != proof.get('createdAt')):
                 continue
+            if (backup_scope(proof.get('backupScope')) != scope or
+                    backup_scope(manifest.get('backupScope')) != scope):
+                continue
             db = proof['preflight']['databaseBytes']
             dump = manifest['files']['database.dump']['bytes']
+            if type(dump) is not int or dump <= 0:
+                continue
+            if scope == SCOPE:
+                supplement = manifest['files']['first-party.sql']['bytes']
+                if type(supplement) is not int or supplement <= 0:
+                    continue
+                dump += supplement
             cipher = proof['ciphertextBytes']
             if (any(type(n) is not int or n <= 0 for n in (db, dump, cipher)) or dump > cipher or
                     not re.fullmatch(r'[a-f0-9]{64}', proof.get('ciphertextSha256', ''))):

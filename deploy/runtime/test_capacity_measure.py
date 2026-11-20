@@ -3,17 +3,21 @@ from pathlib import Path
 import unittest
 import sys
 import tempfile
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parent/'production'))
+import backup_space
 spec=importlib.util.spec_from_file_location('measure',Path(__file__).parent/'production/capacity-measure.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Peak(unittest.TestCase):
     def data(self):
         return dict(distinctProcessed=10000,targetRows=500000,sampleEvidenceSufficient=True,businessBytes=10000000,projectedBytesPerDetail=1000,sqlStagingBytes=20000000,archiveDirectoryBytes=1000000,walBytes=100000)
-    def calculate(self,e, *, wal_on_disk=100000, wal_configured=1024**3, samples=((30_000_000, 6_000_000),)):
+    def calculate(self,e, *, wal_on_disk=100000, wal_configured=1024**3, samples=((30_000_000, 6_000_000),),
+                  daily=0, **scope):
         return m.project(e,used=50_000_000,total=400*1024**3,available_reserve=0,media=100000,
-                         controls=1000,daily=0,database=30_000_000,wal_on_disk=wal_on_disk,
-                         wal_configured=wal_configured,samples=samples)
+                         controls=1000,daily=daily,database=30_000_000,wal_on_disk=wal_on_disk,
+                         wal_configured=wal_configured,samples=samples,**scope)
     def test_cumulative_wal_does_not_replace_disk_usage(self):
         e=self.data() | {'walBytes': 150*1024**3}
         result=self.calculate(e)
@@ -46,6 +50,27 @@ class Peak(unittest.TestCase):
         e=self.data();e['sampleEvidenceSufficient']=False
         with self.assertRaises(ValueError):self.calculate(e)
 
+    def test_first_party_changes_only_the_backup_estimate_and_keeps_old_retention(self):
+        retained=1_500_000_000
+        full=self.calculate(self.data(),daily=retained)
+        scoped=self.calculate(self.data(),daily=retained,samples=((500_000,100_000),),
+                              backup_database=1_000_000,backup_files=200_000)
+        full_parts,parts=full['components'],scoped['components']
+        for name in ('protectedBytes','businessBytes','sqlSnapshotsBytes','csvSnapshotsBytes','walBytes'):
+            self.assertEqual(parts[name],full_parts[name])
+        self.assertEqual(parts['recoveryDumpBytes'],250_000)
+        self.assertEqual(parts['recoveryPointBytes'],450_000+backup_space.OVERHEAD)
+        self.assertEqual(parts['recoveryPeakBytes'],retained+2*parts['recoveryPointBytes'])
+        forecast_parts=('protectedBytes','businessBytes','sqlSnapshotsBytes','csvSnapshotsBytes','mediaBytes',
+                        'controlsBytes','walBytes','filesystemReservedBytes','recoveryPeakBytes')
+        self.assertEqual(scoped['projectedPeakBytes'],sum(parts[name] for name in forecast_parts))
+
+    def test_incomplete_first_party_backup_size_cannot_lower_forecast(self):
+        for values in ({'backup_database':100_000}, {'backup_files':10_000},
+                       {'backup_database':0,'backup_files':10_000}):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError,'first-party'):
+                self.calculate(self.data(),**values)
+
 class BoundedAdmission(unittest.TestCase):
     def test_host_config_accepts_finite_expansion_only_within_database_ceiling(self):
         for value in (150_000, 459_009, m.MAX_ADMISSION_TARGET_ROWS):
@@ -71,6 +96,7 @@ class BoundedAdmission(unittest.TestCase):
         e = Peak().data() | {'targetRows': 100_000, 'evidenceHash': 'a'*64}
         c = {'database': 'hd_release_'+'a'*16, 'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
         with patch.object(m,'config',return_value=c), patch.object(m,'evidence',return_value=e), \
+             patch.object(m,'backup_policy',return_value={}), \
              patch.object(m,'sql',return_value={'database':30_000_000,'walOnDisk':100000,'walConfigured':1024**3}), \
              patch.object(m,'daily_bytes',return_value=0), patch.object(m,'recovery_samples',return_value=[(30_000_000,6_000_000)]), \
              patch.object(m.os,'statvfs') as disk, patch.object(m.subprocess,'run') as run:
@@ -90,6 +116,78 @@ class BoundedAdmission(unittest.TestCase):
              patch.object(m,'evidence',return_value=e), patch.object(m,'recovery_samples') as backup:
             self.assertIsNone(m.measure())
             backup.assert_not_called()
+
+    def test_scoped_measurement_uses_exact_backup_inputs_and_authority(self):
+        evidence = Peak().data() | {'evidenceHash': 'a'*64}
+        sizes = {'database':30_000_000,'walOnDisk':100_000,'walConfigured':1024**3}
+        policy = {'backupScope':m.SCOPE,'mediaRoots':['first-party-media'],'controlRoots':['backup-controls']}
+        config = {'database':'hd_release_'+'a'*16,'mediaRoots':['physical-media'],'controlRoots':['physical-controls']}
+        fs = SimpleNamespace(f_blocks=400*1024**2,f_bfree=350*1024**2,f_bavail=346*1024**2,f_frsize=1024)
+        for last in (policy, {}):
+            with self.subTest(changed=last!=policy), patch.object(m,'config',return_value=config), \
+                 patch.object(m,'evidence',return_value=evidence), \
+                 patch.object(m,'backup_policy',side_effect=(policy,last)), \
+                 patch.object(m,'sql',side_effect=(sizes,1_000_000)) as query, \
+                 patch.object(m,'daily_bytes',return_value=2_000_000), \
+                 patch.object(m,'recovery_samples',return_value=[(1_000_000,400_000)]) as samples, \
+                 patch.object(m,'allocated',side_effect=lambda path,**_: 2_000 if path=='backup-controls' else 1_000), \
+                 patch.object(m.os,'statvfs',return_value=fs):
+                result=m.measure()
+            self.assertEqual(query.call_args.args,(config,m.measurement_sql()))
+            samples.assert_called_once_with(m.ROOT/'backups/ext07',config['database'],scope=m.SCOPE)
+            if last==policy:
+                self.assertEqual(result['components']['firstPartyFilesBytes'],3_000)
+                self.assertEqual(result['components']['recoveryDumpBytes'],500_000)
+            else:
+                self.assertIsNone(result)
+
+
+class RecoveryScope(unittest.TestCase):
+    def test_policy_must_match_the_backup_unit_database_disk_and_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve()
+            backups=root/'backups/ext07';backups.mkdir(parents=True)
+            config={'database':'hd_release_'+'a'*16,'filesystemUuid':'disk-a'}
+            policy=config|{'backupRoot':str(backups),'backupScope':m.SCOPE}
+            with patch.object(m,'ROOT',root), patch.object(m,'private_json',return_value=policy) as read:
+                self.assertEqual(m.backup_policy(config),policy)
+                read.assert_called_once_with(root/'secrets/ext07/backup.json',private=True)
+            for altered in ({'database':'other'},{'filesystemUuid':'disk-b'},
+                            {'backupRoot':str(backups.parent)},{'backupScope':'unrecognized'}):
+                with self.subTest(altered=altered), patch.object(m,'ROOT',root), \
+                     patch.object(m,'private_json',return_value=policy|altered), self.assertRaises(ValueError):
+                    m.backup_policy(config)
+
+    def test_backup_scope_separates_legacy_and_scoped_samples(self):
+        now=datetime(2026,11,20,tzinfo=timezone.utc)
+        database='hd_release_'+'a'*16
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            metadata={}
+            for hour,proof_scope,manifest_scope in ((10,None,None),(11,m.SCOPE,m.SCOPE),(12,m.SCOPE,None)):
+                point=root/f'daily-20261119T{hour}0000Z';point.mkdir()
+                created=f'2026-11-19T{hour}:00:00+00:00'
+                proof=dict(kind='daily',name=point.name,complete=True,phase='finalized',format=2,createdAt=created,
+                           completedAt=created,preflight={'databaseBytes':2000},ciphertextBytes=800,ciphertextSha256='a'*64)
+                if proof_scope is not None:
+                    proof['backupScope']=proof_scope
+                manifest=dict(format=2,sourceDatabase=database,createdAt=created,files={'database.dump':{'bytes':400}})
+                if manifest_scope is not None:
+                    manifest['backupScope']=manifest_scope
+                    manifest['files']['first-party.sql']={'bytes':72}
+                metadata[point/'routine.json']=proof
+                metadata[point/'manifest.json']=manifest
+                (point/'recovery.cms').write_bytes(b'x'*800)
+            lstat=Path.lstat
+            def owned_cipher(path):
+                info=lstat(path)
+                if path.name=='recovery.cms':
+                    return SimpleNamespace(st_mode=info.st_mode,st_size=info.st_size,st_uid=0)
+                return info
+            with patch.object(Path,'lstat',owned_cipher), \
+                 patch.object(backup_space,'_read_private',side_effect=lambda path,_: metadata[path]):
+                self.assertEqual(backup_space.recovery_samples(root,database,now),[(2000,400)])
+                self.assertEqual(backup_space.recovery_samples(root,database,now,scope=m.SCOPE),[(2000,472)])
 
 
 class DumpBoundary(unittest.TestCase):
