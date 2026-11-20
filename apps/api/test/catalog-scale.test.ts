@@ -20,6 +20,12 @@ let created=false;
 const query=(extra:Record<string,unknown>={})=>PublicVehicleQuerySchema.parse({locale:'en',view:'localized',pageSize:2,...extra});
 const filters=(extra:Record<string,unknown>={})=>PublicFilterQuerySchema.parse({locale:'en',view:'localized',...extra});
 
+async function versions(client:Pick<PoolClient,'query'>=db.pool) {
+  const result=await client.query<{revision:string;filter_revision:string}>('SELECT revision,filter_revision FROM public_catalog_state WHERE id=1');
+  const row=result.rows[0]!;
+  return {global:BigInt(row.revision),filters:BigInt(row.filter_revision)};
+}
+
 before(async()=>{
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;await migrateDatabase(db);
   for(let i=1;i<=3;i++){
@@ -183,12 +189,6 @@ test('supplier and cover observation times only change the global version; cover
     VALUES($1,$2,'scope-fixture','https://photos.example.invalid/cache-scope.webp',0,true,now())`,[photo,id]);
   const scope=filters({projection:'overview-models'});
   const original=await inventory.filters(scope);
-  async function versions(client:Pick<PoolClient,'query'>=db.pool) {
-    const result=await client.query<{revision:string;filter_revision:string}>(
-      'SELECT revision,filter_revision FROM public_catalog_state WHERE id=1');
-    const row=result.rows[0]!;
-    return {global:BigInt(row.revision),filters:BigInt(row.filter_revision)};
-  }
   const refresh=async (client:Pick<PoolClient,'query'>)=>{
     await client.query("UPDATE external_listings SET fetched_at=fetched_at+interval '1 second',source_updated_at=fetched_at WHERE id=$1",[id]);
     await client.query("UPDATE external_media SET refreshed_at=refreshed_at+interval '1 second' WHERE id=$1",[photo]);
@@ -238,6 +238,66 @@ test('supplier and cover observation times only change the global version; cover
   } finally {
     await db.pool.query('UPDATE home_config SET sections=$1 WHERE id=1',[JSON.stringify(config.sections)]);
     await db.pool.query('DELETE FROM external_media WHERE id=$1',[photo]);
+  }
+});
+
+test('inspection evidence and report-only projection edits keep the facet version stable',async()=>{
+  const id=externalIds.at(-1)!;
+  const original=(await db.pool.query('SELECT details,issues,price_cny,localized FROM external_catalog WHERE listing_id=$1',[id])).rows[0]!;
+  const scope=filters({make:'fixture_make',projection:'models'});
+  const originalFacets=await externalFacets(db.pool,scope);
+  const writeEvidence=(client:Pick<PoolClient,'query'>,revision:string)=>client.query(`INSERT INTO external_vehicle_evidence_sets(listing_id,locale,kind,source_revision,total,status)
+    VALUES($1,'en','inspection',$2,0,'unavailable') ON CONFLICT(listing_id,locale,kind) DO UPDATE SET source_revision=excluded.source_revision`,[id,revision]);
+  const writeReport=(client:Pick<PoolClient,'query'>,fixture:number)=>client.query(`UPDATE external_catalog
+    SET details=jsonb_set(details,'{inspection}',jsonb_build_object('fixture',$2::integer)) WHERE listing_id=$1`,[id,fixture]);
+  async function expectBumps(globalDelta:bigint,filterDelta:bigint,change:()=>Promise<unknown>){
+    const prior=await versions();
+    await change();
+    assert.deepEqual(await versions(),{global:prior.global+globalDelta,filters:prior.filters+filterDelta});
+  }
+  try {
+    await expectBumps(1n,0n,()=>writeEvidence(db.pool,'report-1'));
+    await expectBumps(1n,0n,()=>writeEvidence(db.pool,'report-2'));
+    await expectBumps(1n,0n,()=>writeReport(db.pool,1));
+    await expectBumps(1n,0n,()=>db.pool.query(`UPDATE external_catalog
+      SET issues='[{"field":"inspection","code":"invalid"}]' WHERE listing_id=$1`,[id]));
+    assert.deepEqual(await externalFacets(db.pool,scope),originalFacets);
+    await expectBumps(0n,0n,()=>db.transaction(async tx=>{
+      await writeEvidence(tx,'report-2');
+      await writeReport(tx,1);
+    }));
+
+    await expectBumps(1n,1n,()=>db.transaction(async tx=>{
+      await writeReport(tx,2);
+      await writeEvidence(tx,'report-3');
+      await tx.query('UPDATE external_catalog SET price_cny=price_cny+1 WHERE listing_id=$1',[id]);
+    }));
+    await expectBumps(1n,1n,()=>db.transaction(async tx=>{
+      await tx.query(`UPDATE external_catalog SET localized=jsonb_set(localized,'{en,display,model,text}','"Current label"') WHERE listing_id=$1`,[id]);
+      await writeEvidence(tx,'report-4');
+      await writeReport(tx,3);
+    }));
+    assert.equal((await externalFacets(db.pool,scope))[0]?.name,'Current label');
+
+    await expectBumps(0n,0n,()=>assert.rejects(db.transaction(async tx=>{
+      await writeEvidence(tx,'report-rolled-back');
+      await writeReport(tx,4);
+      throw new Error('rollback report changes');
+    }),/rollback report changes/));
+    await expectBumps(1n,1n,()=>db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[id]));
+    await expectBumps(0n,0n,()=>db.transaction(async tx=>{
+      await writeEvidence(tx,'report-withdrawn');
+      await writeReport(tx,4);
+    }));
+    await expectBumps(1n,1n,()=>db.pool.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1",[id]));
+    await expectBumps(1n,0n,()=>db.pool.query("DELETE FROM external_vehicle_evidence_sets WHERE listing_id=$1 AND locale='en' AND kind='inspection'",[id]));
+  } finally {
+    await db.transaction(async tx=>{
+      await tx.query("DELETE FROM external_vehicle_evidence_sets WHERE listing_id=$1 AND locale='en' AND kind='inspection'",[id]);
+      await tx.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1",[id]);
+      await tx.query('UPDATE external_catalog SET details=$2,issues=$3,price_cny=$4,localized=$5 WHERE listing_id=$1',
+        [id,JSON.stringify(original.details),JSON.stringify(original.issues),original.price_cny,JSON.stringify(original.localized)]);
+    });
   }
 });
 

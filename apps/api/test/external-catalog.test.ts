@@ -29,7 +29,7 @@ async function localTransport(url: URL) {
   if (!path.isAbsolute(socket) || !(await stat(path.join(socket, `.s.PGSQL.${url.port || '5432'}`))).isSocket()) throw new Error('Expected a local PostgreSQL socket directory.');
   const transport = new URL(url); transport.searchParams.set('host', socket); return transport.toString();
 }
-const name = `hd_ext_test_${randomBytes(8).toString('hex')}`;
+const name = `hd_ext_scale_catalog_${randomBytes(8).toString('hex')}`;
 const databaseUrl = new URL(maintenanceUrl);
 databaseUrl.pathname = `/${name}`;
 const maintenance = createDatabase(await localTransport(maintenanceUrl), 2);
@@ -104,9 +104,9 @@ async function readRecords(id: string, page = 1) {
 before(async () => {
   temp = await mkdtemp(path.join(tmpdir(), 'hd-external-catalog-'));
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);
-  const config = readConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl.toString(), EXTERNAL_CATALOG_MODE: 'synthetic',
+  const config = readConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl.toString(), EXTERNAL_CATALOG_MODE: 'synthetic-scale',
     AUTH_SECRET: randomBytes(32).toString('hex'), AUTH_BASE_URL: origin, TRUSTED_ORIGINS: origin, MEDIA_ROOT: path.join(temp, 'media'),
-    TRANSLATION_PROVIDER: 'disabled' });
+    TRANSLATION_PROVIDER: 'disabled', HD_DEPLOYMENT_ENV:'test', HD_RELEASE_ID:'a'.repeat(40), EXTERNAL_PUBLIC_CACHE:'memory' });
   runtime = await buildApp({ ...config, databaseUrl: await localTransport(databaseUrl) });
   assert.equal((await call({ url: '/health/ready' })).statusCode, 503);
   await migrateDatabase(runtime.db);
@@ -755,7 +755,7 @@ test('a confirmed source make or model identity change suspends manual copy unti
   }
 });
 
-test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn and nonprimary suppliers', async () => {
+test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn and nonprimary suppliers', async context => {
   const fixtures = [301, 302, 303, 304, 305].map(index => {
     const candidate = makeExternalCandidateFixture(index);
     candidate.facts.make = index === 302 ? {id:'fixture-home-brand-b',name:'Home B'} : {id:'fixture-home-brand-a',name:'Home A'};
@@ -782,7 +782,7 @@ test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn 
   };
   const ids = (result: publicApi.PublicHomeSections) => result.data.sections.map(section => section.vehicles.map(vehicle => vehicle.id));
   const facets = async (locale:string,projection:'home-models'|'overview-models') => {
-    const response=await call({url:`/api/v1/vehicle-filters?locale=${locale}&view=localized&priceView=usd&projection=${projection}`});
+    const response=await call({url:`/api/v1/vehicle-filters?catalog=curated&locale=${locale}&view=localized&priceView=usd&projection=${projection}`});
     assert.equal(response.statusCode,200,response.body);
     return publicApi.PublicVehicleFiltersSchema.parse(response.json());
   };
@@ -830,6 +830,21 @@ test('homepage saves mixed IDs in order and immediately omits hidden, withdrawn 
   assert.deepEqual(ids(await home('ru','legacy')),[[manualId]]);
 
   const stocked=await home('zh','localized');
+  const warm=await facets('zh','home-models');
+  const load=context.mock.method(runtime.inventory,'filterSnapshot');
+  try {
+    await runtime.db.transaction(async tx=>{
+      const sql="UPDATE external_catalog SET details=jsonb_set(details,'{inspection}',jsonb_build_object('fixture',$2::int)) WHERE listing_id=$1";
+      for(const change of [1,2,3]) await tx.query(sql,[primary!.slice(4),change]);
+    });
+    const afterReport=await facets('zh','home-models');
+    assert.ok(warm.meta.catalogCache?.version);
+    assert.equal(afterReport.meta.catalogCache?.version,warm.meta.catalogCache.version);
+    assert.deepEqual(afterReport.data,warm.data);
+    assert.equal(load.mock.callCount(),0);
+    assert.notEqual((await home('zh','localized')).meta.catalogCache?.version,stocked.meta.catalogCache?.version);
+  } finally {load.mock.restore();}
+
   const listing=await getListing(hidden!);
   assert.equal((await revise(hidden!,{version:listing.version,overrides:{...listing.overrides,hidden:true}})).statusCode,200);
   const hiddenResult=await home('zh','localized');
