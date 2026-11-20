@@ -481,7 +481,14 @@ export function VehicleEditorPage() {
       </Row>
     </Card>
   </div>;
-  const images = <div data-editor-section="images" tabIndex={-1}>{externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}{record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} value={extras.media} savedMediaIds={base.media.map(media => media.id)} onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }} onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || importLocked || conflict || externalSourceChanged} /> : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}</div>;
+  const images = <div data-editor-section="images" tabIndex={-1}>
+    {externalSourceChanged && <Alert type="info" showIcon title="来源资料尚未保存" description="请先保存来源资料，再上传图片，以便逐图对应正确的原始挂牌。" className={styles.feedback} />}
+    {record ? <VehicleMediaEditor source={record.draft.source} vehicleId={record.id} draftVersion={record.version}
+      value={extras.media} savedMediaIds={base.media.map(media => media.id)}
+      onChange={media => { setExtras(previous => ({ ...previous, media })); setSuccess(''); }}
+      onBusyChange={setMediaBusy} disabled={saving || uncertain || actionsBusy || lifecycleBusy || importLocked || conflict || externalSourceChanged} />
+      : <Card className={styles.card}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先保存车辆草稿，再添加图片" /><Typography.Paragraph type="secondary" className={styles.center}>图片需要归属到已保存的车辆。你可以先保存已有信息，再继续录入。</Typography.Paragraph></Card>}
+  </div>;
   const review = <div className={styles.sectionStack} data-editor-section="review" tabIndex={-1}>
     {record ? <VehicleActions key={record.id} publicationTabActive={activeTab === 'review'}
       onIssue={focusPublicationIssue} vehicle={record} hasUnsavedChanges={dirty}

@@ -11,7 +11,7 @@ import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleD
 import {PublicVehicleResponseSchema,PublicVehicleListSchema,PublicVehicleInlineResponseSchema,ApiErrorSchema} from '@hd/contracts/public';
 import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,PublicationPreviewResponseSchema,PublishReadinessResponseSchema,TranslationPlanResponseSchema,TranslationPlanResultResponseSchema,VehicleTranslationBundleResponseSchema,MediaAssetResponseSchema,MediaUploadResponseSchema,type TranslationPlan,type TranslationPlanResult,type VehicleTranslationBundle,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {
-  CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewResponseSchema, configurationImportExample,
+  CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewResponseSchema, MediaAssetSchema, configurationImportExample,
   vehicleConfigurationItemId, type ConfigurationImportDocument,
 } from '@hd/contracts/admin';
 import {buildApp} from '../src/app.js';
@@ -781,6 +781,101 @@ test('media ownership, invalid binary, rights, UUID parameters and missing data 
   const invalid=await call({method:'PUT',url:permit.uploadUrl,headers:{...headers(),'if-match':'1','content-type':'image/png'},payload:Buffer.alloc(20)});assert.equal(invalid.statusCode,400,invalid.body);
   assert.equal((await runtime.media.get(permit.media.id)).status,'pending');
 });
+test('media upload inventory survives a reload and shares the current vehicle quota',async()=>{
+  let vehicle=await create();
+  const other=await create();
+  const inventoryUrl=(id:string)=>`/api/v1/admin/vehicles/${id}/media-uploads`;
+  const inventory=async(id:string)=>{
+    const response=await call({url:inventoryUrl(id),headers:headers()});
+    assert.equal(response.statusCode,200,response.body);
+    assert.equal(response.headers['cache-control'],'no-store');
+    const {data}=response.json<{data:{items:unknown[];used:number;limit:number}}>();
+    return {...data,items:data.items.map(item=>MediaAssetSchema.parse(item))};
+  };
+
+  const anonymous=await call({url:inventoryUrl(vehicle.id)});
+  assert.equal(anonymous.statusCode,401,anonymous.body);
+  assert.equal(ApiErrorSchema.parse(anonymous.json()).error.code,'UNAUTHENTICATED');
+  assert.equal((await call({url:inventoryUrl(randomUUID()),headers:headers()})).statusCode,404);
+  assert.deepEqual(await inventory(vehicle.id),{items:[],used:0,limit:30});
+
+  const savedImages=[await upload(vehicle),await upload(vehicle)];
+  vehicle.draft.media=savedImages.map(({id},sortOrder)=>({
+    id:sortOrder===0?id.toUpperCase().replaceAll('-',''):id,sortOrder,isCover:sortOrder===0,alt:'',
+  }));
+  vehicle=await save(vehicle);
+  const saved=await runtime.media.get(savedImages[0]!.id);
+  const discardSaved=await call({method:'DELETE',url:`/api/v1/admin/media/${saved.id}`,headers:headers(),payload:{version:saved.version}});
+  assert.equal(discardSaved.statusCode,409,discardSaved.body);
+  assert.equal(ApiErrorSchema.parse(discardSaved.json()).error.code,'MEDIA_IN_USE');
+  const bytes=await sharp({create:{width:32,height:24,channels:3,background:'#224466'}}).png().toBuffer();
+  const rights={basis:'owned',note:'Synthetic upload inventory fixture'};
+  const requestPermit=(vehicleId:string)=>call({method:'POST',url:'/api/v1/admin/media/uploads',headers:headers(),
+    payload:{vehicleId,contentType:'image/png',sizeBytes:bytes.length,rights}});
+  const reserve=async(vehicleId:string)=>{
+    const response=await requestPermit(vehicleId);
+    assert.equal(response.statusCode,201,response.body);
+    return MediaUploadResponseSchema.parse(response.json()).data;
+  };
+  const put=(permit:Awaited<ReturnType<typeof reserve>>,payload:Buffer)=>call({
+    method:'PUT',url:permit.uploadUrl,headers:{...headers(),'content-type':'image/png','if-match':String(permit.media.version)},payload,
+  });
+
+  const pending=await reserve(vehicle.id);
+  const rejected=await put(pending,Buffer.alloc(bytes.length));
+  assert.equal(rejected.statusCode,400,rejected.body);
+  assert.equal(ApiErrorSchema.parse(rejected.json()).error.code,'UNSUPPORTED_MEDIA_TYPE');
+  const unfinished=await reserve(vehicle.id);
+  const staged=await put(unfinished,bytes);
+  assert.equal(staged.statusCode,200,staged.body);
+  const readyOrphan=await upload(vehicle);
+  const otherPermit=await reserve(other.id);
+
+  const reloaded=await inventory(vehicle.id);
+  assert.equal(reloaded.limit,30);
+  assert.equal(reloaded.used,5);
+  assert.ok(reloaded.items.every(item=>item.vehicleId===vehicle.id));
+  assert.deepEqual(Object.fromEntries(reloaded.items.map(({id,status})=>[id,status])),{
+    [pending.media.id]:'pending',[unfinished.media.id]:'uploaded',[readyOrphan.id]:'ready',
+  });
+  const otherInventory=await inventory(other.id);
+  assert.equal(otherInventory.used,1);
+  assert.deepEqual(otherInventory.items.map(item=>item.id),[otherPermit.media.id]);
+
+  const recyclable=reloaded.items.find(item=>item.id===readyOrphan.id);
+  assert.ok(recyclable);
+  const recycled=await call({method:'DELETE',url:`/api/v1/admin/media/${recyclable.id}`,headers:headers(),
+    payload:{version:recyclable.version}});
+  assert.equal(recycled.statusCode,204,recycled.body);
+  const remaining=await inventory(vehicle.id);
+  assert.equal(remaining.used,4);
+  assert.ok(remaining.items.every(item=>item.id!==recyclable.id));
+
+  // Seed the remaining active permits in the isolated database to test the quota boundary.
+  const fillIds=Array.from({length:remaining.limit-remaining.used},()=>randomUUID());
+  await runtime.db.pool.query(`INSERT INTO media_assets(id,vehicle_id,content_type,expected_size,expires_at,rights)
+    SELECT fixture.id,$1,'image/png',$2,now()+interval '30 minutes',$3 FROM unnest($4::uuid[]) AS fixture(id)`,
+    [vehicle.id,bytes.length,JSON.stringify(rights),fillIds]);
+  assert.equal((await inventory(vehicle.id)).used,30);
+  const full=await requestPermit(vehicle.id);
+  assert.equal(full.statusCode,422,full.body);
+
+  await runtime.db.pool.query("UPDATE media_assets SET expires_at=now()-interval '1 hour' WHERE id=$1",[pending.media.id]);
+  const afterExpiry=await inventory(vehicle.id);
+  assert.equal(afterExpiry.used,29);
+  assert.ok(afterExpiry.items.every(item=>item.id!==pending.media.id));
+  assert.equal((await runtime.media.get(pending.media.id)).status,'pending');
+  await reserve(vehicle.id);
+  assert.equal((await inventory(vehicle.id)).used,30);
+  const expiredUpload=await put(pending,bytes);
+  assert.equal(expiredUpload.statusCode,409,expiredUpload.body);
+  assert.equal(ApiErrorSchema.parse(expiredUpload.json()).error.code,'MEDIA_NOT_READY');
+
+  const deleted=await call({method:'DELETE',url:`/api/v1/admin/vehicles/${other.id}`,
+    headers:{...headers(),'idempotency-key':randomUUID()},payload:{version:other.version}});
+  assert.equal(deleted.statusCode,200,deleted.body);
+  assert.equal((await call({url:inventoryUrl(other.id),headers:headers()})).statusCode,404);
+});
 test('incomplete manual drafts stay private, demo unknown facts stay null and edited drafts need a current preview',async()=>{
   let vehicle=await publish(await ready());const visible=await runtime.inventory.getPublic(vehicle.id,'ru');
   vehicle.draft.price={kind:'on_request',money:null,includes:[]};vehicle.draft.facts.manufacturedAt=null;vehicle.draft.facts.mileageKm=null;
@@ -877,6 +972,9 @@ test('a full published photo set can replace an image without deleting historica
   const old=vehicle.draft.media.pop()!;vehicle=await runtime.inventory.save(vehicle.id,vehicle.version,vehicle.draft,actor);
   const replacement=await runtime.media.create({vehicleId:vehicle.id,contentType:'image/png',sizeBytes:bytes.length,rights:{basis:'owned',note:'Replacement'}},actor);
   assert.ok(replacement.media.id);assert.equal((await runtime.inventory.getPublic(vehicle.id,'en')).images.length,30);
+  const recovery=await runtime.media.listRecoverableUploads(vehicle.id);
+  assert.equal(recovery.used,30);
+  assert.deepEqual(recovery.items.map(item=>item.id),[replacement.media.id]);
   const oldMedia=await runtime.media.get(old.id);await assert.rejects(runtime.media.remove(old.id,oldMedia.version,actor),/history/);
 });
 test('protected expired uploads do not starve cleanup of later unreferenced files',async()=>{

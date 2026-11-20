@@ -147,6 +147,91 @@ test('search treats percent underscore and backslash literally, with matching fa
   assert.equal((await inventory.filters(filters({q:'replacement'}))).total,1);
 });
 
+test('searching a literal newline matches one field, never the separator between fields',async()=>{
+  const q='boundary end\nboundary start';
+  const tx=await db.pool.connect();
+  try {
+    await tx.query('BEGIN');
+    await tx.query("UPDATE external_catalog_search SET stock_text='boundary end',make_text='boundary start' WHERE listing_id=$1 AND locale='en'",[externalIds[1]]);
+    await tx.query("UPDATE external_catalog_search SET title_text=$1 WHERE listing_id=$2 AND locale='en'",[q,externalIds[2]]);
+    const input=query({q,sort:'newest',projection:'card'});
+    const page=await listExternalPage(tx,input,24,0,Date.now(),undefined,null,true);
+    assert.equal(page.total,1);
+    assert.deepEqual(page.items.map(({id})=>id),[`ext-${externalIds[2]}`]);
+    assert.equal((await externalFacets(tx,filters({q,projection:'overview'}))).find(({kind})=>kind==='total')?.count,1);
+  } finally {await tx.query('ROLLBACK');tx.release();}
+});
+
+test('Chinese search keeps cross-brand title matches, exact facets and newest card keysets',async()=>{
+  const q='马自达',stamp='2026-03-01T00:00:00.123456Z';
+  const matchingStaff=staffIds.slice(0,2);
+  const [compared,mazda,englishOnly,withdrawn]=externalIds.slice(2,6) as [string,string,string,string];
+  const existingStaff=(await db.pool.query('SELECT id,published_revision_id,published_at::text AS stamp FROM vehicles WHERE id=ANY($1::uuid[])',[matchingStaff])).rows;
+  const existingExternal=(await db.pool.query(`SELECT c.listing_id,c.published_at::text AS stamp,c.facts,c.localized,l.upstream_state
+    FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id WHERE c.listing_id=ANY($1::uuid[])`,[[compared,mazda,englishOnly,withdrawn]])).rows;
+  const search={q,locale:'zh',priceView:'usd',projection:'card',sort:'newest'} as const;
+  try {
+    await db.transaction(async tx=>{
+      for(const id of matchingStaff) {
+        const publication=randomUUID();
+        await tx.query(`INSERT INTO vehicle_publications(id,vehicle_id,data)
+          SELECT $2,v.id,jsonb_set(p.data,'{content,title,translations,zh,text}',to_jsonb($3::text))
+          FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id WHERE v.id=$1`,[id,publication,`门店对比${q}`]);
+        await tx.query('UPDATE vehicles SET published_revision_id=$2,published_at=$3 WHERE id=$1',[id,publication,stamp]);
+      }
+      await tx.query(`UPDATE external_catalog SET published_at=$2,localized=jsonb_set(localized,'{zh,title,text}',to_jsonb($3::text))
+        WHERE listing_id=ANY($1::uuid[])`,[[compared,withdrawn],stamp,`车主比较${q}`]);
+      await tx.query(`UPDATE external_catalog SET published_at=$2,facts=jsonb_set(facts,'{make}','{"id":"mazda","name":"Mazda"}'),
+        localized=jsonb_set(localized,'{zh,display,make,text}',to_jsonb($3::text)) WHERE listing_id=$1`,[mazda,stamp,q]);
+      await tx.query(`UPDATE external_catalog SET localized=jsonb_set(localized,'{en,title,text}',to_jsonb($2::text))
+        WHERE listing_id=$1`,[englishOnly,`English-only comparison: ${q}`]);
+      await tx.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[withdrawn]);
+    });
+
+    const expected=[...matchingStaff].sort().concat([compared,mazda].sort().map(id=>`ext-${id}`));
+    const first=await inventory.listPublic(query(search),'chinese-search');
+    assert.equal(first.meta.totalKind,'exact');
+    assert.equal(first.meta.total,expected.length);
+    assert.deepEqual(first.data.items.map(item=>item.id),expected.slice(0,2));
+    const firstWithSupplier=await inventory.listPublic(query({...search,pageSize:4}),'chinese-search-combined');
+    assert.equal(firstWithSupplier.meta.total,expected.length);
+    assert.deepEqual(firstWithSupplier.data.items.map(item=>item.id),expected);
+    const missing=await inventory.listPublic(query({...search,q:'不存在的品牌'}),'chinese-search-missing');
+    assert.equal(missing.meta.total,0);
+    assert.deepEqual(missing.data.items,[]);
+    const pastEnd=await inventory.listPublic(query({...search,page:3}),'chinese-past-end');
+    assert.equal(pastEnd.meta.total,expected.length);
+    assert.deepEqual(pastEnd.data.items,[]);
+    assert.equal(pastEnd.data.hasMore,false);
+    const overview=await inventory.filters(filters({locale:'zh',q,priceView:'usd',projection:'overview'}));
+    assert.equal(overview.total,first.meta.total);
+    assert.deepEqual(overview.makes.map(make=>[make.id,make.count]),[['fixture_make',3],['mazda',1]]);
+
+    let cursor:string|undefined;
+    for(const [index,id] of expected.entries()) {
+      const page=await inventory.listPublic(query({...search,pageSize:1,pagination:'cursor',cursor}),'chinese-keyset');
+      assert.equal(page.meta.total,expected.length);
+      assert.deepEqual(page.data.items.map(item=>item.id),[id]);
+      cursor=page.data.nextCursor??undefined;
+      assert.equal(Boolean(cursor),index<expected.length-1);
+    }
+
+    const english=await inventory.listPublic(query({...search,locale:'en'}),'english-search');
+    assert.equal(english.meta.total,1);
+    assert.deepEqual(english.data.items.map(item=>item.id),[`ext-${englishOnly}`]);
+  } finally {
+    await db.transaction(async tx=>{
+      for(const row of existingStaff)await tx.query('UPDATE vehicles SET published_revision_id=$2,published_at=$3 WHERE id=$1',
+        [row.id,row.published_revision_id,row.stamp]);
+      for(const row of existingExternal) {
+        await tx.query('UPDATE external_listings SET upstream_state=$2 WHERE id=$1',[row.listing_id,row.upstream_state]);
+        await tx.query('UPDATE external_catalog SET published_at=$2,facts=$3,localized=$4 WHERE listing_id=$1',
+          [row.listing_id,row.stamp,JSON.stringify(row.facts),JSON.stringify(row.localized)]);
+      }
+    });
+  }
+});
+
 test('nested facet counts preserve the latest nonnull label when the newest historical labels are missing',async()=>{
   const tx=await db.pool.connect();await tx.query('BEGIN');
   try {

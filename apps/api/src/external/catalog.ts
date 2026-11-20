@@ -161,9 +161,11 @@ function matches(query: CatalogMatchQuery,quote:FxQuote|null=null) {
     where.push(`f.listing_id=(SELECT id FROM external_listings WHERE inquiry_number=${param(inquiryNumber)}::bigint)`);
   } else if (query.q) {
     const pattern = param(literalPattern(query.q));
-    // The combined GIN candidate may cross field separators; the second predicate cannot.
     where.push(`s.search_document LIKE lower(${pattern}) ESCAPE E'\\\\'`);
-    where.push(`(${['stock_text','make_text','model_text','title_text'].map(field => `lower(s.${field}) LIKE lower(${pattern}) ESCAPE E'\\\\'`).join(' OR ')})`);
+    // The indexed document separates fields with newlines. Only a literal
+    // containing that separator can match across two different fields.
+    if(query.q.includes('\n'))
+      where.push(`(${['stock_text','make_text','model_text','title_text'].map(field => `lower(s.${field}) LIKE lower(${pattern}) ESCAPE E'\\\\'`).join(' OR ')})`);
   }
   return { where: where.length ? ` AND ${where.join(' AND ')}` : '', values };
 }
@@ -352,6 +354,13 @@ const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY
   (CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
     WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[])`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
+const maxCombinedSearchMatches = 8_192;
+
+export function canCountExternalSearchPage(query:PublicVehicleQuery) {
+  // Keep the direct ordered scan for deep pages, cursors and short searches.
+  return query.projection==='card' && query.page===1 && !query.cursor && !query.pagination && (query.sort??'newest')==='newest'
+    && Boolean(query.q && !externalInquiryNumber(query.q) && /[\p{L}\p{N}]{3}/u.test(query.q));
+}
 
 export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null): Promise<number> {
   const { where, values } = matches(query,quote);
@@ -368,13 +377,18 @@ function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
     THEN ${exactUsdSortValue('f.price_cny',`$${last}::numeric`)} END`;
 }
 
-export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null) {
+export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null, countMatches=false):
+Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];total?:number}> {
   const { where, values } = matches(query,quote);
   const sort=query.sort??'newest',numeric=numericSort(sort);
   let column=sort==='mileage_asc'?'f.mileage_km':sort==='year_desc'?'f.model_year':'f.price_cny';
   if(sort.startsWith('price_')&&query.priceView==='usd')column=externalUsdSort(quote,values);
   const sortSelect=numeric?`,(${column}) AS sort_value`:',f.published_at';
-  const selection=`SELECT f.listing_id${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
+  const matched=`SELECT f.listing_id${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
+  const includeTotal=countMatches&&!after&&canCountExternalSearchPage(query);
+  // A newest search can reuse exact matches for both the total and the page.
+  // Keep the wide public projection out of the match set.
+  const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${maxCombinedSearchMatches}`:matched;
   const order=numeric?`ORDER BY ${catalogOrder(column,'f.listing_id',sort)}`:filterOrdered;
   let picked:string;
   if(after && !numeric) {
@@ -390,15 +404,28 @@ export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery,
     picked=`${selection}${seek} ${order} LIMIT $${values.length+1} OFFSET $${values.length+2}`;
     values.push(limit,after?0:offset);
   }
-  const result=await tx.query<CatalogRow & {cursor_published_at:string;cursor_sort_value?:string|null}>(`WITH picked AS MATERIALIZED (${picked})
-    SELECT ${query.projection==='card'?cardColumns:columns},to_char(c.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at
+  const page=`SELECT ${query.projection==='card'?cardColumns:columns},to_char(c.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at
       ${numeric?',picked.sort_value::text AS cursor_sort_value':''}
     FROM picked JOIN external_catalog c ON c.listing_id=picked.listing_id
     JOIN external_listings l ON l.id=c.listing_id
     JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text ${extrasJoin}
-    ${visible} ${numeric?`ORDER BY ${catalogOrder('picked.sort_value','c.listing_id',sort)}`:ordered}`,values);
-  return {items:await materialize(tx,result.rows,query.locale,time,query.priceView,quote,query.projection==='card'),
-    anchors:result.rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}))};
+    ${visible}`;
+  const result=await tx.query<CatalogRow & {cursor_published_at:string;cursor_sort_value?:string|null;total?:number}>(includeTotal
+    ? `WITH matching AS MATERIALIZED (${matched} LIMIT ${maxCombinedSearchMatches+1}),
+      totals AS MATERIALIZED (SELECT count(*)::int AS total FROM matching), picked AS MATERIALIZED (${picked})
+      SELECT page.*, totals.total FROM totals
+      LEFT JOIN (${page}) page ON true ORDER BY page.published_at DESC,page.listing_id`
+    : `WITH picked AS MATERIALIZED (${picked}) ${page}
+      ${numeric?`ORDER BY ${catalogOrder('picked.sort_value','c.listing_id',sort)}`:ordered}`,values);
+  const total=result.rows[0]?.total;
+  // Common terms may match most of the catalog. In that case keep the usual
+  // ordered page plan and let the caller compute the exact total separately.
+  if(total!==undefined&&total>maxCombinedSearchMatches) return listExternalPage(tx,query,limit,offset,time,after,quote);
+  // An out-of-range offset still returns the exact total, with no vehicle row.
+  const rows=result.rows.filter(row=>row.listing_id!==null);
+  return {items:await materialize(tx,rows,query.locale,time,query.priceView,quote,query.projection==='card'),
+    anchors:rows.map(row=>({id:row.listing_id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})})),
+    total};
 }
 const externalFacetGroups = {
   make: ['make_id'], model: ['model_id','make_id'], trim: ['trim_id','make_id','model_id'],
