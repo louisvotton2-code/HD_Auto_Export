@@ -23,7 +23,7 @@ import {listingUuid} from './external/catalog.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
 import { analyticsEventsPath, registerAnalyticsRoutes } from './analytics/routes.js';
-import { MediaService } from './media/service.js';
+import { MAX_VEHICLE_MEDIA, MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
@@ -44,6 +44,10 @@ const idemHeader=z.object({'idempotency-key':adm.IdempotencyKeySchema});
 const vehicleDraftBodyLimit=1024*1024;
 const configurationImportPath='/api/v1/admin/vehicles/:id/configuration-import';
 const configurationImportPreviewPath=`${configurationImportPath}/preview`;
+const vehicleMediaUploadsPath='/api/v1/admin/vehicles/:id/media-uploads';
+const vehicleMediaUploadsResponse=pub.responseSchema(z.strictObject({
+  items:z.array(adm.MediaAssetSchema),used:z.number().int().nonnegative(),limit:z.literal(MAX_VEHICLE_MEDIA),
+}));
 // A JSON string wrapper may escape each byte of the original JSON file as a six-byte sequence.
 const configurationImportBodyLimit=6*adm.CONFIGURATION_IMPORT_JSON_BYTES+1024;
 const errorResponses=Object.fromEntries([400,401,403,404,409,413,422,429,500,503].map(code=>[code,pub.ApiErrorSchema]));
@@ -177,7 +181,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       if ((route===staffPath || route.startsWith(`${staffPath}/`)) && !member.permissions.includes('staff:manage')) {
         throw new ApiError(403,'FORBIDDEN','Staff management permission is required.');
       }
-      if((external || route.endsWith('/activity')) && !member.permissions.includes('vehicles:read')) {
+      if((external || route.endsWith('/activity') || route===vehicleMediaUploadsPath) && !member.permissions.includes('vehicles:read')) {
         throw new ApiError(403,'FORBIDDEN','Vehicle read permission is required.');
       }
       const changesExternalListing = request.method==='PUT' && route===externalOverridesPath ||
@@ -505,6 +509,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.put('/api/v1/admin/home/vehicle-sections',{schema:adminSchema('saveHome',{body:adm.SaveHomeSectionsRequestSchema,response:{200:adm.AdminHomeSectionsResponseSchema,...errorResponses}})},async request=>response(await inventory.saveHome(request.body as adm.AdminHomeSections,actor(request)),request));
 
   app.post('/api/v1/admin/media/uploads',{schema:adminSchema('createUpload',{body:adm.MediaUploadRequestSchema,response:{201:adm.MediaUploadResponseSchema,...errorResponses}})},async(request,reply)=>reply.code(201).send(response(await media.create(request.body as adm.MediaUploadRequest,actor(request)),request)));
+  app.get(vehicleMediaUploadsPath,{schema:adminSchema('listRecoverableVehicleUploads',{params:IdParams,response:{200:vehicleMediaUploadsResponse,...errorResponses}})},
+    async request=>response(await media.listRecoverableUploads((request.params as {id:string}).id),request));
   app.get('/api/v1/admin/media/:id',{schema:adminSchema('mediaStatus',{params:IdParams,response:{200:adm.MediaAssetResponseSchema,...errorResponses}})},async request=>response(await media.get((request.params as {id:string}).id),request));
   app.addContentTypeParser(['image/jpeg','image/png','image/webp'],{parseAs:'buffer',bodyLimit:10*1024*1024},(_request,body,done)=>done(null,body));
   app.put('/api/v1/admin/media/:id/content',{bodyLimit:10*1024*1024,schema:adminSchema('uploadContent',{params:IdParams,headers:versionHeader,response:{200:adm.MediaAssetResponseSchema,...errorResponses}})},async request=>{

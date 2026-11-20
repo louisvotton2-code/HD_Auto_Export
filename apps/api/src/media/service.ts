@@ -13,6 +13,18 @@ type MediaRow = {id:string;vehicle_id:string;version:number;state:'pending'|'upl
   width:number|null;height:number|null;byte_size:number|null;expected_size:number;expires_at:Date;created_at:Date;rights:MediaRights};
 const dto=(r:MediaRow)=>MediaAssetSchema.parse({id:r.id,vehicleId:r.vehicle_id,version:r.version,status:r.state,contentType:r.content_type,
   sizeBytes:r.expected_size,width:r.width,height:r.height,rights:r.rights,previewPath:r.state==='ready'?`/api/v1/admin/media/${r.id}/preview`:null,createdAt:r.created_at.toISOString()});
+export const MAX_VEHICLE_MEDIA = 30;
+// Saved draft IDs can use any UUID spelling accepted by the ownership check.
+const draftReference=`EXISTS(SELECT 1 FROM vehicle_drafts d
+  CROSS JOIN LATERAL jsonb_array_elements(
+    CASE WHEN jsonb_typeof(d.data->'media')='array' THEN d.data->'media' ELSE '[]'::jsonb END
+  ) AS attachment(item)
+  WHERE d.vehicle_id=m.vehicle_id AND
+    CASE WHEN pg_input_is_valid(attachment.item->>'id','uuid') THEN (attachment.item->>'id')::uuid END=m.id)`;
+const publicationReference='EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)';
+const permitExpired='m.expires_at<statement_timestamp()';
+const mediaQuotaRows=`FROM media_assets m WHERE m.vehicle_id=$1 AND m.state<>'deleted'
+  AND (${draftReference} OR (NOT ${publicationReference} AND (m.state<>'pending' OR NOT (${permitExpired}))))`;
 const companyDefaultRights: MediaRights = {
   basis: 'permission',
   note: 'Company authorization for staff-uploaded manual vehicle images.',
@@ -26,7 +38,8 @@ export class MediaService {
     // All media mutations and publication use vehicle -> media lock order.
     const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[media.vehicle_id]);
     if(!vehicle.rowCount) throw notFound();
-    const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
+    const row=(await tx.query<MediaRow & {permit_expired:boolean}>(`SELECT m.*, ${permitExpired} AS permit_expired
+      FROM media_assets m WHERE m.id=$1 FOR UPDATE`,[id])).rows[0];
     if(!row || row.state==='deleted') throw notFound();
     if(version!==undefined&&row.version!==version) throw conflict();
     return row;
@@ -43,10 +56,8 @@ export class MediaService {
         throw new ApiError(400,'INVALID_REQUEST',message,[{path:'rights',code:'INVALID_FIELD',message}]);
       }
       const rights=input.rights??companyDefaultRights;
-      const count=await tx.query(`SELECT count(*)::int AS count FROM media_assets m WHERE m.vehicle_id=$1 AND m.state<>'deleted'
-        AND (NOT EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)
-          OR EXISTS(SELECT 1 FROM vehicle_drafts d WHERE d.vehicle_id=m.vehicle_id AND d.data->'media' @> jsonb_build_array(jsonb_build_object('id',m.id))))`,[input.vehicleId]);
-      if(count.rows[0].count>=30) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED','A vehicle can have at most 30 active images.');
+      const count=await tx.query<{count:number}>(`SELECT count(*)::int AS count ${mediaQuotaRows}`,[input.vehicleId]);
+      if(count.rows[0]!.count>=MAX_VEHICLE_MEDIA) throw new ApiError(422,'PUBLISH_VALIDATION_FAILED',`A vehicle can have at most ${MAX_VEHICLE_MEDIA} active images.`);
       const id=randomUUID();
       const result=await tx.query<MediaRow>(`INSERT INTO media_assets(id,vehicle_id,content_type,expected_size,rights,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '30 minutes') RETURNING *`,[id,input.vehicleId,input.contentType,input.sizeBytes,JSON.stringify(rights)]);
       const row=result.rows[0]!;
@@ -60,7 +71,7 @@ export class MediaService {
   async upload(id:string,version:number,bytes:Buffer,contentType:string,actor:Actor) {
     return this.db.transaction(async tx=>{
       const row=await this.lock(tx,id,version);
-      if(row.state!=='pending'||row.expires_at.getTime()<Date.now()) throw new ApiError(409,'MEDIA_NOT_READY','Upload permit has expired or is already used.');
+      if(row.state!=='pending'||row.permit_expired) throw new ApiError(409,'MEDIA_NOT_READY','Upload permit has expired or is already used.');
       if(bytes.length!==row.expected_size||contentType!==row.content_type) throw new ApiError(400,'INVALID_REQUEST','Upload does not match its declared size and type.');
       const result=await this.store.put(id,bytes,contentType);
       const updated=await tx.query<MediaRow>("UPDATE media_assets SET state='uploaded',width=$2,height=$3,byte_size=$4,version=version+1 WHERE id=$1 RETURNING *",[id,result.width,result.height,result.byteSize]);
@@ -83,6 +94,18 @@ export class MediaService {
     const row=(await this.db.pool.query<MediaRow>("SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id WHERE m.id=$1 AND m.state<>'deleted' AND v.deleted_at IS NULL",[id])).rows[0];
     if(!row) throw notFound();return dto(row);
   }
+  async listRecoverableUploads(vehicleId:string) {
+    return this.db.transaction(async tx=>{
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const vehicle=await tx.query('SELECT 1 FROM vehicles WHERE id=$1 AND deleted_at IS NULL',[vehicleId]);
+      if(!vehicle.rowCount) throw notFound();
+      // Use the create limit's exact scope. At this point the only rows that
+      // can still have publication history are already attached to the draft.
+      const {rows}=await tx.query<MediaRow & {draft_attached:boolean}>(`SELECT m.*, ${draftReference} AS draft_attached
+        ${mediaQuotaRows} ORDER BY m.created_at DESC,m.id`,[vehicleId]);
+      return {items:rows.filter(row=>!row.draft_attached).map(dto),used:rows.length,limit:MAX_VEHICLE_MEDIA};
+    });
+  }
   private async authorizePreview(id:string) {
     const row=(await this.db.pool.query<MediaRow>("SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id WHERE m.id=$1 AND m.state='ready' AND v.deleted_at IS NULL",[id])).rows[0];
     if(!row) throw notFound();
@@ -104,12 +127,15 @@ export class MediaService {
     await this.authorizePublic(id);
     return this.store.preparePublicDelivery(id,variant,options);
   }
+  private async hasReferences(tx:PoolClient,id:string) {
+    const result=await tx.query(`SELECT 1 FROM media_assets m WHERE m.id=$1
+      AND (${publicationReference} OR ${draftReference})`,[id]);
+    return Boolean(result.rowCount);
+  }
   async remove(id:string,version:number,actor:Actor) {
     const vehicleId=await this.db.transaction(async tx=>{
       const row=await this.lock(tx,id,version);
-      const historical=await tx.query('SELECT 1 FROM publication_media WHERE media_id=$1 LIMIT 1',[id]);
-      const draft=await tx.query('SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$1 AND data->\'media\' @> $2::jsonb',[row.vehicle_id,JSON.stringify([{id}])]);
-      if(historical.rowCount||draft.rowCount) throw new ApiError(409,'MEDIA_IN_USE','Remove draft references first; publication history references are protected.');
+      if(await this.hasReferences(tx,row.id)) throw new ApiError(409,'MEDIA_IN_USE','Remove draft references first; publication history references are protected.');
       await tx.query("UPDATE media_assets SET state='deleted',version=version+1 WHERE id=$1",[id]);
       await audit(tx,actor,'media.delete',row.vehicle_id,version,version+1,activityChanges(row.state,'deleted',`media.${id}.state`));
       return row.vehicle_id;
@@ -125,8 +151,7 @@ export class MediaService {
       if(!vehicle.rowCount) return false;
       const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!row || row.state!=='deleted') return false;
-      const references=await tx.query(`SELECT 1 FROM publication_media WHERE media_id=$1 UNION ALL SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$2 AND data->'media' @> $3::jsonb LIMIT 1`,[id,vehicleId,JSON.stringify([{id}])]);
-      if(references.rowCount) return false;
+      if(await this.hasReferences(tx,row.id)) return false;
       // Keep the vehicle lock until unlink finishes. A concurrent vehicle soft
       // deletion can only commit before this check (skip) or after the removal.
       // If unlink/commit fails the deleted row remains safe for a later retry.
@@ -138,19 +163,18 @@ export class MediaService {
   async cleanupExpired() {
     const candidates=await this.db.pool.query<MediaRow>(`SELECT m.* FROM media_assets m JOIN vehicles v ON v.id=m.vehicle_id
       WHERE v.deleted_at IS NULL AND (m.state='deleted' OR m.expires_at<now())
-      AND NOT EXISTS(SELECT 1 FROM publication_media pm WHERE pm.media_id=m.id)
-      AND NOT EXISTS(SELECT 1 FROM vehicle_drafts d WHERE d.vehicle_id=m.vehicle_id AND d.data->'media' @> jsonb_build_array(jsonb_build_object('id',m.id)))
+      AND NOT ${publicationReference} AND NOT ${draftReference}
       ORDER BY m.created_at LIMIT 100`);
     let removed=0;
     for(const candidate of candidates.rows) {
       const safe=await this.db.transaction(async tx=>{
         const vehicle=await tx.query('SELECT id FROM vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[candidate.vehicle_id]);
         if(!vehicle.rowCount) return false;
-        const row=(await tx.query<MediaRow>('SELECT * FROM media_assets WHERE id=$1 FOR UPDATE',[candidate.id])).rows[0];
+        const row=(await tx.query<MediaRow & {permit_expired:boolean}>(`SELECT m.*, ${permitExpired} AS permit_expired
+          FROM media_assets m WHERE m.id=$1 FOR UPDATE`,[candidate.id])).rows[0];
         if(!row) return false;
-        if(row.state!=='deleted' && row.expires_at.getTime()>=Date.now()) return false;
-        const references=await tx.query(`SELECT 1 FROM publication_media WHERE media_id=$1 UNION ALL SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$2 AND data->'media' @> $3::jsonb LIMIT 1`,[row.id,row.vehicle_id,JSON.stringify([{id:row.id}])]);
-        if(references.rowCount) return false;
+        if(row.state!=='deleted' && !row.permit_expired) return false;
+        if(await this.hasReferences(tx,row.id)) return false;
         await tx.query("UPDATE media_assets SET state='deleted',version=version+1 WHERE id=$1 AND state<>'deleted'",[row.id]);
         return true;
       });
