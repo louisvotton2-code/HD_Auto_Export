@@ -358,6 +358,7 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:Publ
 }
 type CatalogVersion={epoch:string;revision:string};
 export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'result';
+export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 const catalogReadTransaction='SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL jit=off';
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
@@ -783,9 +784,11 @@ export class InventoryService {
         row.publication_data?.configuration,vehicle.configuration,locale),...(englishTitle?{englishTitle}:{})},locale);
     });
   }
-  async listPublic(query:PublicVehicleQuery,requestId:string) {
+  async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void) {
+    phase?.('database');
     return this.db.transaction(async tx=>{
       await tx.query(catalogReadTransaction);
+      phase?.('revision');
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
       const fx=query.priceView==='usd'?(quote?.version??'none'):undefined;
       const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
@@ -793,11 +796,17 @@ export class InventoryService {
       const binding=queryBinding(query,includeExternal);
       const cursor=query.cursor?decodeCursor(query.cursor,binding,version!,fx,query.sort):null;
       if(cursor?.stream==='external'&&!includeExternal)throw new ApiError(400,'INVALID_REQUEST','External cursor is unavailable.');
+      phase?.('staff_count');
       const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params,quote)}`;
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
       const staffTotal:number=count.rows[0].total;
       const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query);
-      let externalTotal=includeExternal&&!countWithSearchPage?await countExternal(tx,query,quote):undefined;
+      let externalTotal:number|undefined;
+      if(includeExternal&&!countWithSearchPage) {
+        phase?.('supplier_count');
+        externalTotal=await countExternal(tx,query,quote);
+      }
+      phase?.('staff_page');
       const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
       const limit=query.pageSize+(cursorMode?1:0);
       const sort=query.sort??'newest',numeric=numericSort(sort);
@@ -828,11 +837,17 @@ export class InventoryService {
       const items:Array<PublicVehicle|PublicVehicleCard>=staff?.rows.map(row=>query.projection==='card'?toCard(row,query.locale,query.view,query.priceView,quote):toPublic(row,query.locale,query.view,query.priceView,quote))??[];
       const anchors:Array<{stream:'staff'|'external';after:CatalogAnchor}>=(staff?.rows??[]).map(row=>({stream:'staff',after:{id:row.id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}}));
       if(includeExternal&&items.length<limit) {
+        phase?.('supplier_page');
         const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage);
         items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));
         externalTotal=external.total??externalTotal;
       }
-      const total=staffTotal+(includeExternal?(externalTotal??await countExternal(tx,query,quote)):0);
+      if(includeExternal&&externalTotal===undefined) {
+        phase?.('supplier_count');
+        externalTotal=await countExternal(tx,query,quote);
+      }
+      phase?.('result');
+      const total=staffTotal+(externalTotal??0);
       const page=cursor?.page??query.page,hasMore=cursorMode?items.length>query.pageSize:offset+items.length<total;
       items.splice(query.pageSize);anchors.splice(query.pageSize);
       const last=anchors.at(-1);
@@ -846,8 +861,7 @@ export class InventoryService {
     return (await this.filterResult(query)).value;
   }
 
-  async filterResult(query: PublicFilterQuery, onPhase?: (phase: HomeModelFilterPhase)=>void) {
-    const phase=query.projection==='home-models'?onPhase:undefined;
+  async filterResult(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
     phase?.('database');
     return this.db.transaction(async tx=>{
       await tx.query(catalogReadTransaction);
@@ -855,8 +869,7 @@ export class InventoryService {
     });
   }
 
-  async filterSnapshot(query: PublicFilterQuery, onPhase?: (phase: HomeModelFilterPhase)=>void) {
-    const phase=query.projection==='home-models'?onPhase:undefined;
+  async filterSnapshot(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
     phase?.('database');
     return this.db.transaction(async tx => {
       await tx.query(catalogReadTransaction);
@@ -868,7 +881,9 @@ export class InventoryService {
 
   private async readFilters(tx: PoolClient, query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
     const homeModels=query.projection==='home-models';
-    const quote=query.priceView==='usd'&&!homeModels?await readFxQuote(tx):null;
+    const needsQuote=query.priceView==='usd'&&!homeModels;
+    if(needsQuote) phase?.('revision');
+    const quote=needsQuote?await readFxQuote(tx):null;
     const includeExternal=this.externalCatalog&&query.view==='localized';
     if(homeModels) phase?.('home_scope');
     const scope=homeModels?await this.readHomeModelScope(tx,query.locale,includeExternal):undefined;

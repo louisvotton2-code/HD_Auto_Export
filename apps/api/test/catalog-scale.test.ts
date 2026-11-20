@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
 import {after,before,test} from 'node:test';
 import {PublicVehicleQuerySchema,PublicFilterQuerySchema} from '@hd/contracts/public';
 import {makeVehicleDraftFixture,makePublicVehicleFixture,makeExternalCandidateFixture} from '@hd/contracts/fixtures';
@@ -55,6 +56,37 @@ before(async()=>{
   }
 });
 after(async()=>{await db.close();if(created)await maintenance.pool.query(`DROP DATABASE "${name}" WITH (FORCE)`);await maintenance.close();});
+
+test('0037 adopts the exact prebuilt index and rejects missing or same-name mismatched indexes',async()=>{
+  const migration=await readFile(new URL('../migrations/0037_external_search_zh_trgm.sql',import.meta.url),'utf8');
+  await db.transaction(async tx=>{
+    const oid=async()=>(await tx.query<{oid:string|null}>("SELECT to_regclass('public.external_catalog_search_zh_trgm_idx')::oid::text AS oid")).rows[0]!.oid;
+    const original=await oid();
+    assert.ok(original);
+    await tx.query("SET LOCAL hd.require_prebuilt_search_zh_index='on'");
+    await tx.query('SAVEPOINT original_index');
+    await tx.query(migration);
+    assert.equal(await oid(),original);
+
+    await tx.query('DROP INDEX public.external_catalog_search_zh_trgm_idx');
+    await tx.query('SAVEPOINT missing_index');
+    await assert.rejects(tx.query(migration),/must be prebuilt concurrently/);
+    await tx.query('ROLLBACK TO SAVEPOINT missing_index');
+    assert.equal(await oid(),null);
+
+    await tx.query(`CREATE INDEX external_catalog_search_zh_trgm_idx
+      ON public.external_catalog_search USING gin(search_document gin_trgm_ops) WHERE locale='en'`);
+    const wrong=await oid();
+    assert.ok(wrong&&wrong!==original);
+    await tx.query('SAVEPOINT wrong_index');
+    await assert.rejects(tx.query(migration),/index definition or state does not match/);
+    await tx.query('ROLLBACK TO SAVEPOINT wrong_index');
+    assert.equal(await oid(),wrong);
+
+    await tx.query('ROLLBACK TO SAVEPOINT original_index');
+    assert.equal(await oid(),original);
+  });
+});
 
 test('SQL facets agree with exact totals and preserve unknown and original-currency semantics',async()=>{
   const f=await inventory.filters(filters());assert.equal(f.total,11);assert.equal(f.makes[0]!.count,11);
@@ -145,6 +177,52 @@ test('search treats percent underscore and backslash literally, with matching fa
   await db.pool.query(`UPDATE external_catalog SET localized=jsonb_set(localized,'{en,title,text}','"Replacement token"') WHERE listing_id=$1`,[externalIds[0]]);
   assert.equal((await inventory.listPublic(query({q:'replacement'}),'after')).meta.total,1);
   assert.equal((await inventory.filters(filters({q:'replacement'}))).total,1);
+});
+
+test('search projection rewrites only the rows whose searchable fields change',async()=>{
+  const id=externalIds[2]!,title='Search write fixture title',model='Search write fixture model';
+  const tx=await db.pool.connect();
+  const searchRows=async()=>(await tx.query(`SELECT ctid::text AS tuple,s.* FROM external_catalog_search s
+    WHERE listing_id=$1 ORDER BY locale`,[id])).rows;
+  const matches=async(q:string)=>listExternalPage(tx,query({q,projection:'card'}),24,0,Date.now());
+  try {
+    await tx.query('BEGIN');
+    const initial=await searchRows();
+    assert.deepEqual(initial.map(({locale})=>locale),['en','ru','zh']);
+    assert.ok(initial.every(row=>row.trim_label===null&&row.generation_label===null));
+
+    // The production publication upsert assigns both source JSON columns even for price changes.
+    await tx.query(`INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
+      SELECT listing_id,published_at,platform_name,listing_url,facts,price_cny+1,issues,localized,details
+      FROM external_catalog WHERE listing_id=$1
+      ON CONFLICT(listing_id) DO UPDATE SET price_cny=excluded.price_cny,facts=excluded.facts,localized=excluded.localized`,[id]);
+    assert.deepEqual(await searchRows(),initial);
+    await tx.query("UPDATE external_catalog SET facts=jsonb_set(facts,'{mileageKm}','12001') WHERE listing_id=$1",[id]);
+    assert.deepEqual(await searchRows(),initial);
+    assert.equal((await matches(title)).items.length,0);
+
+    await tx.query(`UPDATE external_catalog SET localized=jsonb_set(
+      jsonb_set(localized,'{en,title,text}',to_jsonb($2::text)),'{en,display,model,text}',to_jsonb($3::text)) WHERE listing_id=$1`,[id,title,model]);
+    const changed=await searchRows();
+    const english=changed.find(row=>row.locale==='en')!;
+    assert.notEqual(english.tuple,initial.find(row=>row.locale==='en')!.tuple);
+    assert.equal(english.title_text,title);
+    assert.equal(english.model_label,model);
+    assert.equal(english.model_text,model);
+    const otherLocales=initial.filter(row=>row.locale!=='en');
+    assert.deepEqual(changed.filter(row=>row.locale!=='en'),otherLocales);
+    for(const q of [title,model]) assert.deepEqual((await matches(q)).items.map(({id})=>id),[`ext-${id}`]);
+
+    const saved=(await tx.query("SELECT localized->'en' AS value FROM external_catalog WHERE listing_id=$1",[id])).rows[0]!.value;
+    await tx.query("UPDATE external_catalog SET localized=localized-'en' WHERE listing_id=$1",[id]);
+    assert.deepEqual(await searchRows(),otherLocales);
+    assert.equal((await matches(title)).items.length,0);
+    await tx.query("UPDATE external_catalog SET localized=jsonb_set(localized,'{en}',$2::jsonb) WHERE listing_id=$1",[id,JSON.stringify(saved)]);
+    const restored=await searchRows();
+    assert.deepEqual(restored.filter(row=>row.locale!=='en'),otherLocales);
+    assert.equal(restored.find(row=>row.locale==='en')!.model_label,model);
+    assert.deepEqual((await matches(title)).items.map(({id})=>id),[`ext-${id}`]);
+  } finally {await tx.query('ROLLBACK');tx.release();}
 });
 
 test('searching a literal newline matches one field, never the separator between fields',async()=>{
