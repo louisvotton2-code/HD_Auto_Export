@@ -22,7 +22,7 @@ import type { TranslationPlanInput, TranslationPlanInputField } from './translat
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair } from '../external/catalog.js';
+import { aggregateCatalogFacets, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -357,6 +357,7 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:Publ
       modelYears:rows('year').map(row=>({year:Number(row.id),count:row.count})).sort((a,b)=>b.year-a.year)}:{})});
 }
 type CatalogVersion={epoch:string;revision:string};
+export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 const catalogReadTransaction='SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL jit=off';
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
@@ -842,44 +843,43 @@ export class InventoryService {
     return (await this.filterResult(query)).value;
   }
 
-  async filterResult(query: PublicFilterQuery) {
+  async filterResult(query: PublicFilterQuery, onPhase?: (phase: HomeModelFilterPhase)=>void) {
+    const phase=query.projection==='home-models'?onPhase:undefined;
+    phase?.('database');
     return this.db.transaction(async tx=>{
       await tx.query(catalogReadTransaction);
-      return this.readFilters(tx,query);
+      return this.readFilters(tx,query,phase);
     });
   }
 
-  async filterSnapshot(query: PublicFilterQuery) {
+  async filterSnapshot(query: PublicFilterQuery, onPhase?: (phase: HomeModelFilterPhase)=>void) {
+    const phase=query.projection==='home-models'?onPhase:undefined;
+    phase?.('database');
     return this.db.transaction(async tx => {
       await tx.query(catalogReadTransaction);
+      phase?.('revision');
       const revision = await readPublicCatalogRevision({pool:tx},query.priceView==='usd','filters');
-      return { revision, ...await this.readFilters(tx,query) };
+      return { revision, ...await this.readFilters(tx,query,phase) };
     });
   }
 
-  private async readFilters(tx: PoolClient, query: PublicFilterQuery) {
-    const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+  private async readFilters(tx: PoolClient, query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
+    const homeModels=query.projection==='home-models';
+    const quote=query.priceView==='usd'&&!homeModels?await readFxQuote(tx):null;
     const includeExternal=this.externalCatalog&&query.view==='localized';
-    let pairs: CatalogModelPair[] | undefined;
-    let expiresAt: number | undefined;
-    if (query.projection === 'home-models') {
-      const home = await this.readPublicHome(tx,query.locale,'localized');
-      const featured = new Map<string,CatalogModelPair>();
-      for (const { vehicles } of home.sections) for (const vehicle of vehicles) {
-        const makeId = vehicle.facts.make?.id, modelId = vehicle.facts.model?.id;
-        if (!vehicle.images.length || !makeId || !modelId) continue;
-        featured.set(JSON.stringify([makeId,modelId]),{makeId,modelId});
-        for (const image of vehicle.images) {
-          if (image.remote?.expiresAt) expiresAt = Math.min(expiresAt ?? Infinity,Date.parse(image.remote.expiresAt));
-        }
-      }
-      pairs = [...featured.values()];
-      if (!pairs.length) return {value:facetData([],[],query,includeExternal)};
+    if(homeModels) phase?.('home_scope');
+    const scope=homeModels?await this.readHomeModelScope(tx,query.locale,includeExternal):undefined;
+    if(scope&&!scope.pairs.length) {
+      phase?.('result');
+      return {value:facetData([],[],query,includeExternal)};
     }
-    const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote,pairs);
+    phase?.('staff_facets');
+    const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote,scope?.pairs);
     const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
-    const external=includeExternal?await externalFacets(tx,query,quote,pairs):[];
-    return {value:facetData(staff,external,query,includeExternal),expiresAt};
+    if(includeExternal) phase?.('supplier_facets');
+    const external=includeExternal?await externalFacets(tx,query,quote,scope?.pairs):[];
+    phase?.('result');
+    return {value:facetData(staff,external,query,includeExternal),expiresAt:scope?.expiresAt};
   }
 
   async getHome():Promise<AdminHomeSections> {
@@ -915,15 +915,47 @@ export class InventoryService {
   }
 
   private async readPublicHome(tx:PoolClient,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {
-    const config=(await tx.query('SELECT sections FROM home_config WHERE id=1')).rows[0] as Pick<AdminHomeSections,'sections'>;
-    const {staff,supplier}=homeVehicleIds(config.sections);
-    const params:unknown[]=[staff];const visible=localeVisible(locale,params);
-    const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
-    const map=new Map(rows.rows.map(r=>[r.id,toPublic(r,locale,view,priceView,quote)]));
+    const {sections,staff,supplier}=await this.readHomeSelection(tx);
+    const vehicles=await this.readStaffHomeVehicles(tx,staff,locale,view,priceView,quote);
+    const map=new Map(vehicles.map(vehicle=>[vehicle.id,vehicle]));
     if(view==='localized'&&this.externalCatalog) {
       const external=await readExternalHomeVehicles(tx,supplier,locale,Date.now(),priceView,quote);
       for(const vehicle of external)map.set(vehicle.id,vehicle);
     }
-    return {sections:config.sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
+    return {sections:sections.map(s=>({id:s.id,title:s.title[locale],vehicles:s.vehicleIds.map(id=>map.get(id.toLowerCase())).filter((v):v is PublicVehicle=>!!v)})).filter(s=>s.vehicles.length)};
+  }
+
+  private async readHomeSelection(tx:PoolClient) {
+    const {sections}=(await tx.query<Pick<AdminHomeSections,'sections'>>('SELECT sections FROM home_config WHERE id=1')).rows[0]!;
+    return {sections,...homeVehicleIds(sections)};
+  }
+
+  private async readStaffHomeVehicles(tx:PoolClient,ids:string[],locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {
+    if(!ids.length) return [];
+    const params:unknown[]=[ids];const visible=localeVisible(locale,params);
+    const rows=await tx.query<Row>(`${publicSelect} WHERE v.id=ANY($1::uuid[]) AND ${homeVisible} AND ${visible}`,params);
+    return rows.rows.map(row=>toPublic(row,locale,view,priceView,quote));
+  }
+
+  private async readHomeModelScope(tx:PoolClient,locale:Locale,includeExternal:boolean) {
+    const {staff,supplier}=await this.readHomeSelection(tx);
+    const featured=new Map<string,CatalogModelPair>();
+    let expiresAt: number | undefined;
+    const recordExpiry=(time:number)=>{ expiresAt=Math.min(expiresAt ?? Infinity,time); };
+    for(const vehicle of await this.readStaffHomeVehicles(tx,staff,locale,'localized')) {
+      const makeId=vehicle.facts.make?.id,modelId=vehicle.facts.model?.id;
+      if(!vehicle.images.length||!makeId||!modelId) continue;
+      featured.set(JSON.stringify([makeId,modelId]),{makeId,modelId});
+      for(const image of vehicle.images) {
+        if(image.remote?.expiresAt) recordExpiry(Date.parse(image.remote.expiresAt));
+      }
+    }
+    if(includeExternal) {
+      for(const {makeId,modelId,expiresAt:coverExpiry} of await readExternalHomeModelPairs(tx,supplier,locale,Date.now())) {
+        featured.set(JSON.stringify([makeId,modelId]),{makeId,modelId});
+        if(coverExpiry) recordExpiry(coverExpiry.getTime());
+      }
+    }
+    return {pairs:[...featured.values()],expiresAt};
   }
 }

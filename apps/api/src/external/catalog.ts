@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import {
-  PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
+  IdSchema, PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
 } from '@hd/contracts/public';
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
@@ -230,8 +230,10 @@ const columns = `c.listing_id,c.published_at,c.facts,c.price_cny,c.issues,
 const cardColumns = `c.listing_id,c.published_at,c.facts,c.price_cny,
   jsonb_build_object('title',c.localized->$1::text->'title','display',c.localized->$1::text->'display') AS localized,
   l.inquiry_number::text AS inquiry_number,l.fetched_at,l.source_updated_at,x.data AS extras,ARRAY(SELECT jsonb_object_keys(coalesce(o.data->'facts','{}'::jsonb))) AS overridden_names`;
-const extrasJoin = ' LEFT JOIN external_vehicle_extras x ON x.listing_id=c.listing_id AND x.locale=$1::text LEFT JOIN external_listing_overrides o ON o.listing_id=c.listing_id';
-const from = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text' + extrasJoin;
+const overridesJoin = ' LEFT JOIN external_listing_overrides o ON o.listing_id=c.listing_id';
+const extrasJoin = ' LEFT JOIN external_vehicle_extras x ON x.listing_id=c.listing_id AND x.locale=$1::text' + overridesJoin;
+const localizedCatalogFrom = 'FROM external_catalog c JOIN external_listings l ON l.id=c.listing_id JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text';
+const from = localizedCatalogFrom + extrasJoin;
 // Catalogue rows only exist for visible listings. This second predicate is also useful when repairing projections.
 const visible = "WHERE l.upstream_state='active'";
 const ordered = 'ORDER BY c.published_at DESC,c.listing_id';
@@ -249,11 +251,14 @@ export async function eligibleExternalHomeIds(tx: PoolClient, ids: string[]) {
   return result.rows.map(({id}) => publicListingId(id));
 }
 
+function firstActiveCover(listing: string, asOf: string) {
+  return `FROM external_media WHERE active AND listing_id=${listing} AND (expires_at IS NULL OR expires_at>${asOf}::timestamptz)
+    ORDER BY position,id LIMIT 1`;
+}
 async function coverPhotos(tx: Queryable, ids: string[], time: number) {
   const result = await tx.query<ImageRow>(`SELECT m.* FROM unnest($1::uuid[]) AS picked(listing_id) CROSS JOIN LATERAL (
-    SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at FROM external_media
-    WHERE active AND listing_id=picked.listing_id AND (expires_at IS NULL OR expires_at>$2::timestamptz)
-    ORDER BY position,id LIMIT 1) m`, [ids, new Date(time).toISOString()]);
+    SELECT id,listing_id,url,alt,width,height,position,revision,refreshed_at,expires_at
+    ${firstActiveCover('picked.listing_id','$2')}) m`, [ids, new Date(time).toISOString()]);
   return new Map(result.rows.map(photo => [photo.listing_id, [photo]]));
 }
 
@@ -267,6 +272,22 @@ export async function readExternalHomeVehicles(tx: PoolClient, ids: string[], lo
   return result.rows.map(row => {
     const card = toCard(row, covers.get(row.listing_id) ?? [], locale, priceView, quote);
     return PublicVehicleSchema.parse({ ...card, content: { ...card.content, description: null }, external: { issues: row.issues } });
+  });
+}
+
+export async function readExternalHomeModelPairs(tx: PoolClient, ids: string[], locale: Locale, time: number) {
+  if (!ids.length) return [];
+  const result = await tx.query<{makeId:unknown;modelId:unknown;expiresAt:Date|null}>(`SELECT
+      c.facts->'make'->'id' AS "makeId",c.facts->'model'->'id' AS "modelId",cover.expires_at AS "expiresAt"
+    ${localizedCatalogFrom}${overridesJoin}
+    CROSS JOIN LATERAL (SELECT expires_at ${firstActiveCover('c.listing_id','$3')}) cover
+    WHERE c.listing_id=ANY($2::uuid[]) AND ${homeExternalVisible}`,
+  [locale,ids,new Date(time).toISOString()]);
+  return result.rows.flatMap(({makeId,modelId,expiresAt})=>{
+    // Keep JSON types until validation. Text extraction can turn a malformed
+    // numeric ID into a valid-looking string.
+    const make=IdSchema.safeParse(makeId),model=IdSchema.safeParse(modelId);
+    return make.success&&model.success?[{makeId:make.data,modelId:model.data,expiresAt}]:[];
   });
 }
 
