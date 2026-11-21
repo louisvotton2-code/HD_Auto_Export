@@ -3,7 +3,7 @@ import type { Locale } from '@/i18n/routing';
 
 afterEach(() => vi.unstubAllEnvs());
 
-async function configure(enabled: boolean) {
+async function configure(enabled: boolean | 'static') {
   vi.stubEnv('SITE_INDEXABLE', String(enabled));
   vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://seo.example.com');
   vi.resetModules();
@@ -48,6 +48,40 @@ describe('public search metadata', () => {
     const safe = jsonLdText(unsafe);
     expect(safe).not.toContain('<');
     expect(JSON.parse(safe)).toEqual(unsafe);
+  });
+
+  it('keeps static search eligibility, robots and sitemap on the same paths without reading vehicle SEO', async () => {
+    const { pageMetadata } = await configure('static');
+    const robots = (await import('@/app/robots')).default();
+    const manifest = vi.fn().mockRejectedValue(new Error('Vehicle SEO is disabled'));
+    vi.doMock('@/modules/vehicles/server', () => ({ getPublicSeoManifest: manifest }));
+    try {
+      const response = await (await import('@/app/sitemap.xml/route')).GET();
+      expect(response.status).toBe(200);
+      expect(manifest).not.toHaveBeenCalled();
+      const xml = await response.text();
+      const advertised = [...xml.matchAll(/<loc>https:\/\/seo\.example\.com([^<]+)<\/loc>/g)]
+        .map((match) => match[1]).sort();
+      expect(advertised).toEqual(['/en/about/', '/en/buy/', '/ru/about/', '/ru/buy/', '/zh/about/', '/zh/buy/']);
+      expect(robots.rules).toMatchObject({
+        disallow: '/',
+        allow: expect.arrayContaining([...advertised.map((path) => `${path}$`), '/sitemap-*.xml$', '/flags/']),
+      });
+      for (const path of ['/about/', '/buy/']) {
+        expect(pageMetadata({ path, locale: 'ru', title: 'Title' })).toMatchObject({
+          robots: { index: true, follow: true },
+          alternates: { canonical: `https://seo.example.com/ru${path}`, languages: {
+            'zh-Hans': `https://seo.example.com/zh${path}`, en: `https://seo.example.com/en${path}`,
+            ru: `https://seo.example.com/ru${path}`, 'x-default': `https://seo.example.com/ru${path}`,
+          } },
+        });
+      }
+      for (const path of ['/', '/cars/', '/cars/qualified/', '/calculator/russia/']) {
+        expect(pageMetadata({ path, locale: 'ru', title: 'Title' }).robots).toEqual({ index: false, follow: false });
+      }
+    } finally {
+      vi.doUnmock('@/modules/vehicles/server');
+    }
   });
 
   it('publishes only manifest locales and rejects an oversized fallback sitemap', async () => {

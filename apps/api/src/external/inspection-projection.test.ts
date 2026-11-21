@@ -51,7 +51,26 @@ test('missing, pending, explicit absence, unavailable and mismatched evidence ne
  assert.equal(selectInspection([doc({...report,available:false})],identity,{},'en').status,'unavailable');
  assert.equal(selectInspection([doc({id:identity.externalId,hasReport:false})],identity,{},'en').status,'no_report');
  assert.equal(selectInspection([doc({...report,id:'900009'})],identity,{},'en').status,'unknown');
+ assert.equal(selectInspection([doc({...report,id:[identity.externalId]})],identity,{},'en').status,'unknown');
+ assert.equal(selectInspection([doc({...report,id:Number(identity.externalId)})],identity,{},'en').status,'available');
  assert.equal(selectInspection([doc({id:identity.externalId,checks:[],counts:[],summary:[],defects:[]})],identity,{},'en').status,'unavailable');
  const unsafe=projectInspectionReport({checks:[{category:'https://private.invalid',groups:[{name:'Contact: +12345678901',items:[{part:'Door',result:'OK',ok:true}]}]}]},'en');
  assert.equal(unsafe.status,'unavailable');assert.equal(unsafe.items.length,0);
+});
+
+test('inspection projection omits rows with a rejected supplied category or part',()=>{
+ const projection=projectInspectionReport({checks:[
+  {category:'　Ｐｈｏｎｅ　',groups:[{name:'Body',items:[{part:'(202) 555-0103',result:'(202) 555-0142',ok:false}]}]},
+  {category:'Major accident check',groups:[
+   {name:'(202) 555-0104',items:[{part:'Phone',result:'OK',ok:true}]},
+   {name:'Body',items:[{part:'内部采购成本',result:73421,ok:false},{part:'Hood',result:'Repaired',ok:false}]},
+  ]},
+  {groups:[{name:'Other inspection',items:[{result:'Factory finish',ok:true}]}]},
+  {category:null,groups:[{name:'Other inspection',items:[{part:'　',result:12,ok:true}]}]},
+ ]},'en');
+ assert.equal(projection.status,'available');
+ assert.deepEqual(projection.items.map(({id,categoryId,part,value})=>[id,categoryId,part?.text??null,value.text]),[
+  ['check.1.1.1','accident','Hood','Repaired'],['check.2.0.0',null,null,'Factory finish'],['check.3.0.0',null,null,'12'],
+ ]);
+ projection.items.forEach(item=>PublicInspectionEntrySchema.parse(item));
 });

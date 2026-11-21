@@ -124,12 +124,9 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         text = text.replace('set $hd_page_documents_enabled 0;', 'set $hd_page_documents_enabled 1;')
     if page_visits:
         text = text.replace('set $hd_page_visits_enabled 0;', 'set $hd_page_visits_enabled 1;')
-    block='''    location ^~ /_next/static/ {
-        root /srv/hd-assets;
-        try_files $uri =404;
-        add_header Cache-Control $hd_asset_cache_control always;
-    }'''
-    text=re.sub(r'    location \^~ /_next/static/ \{\n.*?\n    \}',lambda _:block,text,flags=re.S)
+    # Replace the upstream only, retaining MIME, compression and response policies from the template.
+    text=re.sub(r'(    location \^~ /_next/static/ \{\n)(?:        [^\n]*\n)*?(?=        gzip_types )',
+                r'\1        root /srv/hd-assets;\n        try_files $uri =404;\n',text)
     if html_cache_host:
         text = text.replace('    # HD_HTML_CACHE_LOCATIONS', f'''    location ~ "^/(zh|en|ru)/$" {{
         error_page 419 502 504 = @hd_home_dynamic;
@@ -137,15 +134,19 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $web http://{html_cache_host}:3010;
         include /etc/nginx/hd-domains/web-proxy.conf;
+        gzip on;
         proxy_intercept_errors on;
         proxy_hide_header Cache-Control;
+        add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;
     }}
     location @hd_home_dynamic {{
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $web http://{web_host}:3000;
         include /etc/nginx/hd-domains/web-proxy.conf;
+        gzip on;
         proxy_hide_header Cache-Control;
+        add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;
     }}''')
     files['default.conf']=text

@@ -211,17 +211,19 @@ class GeoGatewayTests(unittest.TestCase):
     def test_scope_and_no_forwarded_spoofing(self):
         with gateway(True) as root:
             for address, method, path, host, country, trusted in (
-                ('8.8.8.7', 'POST', PATH, HOST, b'US', True),
+                ('8.8.8.7', 'POST', CONTACT, HOST, b'US', True),
                 ('2001:4860::1234', 'POST', CONTACT, HOST, b'RU', True),
-                ('9.9.9.9', 'POST', PATH, HOST, b'', True),
+                ('9.9.9.9', 'POST', CONTACT, HOST, b'', True),
                 ('10.0.0.1', 'POST', CONTACT, HOST, b'', True),
-                ('::ffff:10.0.0.1', 'POST', PATH, HOST, b'', True),
-                ('bad', 'POST', PATH, HOST, b'', True),
-                ('8.8.8.7', 'POST', PATH+'/', HOST, b'', False),
-                ('8.8.8.7', 'POST', PATH.upper(), HOST, b'', False),
-                ('8.8.8.7', 'POST', PATH+'?test=1', HOST, b'', False),
-                ('8.8.8.7', 'POST', PATH, 'admin.hongdingauto.com', b'', False),
-                ('8.8.8.7', 'GET', PATH, HOST, b'', False),
+                ('::ffff:10.0.0.1', 'POST', CONTACT, HOST, b'', True),
+                ('bad', 'POST', CONTACT, HOST, b'', True),
+                ('8.8.8.7', 'POST', PATH, HOST, b'', False),
+                ('2001:4860::1234', 'POST', PATH, HOST, b'', False),
+                ('8.8.8.7', 'POST', CONTACT+'/', HOST, b'', False),
+                ('8.8.8.7', 'POST', CONTACT.upper(), HOST, b'', False),
+                ('8.8.8.7', 'POST', CONTACT+'?test=1', HOST, b'', False),
+                ('8.8.8.7', 'POST', CONTACT, 'admin.hongdingauto.com', b'', False),
+                ('8.8.8.7', 'GET', CONTACT, HOST, b'', False),
                 ('8.8.8.7', 'POST', '/zh/', HOST, b'', False),
             ):
                 # Stay below the existing global SSR limiter on the Unix peer.
@@ -243,7 +245,8 @@ class GeoGatewayTests(unittest.TestCase):
     def test_empty_table_disables_live_lookup_without_restarting_gateway(self):
         with gateway(True) as root:
             pid = (root/'nginx.pid').read_text()
-            self.assertEqual(request(root, '8.8.8.7'), result(b'US', True))
+            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result(b'US', True))
+            self.assertEqual(request(root, '8.8.8.7'), result())
             empty = root/'dataset/country.next'
             shutil.copyfile(HERE/'production/analytics-geo-disabled.conf', empty)
             empty.replace(root/'dataset/country.conf')
@@ -251,16 +254,17 @@ class GeoGatewayTests(unittest.TestCase):
             subprocess.run([*command, '-t'], check=True, capture_output=True, timeout=5)
             subprocess.run([*command, '-s', 'reload'], check=True, capture_output=True, timeout=5)
             deadline = time.monotonic()+3
-            while request(root, '8.8.8.7') == result(b'US', True) and time.monotonic() < deadline:
+            while request(root, '8.8.8.7', path=CONTACT) == result(b'US', True) and time.monotonic() < deadline:
                 time.sleep(.025)
-            self.assertEqual(request(root, '8.8.8.7'), result(authenticated=True))
+            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result(authenticated=True))
 
             (root/'dataset/gateway-key.conf').unlink()
             subprocess.run([*command, '-t'], check=True, capture_output=True, timeout=5)
             subprocess.run([*command, '-s', 'reload'], check=True, capture_output=True, timeout=5)
             deadline = time.monotonic()+3
-            while request(root, '8.8.8.7') == result(authenticated=True) and time.monotonic() < deadline:
+            while request(root, '8.8.8.7', path=CONTACT) == result(authenticated=True) and time.monotonic() < deadline:
                 time.sleep(.025)
+            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result())
             self.assertEqual(request(root, '8.8.8.7'), result())
             self.assertEqual((root/'nginx.pid').read_text(), pid)
 

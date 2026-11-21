@@ -1,6 +1,9 @@
 import { resolveSiteOrigin } from './site-origin';
 
 const indexable = process.env.SITE_INDEXABLE === 'true';
+const staticIndexable = process.env.SITE_INDEXABLE === 'static';
+
+export const staticSearchPaths: readonly string[] = ['/about/', '/buy/'];
 
 export const siteConfig = {
   name: 'HD Auto Export',
@@ -25,8 +28,9 @@ export const siteConfig = {
       { display: '+86 199 3899 9916', copyValue: '+8619938999916' },
     ],
   },
-  origin: resolveSiteOrigin(process.env.NEXT_PUBLIC_SITE_URL, indexable),
+  origin: resolveSiteOrigin(process.env.NEXT_PUBLIC_SITE_URL, indexable || staticIndexable),
   indexable,
+  staticIndexable,
   defaultCountrySlug: 'russia',
 };
 

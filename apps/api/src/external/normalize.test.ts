@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeExternalCandidateFixture } from '@hd/contracts/fixtures';
-import { buildProjection, emptyOverrides } from './normalize.js';
+import { buildProjection, emptyOverrides, isPublicText } from './normalize.js';
 import {publicLink,chinaCarProfile} from './profiles.js';
 
 test('source free text containing a VIN or formatted international phone stays in private source data', () => {
@@ -49,4 +49,22 @@ test('safe supplier translations apply without inferred script or numeric checks
   assert.equal(projection.localized.en.title.contentLocale,'ru');
   assert.equal(projection.localized.en.title.kind,'supplier');
   assert.equal(projection.localized.ru.title.text,'车型 85 kW');
+});
+
+test('source display excludes labeled internal costs and seller contacts in all supported languages', () => {
+  for (const text of ['内部采购成本 CNY 73421','Seller contact (202) 555-0142','Dealer cost: CNY 73421','Phone','Contact details',
+    'Закупочная цена 73 421','Контакт продавца (202) 555-0142']) {
+    assert.equal(isPublicText(text), false, text);
+  }
+  for (const text of ['参考价 CNY 73421','Asking price: CNY 73421','Мощность 85 кВт']) {
+    assert.equal(isPublicText(text), true, text);
+  }
+  const source=makeExternalCandidateFixture(1);
+  source.copy.description!.original.text='内部采购成本 CNY 73421';
+  source.copy.title!.translations.en={text:'Seller contact (202) 555-0142',contentLocale:'en'};
+  const projection=buildProjection(source,emptyOverrides(),'Synthetic Market');
+  assert.equal(projection.localized.zh.description,null);
+  assert.equal(projection.details.original.description,null);
+  assert.equal(projection.localized.en.title.text,source.copy.title!.original.text);
+  assert.equal(source.copy.description!.original.text,'内部采购成本 CNY 73421');
 });

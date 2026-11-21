@@ -21,7 +21,13 @@ export async function newName(page: Page, kind: '品牌' | '车型', name: strin
 
 export async function fillRequiredVehicleBasics(page: Page, title = '合成测试车辆') {
   await select(page, '品牌', '丰田 / Toyota');
-  await select(page, '车型', '卡罗拉 / Corolla');
+  const model = page.getByRole('combobox', { name: '车型', exact: true });
+  await model.click();
+  // Search before clicking so the virtual list keeps the exact match in view.
+  await model.fill('Corolla');
+  const corolla = page.locator('.ant-select-dropdown:visible').getByText('卡罗拉 / Corolla', { exact: true });
+  await expect(corolla).toBeInViewport();
+  await corolla.click();
   await page.getByLabel('标题原文', { exact: true }).fill(title);
   await page.getByLabel('配置名称', { exact: true }).fill('合成配置款型');
   await page.getByRole('textbox', { name: '年款', exact: true }).click();

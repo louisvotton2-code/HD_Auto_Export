@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { mock,test } from 'node:test';
-import { PublicFilterQuerySchema, PublicVehicleCardListSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
+import { PublicFilterQuerySchema, PublicVehicleCardListSchema, PublicVehicleInlineSchema, PublicVehicleInspectionResponseSchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
 import { ExternalListingListQuerySchema } from '@hd/contracts/admin';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -66,12 +66,12 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       },
     }));
     // These are the real worker's pre-apply membership updates. The applier and all projections remain real.
-    const apply=(source:Source,operation:'upsert'|'withdraw'='upsert')=>database.transaction(async tx=>{
+    const apply=(source:Source,operation:'upsert'|'withdraw'='upsert',reports:SourceDocument[] = [])=>database.transaction(async tx=>{
       const member=await ensureMember(tx,source,sourceIds[source]);
       await tx.query(`UPDATE external_full_members SET state=$3,locales=$4,applied_generation=desired_generation,last_detail_at=$5
         WHERE source=$1 AND external_id=$2`,[source,sourceIds[source],operation==='withdraw'?'withdrawn':'active',[...locales],at]);
       await applyFullSource(tx,{source,externalId:sourceIds[source],canonicalId:member.canonical_id,operation,
-        documents:operation==='upsert'?documents(source):[],at,batchId});
+        documents:operation==='upsert'?[...documents(source),...reports]:[],at,batchId});
       return member.canonical_id as string;
     });
     const listing=(source:Source)=>database.pool.query<{id:string;inquiry_number:string;formal_canonical_id:string;formal_primary:boolean;upstream_state:string}>(
@@ -183,6 +183,42 @@ test('full-source apply preserves staff edits and promotes an active canonical b
       assert.equal((await database.pool.query('SELECT count(DISTINCT canonical_id)::int AS n FROM external_full_members')).rows[0].n,1);
       assert.deepEqual((await store.getListing(`ext-${backupId}`,'en')).overrides,backupOverrides);
       await assertPublic(backupId);
+    });
+    await t.test('a raw report with private category or part leaves only safe rows in persisted public evidence',async()=>{
+      const identity={provider:'chinacarapi',source:'dongchedi',externalId:sourceIds.dongchedi} as const;
+      const payload={id:identity.externalId,source:identity.source,counts:[{category:'Accident items',checked:4,faults:1}],checks:[
+        {category:'　Ｐｈｏｎｅ　',groups:[{name:'Body',items:[{part:'(202) 555-0103',result:'(202) 555-0142',ok:false}]}]},
+        {category:'Major accident check',groups:[
+          {name:'(202) 555-0104',items:[{part:'Phone',result:'OK',ok:true}]},
+          {name:'Body',items:[{part:'内部采购成本',result:73421,ok:false},{part:'Hood',result:'Repaired',ok:false}]},
+        ]},
+        {groups:[{name:'Other inspection',items:[{result:'Factory finish',ok:true}]}]},
+        {category:null,groups:[{name:'Other inspection',items:[{part:'　',result:12,ok:true}]}]},
+      ]};
+      await apply(identity.source,'upsert',[{identity,kind:'report',locale:'en',observedAt:'2026-11-14T00:30:00.000Z',sourceUpdatedAt:null,payload}]);
+      const archived=await database.pool.query(`SELECT merged_payload FROM external_source_heads
+        WHERE provider=$1 AND source=$2 AND external_id=$3 AND kind='report' AND locale='en'`,[identity.provider,identity.source,identity.externalId]);
+      assert.deepEqual(archived.rows[0]?.merged_payload,payload);
+      const materialized=await database.pool.query(`SELECT data FROM external_vehicle_evidence
+        WHERE listing_id=$1 AND locale='en' AND kind='inspection' ORDER BY position`,[backupId]);
+      assert.deepEqual(materialized.rows.map(({data})=>data.value.text),['Repaired','Factory finish','12']);
+      assert.doesNotMatch(JSON.stringify(materialized.rows),/555-01(?:03|04|42)|73421|采购成本|Ｐｈｏｎｅ/);
+
+      const visibleId=`ext-${backupId}`,evidence=new VehicleEvidence(database,inventory);
+      const withInspection=PublicVehicleInspectionResponseSchema.shape.data;
+      for(const locale of locales){
+        const query={locale,limit:2,order:'source'} as const;
+        const first=withInspection.parse(await evidence.read(visibleId,'inspection',query));
+        assert.equal(first.status,'available');assert.equal(first.total,3);assert.equal(first.summary?.checked,4);assert.equal(first.summary?.faults,1);
+        assert.deepEqual(first.items.map(item=>[item.categoryId,item.value.text]),[['accident','Repaired'],[null,'Factory finish']]);assert.ok(first.nextCursor);
+        const second=withInspection.parse(await evidence.read(visibleId,'inspection',{...query,cursor:first.nextCursor}));
+        assert.equal(second.nextCursor,null);
+        assert.deepEqual(second.items.map(item=>[item.categoryId,item.value.text]),[[null,'12']]);
+        const detail=PublicVehicleInlineSchema.parse(await inventory.getPublic(visibleId,locale,'localized',undefined,'detail-inline-v1'));
+        assert.equal(detail.inspectionSummary.status,'available');
+        assert.deepEqual(detail.inspectionInline.defects.map(item=>item.part?.text),['Hood']);
+        for(const response of [first,second,detail])assert.doesNotMatch(JSON.stringify(response),/555-01(?:03|04|42)|73421|采购成本|Ｐｈｏｎｅ/);
+      }
     });
     await t.test('bounded stored-report reprojection resumes, is idempotent and cannot revive a withdrawn source or change staff facts',async()=>{
       const report:SourceDocument={identity:{provider:'chinacarapi',source:'dongchedi',externalId:sourceIds.dongchedi},kind:'report',locale:'en',observedAt:'2026-11-14T01:00:00.000Z',sourceUpdatedAt:null,

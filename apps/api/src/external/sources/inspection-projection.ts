@@ -7,6 +7,7 @@ type Obj=Record<string,unknown>;
 const obj=(value:unknown):Obj=>value&&typeof value==='object'&&!Array.isArray(value)?value as Obj:{};
 const arr=(value:unknown):unknown[]=>Array.isArray(value)?value:[];
 const count=(value:unknown)=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;
+const suppliedLabel=(value:unknown)=>typeof value==='string'?value.trim()!=='':value!==undefined&&value!==null;
 type Conclusion={id:string;name:DisplayText;value:DisplayText};
 export type InspectionProjection={status:PublicInspectionSummary['status'];items:PublicInspectionEntry[];summary:PublicInspectionSummary;conclusions:Conclusion[]};
 export const emptyInspectionSummary=(status:PublicInspectionSummary['status']='unknown'):PublicInspectionSummary=>({status,contentLocale:null,checked:null,faults:null,categories:[]});
@@ -40,7 +41,10 @@ export function projectInspectionReport(report:Obj,locale:Locale):InspectionProj
  }
  const add=(id:string,kind:NonNullable<PublicInspectionEntry['kind']>,rawCategory:unknown,rawPart:unknown,name:unknown,value:unknown,result:PublicInspectionEntry['outcome'])=>{
   const n=sourceDisplay(name,locale);if(n.status!=='ready')return;
-  const c=category(rawCategory),p=sourceDisplay(rawPart,locale),v=sourceDisplay(value,locale);
+  const c=category(rawCategory),p=sourceDisplay(rawPart,locale);
+  // A private label can be the only indication that other fields on the row are private too.
+  if((!c&&suppliedLabel(rawCategory))||(p.status==='missing'&&suppliedLabel(rawPart)))return;
+  const v=sourceDisplay(value,locale);
   items.push({id,kind,categoryId:c?.id??null,category:c?.label??null,partId:p.status==='ready'?key('part',p.text):null,part:p.status==='ready'?p:null,
    groupId:kind==='summary'?null:key('group',`${c?.id??''}:${n.text}`),group:kind==='summary'?null:n,name:n,value:v,outcome:result});
  };
@@ -87,7 +91,8 @@ export function selectInspection(documents:SourceDocument[],identity:SourceIdent
  const newest=new Map<string,SourceDocument>();
  for(const d of documents.filter(d=>d.kind==='report').sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt))){
   const r=obj(d.payload);
-  if(d.identity.provider!==identity.provider||d.identity.source!==identity.source||d.identity.externalId!==identity.externalId||String(r.id)!==identity.externalId||r.source!==undefined&&r.source!==identity.source)continue;
+  const reportId=typeof r.id==='string'?r.id:typeof r.id==='number'&&Number.isSafeInteger(r.id)?String(r.id):null;
+  if(d.identity.provider!==identity.provider||d.identity.source!==identity.source||d.identity.externalId!==identity.externalId||reportId!==identity.externalId||r.source!==undefined&&r.source!==identity.source)continue;
   if(!newest.has(d.locale))newest.set(d.locale,d);
  }
  const preference=locale==='ru'?['ru','en','und','zh']:['en','und','ru','zh'];

@@ -250,3 +250,72 @@ test('retained text in immutable snapshots projects consistently and whitespace 
   assert.deepEqual(featured.map(vehicle=>vehicle.id),[retained]);
   assert.equal(featured[0]?.facts.model?.name,'Retained archived model');
 });
+
+test('previously stored supplier copy with private costs or contacts stays out of public detail, cards and facets',async()=>{
+  const id=external[1]!;
+  const cost='内部采购成本 CNY 73421', contact='Seller contact (202) 555-0142';
+  const original=(await db.pool.query('SELECT facts,localized,details FROM external_catalog WHERE listing_id=$1',[id])).rows[0]!;
+  const stored=structuredClone(original);
+  stored.localized.en.title.text=contact;
+  stored.localized.en.description={...stored.localized.en.title,text:cost};
+  stored.localized.en.display.model={...stored.localized.en.display.make,text:contact};
+  stored.facts.model.name=contact;
+  stored.details.original.description={text:cost,contentLocale:'zh'};
+  stored.details.specifications=[{name:{text:'内部采购成本',contentLocale:'zh'},value:{text:'CNY 73421',contentLocale:'und'}}];
+  await db.transaction(async tx=>{
+    await tx.query('UPDATE external_catalog SET facts=$2,localized=$3,details=$4 WHERE listing_id=$1',
+      [id,JSON.stringify(stored.facts),JSON.stringify(stored.localized),JSON.stringify(stored.details)]);
+    await tx.query('UPDATE external_media SET alt=$2 WHERE listing_id=$1', [id,JSON.stringify({text:contact,contentLocale:'en'})]);
+  });
+  try {
+    const detail=await service.getPublic(`ext-${id}`,'en','localized');
+    assert.equal(detail.content.title.kind,'catalog');
+    assert.equal(detail.content.description,null);
+    assert.equal(detail.external?.detail?.original.description,null);
+    assert.deepEqual(detail.external?.detail?.specifications,[]);
+    assert.equal(detail.images[0]?.alt,'');
+    const card=(await service.listPublic(query(),'private-supplier-copy')).data.items.find(item=>item.id===`ext-${id}`);
+    assert.ok(card);
+    assert.equal(card.content.title.kind,'catalog');
+    const facet=await service.filters(filters({model:original.facts.model.id}));
+    assert.ok(facet.models.some(item=>item.id===original.facts.model.id));
+    for(const value of [detail,card,facet]) assert.doesNotMatch(JSON.stringify(value),/73421|555-0142/);
+    const persisted=(await db.pool.query('SELECT details FROM external_catalog WHERE listing_id=$1',[id])).rows[0]!;
+    assert.equal(persisted.details.original.description.text,cost);
+  } finally {
+    await db.transaction(async tx=>{
+      await tx.query('UPDATE external_catalog SET facts=$2,localized=$3,details=$4 WHERE listing_id=$1',
+        [id,JSON.stringify(original.facts),JSON.stringify(original.localized),JSON.stringify(original.details)]);
+      await tx.query('UPDATE external_media SET alt=NULL WHERE listing_id=$1',[id]);
+    });
+  }
+});
+
+test('powertrain and year overview count unpriced listings and preserve visibility and facet availability',async()=>{
+  const make={id:'facet-test-make',name:'Facet test make'};
+  for(const [position,index] of [1,2,3].entries()) {
+    const id=external[index]!;
+    await db.pool.query(`UPDATE external_catalog
+      SET facts=facts||$2::jsonb,price_cny=CASE WHEN $3 THEN NULL ELSE price_cny END,
+        localized=CASE WHEN $3 THEN localized-'en' ELSE localized END WHERE listing_id=$1`,[id,JSON.stringify({
+      make,model:{id:'facet-test-model',name:'Facet test model'},trim:{id:'facet-test-trim',name:'Facet test trim'},
+      generation:{id:'facet-test-generation',name:'Facet test generation'},powertrain:'bev',modelYear:position===1?2019:2020,
+    }),position===2]);
+  }
+  const options={make:make.id,powertrain:'bev',yearMin:2020,projection:'overview'};
+  const read=(locale:'zh'|'en')=>service.filters(filters({...options,locale}));
+  const zh=await read('zh');
+  assert.equal(zh.total,2);
+  assert.equal(zh.makes.find(option=>option.id===make.id)?.count,2);
+  assert.deepEqual(zh.modelYears,[{year:2020,count:2}]);
+  assert.deepEqual(zh.powertrains,[{id:'bev',count:2}]);
+  assert.equal(zh.hasTrims,true);
+  assert.equal(zh.hasGenerations,true);
+  assert.equal((await read('en')).total,1);
+  await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[external[3]]);
+  assert.equal((await read('zh')).total,1);
+  await db.pool.query('UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1',[external[1]]);
+  const safe=await read('zh');
+  assert.equal(safe.total,1);
+  assert.deepEqual(safe.makes,[{id:make.id,name:'外部挂牌',count:1}]);
+});

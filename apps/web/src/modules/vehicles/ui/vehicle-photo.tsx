@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { PublicMedia } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { Icon } from '@/shared/ui/icon';
+import { publicMediaUrl, publicMediaVariantUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
 import { imageAltAttributes } from '../vehicle-image-text';
@@ -14,26 +15,28 @@ type Layout = 'catalog' | 'rail';
 
 const mobileSizes = '(max-width: 639px) calc(100vw - 32px), (max-width: 1023px) calc((100vw - 68px) / 2)';
 const photoSizes: Record<Layout, string> = {
-  catalog: `auto, ${mobileSizes}, (max-width: 1279px) calc((100vw - 72px) * .375 - 10px), 443px`,
-  rail: `auto, ${mobileSizes}, (max-width: 1279px) calc((100vw - 88px) / 3), 398px`,
+  catalog: `${mobileSizes}, (max-width: 1279px) calc((100vw - 72px) * .375 - 10px), 443px`,
+  rail: `${mobileSizes}, (max-width: 1279px) calc((100vw - 88px) / 3), 398px`,
 };
 
-function cardSources(image: Photo) {
-  // Only site-owned originals are eligible. Never rewrite a remote or signed URL.
-  const original = /^(\/api\/v1\/media\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})\/?$/.exec(image.url);
+function cardSources(image: Photo, limitToCard: boolean) {
+  const thumb = publicMediaVariantUrl(image.url, 'thumb');
+  const card = publicMediaVariantUrl(image.url, 'card');
   const { width, height } = image;
-  if (!original || image.remote || !width || !height || width < 1 || height < 1) return null;
-  const base = `${original[1]}/`;
-  const thumb = `${base}?variant=thumb`;
-  const card = `${base}?variant=card`;
+  if (!thumb || !card || image.remote || !width || !height || width < 1 || height < 1) return null;
+  const base = publicMediaUrl(image.url);
   const thumbWidth = Math.min(240, width);
   const cardWidth = Math.max(1, Math.round(width * Math.min(1, 800 / Math.max(width, height))));
+  const useCard = cardWidth < width || height > 800;
+  const cardSrc = useCard ? card : base;
   const candidates = [
     ...(thumbWidth < cardWidth ? [`${thumb} ${thumbWidth}w`] : []),
-    ...(cardWidth < width ? [`${card} ${cardWidth}w`] : []),
-    `${base} ${width}w`,
+    ...(limitToCard
+      ? [`${cardSrc} ${cardWidth}w`]
+      : [...(cardWidth < width ? [`${card} ${cardWidth}w`] : []), `${base} ${width}w`]),
   ];
   return {
+    cardSrc,
     compactSrc: cardWidth < thumbWidth ? card : thumbWidth < width ? thumb : base,
     srcSet: candidates.length > 1 ? candidates.join(', ') : undefined,
   };
@@ -54,15 +57,17 @@ export function VehiclePhoto({
   alt,
   compact = false,
   layout = 'catalog',
+  priority = false,
 }: {
   image: Photo | null;
   locale: Locale;
   alt: string;
   compact?: boolean;
   layout?: Layout;
+  priority?: boolean;
 }) {
   if (!image) return <VehiclePhotoFallback locale={locale} compact={compact} />;
-  return <PhotoResource key={`${image.id}:${image.url}:${image.remote?.revision ?? 0}`} image={image} locale={locale} alt={alt} compact={compact} layout={layout} />;
+  return <PhotoResource key={`${image.id}:${image.url}:${image.remote?.revision ?? 0}`} image={image} locale={locale} alt={alt} compact={compact} layout={layout} priority={priority} />;
 }
 
 function PhotoResource({
@@ -71,16 +76,20 @@ function PhotoResource({
   alt,
   compact,
   layout,
+  priority,
 }: {
   image: Photo;
   locale: Locale;
   alt: string;
   compact: boolean;
   layout: Layout;
+  priority: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [originalOnly, setOriginalOnly] = useState(false);
-  const sources = originalOnly ? null : cardSources(image);
+  const limitToCard = layout === 'catalog' && !compact;
+  const sources = originalOnly ? null : cardSources(image, limitToCard);
+  const src = compact ? sources?.compactSrc : limitToCard ? sources?.cardSrc : undefined;
   function fail(node: HTMLImageElement) {
     if (sources && /\?variant=(?:thumb|card)$/.test(node.currentSrc)) {
       // Older API or a failed derivative: keep the authorized original as the only fallback.
@@ -99,10 +108,11 @@ function PhotoResource({
         if (node?.complete && node.naturalWidth === 0) fail(node);
       }}
       srcSet={compact ? undefined : sources?.srcSet}
-      sizes={!compact && sources?.srcSet ? photoSizes[layout] : undefined}
-      src={compact && sources ? sources.compactSrc : image.url}
+      sizes={!compact && sources?.srcSet ? (priority ? photoSizes[layout] : `auto, ${photoSizes[layout]}`) : undefined}
+      src={src ?? image.url}
       {...imageAltAttributes(image, alt)}
-      loading="lazy"
+      loading={priority ? 'eager' : 'lazy'}
+      fetchPriority={priority ? 'high' : undefined}
       width={image.width ?? undefined}
       height={image.height ?? undefined}
       referrerPolicy={image.url.startsWith('https:') ? 'no-referrer' : undefined}

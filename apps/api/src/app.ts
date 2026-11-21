@@ -35,7 +35,7 @@ import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
-import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
+import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -137,9 +137,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   const staff=new WeakMap<object,adm.StaffMe>();
   const requestSignals=new WeakMap<object,AbortSignal>();
   const longCacheRequests=new WeakSet<object>();
-  type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
+  type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|PublicCacheReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
   type CatalogReadTiming={
-    kind:'home-models'|'list'|'filters'; phase:CatalogReadPhase; started:number;
+    kind:'home-models'|'overview'|'overview-models'|'list'|'filters'; phase:CatalogReadPhase; started:number;
     stageMs:Partial<Record<CatalogReadPhase,number>>;
   };
   const catalogReadTimings=new WeakMap<FastifyRequest,CatalogReadTiming>();
@@ -158,9 +158,9 @@ export async function buildApp(config:Config=readConfig(), options:{
     if(!timing)return {};
     const {kind,phase,stageMs,started}=timing;
     const elapsed={...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)};
-    return kind==='home-models'
-      ? {projection:'home-models',homeModelsPhase:phase,homeModelsStageMs:elapsed}
-      : {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed};
+    if(kind==='home-models')return {projection:kind,homeModelsPhase:phase,homeModelsStageMs:elapsed};
+    if(kind==='overview'||kind==='overview-models')return {projection:kind,facetsPhase:phase,facetsStageMs:elapsed};
+    return {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed};
   };
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
@@ -417,19 +417,21 @@ export async function buildApp(config:Config=readConfig(), options:{
     // Previous Web releases still compare the filter response with the global version.
     const legacy=internal&&request.headers['x-hd-catalog-scope']!=='filters';
     const usd=query.priceView==='usd', signal=requestSignals.get(request), protocol=cacheProtocol(request);
-    const advance=query.projection==='home-models'?beginCatalogTiming(request,'home-models')
+    const {projection}=query;
+    const trackProjection=projection==='home-models'||projection==='overview'||projection==='overview-models';
+    const advance=trackProjection?beginCatalogTiming(request,projection)
       :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
     const {value,stamp}=legacy
       ? await catalogCache.getBoundedVersioned('filters',query,async()=>{
         const result=await inventory.filterResult(query,advance);
         advance?.('cache_validate');
         return result;
-      },usd,signal,protocol)
+      },usd,signal,protocol,advance)
       : await catalogCache.getFilterSnapshot(query,async()=>{
         const result=await inventory.filterSnapshot(query,advance);
         advance?.('cache_validate');
         return result;
-      },usd,signal,protocol);
+      },usd,signal,protocol,advance);
     advance?.('response');
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   });
@@ -500,7 +502,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     async request=>response(pub.PublicVehiclePriceHistoryResponseSchema.shape.data.parse(await evidence.read((request.params as {id:string}).id,'price-history',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/vehicles/:id/gallery',{schema:{operationId:'getVehicleGallery',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleGalleryResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleGalleryResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'gallery',request.query as pub.PublicVehicleSegmentQuery)),request));
   app.get('/api/v1/vehicles/:id/configuration',{schema:{operationId:'getVehicleConfiguration',tags:['public'],params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleSegmentQuerySchema,response:{200:pub.PublicVehicleConfigurationResponseSchema,...errorResponses}}},async request=>response(pub.PublicVehicleConfigurationResponseSchema.shape.data.parse(await segments.read((request.params as {id:string}).id,'configuration',request.query as pub.PublicVehicleSegmentQuery)),request));
-  app.get('/api/v1/admin/vehicles/:id/activity',{schema:adminSchema('getVehicleActivity',{params:IdParams,querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.staff((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
+  app.get('/api/v1/admin/vehicles/:id/activity',{schema:adminSchema('getVehicleActivity',{params:IdParams,querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.staff((request.params as {id:string}).id,request.query as adm.ActivityQuery,staff.get(request)!.role),request));
   app.get('/api/v1/admin/external/listings/:id/activity',{schema:adminSchema('getExternalListingActivity',{params:z.strictObject({id:pub.ExternalListingIdSchema}),querystring:adm.ActivityQuerySchema,response:{200:adm.ActivityResponseSchema,...errorResponses}})},async request=>response(await activity.external((request.params as {id:string}).id,request.query as adm.ActivityQuery),request));
   app.put('/api/v1/admin/vehicles/:id/translation-bundle',{bodyLimit:vehicleDraftBodyLimit,schema:adminSchema('saveVehicleTranslationBundle',{params:IdParams,body:adm.SaveVehicleTranslationBundleSchema,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.saveTranslationBundle((request.params as {id:string}).id,request.body as adm.SaveVehicleTranslationBundle,actor(request)),request));
   app.post(configurationImportPreviewPath,{bodyLimit:configurationImportBodyLimit,schema:adminSchema('previewConfigurationImport',{

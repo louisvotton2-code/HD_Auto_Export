@@ -369,7 +369,7 @@ async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,ca
   captureRevision(revision);
   return revision;
 }
-export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'result';
+export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_label_fallback'|'result';
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 // The catalog's origin queue already limits concurrent reads. Keep each read
@@ -919,7 +919,7 @@ export class InventoryService {
     const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote,scope?.pairs);
     const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
     if(includeExternal) phase?.('supplier_facets');
-    const external=includeExternal?await externalFacets(tx,query,quote,scope?.pairs):[];
+    const external=includeExternal?await externalFacets(tx,query,quote,scope?.pairs,phase):[];
     phase?.('result');
     return {value:facetData(staff,external,query,includeExternal),expiresAt:scope?.expiresAt};
   }

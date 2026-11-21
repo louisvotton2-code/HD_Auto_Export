@@ -15,7 +15,7 @@ export function resolveSiteOrigin(value: string | undefined, indexable: boolean)
     );
   if (indexable && (!configured || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)))
     throw new Error(
-      'SITE_INDEXABLE=true requires the real public NEXT_PUBLIC_SITE_URL before building.',
+      'Enabling site indexing requires the real public NEXT_PUBLIC_SITE_URL before building.',
     );
   return origin.origin;
 }

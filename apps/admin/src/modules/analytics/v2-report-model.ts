@@ -25,8 +25,8 @@ type Counts = Pick<AnalyticsReport['totals'], 'pageViews' | 'detailViews' | 'veh
 type Coverage = AnalyticsReport['coverage'];
 const covered = (count: number, coverage: Coverage) => coverage === 'complete' || count > 0 ? count : null;
 
-function counts(row: Counts, coverage: Coverage, sessions?: number, legacyComplete = false): MetricCounts {
-  const count = (value: number) => legacyComplete ? value : covered(value, coverage);
+function counts(row: Counts, coverage: Coverage, sessions?: number): MetricCounts {
+  const count = (value: number) => covered(value, coverage);
   return {
     pageViews: count(row.pageViews), detailViews: count(row.detailViews),
     vehicleClicks: count(row.vehicleClicks), contactClicks: count(row.contactClicks),
@@ -36,11 +36,9 @@ function counts(row: Counts, coverage: Coverage, sessions?: number, legacyComple
 
 export function overviewData(report: AnalyticsReport, showDailyComparison: boolean): OverviewData {
   const comparison = report.comparison;
-  const legacyComplete = (start: string, coverage: Coverage) => coverage === 'not_collected' && report.legacyCollectionStartedAt !== null
-    && Date.parse(start) >= Date.parse(report.legacyCollectionStartedAt);
   const todayComparisonMatches = reportDay(comparison.today.start) === reportDay(report.range.start);
   return {
-    counts: counts(report.totals, report.coverage, report.sessions, legacyComplete(report.range.start, report.coverage)),
+    counts: counts(report.totals, report.coverage, report.sessions),
     comparison: showDailyComparison && todayComparisonMatches ? {
       label: `今日截至 ${reportTime(comparison.today.end)}，昨日 ${reportTime(comparison.yesterday.start)} 至 ${reportTime(comparison.yesterday.end)}（与今日同一时段）`,
       current: counts(comparison.current, comparison.todayCoverage),
@@ -51,7 +49,7 @@ export function overviewData(report: AnalyticsReport, showDailyComparison: boole
     buckets: report.trend.map(bucket => ({
       start: report.granularity === 'day' ? reportDay(bucket.start) : bucket.start,
       state: ({ complete: 'collected', partial: 'partial', gap: 'interrupted', not_collected: 'not_collected' } as const)[bucket.coverage],
-      metrics: counts(bucket, bucket.coverage, undefined, report.granularity === 'day' && legacyComplete(bucket.start, bucket.coverage)),
+      metrics: counts(bucket, bucket.coverage),
     })),
     dailyIpEstimates: report.dailyUniqueIpEstimates,
     activeSessions: covered(report.activeSessions, report.coverage),

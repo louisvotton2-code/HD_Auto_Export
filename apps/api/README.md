@@ -260,7 +260,20 @@ node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATAB
 node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATABASE_NAME --limit 25 --after PREVIOUS_NEXT_CURSOR
 ```
 
-读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。limit默认25、最大100，每次仅一批，返回 `{scanned,changed,nextCursor}`，nextCursor非null才沿同一命令续跑。失败退出1，不打印数据库连接/原文；成功0仅表示该批完成。末页nextCursor=null才表示该次有界遍历结束；重复运行相同内容不会重复改版本。只覆盖具有当前detail存档的ChinaCarAPI身份，缺档不虚构报告；现场处理数/异常和是否完成须由OPS另记，不能把本说明视为已经执行。
+读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。`limit` 默认 25、最大 100，每次处理一批，返回 `{scanned,changed,nextCursor}`。`nextCursor` 非空时继续同一命令，空值表示遍历结束。失败退出 1，已完成的单车事务保留，从同一游标重试即可；重复处理同一内容不会推进版本。候选包含有详情归档的既有范围，以及仍公开且持有报告归档的挂牌。仅有报告归档时，同源绑定和三语投影校验均通过才写入。实际处理数和异常由 OPS 记录。
+
+### 按挂牌暂停无法复核的旧检测
+
+由 OPS 在批准的维护窗口，使用含本次检查的已审 API 成品运行。生产 API 与写入检测的供应商 worker 应使用同一套报告来源绑定校验。先用覆盖对账圈定拟处理的挂牌，核准名单按内部挂牌 UUID 保存。若来自公开编号，使用 `ext-` 后面的 UUID。可重复传 `--listing-id`，单次最多 25 个。此模式不扫描未指定的挂牌，不能与 `--after` 或 `--limit` 共用。
+
+```sh
+node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATABASE_NAME \
+  --withhold-unverifiable --listing-id LISTING_UUID
+```
+
+在同一批事务内取得供应商写锁，核对挂牌仍公开、现有检测仍可读，并通过当前绑定原档尝试重建。`withheld` 表示报告状态置为 `unavailable` 且版本已变更，私有收据记录语言和更新前后的版本。`rebuildable` 表示可从绑定归档重新投影，应按上述 EXT08 流程另行回补并核对新公开明细。`skipped` 表示该挂牌无适用的已公开检测行。批次错误会回滚，重跑同一名单不重复推进版本。收据仅用于核对，不能作为直接恢复旧公开内容的依据。
+
+暂停只改现有检测状态和版本。保留旧投影行、原始报告、挂牌、价史、员工覆盖和审计。新的摘要与内嵌和分页检测不输出被暂停的旧正文，报告存在标识按独立来源证据保留。提交会失效目录和详情缓存，既存分页游标按 409 从第一页重读。恢复必须等待可核对的同一来源报告并经过现行投影，缺档记录留待人工核对。
 
 本轮受影响检查为contracts/schema及合成fixtures、API类型/构建/OpenAPI、报告投影单测、来源映射深层单测，以及full-sync-http/full-sync-projection/report-evidence/external-catalog数据库回归。检查在服务器准确集成SHA运行，本机未运行应用检查；按已有统一门禁复用结果，不另重复全仓检查。公开OpenAPI生成命令仍为 `pnpm --filter @hd/api openapi`。
 
