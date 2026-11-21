@@ -85,7 +85,7 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
   expect(writes).toBe(0);
 });
 
-test('EXT07 v2 sync timings distinguish applied, publicly effective, historical gaps and failed work', async ({ page }) => {
+test('EXT07 v2 sync timings distinguish finished handling, publicly effective, historical gaps and failed work', async ({ page }) => {
   await setup(page, true);
   const observed = '2026-11-21T03:30:00.000Z';
   const base = {
@@ -96,7 +96,7 @@ test('EXT07 v2 sync timings distinguish applied, publicly effective, historical 
   const body = ExternalSyncTimingsResponseSchema.parse(envelope({
     asOf: observed, window: { from: '2026-11-20T03:30:00.000Z', to: observed, lastReceivedAt: observed, nextReceiveAt: '2026-11-21T04:00:00.000Z',
       complete: false, uninstrumentedEvents: 5, instrumentedSince: '2026-11-21T00:00:00.000Z',
-      coverage: { slotMs: 300_000, expectedSlots: 288, successfulSlots: 38, missingSlots: 249, failedSlots: 1, through: observed } },
+      coverage: { slotMs: 300_000, expectedSlots: 288, successfulSlots: 38, missingSlots: 250, failedSlots: 1, through: observed } },
     backlog: { pendingEvents: 3, pendingWork: 10, failedWork: 1, oldestEventAt: '2026-11-21T01:15:00.000Z', oldestWorkAt: null },
     metrics: [{ ...base, kind: 'removed' }, { ...base, kind: 'price', p95ReceivedToPublicMs: 0 },
       { ...base, kind: 'relisted', p95ReceivedToPublicMs: null }], events: [],
@@ -108,10 +108,17 @@ test('EXT07 v2 sync timings distinguish applied, publicly effective, historical 
   await expect(timing.getByText('监测尚未覆盖完整 24 小时')).toBeVisible();
   await expect(timing.getByText(/缺少观测证据 5 项/)).toBeVisible();
   await expect(timing.getByText('38 / 288 个 5 分钟时段成功', { exact: true })).toBeVisible();
+  await expect(timing.getByText('250 个，其中接收失败 1 个', { exact: true })).toBeVisible();
+  await expect(timing.getByRole('columnheader', { name: '事件处理结束', exact: true })).toBeVisible();
+  await expect(timing.getByRole('columnheader', { name: '未见匹配的公开变化', exact: true })).toBeVisible();
+  await expect(timing.getByText('最早任务入队记录', { exact: true })).toBeVisible();
+  await expect(timing.getByText(/事件处理结束包含被跳过和受准入限制的记录/)).toBeVisible();
   await expect(timing.getByText(/09:15.*上海时间/)).toBeVisible();
   await expect(timing.getByRole('row', { name: /^撤回/ })).toContainText('2.1 分钟');
   await expect(timing.getByRole('row', { name: /^改价/ })).toContainText('0 秒');
   await expect(timing.getByRole('row', { name: /^重挂/ })).toContainText('无样本');
+  await timing.getByText('查看分阶段 P95').click();
+  await expect(timing.getByRole('columnheader', { name: '收件到事件处理结束' })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 

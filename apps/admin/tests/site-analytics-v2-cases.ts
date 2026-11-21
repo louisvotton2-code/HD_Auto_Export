@@ -241,14 +241,21 @@ test('v2 website analytics keeps all four views on a 390 px screen and shows unk
   expect(reads).toHaveLength(1);
 });
 
-test('v2 website analytics keeps uncollected country data distinct from inferred locations', async ({ page }) => {
+test('v2 website analytics keeps historical gaps and uncollected country data distinct from measured values', async ({ page }) => {
   await installReport(page);
   await page.route(`**${reportPath}?*`, route => {
     const query = AnalyticsReportQuerySchema.parse(Object.fromEntries(new URL(route.request().url()).searchParams));
     const report = sampleReport(query);
     return reply(route, AnalyticsReportResponseSchema.parse({
       ...report,
-      data: { ...report.data, coverage: 'not_collected', markets: { ...report.data.markets, countries: [] } },
+      data: {
+        ...report.data,
+        coverage: 'not_collected',
+        legacyCollectionStartedAt: iso(midnight('2026-10-01')),
+        totals: { ...report.data.totals, contactClicks: 0 },
+        trend: report.data.trend.map(bucket => ({ ...bucket, coverage: 'not_collected' })),
+        markets: { ...report.data.markets, countries: [] },
+      },
     }));
   });
   const attribution = page.getByRole('link', { name: 'IP Geolocation by DB-IP', exact: true });
@@ -258,6 +265,12 @@ test('v2 website analytics keeps uncollected country data distinct from inferred
   await expect(attribution).toHaveCount(0);
   await tab(page, '历史总览');
   await expect(page.getByText('国家未知的会话', { exact: true }).locator('..')).toContainText('未采集');
+  await expect(statistic(region(page), '页面浏览（PV）')).toHaveText('6');
+  await expect(statistic(region(page), '主动联系点击')).toHaveText('—');
+  await page.getByText('查看每日数据', { exact: true }).click();
+  const daily = page.locator('details').filter({ hasText: '查看每日数据' });
+  await expect(daily.locator('dl > div').filter({ hasText: '2026-11-19' }).locator('dd')).toHaveText('未采集');
+  await expect(daily.locator('dl > div').filter({ hasText: '2026-11-20' }).locator('dd')).toHaveText('1');
   await expect(attribution).toHaveCount(0);
 });
 
