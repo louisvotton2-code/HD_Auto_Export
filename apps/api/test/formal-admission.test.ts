@@ -362,8 +362,11 @@ test('formal listing admissions persist across CSV and delta runs, including exi
    assert.equal(await worker.applyEvents(),0);
    await event(199,'che168','112','upsert');
    assert.equal(await worker.applyEvents(),1);
+   assert.equal((await database.pool.query(`SELECT 1 FROM external_listings
+    WHERE provider='chinacarapi' AND platform_id='che168' AND external_id='112'`)).rowCount,0);
    assert.equal((await database.pool.query(`SELECT priority FROM external_full_work
-    WHERE source='che168' AND external_id='112' AND kind='detail'`)).rows[0].priority,100);
+    WHERE source='che168' AND external_id='112' AND kind='detail'`)).rows[0].priority,50,
+    'an admitted identity without a published listing gets normal detail priority');
    await event(200,'che168','112','withdraw');
    assert.equal(await worker.applyEvents(true),1);
    assert.equal((await database.pool.query(`SELECT state FROM external_full_members
