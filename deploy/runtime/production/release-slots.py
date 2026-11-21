@@ -138,6 +138,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $web http://{html_cache_host}:3010;
         include /etc/nginx/hd-domains/web-proxy.conf;
+        gzip on;
         proxy_intercept_errors on;
         proxy_hide_header Cache-Control;
         add_header Strict-Transport-Security $hd_hsts always;
@@ -147,6 +148,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $web http://{web_host}:3000;
         include /etc/nginx/hd-domains/web-proxy.conf;
+        gzip on;
         proxy_hide_header Cache-Control;
         add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;

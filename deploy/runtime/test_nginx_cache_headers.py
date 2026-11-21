@@ -5,6 +5,8 @@ HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
 CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
+HOME_HTML=b'<html>'+b'<p>Example vehicles on the homepage</p>'*60+b'</html>'
+HOME_GZIP=gzip.compress(HOME_HTML,mtime=0)
 ANALYTICS_PATH='/api/v1/analytics/events'
 CONTACT_COUNT_PATH='/api/v1/analytics/contact-count'
 ANALYTICS_BODY=json.dumps({'events':[{'eventId':'11111111-1111-4111-8111-111111111111',
@@ -19,6 +21,7 @@ CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-K
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
+    precompressed_home=None
     def media_reply(self, preview):
         variant=self.path.rsplit('?variant=',1)[-1] if '?variant=' in self.path else 'original'
         suffix,image=MEDIA_REPRESENTATIONS[variant]
@@ -44,6 +47,19 @@ class Origin(http.server.BaseHTTPRequestHandler):
         self.calls.append(self.path)
         if self.path.split('?')[0] in (MEDIA_PATH,MEDIA_PREVIEW):
             return self.media_reply(self.path==MEDIA_PREVIEW)
+        if self.headers.get('Accept')=='text/html' and self.path in ('/zh/','/en/','/ru/'):
+            precompressed=self.path==self.precompressed_home and self.headers.get('Accept-Encoding')=='gzip'
+            body=HOME_GZIP if precompressed else HOME_HTML
+            self.send_response(200)
+            self.send_header('Content-Type','text/html')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Security-Policy',"frame-ancestors 'none'")
+            self.send_header('Vary','RSC, Accept-Encoding' if precompressed else 'RSC')
+            if precompressed:self.send_header('Content-Encoding','gzip')
+            self.send_header('Content-Length',str(len(body)))
+            self.end_headers()
+            if self.command!='HEAD':self.wfile.write(body)
+            return
         known={'/_next/static/chunks/chunk-12345678.js':200,'/_next/static/chunks/partial-12345678.js':206,'/_next/static/build-12345678/_buildManifest.js':304}
         status=known.get(self.path,404 if self.path.startswith('/_next/static/') else 200)
         body=json.dumps({'headers':dict(self.headers.items()),'path':self.path}).encode() if not self.path.startswith('/_next/static/') else b'code'
@@ -80,6 +96,7 @@ class Origin(http.server.BaseHTTPRequestHandler):
 
 class CacheOrigin(Origin):
     calls=[]
+    precompressed_home='/en/'
     def do_GET(self):
         if self.path=='/ru/':
             self.calls.append(self.path)
@@ -163,7 +180,7 @@ class DomainCacheHeaders(unittest.TestCase):
             s.sendall(message+(body or b''))
             res=http.client.HTTPResponse(s,method=method);res.begin()
             headers={k.lower():v for k,v in res.getheaders()}
-            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options'):
+            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options','Vary'):
                 if values:=res.headers.get_all(name):
                     headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
@@ -431,6 +448,31 @@ class DomainCacheHeaders(unittest.TestCase):
             self.assertTrue(all(status in (200,429) for status in statuses))
             self.assertEqual(CacheOrigin.calls.count('/en/'),statuses.count(200))
         finally:time.sleep(2.3)
+    def test_home_gzip_covers_cache_miss_precompressed_hit_and_dynamic_fallback(self):
+        host='cars.hongdingauto.com'
+        for path,accept_encoding,expected_body,calls in (
+            ('/zh/','gzip',None,(['/zh/'],[])),
+            ('/zh/','gzip;q=0',HOME_HTML,(['/zh/'],[])),
+            ('/en/','gzip',HOME_GZIP,(['/en/'],[])),
+            ('/ru/','gzip',None,(['/ru/'],['/ru/'])),
+        ):
+            with self.subTest(path=path,accept_encoding=accept_encoding):
+                Origin.calls.clear();CacheOrigin.calls.clear()
+                status,headers,body=self.request(host,path,{'Accept':'text/html','Accept-Encoding':accept_encoding,
+                                                           'Via':'1.1 synthetic-proxy'})
+                self.assertEqual(status,200)
+                self.assertEqual((CacheOrigin.calls,Origin.calls),calls)
+                self.assertEqual(headers['cache-control'],'no-store')
+                self.assertEqual(headers['strict-transport-security'],'max-age=300')
+                self.assertEqual(headers['content-security-policy'],"frame-ancestors 'none'")
+                self.assertEqual(set(headers['vary'].lower().split(', ')),{'rsc','accept-encoding'})
+                if accept_encoding=='gzip':
+                    self.assertEqual(headers['content-encoding'],'gzip')
+                    self.assertLess(len(body),len(HOME_HTML))
+                    self.assertEqual(gzip.decompress(body),HOME_HTML)
+                else:
+                    self.assertNotIn('content-encoding',headers)
+                if expected_body is not None:self.assertEqual(body,expected_body)
     def test_public_catalog_json_negotiates_gzip_without_changing_body_or_cache_policy(self):
         paths=[('/api/v1/vehicles/', '/api/v1/vehicles'), ('/api/v1/vehicle-filters/', '/api/v1/vehicle-filters'),
                ('/catalog-facets.json', '/catalog-facets.json')]
