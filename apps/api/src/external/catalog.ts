@@ -521,8 +521,18 @@ function externalOverviewGroups(withModels:boolean) {
   )`;
 }
 
+function canUseExternalOverviewRollup(query:PublicFilterQuery) {
+  // Every membership predicate must be represented by the rollup's keys.
+  return query.projection==='overview' && !!query.powertrain && query.powertrain!=='unknown'
+    && (query.yearMin!==undefined||query.yearMax!==undefined)
+    && !query.q && !query.model && !query.trim && !query.generation
+    && query.mileageMin===undefined && query.mileageMax===undefined
+    && query.priceMin===undefined && query.priceMax===undefined
+    && (!query.exportStatus||query.exportStatus==='all');
+}
+
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
-  observe?: (phase:'supplier_label_fallback')=>void) {
+  observe?: (phase:'supplier_overview_rollup'|'supplier_label_fallback')=>void) {
   const { where: filters, values } = matches(query,quote);
   const where = pairs ? `${filters} AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}` : filters;
   const matchingValues=[...values];
@@ -550,14 +560,21 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // keys are distributive, so grouping these atoms by each dimension preserves
   // exact counts. Overview keeps only overview dimensions in the grouping; variant
   // IDs contribute to availability without producing per-variant dictionaries.
-  const result=await tx.query<CatalogFacetRow>(`WITH matched AS NOT MATERIALIZED (
+  const useRollup=!pairs&&canUseExternalOverviewRollup(query);
+  const atoms=useRollup?`atoms AS MATERIALIZED (
+    SELECT f.make_id,f.powertrain,f.drivetrain,f.model_year,f.trim_count>0 AS has_trims,
+      f.generation_count>0 AS has_generations,f.label_order,f.row_count
+    FROM external_catalog_overview_groups f WHERE f.locale_mask=ANY(${visibleLocaleMasks})${where}
+  )`:`matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
     ${filterFrom(query)} ${filterVisible}${where}
   ), atoms AS MATERIALIZED (
     SELECT ${groupBy},${overview?`${facetAvailability},`:''}
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count
     FROM matched GROUP BY ${groupBy}
-  )${groups}, winner_ids AS (
+  )`;
+  if(useRollup)observe?.('supplier_overview_rollup');
+  const result=await tx.query<CatalogFacetRow>(`WITH ${atoms}${groups}, winner_ids AS (
     SELECT DISTINCT substring(label_order FROM 19 FOR 36)::uuid AS listing_id FROM facets WHERE label_order IS NOT NULL
   ), winner_labels AS MATERIALIZED (
     SELECT label.listing_id,${needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ')}

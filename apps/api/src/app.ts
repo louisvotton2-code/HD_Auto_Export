@@ -330,9 +330,10 @@ export async function buildApp(config:Config=readConfig(), options:{
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.publicSeoEnabled) await db.pool.query('SELECT 1 FROM seo_external_selection LIMIT 0');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,state.locale_counts,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,state.locale_counts,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview,overview.row_count,overview.label_order FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
+          LEFT JOIN external_catalog_overview_groups overview ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
           LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false LEFT JOIN external_full_sync fs ON fs.id=1
           LEFT JOIN external_full_receive_observations obs ON false LEFT JOIN external_vehicle_extras ve ON false LEFT JOIN external_vehicle_evidence_sets ev ON false

@@ -319,7 +319,7 @@ test('powertrain and year overview count unpriced listings and preserve visibili
     assert.deepEqual(await service.filters(filters({...options,...extra,projection:'overview-models'})),{...overview,models});
     return result;
   };
-  const supplierFacets=['supplier_facets'];
+  const supplierFacets=['supplier_facets','supplier_overview_rollup'];
   const zh=await compareToFull({},supplierFacets);
   assert.equal(zh.total,2);
   assert.deepEqual(zh.makes,[{id:make.id,name:'合成新品牌',count:2}]);
