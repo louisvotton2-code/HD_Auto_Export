@@ -139,7 +139,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const longCacheRequests=new WeakSet<object>();
   type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|PublicCacheReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
   type CatalogReadTiming={
-    kind:'home-models'|'overview'|'overview-models'|'list'|'filters'; phase:CatalogReadPhase; started:number;
+    kind:'home-models'|'overview'|'overview-models'|'list'|'filters'|'catalog-page'; phase:CatalogReadPhase; started:number;
     stageMs:Partial<Record<CatalogReadPhase,number>>;
   };
   const catalogReadTimings=new WeakMap<FastifyRequest,CatalogReadTiming>();
@@ -160,6 +160,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     const elapsed={...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)};
     if(kind==='home-models')return {projection:kind,homeModelsPhase:phase,homeModelsStageMs:elapsed};
     if(kind==='overview'||kind==='overview-models')return {projection:kind,facetsPhase:phase,facetsStageMs:elapsed};
+    if(kind==='catalog-page')return {catalogPhase:phase,catalogStageMs:elapsed};
     return {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed};
   };
   app.addHook('onRequest',async(request,reply)=>{
@@ -266,6 +267,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       const metrics=catalogError&&catalogCache.metrics();
       app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,...catalogReadDiagnostics(request),
         ...(metrics&&catalogError?{catalogReason:catalogError.reason,
+          ...(catalogError.revisionConflicts?{catalogRevisionConflicts:catalogError.revisionConflicts}:{}),
           activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
           timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,oversizedValues:metrics.oversizedValues,
           poolWaiting:db.pool.waitingCount}:{}),
@@ -285,13 +287,13 @@ export async function buildApp(config:Config=readConfig(), options:{
   type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
   type CaptureRevision=(revision:PublicCatalogRevision)=>void;
   type CatalogLoad<T>=(capture:CaptureRevision)=>Promise<T>;
-  const cached=<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string})=>
+  const cached=<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string},observe?:(phase:PublicCacheReadPhase)=>void)=>
     catalogCache.getCatalogSnapshot(route,query,async()=>{
       let revision:PublicCatalogRevision|undefined;
       const value=await load(observed=>{ revision=observed; });
       if(!revision)throw new PublicCatalogUnavailableError('revision-read');
       return {value,revision};
-    },query.priceView==='usd',requestSignals.get(request),cacheProtocol(request));
+    },query.priceView==='usd',requestSignals.get(request),cacheProtocol(request),observe);
   const publicResponse=async<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string})=>{
     const {value,stamp}=await cached(route,query,load,request);
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
@@ -328,7 +330,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
       if(config.publicSeoEnabled) await db.pool.query('SELECT 1 FROM seo_external_selection LIMIT 0');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,state.locale_counts,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
@@ -393,12 +395,13 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([cardList,list]),...errorResponses}})},
     async request=>{
       const query=request.query as pub.PublicVehicleQuery;
-      const advance=isCatalogTextSearch(query)?beginCatalogTiming(request,'list'):undefined;
+      const advance=isCatalogTextSearch(query)?beginCatalogTiming(request,'list')
+        :query.projection==='card'?beginCatalogTiming(request,'catalog-page'):undefined;
       const {value:loaded,stamp}=await cached('list',query,async capture=>{
         const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance,capture);
         advance?.('cache_validate');
         return {data,meta};
-      },request);
+      },request,advance);
       advance?.('response');
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });

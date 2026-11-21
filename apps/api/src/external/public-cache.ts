@@ -13,8 +13,9 @@ const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLI
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
   'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
+type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed';
 export class PublicCatalogUnavailableError extends ApiError {
-  constructor(readonly reason: CatalogUnavailableReason) {
+  constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[]) {
     super(503, 'SERVICE_UNAVAILABLE', 'Public catalog is temporarily unavailable.', undefined, true);
   }
 }
@@ -63,9 +64,13 @@ type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Prom
 const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
 const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
-function orderedSnapshotInDomain(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision) {
-  return sameEpochAndFx(start,snapshot) && sameEpochAndFx(snapshot,current) &&
-    BigInt(start.revision) <= BigInt(snapshot.revision) && BigInt(snapshot.revision) <= BigInt(current.revision);
+function snapshotConflict(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision): RevisionConflict | undefined {
+  if (start.epoch !== snapshot.epoch || snapshot.epoch !== current.epoch) return 'epoch-changed';
+  if (!sameEpochAndFx(start,snapshot) || !sameEpochAndFx(snapshot,current)) return 'fx-changed';
+  if (BigInt(start.revision) > BigInt(snapshot.revision) || BigInt(snapshot.revision) > BigInt(current.revision)) return 'revision-regressed';
+}
+class ChangedRevision {
+  constructor(readonly conflict:RevisionConflict) {}
 }
 const bounded = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => key === 'requestId' ? undefined : item);
@@ -232,10 +237,12 @@ export class PublicCatalogCache {
       const current = await this.revision(usd,scope);
       const matchesLookup = sameRevision(revision,snapshot.revision);
       const stillCurrent = sameRevision(snapshot.revision,current);
-      const moved = !matchesLookup || !stillCurrent;
-      if (moved && ((!stillCurrent && scope !== 'filters') || !orderedSnapshotInDomain(revision,snapshot.revision,current))) {
-        this.values.versionRetries++;
-        throw changedRevision;
+      if (!matchesLookup || !stillCurrent) {
+        const conflict = snapshotConflict(revision,snapshot.revision,current);
+        if (conflict || (!stillCurrent && scope !== 'filters')) {
+          this.values.versionRetries++;
+          throw new ChangedRevision(conflict ?? 'catalog-advanced');
+        }
       }
       const expiresAt = Math.min(this.deadline(value,protocol),snapshot.expiresAt ?? Infinity,snapshot.revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
@@ -297,8 +304,8 @@ export class PublicCatalogCache {
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
-    load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1) {
-    const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal);
+    load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
+    const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,
@@ -315,6 +322,7 @@ export class PublicCatalogCache {
     const input = canonicalJson(normalizedInput);
     if (Buffer.byteLength(input) > 16_384) throw unavailable('invalid-input');
     const work = async (requestSignal:AbortSignal) => {
+      const conflicts:RevisionConflict[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         observe?.('cache_revision');
         const revision = await this.revision(usd,scope);
@@ -339,10 +347,13 @@ export class PublicCatalogCache {
           const envelope = await waitFor(flight.promise,requestSignal);
           return { value: JSON.parse(json(envelope.value)) as T, revision:envelope.revision, expiresAt:envelope.expiresAt, snapshotOnly:!!envelope.snapshotOnly };
         }
-        catch (error) { if (error !== changedRevision) throw error; }
+        catch (error) {
+          if (!(error instanceof ChangedRevision)) throw error;
+          conflicts.push(error.conflict);
+        }
         finally {if(--flight.waiters===0)flight.controller.abort();}
       }
-      throw unavailable('revision-changed');
+      throw new PublicCatalogUnavailableError('revision-changed',conflicts);
     };
     return this.withDeadline(work,signal);
   }
@@ -361,8 +372,6 @@ export class PublicCatalogCache {
     this.values.queuedLoads=0;this.memory.clear();this.values.bytes=0;await this.dependencies.store?.close();
   }
 }
-const changedRevision = Symbol('public catalog changed during load');
-
 export async function createPublicCatalogCache(db: DatabaseReader, options: PublicCatalogCacheOptions): Promise<PublicCatalogCache> {
   const store = options.redis ? await createRedisPublicCacheStore(options.redis, options.maxValueBytes ?? 1_048_576) : undefined;
   return new PublicCatalogCache(options, { readRevision: (usd,scope) => readPublicCatalogRevision(db, usd,scope), store });

@@ -56,7 +56,9 @@ test('a publication changing during source reads retries once and never tags old
   assert.deepEqual(value, { observed: '2' });
   assert.equal(loads, 2); assert.equal(cache.metrics().versionRetries, 1);
   const unstable = new PublicCatalogCache({ namespace: 'hd:test' }, { readRevision: async () => revision });
-  await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503, reason: 'revision-changed' });
+  await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), {
+    status: 503, reason: 'revision-changed', revisionConflicts: ['catalog-advanced', 'catalog-advanced'],
+  });
 });
 
 test('a queued filter read shares a new authoritative stamp and warms only the current version', async () => {
@@ -173,6 +175,7 @@ test('a withdrawal during the actual detail snapshot retries once and never publ
 test('catalog snapshots do not bridge epoch, FX or revision rollback and do not hide failed post-checks', async () => {
   const now = Date.parse('2026-11-22T00:00:00Z');
   for (const mode of ['epoch', 'fx', 'rollback', 'database'] as const) {
+    const conflict = { epoch:'epoch-changed', fx:'fx-changed', rollback:'revision-regressed', database:undefined }[mode];
     let revision: PublicCatalogRevision = { ...version('3'), fx: { version: 'first', expiresAt: now + 3_000 } };
     let loads = 0;
     const store = new Store();
@@ -188,7 +191,9 @@ test('catalog snapshots do not bridge epoch, FX or revision rollback and do not 
       if (mode === 'fx') revision = { ...revision, fx: { version: String(loads), expiresAt: now + 3_000 } };
       if (mode === 'rollback') revision = { ...revision, revision: String(3 - loads) };
       return { value: { items: ['unsafe'] }, revision };
-    }, true), { status: 503, reason: mode === 'database' ? 'revision-read' : 'revision-changed', message: 'Public catalog is temporarily unavailable.' });
+    }, true), { status: 503, reason: mode === 'database' ? 'revision-read' : 'revision-changed', message: 'Public catalog is temporarily unavailable.',
+      ...(conflict ? { revisionConflicts:[conflict,conflict] } : {}),
+    });
     assert.equal(loads, mode === 'database' ? 1 : 2);
     assert.equal(cache.metrics().entries, 0);
     assert.equal(store.values.size, 0);

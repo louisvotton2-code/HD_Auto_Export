@@ -5,6 +5,7 @@ import {
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
 import type { Database } from '../db/index.js';
+import { ApiError } from '../errors.js';
 import { displayText, fallbackExternalTitle, isPublicText, publicText, safeExternalDisplayText, safeExternalInspectionSummary, type ExternalProjection } from './normalize.js';
 import { externalInquiryCode, externalInquiryNumber } from './inquiry-code.js';
 import { publicExternalDisplay, publicExternalSource } from './public-source.js';
@@ -370,9 +371,9 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
 const filterFrom = (query: CatalogMatchQuery) => 'FROM external_catalog_filter f' +
   (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
-const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(
-  (CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
-    WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[])`;
+const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
+  WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[]`;
+const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(${visibleLocaleMasks})`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 const maxCombinedSearchMatches = 8_192;
 
@@ -384,6 +385,14 @@ export function canCountExternalSearchPage(query:PublicVehicleQuery) {
 
 export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null): Promise<number> {
   const { where, values } = matches(query,quote);
+  if (!where) {
+    // Count the same active locale masks in the caller's catalog snapshot.
+    const result = await tx.query<{total:number|null}>(`SELECT sum(s.locale_counts[visible.mask])::int AS total
+      FROM external_catalog_state s CROSS JOIN unnest(${visibleLocaleMasks}) AS visible(mask) WHERE s.id=1`, values);
+    const total = result.rows[0]?.total;
+    if (total == null) throw new ApiError(503,'SERVICE_UNAVAILABLE','Public catalog is temporarily unavailable.',undefined,true);
+    return total;
+  }
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
   return result.rows[0]!.total;
 }
