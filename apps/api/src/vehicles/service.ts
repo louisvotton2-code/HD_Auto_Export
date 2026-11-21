@@ -11,7 +11,7 @@ import { AdminVehicleSchema, HomeVehicleIdSchema, VehicleTranslationSuggestionsS
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
-import { readPublicCatalogRevision, type PublicCatalogRevision } from '../external/public-cache.js';
+import { PublicCatalogUnavailableError, readPublicCatalogRevision, type PublicCatalogRevision } from '../external/public-cache.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
@@ -369,13 +369,26 @@ async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,ca
   captureRevision(revision);
   return revision;
 }
-export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_overview_rollup'|'supplier_label_fallback'|'result';
+export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_overview_rollup'|'supplier_label_priority'|'supplier_label_fallback'|'result';
+type FilterReadBudget = {deadline:number; signal?:AbortSignal; onBackend?:(pid:number)=>void};
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 // The catalog's origin queue already limits concurrent reads. Keep each read
 // within one database worker so cold aggregate queries do not multiply that load.
 const catalogReadTransaction=`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
   SET LOCAL jit=off; SET LOCAL max_parallel_workers_per_gather=0`;
+function remainingFilterTime(budget:FilterReadBudget) {
+  const remaining=Math.floor(budget.deadline-performance.now());
+  if(remaining<1)throw new PublicCatalogUnavailableError('deadline');
+  if(budget.signal?.aborted)throw new PublicCatalogUnavailableError('cancelled');
+  return remaining;
+}
+async function boundFilterStatement(tx:PoolClient,budget:FilterReadBudget) {
+  const remaining=remainingFilterTime(budget);
+  const result=await tx.query<{pid:number}>("SELECT set_config('statement_timeout',$1,true),pg_backend_pid() AS pid",[`${remaining}ms`]);
+  remainingFilterTime(budget);
+  return result.rows[0]!.pid;
+}
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
 const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
   const {page,cursor,pagination,...filters}=query;
@@ -885,25 +898,42 @@ export class InventoryService {
     return (await this.filterResult(query)).value;
   }
 
-  async filterResult(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
-    phase?.('database');
-    return this.db.transaction(async tx=>{
-      await tx.query(catalogReadTransaction);
-      return this.readFilters(tx,query,phase);
-    });
+  async filterResult(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void,budget?:FilterReadBudget) {
+    return this.filterRead(phase,budget,(tx,refresh)=>this.readFilters(tx,query,phase,refresh));
   }
 
-  async filterSnapshot(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
-    phase?.('database');
-    return this.db.transaction(async tx => {
-      await tx.query(catalogReadTransaction);
+  async filterSnapshot(query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void,budget?:FilterReadBudget) {
+    return this.filterRead(phase,budget,async(tx,refresh)=>{
       phase?.('revision');
       const revision = await readPublicCatalogRevision({pool:tx},query.priceView==='usd','filters');
-      return { revision, ...await this.readFilters(tx,query,phase) };
+      return { revision, ...await this.readFilters(tx,query,phase,refresh) };
     });
   }
 
-  private async readFilters(tx: PoolClient, query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void) {
+  private async filterRead<T>(phase:((phase:HomeModelFilterPhase)=>void)|undefined,budget:FilterReadBudget|undefined,
+    read:(tx:PoolClient,refresh?:()=>Promise<void>)=>Promise<T>) {
+    phase?.('database');
+    try {
+      return await this.db.transaction(async tx=>{
+        if(budget)remainingFilterTime(budget);
+        await tx.query(catalogReadTransaction);
+        if(!budget)return read(tx);
+        const pid=await boundFilterStatement(tx,budget);
+        budget.onBackend?.(pid);
+        const result=await read(tx,async()=>{await boundFilterStatement(tx,budget);});
+        remainingFilterTime(budget);
+        return result;
+      });
+    } catch(error) {
+      if(budget&&error&&typeof error==='object'&&(('code' in error&&error.code==='57014')||
+        (error instanceof PublicCatalogUnavailableError&&error.sqlState==='57014'))) {
+        throw new PublicCatalogUnavailableError('deadline',undefined,'57014');
+      }
+      throw error;
+    }
+  }
+
+  private async readFilters(tx: PoolClient, query: PublicFilterQuery, phase?: (phase: HomeModelFilterPhase)=>void,refresh?:()=>Promise<void>) {
     const homeModels=query.projection==='home-models';
     const needsQuote=query.priceView==='usd'&&!homeModels;
     if(needsQuote) phase?.('revision');
@@ -917,9 +947,14 @@ export class InventoryService {
     }
     phase?.('staff_facets');
     const params:unknown[]=[];const selection=staffFacetSelection(query,params,quote,scope?.pairs);
+    await refresh?.();
     const staff=await aggregateCatalogFacets(tx,selection,params,query.projection);
-    if(includeExternal) phase?.('supplier_facets');
-    const external=includeExternal?await externalFacets(tx,query,quote,scope?.pairs,phase):[];
+    let external:CatalogFacetRow[]=[];
+    if(includeExternal) {
+      phase?.('supplier_facets');
+      await refresh?.();
+      external=await externalFacets(tx,query,quote,scope?.pairs,phase,refresh);
+    }
     phase?.('result');
     return {value:facetData(staff,external,query,includeExternal),expiresAt:scope?.expiresAt};
   }

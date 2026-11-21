@@ -50,11 +50,15 @@ test('every hit validates the live epoch/revision; database failure never serves
 test('a publication changing during source reads retries once and never tags old data with the new version', async () => {
   let revision = version(), loads = 0;
   const cache = new PublicCatalogCache({ namespace: 'hd:test' }, { readRevision: async () => revision });
-  const value = await cache.get('detail', { id: 'one' }, async () => {
-    loads++; const observed = revision.revision; if (loads === 1) revision = version('2'); return { observed };
+  const deadlines:number[]=[];
+  const {value} = await cache.getBoundedVersioned('detail', { id: 'one' }, async deadline => {
+    deadlines.push(deadline);
+    loads++; const observed = revision.revision; if (loads === 1) revision = version('2'); return {value:{observed}};
   });
   assert.deepEqual(value, { observed: '2' });
   assert.equal(loads, 2); assert.equal(cache.metrics().versionRetries, 1);
+  assert.ok(Number.isFinite(deadlines[0]));
+  assert.equal(deadlines[0],deadlines[1]);
   const unstable = new PublicCatalogCache({ namespace: 'hd:test' }, { readRevision: async () => revision });
   await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), {
     status: 503, reason: 'revision-changed', revisionConflicts: ['catalog-advanced', 'catalog-advanced'],
@@ -520,6 +524,33 @@ test('cancelling the last waiter removes a queued key; one cancelled joiner cann
   await new Promise(resolve=>setImmediate(resolve));c.abort();await cancelled;assert.equal(cache.metrics().queuedLoads,1);
   release.resolve();await running;assert.deepEqual(await survivor,{id:3});assert.equal(queuedCalls,1);
   assert.equal(cache.metrics().queuedLoads,0);assert.equal(cache.metrics().activeLoads,0);
+});
+
+test('a running filter shares the flight cancellation signal across callers',async()=>{
+  const cache=new PublicCatalogCache({namespace:'hd:filter-flight'},{readRevision:async()=>version()});
+  const started=deferred<AbortSignal>(), release=deferred<void>();
+  const first=new AbortController(),second=new AbortController();
+  const pendingFirst=assert.rejects(cache.getFilterSnapshot({},async(_,signal)=>{
+    started.resolve(signal);
+    await release.promise;
+    return {value:{},revision:version()};
+  },false,first.signal),{reason:'cancelled'});
+  const signal=await started.promise;
+  const pendingSecond=assert.rejects(cache.getFilterSnapshot({},async()=>{
+    throw new Error('must share owner');
+  },false,second.signal),{reason:'cancelled'});
+  await new Promise(resolve=>setImmediate(resolve));
+  first.abort();
+  await pendingFirst;
+  assert.equal(signal.aborted,false);
+  second.abort();
+  await pendingSecond;
+  assert.equal(signal.aborted,true);
+  assert.equal(cache.metrics().activeLoads,1);
+  release.resolve();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(cache.metrics().activeLoads,0);
+  await cache.close();
 });
 
 test('English title, inline and legacy details cannot share cache entries or in-flight work',async()=>{

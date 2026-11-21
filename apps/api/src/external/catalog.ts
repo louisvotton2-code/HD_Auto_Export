@@ -477,6 +477,29 @@ const facetLabelJoins = `JOIN external_catalog labels ON labels.listing_id=label
   LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=label.listing_id
   LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`;
 
+type OverviewFacetRow = CatalogFacetRow & {make_winner?:string|null;alternate_make?:string|null};
+type SupplierFacetPhase = 'supplier_overview_rollup'|'supplier_label_priority'|'supplier_label_fallback';
+
+async function resolveOverviewMakeLabels(tx:Queryable,rows:OverviewFacetRow[],locale:Locale,observe?: (phase:SupplierFacetPhase)=>void,
+  beforeSupplement?:()=>Promise<void>) {
+  const conflicts=rows.filter(row=>row.make_winner&&row.alternate_make!=null&&row.name!==row.alternate_make);
+  if(conflicts.length) {
+    observe?.('supplier_label_priority');
+    await beforeSupplement?.();
+    // The search row references its catalog row. Fetch the wide localization
+    // only when an alternate name could actually change the public result.
+    const decision=await tx.query<{listing_id:string}>(`SELECT labels.listing_id FROM external_catalog labels
+      LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=labels.listing_id
+      WHERE labels.listing_id=ANY($2::uuid[]) AND NOT coalesce(
+        coalesce(overrides.data->'facts' ? 'make',false)
+        OR labels.localized->$1::text->'display'->'make'->>'provenance'='human',false)`,
+    [locale,[...new Set(conflicts.map(row=>row.make_winner!))]]);
+    const useAlternate=new Set(decision.rows.map(row=>row.listing_id));
+    for(const row of conflicts)if(useAlternate.has(row.make_winner!))row.name=row.alternate_make!;
+  }
+  return rows.map(({make_winner:_winner,alternate_make:_alternate,...row})=>row);
+}
+
 function externalFacetGroup(kind: keyof typeof externalFacetGroups, currency:'CNY'|'USD') {
   const columns = externalFacetGroups[kind];
   const [id, make, model] = columns;
@@ -532,7 +555,7 @@ function canUseExternalOverviewRollup(query:PublicFilterQuery) {
 }
 
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
-  observe?: (phase:'supplier_overview_rollup'|'supplier_label_fallback')=>void) {
+  observe?: (phase:SupplierFacetPhase)=>void, beforeSupplement?:()=>Promise<void>) {
   const { where: filters, values } = matches(query,quote);
   const where = pairs ? `${filters} AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}` : filters;
   const matchingValues=[...values];
@@ -574,21 +597,27 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     FROM matched GROUP BY ${groupBy}
   )`;
   if(useRollup)observe?.('supplier_overview_rollup');
-  const result=await tx.query<CatalogFacetRow>(`WITH ${atoms}${groups}, winner_ids AS (
+  const labels=useRollup?`label.make_label AS make,extra.data->'names'->'make'->>'text' AS alternate_make`
+    :needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ');
+  const joins=useRollup?`LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`:facetLabelJoins;
+  const makeSource=useRollup?',winner.listing_id AS make_winner,winner.alternate_make':'';
+  const result=await tx.query<OverviewFacetRow>(`WITH ${atoms}${groups}, winner_ids AS (
     SELECT DISTINCT substring(label_order FROM 19 FOR 36)::uuid AS listing_id FROM facets WHERE label_order IS NOT NULL
   ), winner_labels AS MATERIALIZED (
-    SELECT label.listing_id,${needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ')}
+    SELECT label.listing_id,${labels}
     FROM winner_ids JOIN external_catalog_search label ON label.listing_id=winner_ids.listing_id AND label.locale=$1::text
-    ${facetLabelJoins}
+    ${joins}
   ) SELECT g.kind,g.id,g.make_id,g.model_id,g.count,
-    CASE g.kind ${needed.map(kind=>`WHEN '${kind}' THEN winner.${kind}`).join(' ')} END AS name
+    CASE g.kind ${needed.map(kind=>`WHEN '${kind}' THEN winner.${kind}`).join(' ')} END AS name${makeSource}
   FROM facets g LEFT JOIN winner_labels winner ON winner.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid`,values);
   // Historical projections may contain a null label despite a present ID. The
   // previous min(order || name) ignored those rows; preserve that rare fallback
   // without probing labels for every normal matched vehicle.
-  const missing=result.rows.filter(row=>namedFacetKinds.has(row.kind)&&row.name===null);
+  const rows=useRollup?await resolveOverviewMakeLabels(tx,result.rows,query.locale,observe,beforeSupplement):result.rows;
+  const missing=rows.filter(row=>namedFacetKinds.has(row.kind)&&row.name===null);
   if(missing.length) {
     observe?.('supplier_label_fallback');
+    await beforeSupplement?.();
     const name=`CASE missing.kind ${facetLabelKinds.map(kind=>`WHEN '${kind}' THEN ${externalFacetLabel(kind)}`).join(' ')} END`;
     const fallback=await tx.query<Pick<CatalogFacetRow,'kind'|'id'|'name'|'make_id'|'model_id'>>(`SELECT missing.*,selected.name
       FROM jsonb_to_recordset($${matchingValues.length+1}::jsonb) AS missing(kind text,id text,make_id text,model_id text)
@@ -610,7 +639,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     const names=new Map(fallback.rows.map(row=>[key(row),row.name]));
     for(const row of missing)row.name=names.get(key(row))??null;
   }
-  return result.rows.map(row=>namedFacetKinds.has(row.kind) && (!row.name || !isPublicText(row.name))
+  return rows.map(row=>namedFacetKinds.has(row.kind) && (!row.name || !isPublicText(row.name))
     ? {...row,name:fallbackExternalTitle(query.locale).text}:row);
 }
 
