@@ -1,4 +1,7 @@
-import { PublicVehicleInspectionQuerySchema, type PublicVehicleInspectionQuery } from '@hd/contracts/public';
+import {
+  PublicSeoManifestResponseSchema, PublicVehicleInspectionQuerySchema,
+  type PublicSeoManifest, type PublicVehicleInspectionQuery,
+} from '@hd/contracts/public';
 import { parseVehicleSegment } from '../public-segments';
 import { type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -103,12 +106,36 @@ export function getPublicCatalog(query: PublicVehicleQuery) {
     localizedCardListSchema(query.locale, 'usd'),
   );
 }
-/** Keep sitemap traversal on the bounded editorial catalog when localized browsing includes imports. */
-export function getPublicSitemapCatalog(locale: Locale, page: number) {
-  return readPublicJson(
-    `/api/v1/vehicles?${queryString({ locale, catalog: 'curated', view: 'legacy', page, pageSize: 48 })}`,
-    legacyListSchema,
-  );
+/** Resolve a complete manifest revision for the local fallback and fail closed on any inconsistency. */
+export async function getPublicSeoManifest() {
+  const items: PublicSeoManifest['items'] = [];
+  const seenIds = new Set<string>();
+  const cursors = new Set<string>();
+  let revision: string | undefined;
+  let validUntil: string | null = null;
+  let cursor: string | undefined;
+  // Bound the on-demand fallback. OPS publishes larger sets as a static sitemap index.
+  for (let page = 0; page < 40; page++) {
+    const { data } = await readPublicJson(
+      `/api/v1/seo/vehicles?${queryString({ limit: 500, cursor })}`,
+      PublicSeoManifestResponseSchema,
+    );
+    if (!data.enabled && revision === undefined) return null;
+    if (!data.enabled || (revision !== undefined && (revision !== data.revision || validUntil !== data.validUntil)) ||
+      (data.validUntil !== null && Date.parse(data.validUntil) <= Date.now())) throw new PublicApiError(503);
+    revision = data.revision;
+    validUntil = data.validUntil;
+    for (const vehicle of data.items) {
+      if (seenIds.has(vehicle.id)) throw new PublicApiError(503);
+      seenIds.add(vehicle.id);
+      items.push(vehicle);
+    }
+    if (!data.nextCursor) return { items, validUntil };
+    if (cursors.has(data.nextCursor)) throw new PublicApiError(503);
+    cursors.add(data.nextCursor);
+    cursor = data.nextCursor;
+  }
+  throw new PublicApiError(503);
 }
 export async function getPublicVehicle(
   id: string,
@@ -119,15 +146,24 @@ export async function getPublicVehicle(
   projection?: 'detail-inline-v1',
   technicalView?: 'verified',
   titleView?: 'english',
+  pixelView?: 'eligible',
+  seoView?: 'eligible',
 ) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)) return null;
   try {
-    const result = await readPublicJson(
-      `/api/v1/vehicles/${id}?${queryString({ locale, view, priceView, projection, technicalView, titleView })}`,
+    const read = (negotiated: boolean) => readPublicJson(
+      `/api/v1/vehicles/${id}?${queryString({
+        locale, view, priceView, projection, technicalView, titleView,
+        pixelView: negotiated ? pixelView : undefined, seoView: negotiated ? seoView : undefined,
+      })}`,
       projection === 'detail-inline-v1' ? localizedInlineVehicleSchema(locale, priceView)
         : view === 'localized' ? localizedVehicleSchema(locale, priceView) : legacyVehicleSchema,
       incoming,
     );
+    const result = await read(true).catch((error: unknown) => {
+      if ((pixelView || seoView) && error instanceof PublicApiError && error.status === 400) return read(false);
+      throw error;
+    });
     if (result.data.id !== id || result.data.detailPath !== `/${locale}/cars/${id}/`)
       throw new PublicApiError(503);
     return result.data;

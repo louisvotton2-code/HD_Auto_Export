@@ -33,6 +33,7 @@ export function PublicVehicleFiltersForm({
   pending = false,
   retryAfter = 0,
   navigate,
+  onSubmitFilters,
   onRetry,
 }: {
   locale: Locale;
@@ -51,6 +52,7 @@ export function PublicVehicleFiltersForm({
   pending?: boolean;
   retryAfter?: number;
   navigate: (href: string) => void;
+  onSubmitFilters?: (href: string) => void;
   onRetry?: () => void;
 }) {
   const t = publicVehicleMessages(locale),
@@ -83,6 +85,7 @@ export function PublicVehicleFiltersForm({
     }
     setError(false);
     const href = publicCatalogHref(locale, parsed, 1);
+    if (event.nativeEvent.isTrusted) onSubmitFilters?.(href);
     navigate(`${href}${href.includes('?') ? '&' : '?'}page=1`);
   }
   function options(items: { id: string; name: string; count: number }[], value: string) {
@@ -151,6 +154,17 @@ export function PublicVehicleFiltersForm({
       <input type="hidden" name="page" value="1" />
       <input type="hidden" name="pageSize" value={query.pageSize} />
       <h2 className={styles.srOnly}>{live.filters}</h2>
+      <CatalogBrandPicker
+        locale={locale}
+        brands={filters?.makes ?? []}
+        value={make}
+        pending={filtersPending}
+        onChange={value => {
+          onModelScopeChange(value, '');
+          setGeneration('');
+          setTrim('');
+        }}
+      />
       <label>
         <span>{live.search}</span>
         <input
@@ -172,16 +186,6 @@ export function PublicVehicleFiltersForm({
         </select>
       </label>
       <div className={styles.filterDivider} />
-      <CatalogBrandPicker
-        locale={locale}
-        brands={filters?.makes ?? []}
-        value={make}
-        onChange={value => {
-          onModelScopeChange(value, '');
-          setGeneration('');
-          setTrim('');
-        }}
-      />
       <label>
         <span>{t.model}</span>
         <select

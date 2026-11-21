@@ -4,12 +4,14 @@ import { getMessages, getTranslations, setRequestLocale } from 'next-intl/server
 import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
 import { siteConfig } from '@/shared/config/site';
+import { sessionAnalyticsEnabledForSite } from '@/shared/config/session-analytics';
 import { SiteHeader } from '@/shared/ui/site-header';
 import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
 import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
 import { VehicleFavorites } from '@/modules/vehicles';
-import { SiteAnalytics } from '@/modules/analytics';
+import { SiteAnalytics, TrackingConsentControls } from '@/modules/analytics';
+import { getConfiguredPixelId } from '@/modules/analytics/server';
 import { EnquiryProvider, EnquiryTrigger } from '@/modules/enquiries';
 import { getShellMessages } from '@/i18n/client-messages';
 import '../globals.css';
@@ -37,8 +39,9 @@ export async function generateMetadata({
     metadataBase: new URL(siteConfig.origin),
     title: { default: t('title'), template: '%s' },
     description: t('description'),
-    robots: { index: siteConfig.indexable, follow: siteConfig.indexable },
+    robots: { index: false, follow: false },
     applicationName: siteConfig.name,
+    other: siteConfig.domainVerification,
   };
 }
 
@@ -53,6 +56,8 @@ export default async function LocaleLayout({
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   const messages = getShellMessages(await getMessages());
+  const sessionAnalyticsEnabled = sessionAnalyticsEnabledForSite(siteConfig.origin, process.env.ANALYTICS_V2_ENABLED);
+  const pixelId = getConfiguredPixelId();
   return (
     <html lang={locale === 'zh' ? 'zh-Hans' : locale} data-scroll-behavior="smooth">
       <body>
@@ -68,10 +73,12 @@ export default async function LocaleLayout({
           </a>
           <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} enquiryAction={<EnquiryTrigger />} />
           {children}
-          <SiteFooter />
+          <SiteFooter privacyAction={
+            <TrackingConsentControls locale={locale} sessionAnalyticsEnabled={sessionAnalyticsEnabled} metaEnabled={Boolean(pixelId)} />
+          } />
           <InteractionMotion />
-          <PublicNavigationFreshness />
-          <SiteAnalytics locale={locale} />
+          <PublicNavigationFreshness verifyVehicleOnRestore={Boolean(pixelId)} />
+          <SiteAnalytics locale={locale} sessionAnalyticsEnabled={sessionAnalyticsEnabled} pixelId={pixelId} />
           </EnquiryProvider>
         </NextIntlClientProvider>
       </body>

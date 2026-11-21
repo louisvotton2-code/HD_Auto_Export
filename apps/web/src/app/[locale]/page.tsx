@@ -5,7 +5,8 @@ import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { connection } from 'next/server';
 import { routing, type Locale } from '@/i18n/routing';
-import { localizedAlternates } from '@/shared/config/site';
+import { pageMetadata, publicPageSchema } from '@/shared/lib/page-seo';
+import { JsonLd } from '@/shared/ui/json-ld';
 import { markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 import { PublicHome } from '@/modules/home';
 import { getPublicCatalog, getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
@@ -31,10 +32,8 @@ type Props = { params: Promise<{ locale: string }> };
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) return {};
-  return {
-    ...metadataByLocale[locale],
-    alternates: { canonical: `/${locale}/`, languages: localizedAlternates('/') },
-  };
+  return pageMetadata({ locale, path: '/', ...metadataByLocale[locale],
+    image: { src: '/media/home/dawn-convoy-1056.webp' } });
 }
 
 export default async function Home({ params }: Props) {
@@ -63,7 +62,9 @@ export default async function Home({ params }: Props) {
   if (home.status === 'fulfilled' && models.status === 'fulfilled' && facets?.total !== undefined) {
     markPublicHtmlRenderComplete((await headers()).get(publicHtmlRenderTicketHeader));
   }
-  return (
+  const { title, description } = metadataByLocale[locale];
+  return <>
+    <JsonLd data={publicPageSchema(locale, '/', title, 'WebSite', description)} />
     <PublicHome
       key={locale}
       locale={locale}
@@ -79,5 +80,5 @@ export default async function Home({ params }: Props) {
       catalogTotal={catalogTotal}
       initialRetryAfter={initialRetryAfter}
     />
-  );
+  </>;
 }

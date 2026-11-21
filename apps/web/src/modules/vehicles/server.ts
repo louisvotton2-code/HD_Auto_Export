@@ -3,7 +3,7 @@ import { cache } from 'react';
 import { getSsrPublicVehicle } from './infrastructure/ssr-public-api';
 import type { Locale } from '@/i18n/routing';
 export {
-  getPublicSitemapCatalog,
+  getPublicSeoManifest,
   getPublicVehicleInspection,
   parseCatalogQuery,
   parseCatalogPageQuery,
@@ -15,10 +15,12 @@ export {
   getSsrPublicFilters as getPublicFilters,
   getSsrPublicCatalog as getPublicCatalog,
 } from './infrastructure/ssr-public-api';
-export const getPublicVehicleById = cache((id: string, locale: Locale) =>
-  getSsrPublicVehicle(id, locale),
+export const getPublicVehicleById = cache((id: string, locale: Locale, includePixel = false, includeSeo = false) =>
+  getSsrPublicVehicle(id, locale, undefined, { includePixel, includeSeo }),
 );
+export { getSsrPublicVehicle as readPublicVehicleDocument } from './infrastructure/ssr-public-api';
 export { proxyPublicRequest } from './infrastructure/public-proxy';
 export { getPublicHtmlCacheVersions } from './infrastructure/public-html-cache-version';
 export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';
 export { catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';
+export { vehicleSeoPresentation, vehicleStructuredData } from './vehicle-seo';

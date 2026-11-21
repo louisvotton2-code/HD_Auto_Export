@@ -30,6 +30,7 @@ import { ManufactureRangeResult } from './manufacture-range-result';
 import { fieldDisplayPrecision } from './field-display-precision';
 import { DecimalDisplayInput } from './decimal-display-input';
 import { NumericDateInput } from './numeric-date-input';
+import { useCalculatorCompletion } from './use-calculator-completion';
 import styles from './vehicle-import-estimate.module.css';
 
 type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate'
@@ -93,6 +94,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
     [dateIsBlank, normalized, referenceYear]);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
+  const recordCalculationEdit = useCalculatorCompletion(active && result.status === 'reference' && result.total !== null);
   const format = (value: string) => formatDisplayAmount(value, locale, 2);
   const usd = (value: string) => {
     const converted = convertImportAmountToUsd(value, normalized, initialRates);
@@ -113,6 +115,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   }, [identity, preference.country, preference.ready]);
 
   function update<K extends keyof VehicleEstimateDraft>(key: K, value: VehicleEstimateDraft[K]) {
+    recordCalculationEdit();
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
     setState((previous) => ({
       ...previous,
@@ -124,6 +127,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     }));
   }
   function changeCountry(code: CountryCode) {
+    recordCalculationEdit();
     preference.selectCountry(code);
     setManualRates(false);
     setState((previous) => ({ ...previous, input: {
@@ -133,6 +137,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     setExpanded(new Set());
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
+    recordCalculationEdit();
     setManualRates(false);
     setState((previous) => ({ ...previous, input: {
       ...previous.input, currency,

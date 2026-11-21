@@ -7,7 +7,8 @@ import { routing } from '@/i18n/routing';
 import { getCalculatorCountryMessages } from '@/i18n/client-messages';
 import { countries, getCountryBySlug } from '@/modules/calculator/config/countries';
 import { CalculatorPage } from '@/modules/calculator/ui/calculator-page';
-import { localizedAlternates } from '@/shared/config/site';
+import { pageMetadata, publicPageSchema } from '@/shared/lib/page-seo';
+import { JsonLd } from '@/shared/ui/json-ld';
 import { fetchExchangeRates } from '@/modules/calculator/infrastructure/exchange-rates.server';
 
 type Props = { params: Promise<{ locale: string; country: string }> };
@@ -24,12 +25,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!country || !hasLocale(routing.locales, locale)) return {};
   const t = await getTranslations({ locale });
   const name = t(`Countries.${country.code}`);
-  const path = `/calculator/${country.slug}`;
-  return {
+  return pageMetadata({
+    locale, path: `/calculator/${country.slug}/`,
     title: t('Meta.countryTitle', { country: name }),
     description: t('Meta.countryDescription', { country: name }),
-    alternates: { canonical: `/${locale}${path}/`, languages: localizedAlternates(`${path}/`) },
-  };
+  });
 }
 
 export default async function CountryCalculator({ params }: Props) {
@@ -45,9 +45,14 @@ export default async function CountryCalculator({ params }: Props) {
     day: '2-digit',
   }).format(new Date());
   const rates = await fetchExchangeRates();
-  const messages = getCalculatorCountryMessages(await getMessages(), country.code);
+  const [allMessages, t] = await Promise.all([getMessages(), getTranslations({ locale })]);
+  const messages = getCalculatorCountryMessages(allMessages, country.code);
+  const name = t(`Countries.${country.code}`);
   return (
     <ScopedMessagesProvider messages={messages}>
+      <JsonLd data={publicPageSchema(locale, `/calculator/${country.slug}/`,
+        t('Meta.countryTitle', { country: name }), 'WebApplication',
+        t('Meta.countryDescription', { country: name }))} />
       <CalculatorPage country={country} initialDate={today} initialRates={rates} />
     </ScopedMessagesProvider>
   );

@@ -3,7 +3,7 @@ import type { PublicVehicleSummary } from '@/shared/lib/public-vehicle-summary';
 import { hasPrivateVehicleSource } from './public-vehicle-reference';
 import type { Locale } from '@/i18n/routing';
 
-export function publicDetailTitle(vehicle: PublicVehicleInline, locale: Locale) {
+export function publicDetailTitle(vehicle: PublicVehicleSummary & Pick<PublicVehicleInline, 'englishTitle'>, locale: Locale) {
   const title = vehicle.englishTitle;
   const text = title?.text.trim();
   if (title && text && text !== '—' && !hasPrivateVehicleSource(text)) {

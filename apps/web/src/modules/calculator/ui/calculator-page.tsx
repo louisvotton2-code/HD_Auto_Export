@@ -38,6 +38,7 @@ import { CountryPolicyNotes } from './country-policy-notes';
 import { FeeLine } from './fee-line';
 import { ResultStamp } from './result-stamp';
 import { ManufactureRangeResult } from './manufacture-range-result';
+import { useCalculatorCompletion } from './use-calculator-completion';
 import { formatFeeFormula, formatMethodParameters } from '../application/fee-presentation';
 import type { CalculationLine } from '../core/types';
 import {
@@ -194,6 +195,8 @@ export function CalculatorPage({
   const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
     [dateIsBlank, normalized, referenceYear]);
   const result = useMemo(() => rangeResult?.result ?? calculateImportEstimate(normalized), [normalized, rangeResult]);
+  const recordCalculationEdit = useCalculatorCompletion(ready && input.country === country.code &&
+    result.status === 'reference' && result.total !== null);
   const rangeCopy = manufactureRangeCopy[locale as Locale];
   const manufactureNote = rangeResult ? januaryRangeNote(locale as Locale, rangeResult) : undefined;
   const totalRef = useValueHighlight(`${result.status}:${result.total}:${result.currency}`);
@@ -237,6 +240,7 @@ export function CalculatorPage({
   }
 
   function update<K extends keyof CalculationInput>(key: K, value: CalculationInput[K]) {
+    recordCalculationEdit();
     setInput((previous) => ({
       ...previous,
       [key]: value,
@@ -248,6 +252,7 @@ export function CalculatorPage({
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
+    recordCalculationEdit();
     setInput((previous) => ({
       ...previous,
       currency,
@@ -353,6 +358,7 @@ export function CalculatorPage({
     }
   }
   function showResult() {
+    recordCalculationEdit();
     setTouched(new Set(result.missingFields));
     if (
       result.missingFields.some((key) =>

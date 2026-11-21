@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: `404 | ${siteConfig.name}`,
   description: 'Page not found. Return to the HD Auto Export calculator.',
   robots: { index: false, follow: true },
+  other: siteConfig.domainVerification,
 };
 
 /** Global static fallback bypasses both root layouts and cannot infer a request language. */

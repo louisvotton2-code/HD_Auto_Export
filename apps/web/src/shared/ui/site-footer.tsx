@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import type { ReactNode } from 'react';
 import { getTranslations } from 'next-intl/server';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { siteConfig } from '@/shared/config/site';
@@ -8,7 +9,7 @@ import { FooterPayment } from './footer-payment';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
-export async function SiteFooter() {
+export async function SiteFooter({ privacyAction }: { privacyAction?: ReactNode }) {
   const t = await getTranslations();
   const year = new Intl.DateTimeFormat('en', { year: 'numeric', timeZone: 'Asia/Shanghai' }).format(
     new Date(),
@@ -79,6 +80,7 @@ export async function SiteFooter() {
           <span>{t('Footer.note')}</span>
         </div>
       </div>
+      {privacyAction}
     </footer>
   );
 }

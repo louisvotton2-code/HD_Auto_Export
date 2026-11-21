@@ -126,6 +126,17 @@ test('brand search filters available options before selection on touch and keybo
       await expect(brand).toHaveCount(1);
       await expect(brand).toHaveValue('beta');
       await expect(search).toHaveAccessibleName(label);
+      await expect(form.locator('[role="listbox"]')).toHaveCount(0);
+      if (locale === 'ru') {
+        const title = page.getByRole('heading', { name: 'Найдите свой следующий автомобиль', level: 1 });
+        await expect(title).toBeInViewport({ ratio: 1 });
+        await expect(search).toBeInViewport({ ratio: 1 });
+        await expect(search).toHaveCSS('font-size', '16px');
+        const searchBox = (await search.boundingBox())!;
+        const generalSearch = (await form.locator('[name="q"]').boundingBox())!;
+        expect(searchBox.height).toBeGreaterThanOrEqual(44);
+        expect(searchBox.y).toBeLessThan(generalSearch.y);
+      }
       const initialReads = reads.length;
       await search.tap();
       await expect(search).toHaveAttribute('placeholder', placeholder);
@@ -157,6 +168,58 @@ test('brand search filters available options before selection on touch and keybo
       await expect(page).toHaveURL(initialUrl);
     }
   } finally {
+    await context.close();
+  }
+});
+
+test('Russian mobile brand works with the native control before JavaScript is available', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL, javaScriptEnabled: false, isMobile: true, hasTouch: true,
+    viewport: { width: 390, height: 844 },
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto('/ru/cars/');
+    const brand = page.getByRole('combobox', { name: 'Марка' });
+    await expect(brand).toBeInViewport({ ratio: 1 });
+    await expect(brand).toHaveCSS('font-size', '16px');
+    expect((await brand.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await brand.selectOption('beta');
+    await page.getByRole('button', { name: 'Найти', exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get('make')).toBe('beta');
+    await expect(brand).toHaveValue('beta');
+  } finally {
+    await context.close();
+  }
+});
+
+test('Russian mobile brand search keeps typed text while the catalog dictionary loads', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 },
+  });
+  let release = () => {};
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const page = await context.newPage();
+    await page.route(url => url.pathname === '/catalog-facets.json', async route => {
+      await pending;
+      await route.continue();
+    });
+    await page.goto('/ru/');
+    await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+    await page.locator('#home-shortcuts a[href="/ru/cars/"]').tap();
+    const search = page.getByTestId('catalog-brand-search');
+    await expect(search).toHaveAttribute('aria-busy', 'true');
+    await search.tap();
+    await search.fill('L');
+    const picker = search.locator('../..');
+    await expect(picker.getByRole('status')).toHaveText('Загружаем варианты фильтра…');
+    release();
+    await expect(search).toHaveValue('L');
+    await expect(picker.getByRole('option', { name: /Alpha Motors/ })).toBeVisible();
+    await expect(picker.getByRole('option', { name: /Beta Motors/ })).toHaveCount(0);
+  } finally {
+    release();
     await context.close();
   }
 });

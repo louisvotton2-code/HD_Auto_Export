@@ -6,7 +6,13 @@ import {
   AnalyticsVehicleIdSchema, type AnalyticsEvent,
 } from '@hd/contracts/analytics';
 import type { Locale } from '@/i18n/routing';
-import { enqueueAnalytics, flushAnalyticsOnExit } from './transport';
+import { publicAnalyticsActionEvent, type PublicAnalyticsAction } from '@/shared/lib/public-analytics-actions';
+import { publicNavigationVersion } from '@/shared/lib/public-navigation-events';
+import { getTrackingConsent, refreshTrackingConsent, subscribeTrackingConsent } from '@/shared/lib/tracking-consent';
+import { countVehicleContact } from './contact-count';
+import { trackPixel } from './pixel';
+import { clearAnalyticsSession, nextAnalyticsSession } from './session';
+import { enqueueAnalytics, flushAnalyticsOnExit, stopAnalyticsTransport } from './transport';
 
 type PageType = AnalyticsEvent['pageType'];
 type EventDetails = AnalyticsEvent extends infer T
@@ -21,6 +27,7 @@ const routes: readonly [pattern: RegExp, pageType: PageType, selector: string][]
   [/^calculator\/[a-z-]+$/, 'calculator', '.calculator-main'],
   [/^buy$/, 'guide', '[data-testid="buy-guide"]'],
   [/^about$/, 'about', '[data-about-hero]'],
+  [/^privacy$/, 'other', '[data-testid="privacy-page"]'],
 ];
 
 function vehicleId(value: unknown): string | undefined {
@@ -28,95 +35,173 @@ function vehicleId(value: unknown): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+let frozenPixelSnapshot: { path: string; navigation: number } | undefined;
+
 function pageContext(pathname: string, locale: Locale) {
   const segments = pathname.split('/').filter(Boolean);
   if (segments.shift() !== locale) return null;
   const route = routes.find(([pattern]) => pattern.test(segments.join('/')));
   if (!route) return null;
   const [, pageType, selector] = route;
-  const page = document.querySelector(selector);
+  const page = document.querySelector<HTMLElement>(selector);
   if (!page || page.hasAttribute('data-analytics-demo')) return null;
   const detailId = pageType === 'vehicle' ? vehicleId(page.getAttribute('data-public-vehicle-detail')) : undefined;
-  if (pageType === 'vehicle' && (!detailId || detailId !== segments.at(-1))) return null;
-  return { locale, pageType, ...(detailId ? { vehicleId: detailId } : {}) };
+  if (pageType === 'vehicle' && (!detailId || detailId !== segments.at(-1) ||
+      page.closest('[data-freshness]')?.getAttribute('data-freshness') !== 'fresh')) return null;
+  const navigation = publicNavigationVersion(pathname);
+  const pixelFresh = !detailId || (page.dataset.metaPixelNavigation === String(navigation) &&
+    !(frozenPixelSnapshot?.path === pathname && frozenPixelSnapshot.navigation === navigation));
+  return {
+    locale,
+    pageType,
+    ...(detailId ? { vehicleId: detailId } : {}),
+    pixelFresh,
+    pixelEnabled: Boolean(detailId && pixelFresh && page.dataset.metaPixelEnabled === 'true'),
+  };
 }
 
-function record(details: EventDetails) {
-  if (typeof globalThis.crypto?.randomUUID !== 'function') return;
-  enqueueAnalytics({ ...details, eventId: globalThis.crypto.randomUUID() });
+function record(enabled: boolean, details: EventDetails, entryPage: PageType = details.pageType) {
+  if (!enabled || !getTrackingConsent().analytics || typeof globalThis.crypto?.randomUUID !== 'function') return;
+  const now = Date.now();
+  enqueueAnalytics({
+    ...details,
+    ...nextAnalyticsSession(entryPage, now),
+    eventId: globalThis.crypto.randomUUID(),
+    occurredAt: new Date(now).toISOString(),
+  });
 }
 
-let lastView: string | null = null;
+let lastAnalyticsView: string | null = null;
+let lastPixelView: string | null = null;
 
 /** One observer under the public locale layout. Staff preview has a separate root. */
-export function SiteAnalytics({ locale }: { locale: Locale }) {
+export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
+  locale: Locale;
+  sessionAnalyticsEnabled: boolean;
+  pixelId: string | null;
+}) {
   const pathname = usePathname();
   useEffect(() => {
-    if (window.parent !== window || !pathname) return;
+    if ((!sessionAnalyticsEnabled && !pixelId) || window.parent !== window || !pathname) return;
+    if (frozenPixelSnapshot?.path !== pathname) frozenPixelSnapshot = undefined;
     const key = pathname.replace(/\/$/, '');
     const view = () => {
       if (document.hidden || ('prerendering' in document && document.prerendering === true) ||
-        location.pathname.replace(/\/$/, '') !== key || lastView === key) return;
+        location.pathname.replace(/\/$/, '') !== key) return false;
       const current = pageContext(pathname, locale);
-      if (!current) return;
-      lastView = key;
-      record({ ...current, type: 'page_view' });
+      if (!current) return false;
+      const { pixelFresh, pixelEnabled, ...context } = current;
+      const consent = getTrackingConsent();
+      if (sessionAnalyticsEnabled && consent.analytics && lastAnalyticsView !== key) {
+        lastAnalyticsView = key;
+        record(sessionAnalyticsEnabled, { ...context, type: 'page_view' });
+      }
+      if (pixelId && consent.advertising && current.vehicleId && pixelEnabled && lastPixelView !== key) {
+        lastPixelView = key;
+        void trackPixel(pixelId, 'PageView', current.vehicleId, pixelEnabled);
+        void trackPixel(pixelId, 'ViewContent', current.vehicleId, pixelEnabled);
+      }
+      return !pixelId || pixelFresh;
     };
     // Changing route (including to a missing page) permits a later return to count.
-    if (lastView !== key) lastView = null;
-    view();
+    if (lastAnalyticsView !== key) lastAnalyticsView = null;
+    if (lastPixelView !== key) lastPixelView = null;
     // The initial SSR resource can be unavailable until the user explicitly retries.
     const onResource = new MutationObserver(() => {
-      view();
-      if (lastView === key) onResource.disconnect();
+      if (view()) onResource.disconnect();
     });
-    const main = document.querySelector('main');
-    if (lastView !== key && main?.parentElement) onResource.observe(main.parentElement, { childList: true });
+    const watchUntilReady = () => {
+      if (view()) return;
+      const main = document.querySelector('main');
+      const recoveryBoundary = main?.closest('[data-freshness]') ?? main?.parentElement;
+      if (recoveryBoundary) onResource.observe(recoveryBoundary, {
+        childList: true, subtree: true, attributes: true,
+        attributeFilter: ['data-freshness', 'data-meta-pixel-navigation'],
+      });
+    };
+    watchUntilReady();
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
-      lastView = null;
-      view();
+      lastAnalyticsView = null;
+      lastPixelView = null;
+      refreshTrackingConsent();
+      watchUntilReady();
     };
+    const unsubscribe = subscribeTrackingConsent(view);
     document.addEventListener('visibilitychange', view);
     document.addEventListener('prerenderingchange', view);
     window.addEventListener('pageshow', onPageShow);
     return () => {
       onResource.disconnect();
+      unsubscribe();
       document.removeEventListener('visibilitychange', view);
       document.removeEventListener('prerenderingchange', view);
       window.removeEventListener('pageshow', onPageShow);
     };
-  }, [locale, pathname]);
+  }, [locale, pathname, pixelId, sessionAnalyticsEnabled]);
 
   useEffect(() => {
     if (window.parent !== window) return;
     const onClick = (event: MouseEvent) => {
       if (!event.isTrusted || (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0)) return;
       const anchor = event.target instanceof Element
-        ? event.target.closest<HTMLAnchorElement>('a[href][data-analytics-vehicle],a[href][data-analytics-contact]')
+        ? event.target.closest<HTMLAnchorElement>('a[href][data-analytics-vehicle],a[href][data-analytics-contact-vehicle]')
         : null;
-      if (!anchor || anchor.closest('[aria-disabled="true"]')) return;
+      if (!anchor || anchor.closest('[aria-disabled="true"],[data-analytics-demo]')) return;
       const context = pageContext(location.pathname, locale);
       if (!context) return;
       const { pageType } = context;
       const clickedVehicle = vehicleId(anchor.dataset.analyticsVehicle);
       if (clickedVehicle) {
-        record({ type: 'vehicle_click', pageType, locale, vehicleId: clickedVehicle });
+        record(sessionAnalyticsEnabled, { type: 'vehicle_click', pageType, locale, vehicleId: clickedVehicle });
         return;
       }
       const channel = anchor.dataset.analyticsContact;
       if (channel !== 'whatsapp' && channel !== 'telegram') return;
       const contactVehicle = vehicleId(anchor.dataset.analyticsContactVehicle);
-      record({ type: 'contact_click', locale, pageType, channel, ...(contactVehicle ? { vehicleId: contactVehicle } : {}) });
+      if (!contactVehicle) return;
+      countVehicleContact({ vehicleId: contactVehicle, channel });
+      if (context.vehicleId === contactVehicle) void trackPixel(pixelId, 'Contact', contactVehicle, context.pixelEnabled);
+      // The separate funnel receives this event only with explicit session consent.
+      record(sessionAnalyticsEnabled, { type: 'contact_click', locale, pageType, channel, vehicleId: contactVehicle });
     };
+    const onPublicAction = ({ detail }: CustomEvent<PublicAnalyticsAction>) => {
+      const context = pageContext(location.pathname, locale);
+      if (!context) return;
+      if (detail === 'calculator_complete' &&
+          (context.pageType === 'calculator' || context.pageType === 'vehicle')) {
+        record(sessionAnalyticsEnabled, { type: detail, locale, pageType: 'calculator' }, context.pageType);
+      }
+      if ((detail === 'filter_submit' || detail === 'search_zero_results') && context.pageType === 'catalog') {
+        record(sessionAnalyticsEnabled, { type: detail, locale, pageType: 'catalog' });
+      }
+    };
+    function stopWithoutConsent() {
+      if (sessionAnalyticsEnabled && getTrackingConsent().analytics) return;
+      clearAnalyticsSession();
+      stopAnalyticsTransport();
+    }
+    const unsubscribe = subscribeTrackingConsent(stopWithoutConsent);
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (pixelId && event.persisted) {
+        // The restored document needs a new confirmation of the server's vehicle switch.
+        const path = location.pathname;
+        frozenPixelSnapshot = { path, navigation: publicNavigationVersion(path) };
+      }
+      flushAnalyticsOnExit();
+    };
+    stopWithoutConsent();
     document.addEventListener('click', onClick, true);
     document.addEventListener('auxclick', onClick, true);
-    window.addEventListener('pagehide', flushAnalyticsOnExit);
+    window.addEventListener(publicAnalyticsActionEvent, onPublicAction as EventListener);
+    window.addEventListener('pagehide', onPageHide);
     return () => {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('auxclick', onClick, true);
-      window.removeEventListener('pagehide', flushAnalyticsOnExit);
+      window.removeEventListener(publicAnalyticsActionEvent, onPublicAction as EventListener);
+      window.removeEventListener('pagehide', onPageHide);
+      unsubscribe();
     };
-  }, [locale]);
+  }, [locale, pixelId, sessionAnalyticsEnabled]);
   return null;
 }

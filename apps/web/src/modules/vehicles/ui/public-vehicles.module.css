@@ -38,6 +38,12 @@
   gap: 24px;
   align-items: start;
 }
+.catalogTitle {
+  margin: 0 0 18px;
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 700;
+  line-height: 1.2;
+}
 .sidebar {
   min-width: 0;
 }
@@ -93,19 +99,25 @@
 }
 .brandPickerControl input {
   box-sizing: border-box;
+  padding-inline-start: 34px;
   padding-inline-end: 30px;
 }
-.brandPickerControl input[aria-expanded='false']::placeholder {
+.brandPickerControl input::placeholder {
   color: #f5f0eb;
-  opacity: 1;
+  opacity: .82;
 }
 .brandPickerControl svg {
   position: absolute;
-  inset-inline-end: 10px;
   top: 50%;
   transform: translateY(-50%);
   color: #b9afa6;
   pointer-events: none;
+}
+.brandPickerSearchIcon {
+  inset-inline-start: 10px;
+}
+.brandPickerChevron {
+  inset-inline-end: 10px;
 }
 .brandPickerMenu {
   position: absolute;
@@ -147,7 +159,11 @@
   font-size: 13px;
 }
 @media (pointer: coarse) {
-  .brandPickerControl input { font-size: 16px; }
+  .brandPickerControl input,
+  .brandPickerFallback select {
+    min-height: 44px;
+    font-size: 16px;
+  }
   .brandPickerMenu li { min-height: 44px; }
 }
 .filterActions {

@@ -34,11 +34,15 @@ export function PublicVehicleDetail({
   vehicle,
   detailTitle,
   locale,
+  pixelEnabled,
+  pixelNavigation,
   destinations = [],
   renderBudget,
 }: {
   locale: Locale;
   vehicle: PublicVehicle;
+  pixelEnabled?: boolean;
+  pixelNavigation?: number;
   detailTitle?: ReturnType<typeof publicVehicleTitle>;
   destinations?: VehicleDestination[];
   renderBudget?: (engineCc: number | null) => ReactNode;
@@ -70,7 +74,14 @@ export function PublicVehicleDetail({
   const contactId = `vehicle-contact-${vehicle.id}`;
 
   return (
-    <main id="main" className={styles.page} data-public-vehicle-detail={vehicle.id} data-analytics-demo={vehicle.source.kind === 'demo' || undefined}>
+    <main
+      id="main"
+      className={styles.page}
+      data-public-vehicle-detail={vehicle.id}
+      data-analytics-demo={vehicle.source.kind === 'demo' || undefined}
+      data-meta-pixel-enabled={fresh && vehicle.source.kind !== 'demo' && pixelEnabled === true ? true : undefined}
+      data-meta-pixel-navigation={fresh ? pixelNavigation : undefined}
+    >
       <div className={styles.container}>
         <PublicCatalogLink locale={locale} className={styles.back} href={`/${locale}/cars/`}>
           <Icon name="arrow-left" size={16} />{t.back}

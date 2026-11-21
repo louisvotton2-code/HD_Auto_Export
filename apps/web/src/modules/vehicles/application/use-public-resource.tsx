@@ -47,11 +47,13 @@ export function usePublicResource<T>(
     initialRetryAfter = 0,
     cooldown,
     loadOnMount = false,
+    compatibilityUrl,
   }: {
     navigationPath?: string;
     initialRetryAfter?: number;
     cooldown?: { current: number };
     loadOnMount?: boolean;
+    compatibilityUrl?: string;
   } = {},
 ) {
   const navigation = useSyncExternalStore(
@@ -67,8 +69,8 @@ export function usePublicResource<T>(
     navigation: number;
   }>({ url: loadOnMount && !initial ? null : url, data: initial, phase: initial ? 'fresh' : 'error', missing: false, navigation: 0 });
   const [loadingUrl, setLoadingUrl] = useState<string | null>(null);
-  const active = useRef({ url, schema, navigationPath });
-  active.current = { url, schema, navigationPath };
+  const active = useRef({ url, schema, navigationPath, compatibilityUrl });
+  active.current = { url, schema, navigationPath, compatibilityUrl };
   const request = useRef<{
     id: number;
     controller?: AbortController;
@@ -119,13 +121,20 @@ export function usePublicResource<T>(
     // Preserve the last settled result while a different selection is pending.
     setLoadingUrl(target);
     try {
-      const response = await fetch(target, {
+      const fallback = active.current.compatibilityUrl;
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]);
+      const read = (resourceUrl: string) => fetch(resourceUrl, {
         cache: 'no-store',
         credentials: 'omit',
         redirect: 'error',
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
+        signal,
         headers: { Accept: 'application/json' },
       });
+      let response = await read(target);
+      if (response.status === 400 && fallback && isCurrent()) {
+        await response.body?.cancel();
+        response = await read(fallback);
+      }
       if (response.status === 429) {
         await response.body?.cancel();
         if (!isCurrent()) return;

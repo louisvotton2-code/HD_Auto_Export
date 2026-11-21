@@ -107,7 +107,7 @@ export const localizedHomeSchema = (locale: Locale, priceView?: 'usd') => ({
   },
 });
 
-// The editorial view is also used by sitemap traversal, so imports must stay out of its pages.
+// The legacy editorial view never exposes imported listings.
 export const legacyListSchema = PublicVehicleListSchema.refine((result) =>
   result.data.items.every((vehicle) => !vehicle.external && !vehicle.displayPrice),
 ).transform(clearPrivateVehicleText);
