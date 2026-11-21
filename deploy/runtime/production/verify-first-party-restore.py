@@ -139,6 +139,9 @@ def verify_database(point, container, user, manifest):
         safety = json.loads(read(SAFETY_SQL))
         need(safety['workerDisabled'] is True and safety['supplierDataEmpty'] is True
              and safety['migrationLedger'] > 0, 'The restored database cannot start safely')
+        if read("SELECT to_regclass('public.external_catalog_overview_groups') IS NOT NULL").strip() == b't':
+            need(read('SELECT NOT EXISTS (SELECT FROM public.external_catalog_overview_groups)').strip() == b't',
+                 'The first-party restore contains supplier overview groups')
         read(analytics_restore_retention_sql())
         return retained, safety
     finally:

@@ -369,7 +369,7 @@ async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,ca
   captureRevision(revision);
   return revision;
 }
-export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_label_fallback'|'result';
+export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_overview_rollup'|'supplier_label_fallback'|'result';
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
 // The catalog's origin queue already limits concurrent reads. Keep each read
