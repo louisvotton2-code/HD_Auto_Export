@@ -101,7 +101,7 @@ export function PublicVehicleGallery({ vehicle, title, locale }: { vehicle: Publ
 
   return (
     <section data-public-vehicle-gallery={vehicle.id}>
-      <VehicleGallery images={images} title={title} locale={locale} onOpen={open}
+      <VehicleGallery images={images} title={title} locale={locale} onOpen={open} publicCardPreviews
         imagePosition={(position, loaded) => total === null ? t.position(number(position), number(loaded)) : `${number(position)} / ${number(total)}`}
         photoOverlay={<VehiclePhotoStamps vehicle={vehicle} locale={locale} placement="gallery" />}
         viewerFooter={controls('viewer')} />

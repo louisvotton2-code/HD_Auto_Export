@@ -18,7 +18,7 @@ import { Icon } from '@/shared/ui/icon';
 import { CountryFlag } from '@/shared/ui/country-flag';
 import { destinationCountryFromLocation } from '@/shared/lib/destination-country';
 import { siteConfig } from '@/shared/config/site';
-import { publicMediaUrl } from '@/shared/lib/public-media';
+import { publicMediaUrl, publicMediaVariantUrl } from '@/shared/lib/public-media';
 import { reportExternalPhotoFailure } from '../application/report-external-photo-failure';
 import { detailContent } from '../detail-content';
 import { imageAltAttributes } from '../vehicle-image-text';
@@ -30,7 +30,8 @@ import { FavoriteVehicleButton } from './favorite-vehicle-button';
 import styles from './vehicle-gallery.module.css';
 
 export type VehicleDestination = { slug: string; label: string; flag?: string };
-const imageResourceKey = (image: VehicleGalleryImage) => `${image.id}:${publicMediaUrl(image.url)}:${image.remote?.revision ?? 0}`;
+const imageResourceKey = (image: VehicleGalleryImage, source = publicMediaUrl(image.url)) =>
+  `${image.id}:${source}:${image.remote?.revision ?? 0}`;
 const tapTravel = 10;
 
 /** Full-size viewing stays on the active photo and retains one previous photo for the slide. */
@@ -43,6 +44,7 @@ export function VehicleGallery({
   imagePosition,
   photoOverlay,
   viewerFooter,
+  publicCardPreviews = false,
 }: {
   images: VehicleGalleryImage[];
   title: string;
@@ -52,6 +54,7 @@ export function VehicleGallery({
   imagePosition?: (position: number, loaded: number) => string;
   photoOverlay?: ReactNode;
   viewerFooter?: ReactNode;
+  publicCardPreviews?: boolean;
 }) {
   const t = detailContent[locale];
   const ordered = useMemo(
@@ -63,10 +66,13 @@ export function VehicleGallery({
   );
   const [selectedId, setSelectedId] = useState(ordered[0]?.id ?? '');
   const [enhanced, setEnhanced] = useState(false);
-  const [opened, setOpened] = useState(false);
+  const [viewerOrigin, setViewerOrigin] = useState<string | null>(null);
+  const opened = viewerOrigin !== null;
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [failedId, setFailedId] = useState<string | null>(null);
+  const [originalPreviews, setOriginalPreviews] = useState<ReadonlySet<string>>(() => new Set());
   const [retry, setRetry] = useState(0);
+  const [viewerRetry, setViewerRetry] = useState(0);
   const [direction, setDirection] = useState(1);
   const [previousId, setPreviousId] = useState<string | null>(null);
   const [firstImageDecoded, setFirstImageDecoded] = useState<string | null>(null);
@@ -94,6 +100,10 @@ export function VehicleGallery({
     ordered.findIndex((image) => image.id === selectedId),
   );
   const selected = ordered[index];
+  const selectedPreview = selected ? previewSource(selected) : null;
+  const selectedOriginal = selected ? publicMediaUrl(selected.url) : null;
+  const activeSource = opened ? selectedOriginal : selectedPreview;
+  const activeKey = selected && activeSource ? imageResourceKey(selected, activeSource) : null;
   const positionLabel = imagePosition?.(index + 1, ordered.length) ?? t.imagePosition(index + 1, ordered.length);
   const hasPhoto = Boolean(selected);
   const previous = ordered.find((image) => image.id === previousId && image.id !== selected?.id);
@@ -116,7 +126,7 @@ export function VehicleGallery({
   useActiveImageStatus({
     imageRef: opened ? viewerImage : selectedImage,
     imageId: selected?.id ?? null,
-    imageKey: selected ? `${imageResourceKey(selected)}:${retry}:${opened ? 'viewer' : 'main'}` : null,
+    imageKey: selected ? `${imageResourceKey(selected)}:${opened ? `${viewerRetry}:viewer` : `${retry}:main`}` : null,
     onStatus: onActiveImageStatus ? handleActiveImageStatus : undefined,
   });
 
@@ -135,7 +145,7 @@ export function VehicleGallery({
   useEffect(() => {
     if (hasPhoto || !opened) return;
     opener.current = null;
-    setOpened(false);
+    setViewerOrigin(null);
     emptyPhoto.current?.focus({ preventScroll: true });
   }, [hasPhoto, opened]);
   useEffect(() => {
@@ -145,12 +155,12 @@ export function VehicleGallery({
   }, [previousId, selectedId]);
   useEffect(() => {
     const image = selectedImage.current;
-    if (!selected || !image?.complete) return;
+    if (!selected || !selectedPreview || !image?.complete || (opened && publicCardPreviews)) return;
     if (!acceptsImageEvent(selected, image)) return;
     // An SSR image may finish before hydration, or remain mounted during a quick return.
-    if (image.naturalWidth > 0) loaded(selected);
-    else failed(selected);
-  }, [selected?.id, selected?.url, selected?.remote?.revision, retry]);
+    if (image.naturalWidth > 0) loaded(selected, selectedPreview);
+    else failPreview(selected, selectedPreview);
+  }, [selected?.id, selectedPreview, selected?.remote?.revision, retry, opened, publicCardPreviews]);
 
   function choose(nextIndex: number) {
     if (!ordered.length || staffLocked) return;
@@ -160,18 +170,24 @@ export function VehicleGallery({
     setPreviousId(selected?.id ?? null);
     setDirection(nextIndex >= index ? 1 : -1);
     setSelectedId(image.id);
-    const key = imageResourceKey(image);
+    showImageState(image, opened ? publicMediaUrl(image.url) : previewSource(image));
+  }
+  function showImageState(image: VehicleGalleryImage, source: string) {
+    const key = imageResourceKey(image, source);
     setLoadingId(loadedImages.current.has(key) || failedImages.current.has(key) ? null : key);
     setFailedId(failedImages.current.has(key) ? key : null);
   }
   function showViewer(trigger: HTMLAnchorElement) {
     const viewer = dialog.current;
-    if (!viewer || viewer.open || staffLocked) return;
+    if (!viewer || viewer.open || staffLocked || !selected) return;
     viewer.showModal();
     opener.current = trigger;
     pageOverflow.current ??= document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    setOpened(true);
+    if (selected && selectedOriginal && selectedOriginal !== selectedPreview) {
+      showImageState(selected, selectedOriginal);
+    }
+    setViewerOrigin(selected.id);
     onOpen?.();
   }
   function openViewer(event: MouseEvent<HTMLAnchorElement>) {
@@ -196,7 +212,11 @@ export function VehicleGallery({
     if (!trigger || dialog.current?.open) return;
     opener.current = null;
     restorePageScroll();
-    setOpened(false);
+    if (selected && selectedPreview && selectedPreview !== selectedOriginal) {
+      showImageState(selected, selectedPreview);
+    }
+    if (publicCardPreviews) setPreviousId(null);
+    setViewerOrigin(null);
     const target = trigger.isConnected ? trigger : mainPhotoLink.current;
     target?.focus({ preventScroll: true });
   }
@@ -261,8 +281,8 @@ export function VehicleGallery({
     event.preventDefault();
     showViewer(start.photoLink);
   }
-  function loaded(image: VehicleGalleryImage) {
-    const key = imageResourceKey(image);
+  function loaded(image: VehicleGalleryImage, source?: string) {
+    const key = imageResourceKey(image, source);
     loadedImages.current.add(key);
     failedImages.current.delete(key);
     setLoadingId((current) => (current === key ? null : current));
@@ -275,22 +295,42 @@ export function VehicleGallery({
       && element.dataset.galleryActiveImage === image.id
     );
   }
-  function failed(image: VehicleGalleryImage) {
+  function failed(image: VehicleGalleryImage, source?: string) {
     reportExternalPhotoFailure(image);
-    const key = imageResourceKey(image);
+    const key = imageResourceKey(image, source);
     loadedImages.current.delete(key);
     failedImages.current.add(key);
     setLoadingId((current) => (current === key ? null : current));
-    if (selected && imageResourceKey(selected) === key) setFailedId(key);
+    if (activeKey === key) setFailedId(key);
+  }
+  function previewSource(image: VehicleGalleryImage) {
+    const original = publicMediaUrl(image.url);
+    if (!publicCardPreviews || image.remote || originalPreviews.has(imageResourceKey(image))) return original;
+    const { width, height } = image;
+    // The public inline viewport can use the 800px rendition; the viewer always uses the original.
+    // Keep an original whose dimensions are already bounded or whose portrait crop would be too small.
+    if (!width || !height || Math.max(width, height) <= 800 || width * 800 < 480 * Math.max(width, height)) {
+      return original;
+    }
+    return publicMediaVariantUrl(image.url, 'card') ?? original;
+  }
+  function failPreview(image: VehicleGalleryImage, source: string) {
+    const original = publicMediaUrl(image.url);
+    if (source === original) {
+      failed(image);
+      return;
+    }
+    const key = imageResourceKey(image);
+    setOriginalPreviews((current) => current.has(key) ? current : new Set([...current, key]));
+    if (activeKey === imageResourceKey(image, source)) showImageState(image, original);
   }
   function retrySelected() {
-    if (!selected || onActiveImageStatus) return;
-    const key = imageResourceKey(selected);
-    failedImages.current.delete(key);
-    loadedImages.current.delete(key);
+    if (!activeKey || onActiveImageStatus) return;
+    failedImages.current.delete(activeKey);
+    loadedImages.current.delete(activeKey);
     setFailedId(null);
-    setLoadingId(key);
-    setRetry((value) => value + 1);
+    setLoadingId(activeKey);
+    (opened ? setViewerRetry : setRetry)((value) => value + 1);
   }
   if (!selected) {
     return (
@@ -302,7 +342,15 @@ export function VehicleGallery({
       </div>
     );
   }
-  const selectedKey = imageResourceKey(selected);
+  // Hold the obscured preview while the viewer swaps originals.
+  const freezeInline = publicCardPreviews && opened;
+  const inlinePhoto = freezeInline ? ordered.find((image) => image.id === viewerOrigin) : selected;
+  const inlinePrevious = freezeInline ? null : previous;
+  const inlineKey = inlinePhoto ? imageResourceKey(inlinePhoto, previewSource(inlinePhoto)) : null;
+  const inlineBusy = inlineKey !== null && loadingId === inlineKey;
+  const inlineFrames = inlinePhoto ? [...(inlinePrevious ? [inlinePrevious] : []), inlinePhoto] : [];
+  const inlineId = inlinePhoto?.id;
+  const viewerKey = imageResourceKey(selected);
 
   return (
     <div
@@ -313,8 +361,8 @@ export function VehicleGallery({
     >
       <div
         className={styles.viewport}
-        data-loading={loadingId === selectedKey}
-        aria-busy={loadingId === selectedKey}
+        data-loading={inlineBusy}
+        aria-busy={inlineBusy}
         onTouchStart={enhanced ? startTouch : undefined}
         onTouchMove={enhanced ? moveTouch : undefined}
         onTouchEnd={enhanced ? endTouch : undefined}
@@ -333,28 +381,29 @@ export function VehicleGallery({
           aria-haspopup={enhanced ? 'dialog' : undefined}
           aria-disabled={staffLocked || undefined}
         >
-          {[...(previous ? [previous] : []), selected].map((image) => (
-            <img
-              key={`${imageResourceKey(image)}:${retry}`}
+          {inlineFrames.map((image) => {
+            const source = previewSource(image);
+            return <img
+              key={`${imageResourceKey(image, source)}:${retry}`}
               ref={(element) => {
-                if (image.id === selected.id) selectedImage.current = element;
+                if (image.id === inlineId) selectedImage.current = element;
               }}
               className={styles.image}
               data-direction={direction}
-              data-transition={Boolean(previous)}
-              data-outgoing={image.id !== selected.id}
-              data-gallery-active-image={!opened && image.id === selected.id ? image.id : undefined}
-              src={publicMediaUrl(image.url)}
-              {...imageAltAttributes(image, image.id === selected.id ? image.alt || title : '')}
-              aria-hidden={image.id !== selected.id ? true : undefined}
+              data-transition={Boolean(inlinePrevious)}
+              data-outgoing={image.id !== inlineId}
+              data-gallery-active-image={!opened && image.id === inlineId ? image.id : undefined}
+              src={source}
+              {...imageAltAttributes(image, image.id === inlineId ? image.alt || title : '')}
+              aria-hidden={image.id !== inlineId ? true : undefined}
               width={image.width ?? undefined}
               height={image.height ?? undefined}
               referrerPolicy={image.url.startsWith('https:') ? 'no-referrer' : undefined}
               fetchPriority="high"
-              onLoad={(event) => { if (acceptsImageEvent(image, event.currentTarget)) loaded(image); }}
-              onError={(event) => { if (acceptsImageEvent(image, event.currentTarget)) failed(image); }}
-            />
-          ))}
+              onLoad={(event) => { if (acceptsImageEvent(image, event.currentTarget)) loaded(image, source); }}
+              onError={(event) => { if (acceptsImageEvent(image, event.currentTarget)) failPreview(image, source); }}
+            />;
+          })}
         </a>
         {enhanced && ordered.length > 1 && (
           <>
@@ -382,12 +431,12 @@ export function VehicleGallery({
           {imagePosition ? positionLabel : `${index + 1} / ${ordered.length}`}
         </span>
         {photoOverlay}
-        {loadingId === selectedKey && (
+        {inlineBusy && (
           <span className={styles.loading} role="status">
             {t.imageLoading}
           </span>
         )}
-        {failedId === selectedKey && (
+        {inlineKey !== null && failedId === inlineKey && (
           <div className={styles.imageError} role="status" data-gallery-image-error={!opened ? selected.id : undefined}>
             <p>{t.imageUnavailable}</p>
             {!onActiveImageStatus && <button type="button" onClick={retrySelected}>
@@ -442,7 +491,7 @@ export function VehicleGallery({
           <div className={styles.viewerImage}>
             {opened && (
               <img
-                key={`${selectedKey}:${retry}`}
+                key={`${viewerKey}:${viewerRetry}`}
                 ref={viewerImage}
                 data-gallery-active-image={selected.id}
                 src={publicMediaUrl(selected.url)}
@@ -476,12 +525,12 @@ export function VehicleGallery({
                 </button>
               </>
             )}
-            {loadingId === selectedKey && (
+            {loadingId === viewerKey && (
               <span className={styles.loading} role="status">
                 {t.imageLoading}
               </span>
             )}
-            {failedId === selectedKey && (
+            {failedId === viewerKey && (
               <div className={styles.imageError} role="status" data-gallery-image-error={opened ? selected.id : undefined}>
                 <p>{t.imageUnavailable}</p>
                 {!onActiveImageStatus && <button type="button" onClick={retrySelected}>

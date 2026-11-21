@@ -19,10 +19,12 @@ export function PublicVehicleCard({
   vehicle,
   locale,
   pointerTilt,
+  priorityPhoto,
 }: {
   vehicle: PublicVehicleSummary;
   locale: Locale;
   pointerTilt: PointerTiltHandlers;
+  priorityPhoto: boolean;
 }) {
   const t = publicVehicleMessages(locale),
     cover = publicVehicleCover(vehicle);
@@ -39,7 +41,7 @@ export function PublicVehicleCard({
         <div className={styles.cardLight} aria-hidden="true" />
         <div className={styles.cardImage}>
           <PublicCatalogLink locale={locale} href={vehicle.detailPath} data-analytics-vehicle={analyticsVehicle} tabIndex={-1} aria-hidden="true">
-            <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} />
+            <VehiclePhoto image={cover} locale={locale} alt={cover?.alt || title.text} priority={priorityPhoto} />
             {vehicle.facts.modelYear !== null && (
               <span className={styles.year}>{vehicle.facts.modelYear}</span>
             )}

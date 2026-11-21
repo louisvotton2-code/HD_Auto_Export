@@ -16,7 +16,7 @@ import { recordPublicAnalyticsAction } from '@/shared/lib/public-analytics-actio
 import { currentAnalyticsGrant } from '@/shared/lib/tracking-consent';
 import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleMessages } from '../public-messages';
-import { publicCatalogHref } from '../public-presentation';
+import { publicCatalogHref, publicVehicleCover } from '../public-presentation';
 import {
   parseCatalogPageQuery,
   publicQueryString,
@@ -205,6 +205,7 @@ export function PublicVehicleList({
       results.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
     }
   }
+  const firstPhotoId = data?.data.items.find((vehicle) => publicVehicleCover(vehicle))?.id;
   return (
     <PublicFreshnessBoundary phase={phase} url={url}>
       <main id="main" className={styles.page} data-testid="public-vehicle-catalog">
@@ -283,6 +284,7 @@ export function PublicVehicleList({
                           vehicle={vehicle}
                           locale={locale}
                           pointerTilt={pointerTilt}
+                          priorityPhoto={vehicle.id === firstPhotoId}
                         />
                       ))}
                     </div>
