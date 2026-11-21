@@ -4,6 +4,9 @@ const indexable = process.env.SITE_INDEXABLE === 'true';
 
 export const siteConfig = {
   name: 'HD Auto Export',
+  domainVerification: {
+    'facebook-domain-verification': 'md2rffp4rxtxs1zzhdivrs1oqnbbzy',
+  },
   isPlaceholderBrand: false,
   brand: {
     name: 'HD Auto Export',

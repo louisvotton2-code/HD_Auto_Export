@@ -10,11 +10,15 @@ import { moneyCents } from '@/shared/lib/public-vehicle-price';
 export const publicUsdView = { view: 'localized', priceView: 'usd' } as const;
 const publicInlineDetailView = { ...publicUsdView, projection: 'detail-inline-v1' } as const;
 
-export function publicInlineVehicleView(id: string, locale: Locale) {
+export type PublicInlineDetailOptions = { includePixel?: boolean; includeSeo?: boolean };
+
+export function publicInlineVehicleView(id: string, locale: Locale, { includePixel, includeSeo }: PublicInlineDetailOptions = {}) {
   return {
     ...publicInlineDetailView,
     ...(id.startsWith('ext-') ? { technicalView: 'verified' as const } : {}),
     ...(locale !== 'en' ? { titleView: 'english' as const } : {}),
+    ...(includePixel ? { pixelView: 'eligible' as const } : {}),
+    ...(includeSeo ? { seoView: 'eligible' as const } : {}),
   };
 }
 

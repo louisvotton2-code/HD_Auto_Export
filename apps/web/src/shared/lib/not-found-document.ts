@@ -12,8 +12,13 @@ function escapeHtml(value: string) {
 }
 
 /** Standalone error document: no vehicle data, request context, React or API read. */
-export function notFoundDocument(locale: Locale = 'en') {
+export function notFoundDocument(locale: Locale = 'en', problem?: { status: 429 | 503; message: string; reload: string; path: string }) {
   const brand = escapeHtml(siteConfig.name);
+  const verification = escapeHtml(siteConfig.domainVerification['facebook-domain-verification']);
   const text = copy[locale];
-  return `<!doctype html><html lang="${locale === 'zh' ? 'zh-Hans' : locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,follow"><title>404 | ${brand}</title><style>body{margin:0;background:#0a0a0a;color:#f5f0eb;font-family:system-ui,sans-serif}main{min-height:100vh;display:grid;align-content:center;justify-items:center;gap:18px;padding:24px;box-sizing:border-box;text-align:center}h1{font-size:64px;margin:0}nav{display:flex;flex-wrap:wrap;justify-content:center;gap:20px}a{color:#d6a27c;padding:12px}img{object-fit:contain}</style></head><body><main id="main"><img src="${escapeHtml(siteConfig.brand.logo.src)}" width="144" height="97" alt=""><span>${brand} / 404</span><h1>404</h1><p>${text.message}</p><nav aria-label="${text.navigation}"><a href="/zh/" lang="zh-Hans">中文首页</a><a href="/en/" lang="en">Home</a><a href="/ru/" lang="ru">На главную</a></nav></main></body></html>`;
+  const status = problem?.status ?? 404;
+  const main = problem
+    ? `<main id="main" data-testid="public-vehicle-unavailable"><img src="${escapeHtml(siteConfig.brand.logo.src)}" width="144" height="97" alt=""><span>${brand} / ${status}</span><h1>${escapeHtml(problem.message)}</h1><a href="${escapeHtml(problem.path)}">${escapeHtml(problem.reload)}</a>`
+    : `<main id="main"><img src="${escapeHtml(siteConfig.brand.logo.src)}" width="144" height="97" alt=""><span>${brand} / 404</span><h1>404</h1><p>${text.message}</p>`;
+  return `<!doctype html><html lang="${locale === 'zh' ? 'zh-Hans' : locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,${problem ? 'nofollow' : 'follow'}"><meta name="facebook-domain-verification" content="${verification}"><title>${status} | ${brand}</title><style>body{margin:0;background:#0a0a0a;color:#f5f0eb;font-family:system-ui,sans-serif}main{min-height:100vh;display:grid;align-content:center;justify-items:center;gap:18px;padding:24px;box-sizing:border-box;text-align:center}h1{font-size:${problem ? '24' : '64'}px;margin:0}nav{display:flex;flex-wrap:wrap;justify-content:center;gap:20px}a{color:#d6a27c;padding:12px}img{object-fit:contain}</style></head><body>${main}<nav aria-label="${text.navigation}"><a href="/zh/" lang="zh-Hans">中文首页</a><a href="/en/" lang="en">Home</a><a href="/ru/" lang="ru">На главную</a></nav></main></body></html>`;
 }

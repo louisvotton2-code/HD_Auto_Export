@@ -1,0 +1,30 @@
+.panel {
+  margin-block-start: 28px;
+  padding-inline: clamp(16px, 5vw, 36px);
+  border: 1px solid #463931;
+  border-radius: 16px;
+  background: #1a1715;
+}
+
+.panel .section:last-child {
+  border-bottom: 0;
+}
+
+.section p + p {
+  margin-block-start: 10px;
+}
+
+.contactLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contactLinks a {
+  color: #efc49c;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

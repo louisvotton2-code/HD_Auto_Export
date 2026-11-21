@@ -39,6 +39,7 @@ export function PublicVehicleContacts({
       className={`${styles.contactActions} ${variant === 'detail' ? styles.detailContacts : styles.cardContacts}`}
       data-vehicle-contacts={inspection ? undefined : vehicle.id}
       data-vehicle-report-contacts={inspection ? vehicle.id : undefined}
+      data-analytics-demo={vehicle.source.kind === 'demo' || undefined}
     >
       <a
         className={`${styles.contactAction} ${styles.telegram}`}

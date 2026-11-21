@@ -7,9 +7,10 @@ import {
 
 const homePath = /^\/(zh|en|ru)\/$/;
 const vehiclePath = /^\/(zh|en|ru)\/cars(?:\/.*)?$/;
+const vehicleDetailPath = /^\/(zh|en|ru)\/cars\/[^/]+\/?$/;
 
 /** Back/Forward between pages rechecks public data. Home fragments only scroll. */
-export function PublicNavigationFreshness() {
+export function PublicNavigationFreshness({ verifyVehicleOnRestore = false }: { verifyVehicleOnRestore?: boolean }) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const navigate = () => {
@@ -26,6 +27,9 @@ export function PublicNavigationFreshness() {
         timer = setTimeout(finishPublicNavigation, 0);
       }
     };
+    const recheckRestoredVehicle = (event: PageTransitionEvent) => {
+      if (verifyVehicleOnRestore && event.persisted && vehicleDetailPath.test(location.pathname)) navigate();
+    };
     const ignoreHomeFragment = ({ oldURL, newURL }: HashChangeEvent) => {
       const from = new URL(oldURL);
       const to = new URL(newURL);
@@ -34,14 +38,16 @@ export function PublicNavigationFreshness() {
       }
     };
     addEventListener('popstate', navigate);
+    addEventListener('pageshow', recheckRestoredVehicle);
     addEventListener('hashchange', ignoreHomeFragment);
     document.documentElement.setAttribute('data-public-history-ready', '');
     return () => {
       clearTimeout(timer);
       removeEventListener('popstate', navigate);
+      removeEventListener('pageshow', recheckRestoredVehicle);
       removeEventListener('hashchange', ignoreHomeFragment);
       document.documentElement.removeAttribute('data-public-history-ready');
     };
-  }, []);
+  }, [verifyVehicleOnRestore]);
   return null;
 }

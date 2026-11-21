@@ -5,6 +5,7 @@ import '../globals.css';
 export const metadata: Metadata = {
   title: siteConfig.name,
   robots: { index: false, follow: true },
+  other: siteConfig.domainVerification,
 };
 
 /** Independent root layout for the language-neutral static entry and fallback page. */
