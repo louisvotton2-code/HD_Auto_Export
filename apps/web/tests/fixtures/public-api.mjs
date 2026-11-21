@@ -209,6 +209,8 @@ const resetState = () => ({
   importedPublished: false,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
+  importedPixelEnabled: null,
+  detailNegotiationUnsupported: false,
   catalogSampleCount: null,
   historyScenario: 'default',
   configurationMode: 'none',
@@ -735,6 +737,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
+          importedPixelEnabled: (v) => v === null || typeof v === 'boolean',
+          detailNegotiationUnsupported: (v) => typeof v === 'boolean',
           catalogSampleCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 10_080,
           historyScenario: (v) => ['default', 'complete', 'empty', 'conflict', 'structured-zero', 'structured-null', 'structured-two'].includes(v),
           configurationMode: (v) => ['none', 'ready', 'missing', 'fallback', 'long', 'wrong_name_locale', 'wrong_value_locale'].includes(v),
@@ -879,8 +883,12 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         const raw = Object.fromEntries(url.searchParams);
         if ([...url.searchParams.keys()].some((key) => url.searchParams.getAll(key).length !== 1))
           return send(res, 400, error('INVALID_REQUEST'));
+        const isDetail = /^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname);
         const rawId = segmentMatch?.[1] ?? url.pathname.match(/^\/api\/v1\/(?:vehicles|media)\/(.*)$/)?.[1];
         if (rawId !== undefined && !IdSchema.safeParse(rawId).success)
+          return send(res, 400, error('INVALID_REQUEST'));
+        if (isDetail && state.detailNegotiationUnsupported &&
+            (Object.hasOwn(raw, 'pixelView') || Object.hasOwn(raw, 'seoView')))
           return send(res, 400, error('INVALID_REQUEST'));
         try {
           if (segmentMatch) { segmentQuery = (segmentMatch[2] === 'inspection' ? PublicVehicleInspectionQuerySchema : PublicVehicleSegmentQuerySchema).parse(raw); locale = segmentQuery.locale; }
@@ -892,7 +900,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           } else if (url.pathname === '/api/v1/vehicle-filters') {
             filterQuery = PublicFilterQuerySchema.parse(filterInput(raw));
             locale = filterQuery.locale;
-          } else locale = (/^\/api\/v1\/vehicles\/[A-Za-z0-9_-]+$/.test(url.pathname) ? PublicVehicleDetailQuerySchema : PublicLocaleQuerySchema).parse(raw).locale;
+          } else locale = (isDetail ? PublicVehicleDetailQuerySchema : PublicLocaleQuerySchema).parse(raw).locale;
         } catch {
           return send(res, 400, error('INVALID_REQUEST'));
         }
@@ -1235,7 +1243,14 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         const kind = imports.find((kind) => makeImportedPublicVehicleFixture(locale,kind).id === detailId);
         if (kind) {
           const title = wantsTitle ? makeImportedPublicVehicleFixture('en', kind, true).content.title : undefined;
-          return send(res,200,detailSchema.parse({data:detailProjection(makeImport(kind,true), title),meta:catalogMeta('fixture-import-detail')}));
+          const data = detailProjection(makeImport(kind, true), title);
+          // The isolated detail fixture supplies the switch only to opt-in readers.
+          if (inline && url.searchParams.get('view') === 'localized' &&
+              url.searchParams.get('pixelView') === 'eligible' && kind === 'supplier' &&
+              state.importedPixelEnabled !== null) {
+            data.pixelEnabled = state.importedPixelEnabled;
+          }
+          return send(res, 200, detailSchema.parse({ data, meta: catalogMeta('fixture-import-detail') }));
         }
         const found =
           all.find((v) => v.id === detailId) ??

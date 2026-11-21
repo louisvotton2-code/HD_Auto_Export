@@ -161,7 +161,8 @@ function VehicleRail({
                     )}
                     <VehiclePriceValues vehicle={v} locale={locale} />
                   </div>
-                  <div className={styles.cardContact} data-vehicle-contacts={v.id}>
+                  <div className={styles.cardContact} data-vehicle-contacts={v.id}
+                    data-analytics-demo={v.source.kind === 'demo' || undefined}>
                     <a
                       href={trusted ? links.telegram : undefined}
                       data-analytics-contact={trusted ? 'telegram' : undefined}

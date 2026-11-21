@@ -1,0 +1,17 @@
+# Optional after the gateway and API acceptance. Omit in the default release.
+services:
+  api:
+    environment:
+      ANALYTICS_GATEWAY_SECRET_FILE: /run/secrets/analytics_gateway_key
+      ANALYTICS_CONTACT_ALLOWED_COUNTRIES: '${ANALYTICS_CONTACT_ALLOWED_COUNTRIES:-}'
+    secrets: [analytics_gateway_key]
+  proxy:
+    volumes:
+      - type: bind
+        source: ${HD_ANALYTICS_GEO_ROOT:?set the reviewed local country data directory}
+        target: /etc/nginx/hd-analytics-geo
+        read_only: true
+        bind: {create_host_path: false}
+secrets:
+  analytics_gateway_key:
+    file: ${HD_ANALYTICS_GATEWAY_SECRET_FILE:?set the owner-only API key source used to prepare the gateway map}

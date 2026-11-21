@@ -35,9 +35,14 @@ CMD ["dist/main.js"]
 FROM build AS web-build
 ARG SITE_ORIGIN=https://localhost:3410
 ARG SITE_INDEXABLE=false
+ARG ANALYTICS_V2_ENABLED=false
 ARG HD_DEPLOYMENT_ID
+ARG HD_META_PIXEL_ENABLED=false
+ARG HD_META_PIXEL_ID
 ENV HD_DEPLOYMENT_ID=$HD_DEPLOYMENT_ID
 ENV NEXT_PUBLIC_SITE_URL=$SITE_ORIGIN SITE_INDEXABLE=$SITE_INDEXABLE NEXT_TELEMETRY_DISABLED=1
+ENV ANALYTICS_V2_ENABLED=$ANALYTICS_V2_ENABLED
+ENV HD_META_PIXEL_ENABLED=$HD_META_PIXEL_ENABLED HD_META_PIXEL_ID=$HD_META_PIXEL_ID
 RUN pnpm --filter @hd/web build
 FROM ${NODE_IMAGE} AS web
 WORKDIR /app
@@ -55,6 +60,7 @@ RUN pnpm --filter @hd/admin build
 FROM ${NGINX_IMAGE} AS proxy
 COPY deploy/runtime/nginx.conf /etc/nginx/conf.d/default.conf
 COPY deploy/runtime/nginx-edge.conf /etc/nginx/conf.d/00-edge.conf
+COPY deploy/runtime/production/analytics-geo-disabled.conf /etc/nginx/hd-analytics-geo/country.conf
 COPY deploy/runtime/nginx-domains /etc/nginx/hd-domains
 COPY deploy/runtime/nginx-media-main.conf /etc/nginx/nginx-media-main.conf
 COPY deploy/runtime/nginx-media-entrypoint.sh /etc/nginx/nginx-media-entrypoint.sh

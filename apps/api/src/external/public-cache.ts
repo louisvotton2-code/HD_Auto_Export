@@ -80,6 +80,7 @@ async function waitFor<T>(promise:Promise<T>,signal:AbortSignal):Promise<T> {
 export class PublicCatalogCache {
   private readonly memory = new Map<string, MemoryEntry>();
   private readonly flights = new Map<string, Flight>();
+  private readonly redisReads = new Map<string, Promise<Envelope | null>>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly maxLoads: number;
@@ -192,10 +193,20 @@ export class PublicCatalogCache {
       }
       this.remove(key);
     }
-    if (!this.dependencies.store) return null;
+    if (!this.dependencies.store || this.flights.has(key)) return null;
+    const pending=this.redisReads.get(key);
+    if(pending){const shared=await pending;return shared&&structuredClone(shared);}
+    if(this.redisReads.size>=this.maxEntries)return null;
+    // Same-version waiters share the bounded Redis read before joining origin work.
+    const read=this.lookupRedis(key,protocol,this.dependencies.store);
+    this.redisReads.set(key,read);
+    try {return await read;}
+    finally {this.redisReads.delete(key);}
+  }
+  private async lookupRedis(key:string,protocol:CacheProtocol,store:PublicCacheStore):Promise<Envelope|null> {
     try {
-      const encoded = await this.dependencies.store.get(this.slot(key));
-      if (encoded === null) return null;
+      const encoded = await store.get(this.slot(key));
+      if (encoded === null || this.closed) return null;
       const envelope = this.parse(encoded,key,protocol);
       if (!envelope) { this.values.invalidEntries++; return null; }
       this.remember(key, encoded, envelope.expiresAt); this.values.redisHits++; return envelope;

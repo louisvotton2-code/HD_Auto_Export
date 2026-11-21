@@ -24,6 +24,7 @@ const catalogNameKeys = ['make', 'model', 'trim'] as const;
 type CatalogName = typeof catalogNameKeys[number];
 type CatalogNames = Partial<Pick<VehicleDisplay, CatalogName>>;
 type CatalogRow = {
+  pixel_enabled?: boolean;
   configuration_total?:number; overridden_names?:string[];
   extras?: Pick<PublicVehicleCard, 'identifiers'|'manufacture'|'exportStatus'|'vehicleClass'> & {powerHp?:number|null;names?:CatalogNames};
   english?: { title: unknown; display: CatalogNames; names: CatalogNames | null } | null;
@@ -314,7 +315,7 @@ async function materialize(tx: Queryable, rows: CatalogRow[], locale: Locale, ti
   return rows.map(row => toPublic({...row,configuration_total:configurationTotals.get(row.listing_id)}, images.get(row.listing_id) ?? [], locale, time,priceView,quote));
 }
 
-export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null,titleView?:'english') {
+export async function getExternalPublic(tx: Queryable, id: string, locale: Locale, time = Date.now(),priceView?:'usd',quote:FxQuote|null=null,titleView?:'english',includePixel=false) {
   const needsOtherLocale = titleView !== undefined && locale !== 'en';
   // Point lookups bind English to the same listing/version and eligibility as a standalone English detail.
   const englishColumns = needsOtherLocale ? `,CASE WHEN en.listing_id IS NOT NULL THEN jsonb_build_object(
@@ -322,15 +323,18 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
     'model',c.localized#>'{en,display,model}','trim',c.localized#>'{en,display,trim}'),'names',xe.data->'names') END AS english` : '';
   const englishJoins = needsOtherLocale ? `LEFT JOIN external_catalog_search en ON en.listing_id=c.listing_id AND en.locale='en'
     LEFT JOIN external_vehicle_extras xe ON xe.listing_id=en.listing_id AND xe.locale='en'` : '';
+  const pixelColumn = includePixel ? ',coalesce(pixel.pixel_enabled,false) AS pixel_enabled' : '';
+  const pixelJoin = includePixel ? 'LEFT JOIN external_listing_pixel_settings pixel ON pixel.listing_id=l.id' : '';
   const result = await tx.query<CatalogRow>(`SELECT ${columns},jsonb_set(c.details,'{inspection}','null'::jsonb) AS details,l.provider,l.platform_id,l.external_id,l.source_revision::text,l.source_hash,
     CASE WHEN l.source_data IS NULL THEN NULL ELSE jsonb_build_object('platformId',l.source_data->'platformId','externalId',l.source_data->'externalId','disputes',coalesce(l.source_data->'disputes','[]'::jsonb),'inspection',jsonb_build_object('hasReport',l.source_data->'inspection'->'hasReport','reportUrl',l.source_data->'inspection'->'reportUrl')) END AS source_data,l.upstream_state,
     i.binding AS inspection_binding,jsonb_set(i.content,'{inspection}','null'::jsonb) AS inspection_content,ev.status AS inspection_status,ev.overview->'summary' AS inspection_summary
-    ${englishColumns} ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
+    ${englishColumns}${pixelColumn} ${from} LEFT JOIN external_inspection_enrichment i ON i.listing_id=l.id
     LEFT JOIN external_vehicle_evidence_sets ev ON ev.listing_id=l.id AND ev.locale=$1 AND ev.kind='inspection'
-    ${englishJoins} ${visible} AND c.listing_id=$2`, [locale, id]);
+    ${englishJoins} ${pixelJoin} ${visible} AND c.listing_id=$2`, [locale, id]);
   const row = result.rows[0];
   if (!row) return null;
-  const vehicle = (await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle;
+  const publicVehicle = (await materialize(tx, result.rows, locale, time,priceView,quote))[0] as PublicVehicle;
+  const vehicle = includePixel ? { ...publicVehicle, pixelEnabled: row.pixel_enabled===true } : publicVehicle;
   if (!titleView) return vehicle;
   const english = needsOtherLocale ? row.english : { title: vehicle.content.title, display: vehicle.display, names: null };
   if (!english) return vehicle;

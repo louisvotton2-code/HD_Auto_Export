@@ -6,6 +6,7 @@ NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
 CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
 ANALYTICS_PATH='/api/v1/analytics/events'
+CONTACT_COUNT_PATH='/api/v1/analytics/contact-count'
 ANALYTICS_BODY=json.dumps({'events':[{'eventId':'11111111-1111-4111-8111-111111111111',
                                       'type':'page_view','pageType':'home','locale':'zh'}]}).encode()
 MEDIA_ID='11111111-1111-4111-8111-111111111111'
@@ -67,6 +68,8 @@ class Origin(http.server.BaseHTTPRequestHandler):
         request_body=self.rfile.read(int(self.headers['Content-Length']))
         body=json.dumps({'headers':dict(self.headers.items()),'data':json.loads(request_body)}).encode()
         self.send_response(200)
+        if self.path == CONTACT_COUNT_PATH:
+            self.send_header('Set-Cookie', 'synthetic=disallowed')
         self.send_header('Cache-Control','public, max-age=600')
         self.send_header('Content-Length',str(len(body)))
         self.end_headers()
@@ -103,7 +106,11 @@ class DomainCacheHeaders(unittest.TestCase):
         cls.addClassCleanup(cls.cache.shutdown)
         includes=r/'includes';shutil.copytree(HERE/'nginx-domains',includes)
         for fragment in includes.glob('*.conf'):
-            fragment.write_text(fragment.read_text().replace('/etc/nginx/hd-domains',str(includes)).replace('/srv/private-media/',str(r/'media')+'/'))
+            fragment.write_text(fragment.read_text().replace('/etc/nginx/hd-domains',str(includes))
+                                .replace('http://api:3320','http://hd_test_origin')
+                                .replace('/srv/private-media/',str(r/'media')+'/')
+                                .replace('/srv/hd-assets/sitemap',str(r/'sitemap'))
+                                .replace('http://web:3000','http://hd_test_origin'))
         spec=importlib.util.spec_from_file_location('slots',HERE/'production/release-slots.py')
         slots=importlib.util.module_from_spec(spec);spec.loader.exec_module(slots)
         marker='    # HD_HTML_CACHE_LOCATIONS'
@@ -115,7 +122,8 @@ class DomainCacheHeaders(unittest.TestCase):
         route=active[len(before):-len(after)].replace('http://web-blue:3000','http://web:3000')
         config=(HERE/'nginx-domains.conf').read_text().replace(marker,route).replace('/etc/nginx/hd-domains',str(includes)).replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem')).replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin').replace('http://html-cache-blue:3010','http://hd_test_cache').replace('root /srv;',f'root {r};').replace('listen 8080',f'listen unix:{r}/http.sock').replace('listen 8443',f'listen unix:{r}/tls.sock')
         # Keep the production edge protections; only fixture paths and transport differ.
-        edge=(HERE/'nginx-edge.conf').read_text()
+        edge=(HERE/'nginx-edge.conf').read_text().replace('/etc/nginx/hd-analytics-geo/country.conf',
+                                                         str(HERE/'production/analytics-geo-disabled.conf'))
         # Darwin's larger pages require a larger bookkeeping zone; rate/burst/connection limits are identical.
         if os.uname().sysname=='Darwin':edge=edge.replace('zone=hd_edge_total:64k','zone=hd_edge_total:256k')
         rootuser='user root;\n' if os.getuid()==0 else ''
@@ -154,6 +162,38 @@ class DomainCacheHeaders(unittest.TestCase):
             if res.headers.get_all('Cache-Control'):
                 headers['cache-control']=', '.join(res.headers.get_all('Cache-Control'))
             return res.status,headers,res.read()
+    def test_sitemap_off_switch_public_generation_and_retained_shard(self):
+        host='cars.hongdingauto.com'
+        root=self.root/'sitemap'
+        spec=importlib.util.spec_from_file_location('sitemap',HERE/'production/sitemap-release.py')
+        sitemap=importlib.util.module_from_spec(spec);spec.loader.exec_module(sitemap)
+        old=sitemap.prepare(root,'https://'+host,[{'path':'/zh/'}])['generation']
+        shard=f'/sitemap-{old}-00001.xml'
+        status,_,body=self.request(host,'/sitemap.xml')
+        self.assertEqual((status,json.loads(body)['path']),(200,'/sitemap.xml'))
+        self.assertEqual(self.request(host,shard)[0],404)
+
+        sitemap.activate(root,old,None)
+        self.addCleanup(lambda: sitemap.deactivate(root,sitemap.current(root)) if sitemap.current(root) else None)
+        status,headers,body=self.request(host,'/sitemap.xml')
+        self.assertEqual((status,headers['content-type'],headers['cache-control']),
+                         (200,'application/xml','no-store'))
+        self.assertNotIn('etag',headers)
+        self.assertIn(('https://'+host+shard).encode(),body)
+        status,headers,body=self.request(host,shard)
+        self.assertEqual((status,headers['content-type']),(200,'application/xml'))
+        self.assertIn(b'<loc>https://cars.hongdingauto.com/zh/</loc>',body)
+
+        new=sitemap.prepare(root,'https://'+host,[{'path':'/ru/'}])['generation']
+        self.assertEqual(self.request(host,f'/sitemap-{new}-00001.xml')[0],404)
+        sitemap.activate(root,new,old)
+        self.assertEqual(self.request(host,shard)[0],200)
+        self.assertEqual(self.request('admin.hongdingauto.com',shard)[0],404)
+        sitemap.deactivate(root,new)
+        self.assertEqual(self.request(host,shard)[0],404)
+        status,_,body=self.request(host,'/sitemap.xml')
+        self.assertEqual((status,json.loads(body)['path']),(200,'/sitemap.xml'))
+
     def test_analytics_accepts_only_the_exact_public_same_origin_post(self):
         host='cars.hongdingauto.com'
         headers={'Origin':'https://'+host,'Content-Type':'application/json'}
@@ -192,6 +232,34 @@ class DomainCacheHeaders(unittest.TestCase):
         self.assertEqual({status for status,_,_ in replies},{200,429})
         self.assertTrue(all(response['cache-control']=='no-store' for _,response,_ in replies))
         self.assertEqual(self.request(host,'/api/v1/vehicles')[0],200)
+
+    def test_contact_count_keeps_only_the_anonymous_same_origin_post(self):
+        host = 'cars.hongdingauto.com'
+        origin = 'https://' + host
+        payload = {'vehicleId': MEDIA_ID, 'channel': 'whatsapp'}
+        body = json.dumps(payload).encode()
+        headers = {'Origin': origin, 'Content-Type': 'application/json'}
+        private = {'Cookie': 'synthetic=private', 'Referer': origin + '/zh/?private=1',
+                   'Authorization': 'synthetic', 'X-HD-SSR-Key': 'synthetic'}
+        Origin.calls.clear()
+        status, response, reply = self.request(host, CONTACT_COUNT_PATH, {**headers, **private},
+                                               method='POST', body=body)
+        self.assertEqual((status, response.get('cache-control')), (200, 'no-store'))
+        self.assertNotIn('set-cookie', response)
+        forwarded = json.loads(reply)
+        self.assertEqual(forwarded['data'], payload)
+        self.assertTrue({name.lower() for name in private}.isdisjoint(name.lower() for name in forwarded['headers']))
+        cases = [(host, CONTACT_COUNT_PATH, 'GET', origin, None, 405),
+                 (host, CONTACT_COUNT_PATH, 'POST', 'https://outside.invalid', body, 403),
+                 (host, CONTACT_COUNT_PATH + '?private=1', 'POST', origin, body, 400),
+                 (host, CONTACT_COUNT_PATH, 'POST', origin, b' ' * 513, 413),
+                 (host, CONTACT_COUNT_PATH + '/', 'POST', origin, body, 404),
+                 ('admin.hongdingauto.com', CONTACT_COUNT_PATH, 'POST', origin, body, 404)]
+        for domain, path, method, request_origin, data, expected in cases:
+            with self.subTest(domain=domain, path=path, method=method, expected=expected):
+                result = self.request(domain, path, {**headers, 'Origin': request_origin}, method=method, body=data)
+                self.assertEqual(result[0], expected)
+        self.assertEqual(Origin.calls, [CONTACT_COUNT_PATH])
 
     def test_admin_robots_disallows_all_paths(self):
         status,headers,body=self.request('admin.hongdingauto.com','/robots.txt')

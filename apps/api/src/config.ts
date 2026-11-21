@@ -17,6 +17,15 @@ const Env = z.object({
   AUTH_BASE_URL: z.string().url().default('http://127.0.0.1:3318'),
   TRUSTED_ORIGINS: z.string().default('http://127.0.0.1:3318'),
   ANALYTICS_ORIGINS: z.string().max(2048).default(''),
+  ANALYTICS_V2_ENABLED: z.enum(['false','true']).default('false'),
+  ANALYTICS_CONTACT_LOCAL_ENABLED: z.enum(['false','true']).default('false'),
+  ANALYTICS_CONTACT_ALLOWED_COUNTRIES: z.string().max(1024).default(''),
+  ANALYTICS_GATEWAY_SECRET_FILE: z.string().max(1024).refine(path.isAbsolute).optional(),
+  ANALYTICS_IP_VISITS_ENABLED: z.enum(['false','true']).default('false'),
+  ANALYTICS_IP_VISIT_PEERS: z.string().max(2048).optional(),
+  ANALYTICS_IP_VISIT_GATEWAY_SECRET_FILE: z.string().max(1024).optional(),
+  ANALYTICS_IP_VISIT_HASH_SECRET_FILE: z.string().max(1024).optional(),
+  PUBLIC_SEO_ENABLED: z.enum(['false','true']).default('false'),
   MEDIA_ROOT: z.string().default('.data/media'),
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
@@ -37,6 +46,7 @@ const Env = z.object({
   EXTERNAL_CACHE_NAMESPACE: z.string().regex(/^hd-ext-scale-[a-z0-9-]{1,48}$/).optional(),
   EXTERNAL_CACHE_TTL_MS: z.coerce.number().int().min(250).max(30_000).default(5000),
   EXTERNAL_CACHE_MAX_LOADS: z.coerce.number().int().min(1).max(20).default(4),
+  EXTERNAL_CACHE_MAX_QUEUED_LOADS: z.string().regex(/^(?:[0-9]|1[0-6])$/).transform(Number).default(0),
   EXTERNAL_REDIS_HOST: z.enum(['127.0.0.1','redis-scale']).optional(),
   EXTERNAL_REDIS_PORT: z.coerce.number().int().min(1).max(65535).default(6379),
   EXTERNAL_REDIS_USER: z.string().regex(/^[a-z][a-z0-9_-]{0,48}$/).optional(),
@@ -108,6 +118,26 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
         (e.NODE_ENV === 'production' && !origin.startsWith('https://'));
     } catch { return true; }
   })) throw new Error('ANALYTICS_ORIGINS must contain exact website origins and use HTTPS in production');
+  const analyticsGatewaySecret=e.ANALYTICS_GATEWAY_SECRET_FILE?readLocalSecret(e.ANALYTICS_GATEWAY_SECRET_FILE,128):undefined;
+  if(analyticsGatewaySecret && (!/^[a-f0-9]{64}$/.test(analyticsGatewaySecret) || e.TRUST_PROXY.trim()==='false'))
+    throw new Error('Analytics gateway requires a 32-byte hex secret and a trusted proxy');
+  const analyticsContactCountries=e.ANALYTICS_CONTACT_ALLOWED_COUNTRIES.split(',').map(code=>code.trim()).filter(Boolean);
+  if(analyticsContactCountries.some(code=>!(/^[A-Z]{2}$/).test(code)||code==='ZZ'))
+    throw new Error('ANALYTICS_CONTACT_ALLOWED_COUNTRIES requires explicit two-letter country codes');
+  let ipVisitService:{peers:string[];gatewaySecret:string;hashSecret:string}|null=null;
+  if(e.ANALYTICS_IP_VISITS_ENABLED==='true') {
+    // A missing optional measurement credential must not take down the catalog.
+    try {
+      const gatewayFile=e.ANALYTICS_IP_VISIT_GATEWAY_SECRET_FILE;
+      const hashFile=e.ANALYTICS_IP_VISIT_HASH_SECRET_FILE;
+      const peers=parseTrustProxy(e.ANALYTICS_IP_VISIT_PEERS??'false');
+      if(gatewayFile&&hashFile&&path.isAbsolute(gatewayFile)&&path.isAbsolute(hashFile)&&Array.isArray(peers)) {
+        const gatewaySecret=readLocalSecret(gatewayFile,128),hashSecret=readLocalSecret(hashFile,128);
+        if(/^[a-f0-9]{64}$/.test(gatewaySecret)&&/^[a-f0-9]{64}$/.test(hashSecret)&&gatewaySecret!==hashSecret)
+          ipVisitService={peers,gatewaySecret,hashSecret};
+      }
+    } catch {/* This optional ingress fails closed. */}
+  }
   if (e.EXTERNAL_CATALOG_MODE === 'synthetic') {
     const database = new URL(e.DATABASE_URL);
     if (e.NODE_ENV === 'production' || e.HOST !== '127.0.0.1' || database.hostname !== '127.0.0.1' ||
@@ -116,6 +146,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
     }
   }
   const externalScale = e.EXTERNAL_CATALOG_MODE === 'synthetic-scale';
+  if (!externalScale && env.EXTERNAL_CACHE_MAX_QUEUED_LOADS !== undefined)
+    throw new Error('EXTERNAL_CACHE_MAX_QUEUED_LOADS requires isolated synthetic-scale mode');
   if (e.EXTERNAL_CATALOG_MODE !== 'disabled' && (e.CATALOG_READ_MODE !== 'staff' ||
       Object.keys(env).some(key => key.startsWith('PUBLIC_CACHE_') || key.startsWith('PUBLIC_REDIS_')) || e.PUBLIC_CATALOG_CACHE !== 'off')) {
     throw new Error('Formal catalog settings cannot be combined with synthetic catalog settings');
@@ -168,14 +200,18 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
   }
   return {
     servingModeFile:e.API_SERVING_MODE_FILE, environment: e.NODE_ENV, deployment, ssrService, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
-    authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins, analyticsOrigins,
+    ipVisitService,ipVisitsMisconfigured:e.ANALYTICS_IP_VISITS_ENABLED==='true'&&!ipVisitService,
+    authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins, analyticsOrigins, analyticsGatewaySecret,
+    analyticsV2Enabled:e.ANALYTICS_V2_ENABLED==='true',publicSeoEnabled:e.PUBLIC_SEO_ENABLED==='true',
+    analyticsContactLocalEnabled:e.ANALYTICS_CONTACT_LOCAL_ENABLED==='true'&&deployment.environment!=='production'&&e.NODE_ENV!=='production',
+    analyticsContactCountries:[...new Set(analyticsContactCountries)],
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
     trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog, externalScale,
     externalIngestion: e.EXTERNAL_CATALOG_MODE !== 'disabled', externalSync: e.EXTERNAL_SYNC_MODE,
     publicCache: e.EXTERNAL_PUBLIC_CACHE === 'off' ? formalCache : {
       enabled: true, externalCatalog, deployment,
       maxEntries: 64, maxBytes: 16 * 1_048_576,
-      maxQueuedLoads: 0,
+      maxQueuedLoads: e.EXTERNAL_CACHE_MAX_QUEUED_LOADS,
       namespace: e.EXTERNAL_CACHE_NAMESPACE ?? 'hd-ext-scale-memory', ttlMs: e.EXTERNAL_CACHE_TTL_MS, maxConcurrentLoads: e.EXTERNAL_CACHE_MAX_LOADS,
       redis: e.EXTERNAL_PUBLIC_CACHE === 'redis' ? { host: e.EXTERNAL_REDIS_HOST!, port: e.EXTERNAL_REDIS_PORT,
         username: e.EXTERNAL_REDIS_USER!, passwordFile: e.EXTERNAL_REDIS_PASSWORD_FILE! } : undefined,

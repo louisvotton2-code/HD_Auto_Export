@@ -91,7 +91,69 @@ describe('explicit inline detail HTTP projection', () => {
     );
     expect(response.status).toBe(200);
     expect((await response.json()).data).toEqual(data);
-    expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.has('projection')).toBe(false);
+    const query = new URL(fetcher.mock.calls[0]![0] as string).searchParams;
+    expect(Object.fromEntries(query)).toEqual({ locale: 'ru', view: 'localized' });
+  });
+
+  it('negotiates Pixel eligibility only on the existing inline detail request', async () => {
+    const data = { ...inlineFixture(), pixelEnabled: true };
+    const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope(data)));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(publicInlineVehicleView(data.id, 'ru')).not.toHaveProperty('pixelView');
+    const view = publicInlineVehicleView(data.id, 'ru', { includePixel: true });
+    expect(view.pixelView).toBe('eligible');
+    expect(view).not.toHaveProperty('seoView');
+    const response = await proxyPublicRequest(new Request(
+      `https://website.test/api/v1/vehicles/${data.id}?locale=ru&view=localized&projection=detail-inline-v1&pixelView=eligible`,
+    ), ['vehicles', data.id]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('pixelView')).toBe('eligible');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.pixelEnabled).toBe(true);
+  });
+
+  it('negotiates SEO independently and preserves eligibility in the inline response', async () => {
+    const seo = { indexable: true, locales: ['ru'], lastModified: '2026-11-21T00:00:00Z' };
+    const data = { ...inlineFixture(), seo };
+    const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope(data)));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(publicInlineVehicleView(data.id, 'ru')).not.toHaveProperty('seoView');
+    const view = publicInlineVehicleView(data.id, 'ru', { includeSeo: true });
+    expect(view.seoView).toBe('eligible');
+    expect(view).not.toHaveProperty('pixelView');
+    const response = await proxyPublicRequest(new Request(
+      `https://website.test/api/v1/vehicles/${data.id}?locale=ru&view=localized&projection=detail-inline-v1&seoView=eligible`,
+    ), ['vehicles', data.id]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('seoView')).toBe('eligible');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual(data);
+  });
+
+  it.each([200, 400])('retries a rejected eligibility query once with only the original detail options (upstream %s)', async status => {
+    const data = inlineFixture();
+    const oldQuery = {
+      locale: 'ru', view: 'localized', projection: 'detail-inline-v1', technicalView: 'verified', titleView: 'english',
+    };
+    const fullQuery = { ...oldQuery, pixelView: 'eligible', seoView: 'eligible' };
+    const fetcher = vi.fn()
+      .mockImplementationOnce(async () => new Response(null, { status: 400 }))
+      .mockImplementationOnce(async () => status === 200 ? Response.json(envelope(data)) : new Response(null, { status }));
+    vi.stubGlobal('fetch', fetcher);
+    const response = await proxyPublicRequest(new Request(
+      `https://website.test/api/v1/vehicles/${data.id}?${new URLSearchParams(fullQuery)}`,
+    ), ['vehicles', data.id]);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    for (const [index, query] of [fullQuery, oldQuery].entries()) {
+      const target = new URL(fetcher.mock.calls[index]![0] as string);
+      expect(target.pathname).toBe(`/api/v1/vehicles/${data.id}`);
+      expect(Object.fromEntries(target.searchParams)).toEqual(query);
+    }
+    expect(response.status).toBe(status === 200 ? 200 : 404);
+    if (status === 200) expect((await response.json()).data).toEqual(data);
   });
 
   it.each(['old-for-inline', 'inline-for-old', 'wrong-body-locale', 'private-extra'] as const)(
@@ -121,6 +183,11 @@ describe('explicit inline detail HTTP projection', () => {
     'projection=detail-inline-v2&view=localized',
     'projection=card&view=localized',
     'technicalView=verified&view=localized',
+    'pixelView=eligible&view=localized',
+    'pixelView=invalid&view=localized&projection=detail-inline-v1',
+    'seoView=eligible&view=localized',
+    'seoView=invalid&view=localized&projection=detail-inline-v1',
+    'seoView=eligible&seoView=eligible&view=localized&projection=detail-inline-v1',
     'projection=detail-inline-v1&projection=detail-inline-v1&view=localized',
   ])('rejects an invalid projection/view query before upstream IO: %s', async query => {
     const fetcher = vi.fn();

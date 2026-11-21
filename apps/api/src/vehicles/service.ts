@@ -1,3 +1,4 @@
+import { vehicleSeo } from '../seo/service.js';
 import {inlineDetail} from './inline-detail.js';
 import { recordAudit as audit, staffActivitySql } from '../activity/service.js';
 export { recordAudit as audit } from '../activity/service.js';
@@ -38,6 +39,7 @@ type Row = {
   id: string; stock_number: string; version: number; public_content_revision: number; publication_state: AdminVehicle['publicationState'];
   availability: AdminVehicle['availability']; availability_checked_at: Date|null; published_revision_id: string|null;
   published_at: Date|null; deleted_at: Date|null; created_at: Date; updated_at: Date; data: VehicleDraftInput;
+  pixel_enabled?: boolean;
   activity?:AdminActivitySummary;
   publication_data?: Snapshot;
   localization_revision?:number;localization_data?:LocalizationData;localization_bindings?:Record<string,string>;retired_fields?:StoredLocalization['retiredFields'];
@@ -60,7 +62,10 @@ const adminSelect = `SELECT ${adminColumns} ${adminFrom}`;
 const adminUploaderJoin = `LEFT JOIN staff uploader ON uploader.id=(SELECT a.actor_id FROM audit_events a
   WHERE a.vehicle_id=v.id AND a.operation='vehicle.create' ORDER BY a.created_at,a.id LIMIT 1)`;
 const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
-const publicSelect = `SELECT v.*,p.data AS publication_data,${localizationDataSql('pl')} AS published_localization,pl.bindings AS published_bindings,pl.projections ${publicFrom}`;
+const publicColumns = `v.*,p.data AS publication_data,${localizationDataSql('pl')} AS published_localization,pl.bindings AS published_bindings,pl.projections`;
+const publicSelect = `SELECT ${publicColumns} ${publicFrom}`;
+const pixelDetailSelect = `SELECT ${publicColumns},coalesce(pixel.pixel_enabled,false) AS pixel_enabled ${publicFrom}
+  LEFT JOIN vehicle_pixel_settings pixel ON pixel.vehicle_id=v.id`;
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
 const catalogVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved')) OR ${unverifiedVisible})`;
 const homeVisible = `v.deleted_at IS NULL AND v.publication_state='published' AND ((p.data->'source'->>'kind'='manual' AND v.availability IN ('available','reserved','sold')) OR ${unverifiedVisible})`;
@@ -360,7 +365,10 @@ type CatalogVersion={epoch:string;revision:string};
 export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'result';
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
-const catalogReadTransaction='SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL jit=off';
+// The catalog's origin queue already limits concurrent reads. Keep each read
+// within one database worker so cold aggregate queries do not multiply that load.
+const catalogReadTransaction=`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+  SET LOCAL jit=off; SET LOCAL max_parallel_workers_per_gather=0`;
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
 const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
   const {page,cursor,pagination,...filters}=query;
@@ -389,7 +397,7 @@ function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:str
   return item;
 }
 export class InventoryService {
-  constructor(private db: Database, private externalCatalog=false, private mediaStore?: Pick<LocalMediaStore, 'prepareDelivery'>) {}
+  constructor(private db: Database, private externalCatalog=false, private mediaStore?: Pick<LocalMediaStore, 'prepareDelivery'>, private publicSeoEnabled=false) {}
 
   async getTranslationBundle(id:string,actor:Actor) {
     return this.db.transaction(async tx=>{
@@ -762,26 +770,33 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english') {
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english',pixelView?:'eligible',seoView?:'eligible') {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const quote=priceView==='usd'?await readFxQuote(tx):null;
+      const includePixel=projection==='detail-inline-v1'&&pixelView==='eligible';
+      const includeSeo=projection==='detail-inline-v1'&&seoView==='eligible'&&this.publicSeoEnabled;
       if(id.startsWith('ext-')) {
-        const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote,projection?titleView:undefined);
-        if(!item)throw notFound();return projection?inlineDetail(tx,item,locale,technicalView):item;
+        const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote,projection?titleView:undefined,includePixel);
+        if(!item)throw notFound();
+        if(includeSeo)item.seo=await vehicleSeo(tx,item.id,locale,true);
+        return projection?inlineDetail(tx,item,locale,technicalView):item;
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
-      const result=await tx.query<Row>(`${publicSelect} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
+      const selection=includePixel?pixelDetailSelect:publicSelect;
+      const result=await tx.query<Row>(`${selection} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
       const row=result.rows[0];
       if(!row)throw notFound();
       const vehicle=toPublic(row,locale,view,priceView,quote,true);
       const report=await getStaffReport(tx,row.publication_data!.source);
       vehicle.report={hasReport:report.hasReport};
+      if(includeSeo)vehicle.seo=await vehicleSeo(tx,vehicle.id,locale,true);
       if (!projection) return vehicle;
       const englishTitle = titleView ? staffEnglishTitle(row, vehicle, locale) : undefined;
       return inlineDetail(tx,{...vehicle,...projectTechnicalDetail(vehicle.facts,row.published_localization?.facts,
-        row.publication_data?.configuration,vehicle.configuration,locale),...(englishTitle?{englishTitle}:{})},locale);
+        row.publication_data?.configuration,vehicle.configuration,locale),...(englishTitle?{englishTitle}:{}),
+        ...(includePixel?{pixelEnabled:row.pixel_enabled===true}:{})},locale);
     });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void) {

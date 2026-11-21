@@ -10,11 +10,12 @@ import styles from './public-vehicles.module.css';
 type BrandOption = { id: string; name: string; count?: number };
 
 export function CatalogBrandPicker({
-  locale, brands, value, onChange,
+  locale, brands, value, pending, onChange,
 }: {
   locale: Locale;
   brands: BrandOption[];
   value: string;
+  pending: boolean;
   onChange: (value: string) => void;
 }) {
   const { make: label, all } = publicVehicleMessages(locale);
@@ -31,7 +32,7 @@ export function CatalogBrandPicker({
   if (value && !brands.some(brand => brand.id === value)) options.push({ id: value, name: copy.selected });
   const selected = options.find(option => option.id === value)!.name;
   const normalize = (text: string) => text.normalize('NFKC').toLocaleLowerCase(locale).replace(/[\s_-]+/g, ' ').trim();
-  const term = normalize(search);
+  const term = open ? normalize(search) : '';
   const matches = term ? options.filter(option => option.id && (
     normalize(option.name).includes(term) || normalize(option.id).includes(term)
   )) : options;
@@ -86,7 +87,7 @@ export function CatalogBrandPicker({
   return (
     <>
       {/* Keep a single native GET value, including pre-hydration and disabled JavaScript. */}
-      <label hidden={enhanced}>
+      <label className={styles.brandPickerFallback} hidden={enhanced}>
         <span>{label}</span>
         <select name="make" value={value} onChange={event => select(event.currentTarget.value)}>
           {options.map(option => <option key={option.id} value={option.id}>{optionLabel(option)}</option>)}
@@ -107,7 +108,8 @@ export function CatalogBrandPicker({
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={open}
-              aria-controls={listId}
+              aria-busy={pending || undefined}
+              aria-controls={open ? listId : undefined}
               aria-activedescendant={open && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
               aria-describedby={`${inputId}-selection`}
               data-testid="catalog-brand-search"
@@ -117,7 +119,7 @@ export function CatalogBrandPicker({
               spellCheck={false}
               maxLength={120}
               value={search}
-              placeholder={open ? copy.brandSearch : selected}
+              placeholder={open || !value ? copy.brandSearch : selected}
               onFocus={() => setOpen(true)}
               onClick={() => setOpen(true)}
               onChange={event => {
@@ -128,10 +130,11 @@ export function CatalogBrandPicker({
               }}
               onKeyDown={keys}
             />
-            <Icon name="chevron" size={14} />
+            <Icon name="search" size={16} className={styles.brandPickerSearchIcon} />
+            <Icon name="chevron" size={14} className={styles.brandPickerChevron} />
           </div>
           <span id={`${inputId}-selection`} className={styles.srOnly}>{copy.selected}: {selected}</span>
-          <div className={styles.brandPickerMenu} hidden={!open}>
+          {open && <div className={styles.brandPickerMenu}>
             <ul ref={list} id={listId} role="listbox" aria-label={label}>
               {matches.map((option, index) => (
                 <li
@@ -148,8 +151,9 @@ export function CatalogBrandPicker({
                 </li>
               ))}
             </ul>
-            {!matches.length && <p role="status">{copy.noBrands}</p>}
-          </div>
+            {pending ? <p role="status">{copy.optionsLoading}</p>
+              : !matches.length && <p role="status">{copy.noBrands}</p>}
+          </div>}
         </div>
       )}
     </>

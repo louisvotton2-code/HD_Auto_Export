@@ -7,6 +7,7 @@ import { usePathname } from '@/i18n/navigation';
 import { siteConfig } from '@/shared/config/site';
 import { SocialIcon } from '@/shared/ui/social-icon';
 import { Icon } from '@/shared/ui/icon';
+import { getTrackingConsent, subscribeTrackingConsent } from '@/shared/lib/tracking-consent';
 import { enquiryContent } from '../content';
 import { enquiryDelayMs, enquirySeenKey, enquirySeenRecently } from '../prompt-policy';
 import styles from './enquiry-dialog.module.css';
@@ -73,7 +74,7 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
     close();
     // Keep vehicle and part consultations uninterrupted. The header trigger remains available.
     if (/^\/(cars|parts)\/[^/]+\/?$/.test(pathname)) return;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     function prompt() {
       if (shownThisSession.current) return;
       try { if (enquirySeenRecently(localStorage.getItem(enquirySeenKey), Date.now())) return; } catch { /* Fall back to this mounted session. */ }
@@ -84,8 +85,16 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
       }
       open();
     }
-    timer = setTimeout(prompt, enquiryDelayMs);
-    return () => { clearTimeout(timer); close(); };
+    // A native modal would make the privacy notice inert. Wait for acknowledgment before
+    // scheduling the automatic prompt; the explicitly requested dialog is separate.
+    function schedule() {
+      clearTimeout(timer);
+      if (getTrackingConsent().acknowledged && !shownThisSession.current)
+        timer = setTimeout(prompt, enquiryDelayMs);
+    }
+    const stopWaiting = subscribeTrackingConsent(schedule);
+    schedule();
+    return () => { stopWaiting(); clearTimeout(timer); close(); };
   }, [pathname, close, open]);
 
   return (

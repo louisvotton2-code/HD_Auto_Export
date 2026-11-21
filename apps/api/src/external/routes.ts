@@ -9,6 +9,7 @@ import { reportMediaFailure } from './catalog.js';
 import { getExternalListingOverview, listExternalListings } from './listings.js';
 import { createProviderProbe } from './provider-probe.js';
 import { listSourceDocuments, getSourceDocument } from './sources/index.js';
+import { fullSyncTimings } from './full-sync/timing.js';
 import { fullSyncStatus,setFullSyncPaused } from './full-sync/status.js';
 import { ingestionStatus } from './ingestion/status.js';
 import { ExternalStore } from './store.js';
@@ -37,6 +38,7 @@ const row = (request: FastifyRequest) => Number((request.params as { row: string
 
 export function registerExternalRoutes(app: FastifyInstance, db: Database, actor: (request: FastifyRequest) => Actor, providerAccountKey?: string) {
   const store = new ExternalStore(db);
+  app.get(`${prefix}/sync-timings`,{schema:schema('getExternalSyncTimings',admin.ExternalSyncTimingsResponseSchema)},async request=>result(await fullSyncTimings(db),request));
   app.get(`${prefix}/sync-status`,{schema:schema('getExternalFullSyncStatus',admin.ExternalFullSyncStatusResponseSchema)},async request=>result(await fullSyncStatus(db),request));
   app.post(`${prefix}/sync-control`,{schema:schema('controlExternalFullSync',admin.ExternalFullSyncStatusResponseSchema,{headers:idem,body:admin.ExternalFullSyncControlSchema})},async request=>result(await setFullSyncPaused(db,request.body as admin.ExternalFullSyncControl,actor(request),key(request)),request));
 

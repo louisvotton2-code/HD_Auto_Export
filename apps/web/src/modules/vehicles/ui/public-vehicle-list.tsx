@@ -12,6 +12,8 @@ import {
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
+import { recordPublicAnalyticsAction } from '@/shared/lib/public-analytics-actions';
+import { currentAnalyticsGrant } from '@/shared/lib/tracking-consent';
 import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleMessages } from '../public-messages';
 import { publicCatalogHref } from '../public-presentation';
@@ -147,6 +149,30 @@ export function PublicVehicleList({
   }
   const data = resource.data;
   const phase = navigationFrom !== null ? 'checking' : resource.phase;
+  const submittedFilter = useRef<{ target: string; from: typeof data; grant: number } | null>(null);
+  function recordFilterSubmit(target: string) {
+    const grant = currentAnalyticsGrant();
+    if (grant === null) return;
+    submittedFilter.current = { target, from: data, grant };
+    recordPublicAnalyticsAction('filter_submit');
+  }
+  useEffect(() => {
+    const attempt = submittedFilter.current;
+    if (!attempt || phase === 'checking') return;
+    if (attempt.target !== appliedKey || attempt.grant !== currentAnalyticsGrant()) {
+      submittedFilter.current = null;
+      return;
+    }
+    if (phase === 'error') {
+      submittedFilter.current = null;
+    } else if (data && data !== attempt.from) {
+      submittedFilter.current = null;
+      if (data.meta.freshness === 'fresh' && data.meta.totalKind === 'exact' &&
+          data.meta.total === 0 && data.data.items.length === 0) {
+        recordPublicAnalyticsAction('search_zero_results');
+      }
+    }
+  }, [phase, appliedKey, data]);
   const tiltLayout = useMemo(
     () => ({ data, phase, url }),
     [data, phase, url],
@@ -183,7 +209,7 @@ export function PublicVehicleList({
     <PublicFreshnessBoundary phase={phase} url={url}>
       <main id="main" className={styles.page} data-testid="public-vehicle-catalog">
         <div className={styles.shell}>
-          <h1 className={styles.srOnly}>{t.title}</h1>
+          <h1 className={styles.catalogTitle}>{t.title}</h1>
           <div className={styles.catalogLayout}>
             <CatalogSidebar
               results={results}
@@ -213,6 +239,7 @@ export function PublicVehicleList({
                 pending={phase === 'checking'}
                 retryAfter={Math.max(resource.retryAfter, brand.retryAfter, modelOptions.retryAfter)}
                 navigate={navigate}
+                onSubmitFilters={recordFilterSubmit}
                 onRetry={reloadCatalog}
               />
             </CatalogSidebar>

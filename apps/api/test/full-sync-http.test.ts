@@ -9,7 +9,7 @@ import {migrateDatabase} from '../src/db/migrate.js';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {createStaff} from '../src/staff-cli.js';
-import {ExternalFullSyncStatusResponseSchema} from '@hd/contracts/admin';
+import {ExternalFullSyncStatusResponseSchema,ExternalSyncTimingsResponseSchema} from '@hd/contracts/admin';
 import {makeExternalImportFixture} from '@hd/contracts/fixtures';
 import {PublicVehicleInlineResponseSchema,PublicVehicleResponseSchema,PublicVehicleInspectionResponseSchema,PublicVehiclePriceHistoryResponseSchema} from '@hd/contracts/public';
 import {projectInspectionReport} from '../src/external/sources/inspection-projection.js';
@@ -23,12 +23,23 @@ test('full sync HTTP controls require an admin and preserve versioned idempotent
   await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;url.pathname=`/${name}`;
   const origin='http://127.0.0.1:3318';runtime=await buildApp(readConfig({NODE_ENV:'test',DATABASE_URL:url.toString(),AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:media,AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin,EXTERNAL_CATALOG_MODE:'synthetic'}));
   await migrateDatabase(runtime.db);const app=runtime.app;
+  assert.equal((await app.inject({url:'/health/ready'})).statusCode,200);
+  await runtime.db.pool.query('ALTER TABLE external_full_receive_observations RENAME TO sync_test_observations');
+  try{assert.equal((await app.inject({url:'/health/ready'})).statusCode,503,'new runtime must reject the missing timing migration');}
+  finally{await runtime.db.pool.query('ALTER TABLE sync_test_observations RENAME TO external_full_receive_observations');}
+  assert.equal((await app.inject({url:'/health/ready'})).statusCode,200);
+
   const cookies:Record<string,string>={};
   for(const role of ['admin','editor'] as const){const email=`${role}@example.invalid`,password='Isolated-control-only!';await createStaff(runtime.auth,{name:role,email,password,role});
    const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password}});assert.equal(login.statusCode,200,login.body);cookies[role]=login.cookies.map(c=>`${c.name}=${c.value}`).join('; ');}
   const statusUrl='/api/v1/admin/external/sync-status',controlUrl='/api/v1/admin/external/sync-control';
   assert.equal((await app.inject({url:statusUrl})).statusCode,401);
   assert.equal((await app.inject({url:statusUrl,headers:{origin,cookie:cookies.editor}})).statusCode,403);
+  const timingUrl='/api/v1/admin/external/sync-timings';
+  assert.equal((await app.inject({url:timingUrl})).statusCode,401);
+  assert.equal((await app.inject({url:timingUrl,headers:{origin,cookie:cookies.editor}})).statusCode,403);
+  const timing=await app.inject({url:timingUrl,headers:{origin,cookie:cookies.admin}});assert.equal(timing.statusCode,200,timing.body);
+  assert.equal(timing.headers['cache-control'],'no-store');assert.equal(ExternalSyncTimingsResponseSchema.parse(timing.json()).data.window.complete,false);
   await runtime.db.pool.query('UPDATE external_full_sync SET enabled=true,paused=false WHERE id=1');
   const current=await app.inject({url:statusUrl,headers:{origin,cookie:cookies.admin}});assert.equal(current.statusCode,200,current.body);assert.equal(current.headers['cache-control'],'no-store');
   const status=ExternalFullSyncStatusResponseSchema.parse(current.json()).data;

@@ -14,6 +14,7 @@ import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formal
 import {runSourceMaintenance} from './maintenance.js';
 import {syncAccount} from './quota.js';
 import {capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk} from './capacity.js';
+import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,supersedeTiming} from './timing.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,parseAlias} from './apply.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
@@ -38,7 +39,7 @@ async function queue(tx:PoolClient,source:Source,id:string,kind:'detail'|'report
  const prior=(await tx.query('SELECT generation FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind=$3 FOR UPDATE',[source,id,kind])).rows[0];
  if(prior&&BigInt(prior.generation)!==BigInt(generation))await releaseSourceReferences(tx,'pending',workRef(source,id,kind));
  await tx.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority) VALUES($1,$2,$3,$4,$5)
- ON CONFLICT(source,external_id,kind) DO UPDATE SET priority=greatest(external_full_work.priority,excluded.priority),
+ ON CONFLICT(source,external_id,kind) DO UPDATE SET priority=CASE WHEN external_full_work.generation=excluded.generation THEN greatest(external_full_work.priority,excluded.priority) ELSE excluded.priority END,
  document_refs=CASE WHEN external_full_work.generation=excluded.generation THEN external_full_work.document_refs ELSE '[]'::jsonb END,
  locales=CASE WHEN external_full_work.generation=excluded.generation THEN external_full_work.locales ELSE '{}'::text[] END,
  attempts=CASE WHEN external_full_work.generation=excluded.generation THEN external_full_work.attempts ELSE 0 END,
@@ -82,6 +83,7 @@ export class FullSyncWorker{
  /** 2000-event page staged in 100-event transactions. Cursor advances only after every chunk and raw evidence is durable. */
  async receiveDelta(){
   await this.alive();const s=await this.state();if(!s.since_at)return false;
+  try{
   const page=await this.client.changes(new Date(s.since_at).toISOString(),s.receive_cursor===null?null:String(s.receive_cursor));
   const key=s.receive_cursor===null?`since:${new Date(s.since_at).toISOString()}`:`cursor:${s.receive_cursor}`;
   await this.transaction(async tx=>{await persistSourceResponse(tx,page.rawResponse);await protectSourceBlob(tx,page.rawResponse.hash,{kind:'pending',reference:`full-page:${key}`});});
@@ -90,7 +92,7 @@ export class FullSyncWorker{
     const existing=(await tx.query('SELECT payload_hash FROM external_full_events WHERE event_id=$1',[e.id])).rows[0];if(existing){if(existing.payload_hash!==jsonHash(e))throw new FullSyncError('SYNC_EVENT_CONFLICT');continue;}
     const ref=`full-event:${e.id}`,docs:SourceDocument[]=[{identity:identity(e.source,e.vehicleId),kind:'event',locale:'und',observedAt:new Date().toISOString(),sourceUpdatedAt:e.at,eventSequence:String(e.id),payload:e,rawResponse:{hash:page.rawResponse.hash}}];
     const refs=await archiveSourceDocuments(tx,docs,ref);
-    await tx.query('INSERT INTO external_full_events(event_id,source,external_id,operation,business_at,document_refs,payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',[e.id,e.source,e.vehicleId,e.type==='removed'?'withdraw':e.type==='relisted'?'relist':'upsert',e.at,JSON.stringify(refs),jsonHash(e)]);
+    await tx.query('INSERT INTO external_full_events(event_id,source,external_id,operation,business_at,document_refs,payload_hash,source_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[e.id,e.source,e.vehicleId,e.type==='removed'?'withdraw':e.type==='relisted'?'relist':'upsert',e.at,JSON.stringify(refs),jsonHash(e),e.type]);
     await tx.query('UPDATE external_full_sync SET received_events=received_events+1 WHERE id=1');
    }
   });}
@@ -98,18 +100,25 @@ export class FullSyncWorker{
    const current=(await tx.query('SELECT receive_cursor,since_at FROM external_full_sync WHERE id=1 FOR UPDATE')).rows[0]!;
    if(String(current.receive_cursor)!==String(s.receive_cursor)||new Date(current.since_at).getTime()!==new Date(s.since_at).getTime())throw new FullSyncError('SYNC_CURSOR_CONFLICT');
    await tx.query(`INSERT INTO external_full_receipts(cursor_key,next_cursor,event_count,complete) VALUES($1,$2,$3,true) ON CONFLICT(cursor_key) DO UPDATE SET next_cursor=excluded.next_cursor,event_count=excluded.event_count,complete=true`,[key,page.nextCursor,page.changes.length]);
-   await tx.query("UPDATE external_full_sync SET receive_cursor=$1,next_delta_at=clock_timestamp()+CASE WHEN $2 THEN interval '0 seconds' ELSE interval '5 minutes' END WHERE id=1",[page.nextCursor,page.hasMore]);
+   await tx.query("UPDATE external_full_sync SET receive_cursor=$1,last_receive_at=clock_timestamp(),next_delta_at=CASE WHEN $2 THEN clock_timestamp() ELSE date_bin(interval '5 minutes',clock_timestamp(),'epoch'::timestamptz)+interval '5 minutes' END WHERE id=1",[page.nextCursor,page.hasMore]);
    await releaseSourceReferences(tx,'pending',`full-page:${key}`);
+   await recordReceiveObservation(tx);
   });return page.hasMore;
+  }catch(error){try{await this.transaction(tx=>recordReceiveObservation(tx,errorCode(error)));}catch{/* Missing coverage remains explicit if the database/lease is unavailable. */}throw error;}
  }
  async applyEvents(withdrawOnly=false){
   await this.alive();
-  const events=(await this.db.pool.query(`SELECT e.*,a.external_id IS NOT NULL AS admitted,
+  const events=(await this.db.pool.query(`WITH eligible AS (SELECT e.*,a.external_id IS NOT NULL AS admitted,
+   coalesce((e.operation='upsert' AND f.active AND f.locale_mask=7) OR (e.operation='relist' AND l.published_at IS NOT NULL),false) AS urgent,
    admission.admitted_count >= admission.admission_limit AS at_limit FROM external_full_events e
    CROSS JOIN external_formal_admission_state admission
    LEFT JOIN external_formal_admissions a USING(source,external_id)
+   LEFT JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
+   LEFT JOIN external_catalog_filter f ON f.listing_id=l.id
    WHERE admission.id=1 AND e.applied_at IS NULL AND ($1=false OR e.operation='withdraw')
-   ORDER BY (e.operation='withdraw') DESC,admitted DESC,e.event_id LIMIT 100`,[withdrawOnly])).rows;
+    ), ranked AS (SELECT *,row_number() OVER(PARTITION BY admitted,operation='withdraw' ORDER BY urgent DESC,event_id) AS lane_row FROM eligible)
+   SELECT * FROM ranked ORDER BY (operation='withdraw') DESC,
+   CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,urgent DESC,event_id LIMIT 100`,[withdrawOnly])).rows;
   let expansionAllowed:boolean|undefined,completed=0;
   for(const event of events){
    const withdraw=event.operation==='withdraw';
@@ -126,7 +135,10 @@ export class FullSyncWorker{
     const at=new Date(event.business_at);
     const tombstone=known||withdraw?undefined:await formalWithdrawal(tx,event.source,event.external_id);
     const blockedByWithdrawal=tombstone&&(event.operation!=='relist'||BigInt(event.event_id)<=BigInt(tombstone.business_order)||at<tombstone.business_at);
-    let admitted=known,excluded=false;
+    let admitted=known,excluded=false,generation:string|null=null,outcome='not_public';
+    const prior=(await tx.query(`SELECT c.price_cny,f.active AND f.locale_mask=7 AS visible FROM external_listings l
+     JOIN external_catalog c ON c.listing_id=l.id JOIN external_catalog_filter f ON f.listing_id=l.id
+     WHERE l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id=$2`,[event.source,event.external_id])).rows[0];
     if(!known&&withdraw)await rememberFormalWithdrawal(tx,event.source,event.external_id,event.event_id,at);
     if(!known&&!withdraw&&!blockedByWithdrawal){
      const gates=(await tx.query(`SELECT admitted_count >= admission_limit AS at_limit,
@@ -143,22 +155,26 @@ export class FullSyncWorker{
     }
     if(admitted){
      const member=await ensureMember(tx,event.source,event.external_id);
+     outcome='superseded';
      const newer=BigInt(event.event_id)>BigInt(member.event_order)&&at>=new Date(member.business_at);
      if(newer){
       const canActivate=member.state!=='withdrawn'||event.operation==='relist';
       await tx.query(`UPDATE external_full_members SET event_order=$3,business_at=$4,desired_generation=desired_generation+1,verification_pending=false,
         state=CASE WHEN $5 THEN 'withdrawn' WHEN $6 THEN 'pending' ELSE state END,locales=CASE WHEN $5 THEN locales ELSE '{}'::text[] END WHERE source=$1 AND external_id=$2`,[event.source,event.external_id,event.event_id,event.business_at,withdraw,canActivate]);
       const next=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[event.source,event.external_id])).rows[0]!;
+      generation=String(next.desired_generation);outcome=withdraw||canActivate?'pending':'not_public';
+      await supersedeTiming(tx,event.source,event.external_id,generation);
       if(withdraw){const docs=await loadSourceDocumentRefs(tx,event.document_refs);await this.apply(tx,{source:event.source,externalId:event.external_id,canonicalId:next.canonical_id,operation:'withdraw',documents:docs,at:at.toISOString(),batchId:randomUUID()});
        for(const kind of ['detail','report'])await releaseSourceReferences(tx,'pending',workRef(event.source,event.external_id,kind));await tx.query('DELETE FROM external_full_work WHERE source=$1 AND external_id=$2',[event.source,event.external_id]);
       }else if(canActivate){
        if(event.operation==='relist')await clearFormalWithdrawal(tx,event.source,event.external_id,at,event.event_id);
-       await queue(tx,event.source,event.external_id,'detail',next.desired_generation,100);
+       await queue(tx,event.source,event.external_id,'detail',next.desired_generation,event.urgent?100:50);
       }
      }
     }
-    const marked=await tx.query('UPDATE external_full_events SET applied_at=clock_timestamp(),error_code=$2 WHERE event_id=$1 AND applied_at IS NULL',
-     [event.event_id,excluded?FORMAL_LISTING_LIMIT_CODE:null]);
+    const marked=await tx.query('UPDATE external_full_events SET applied_at=clock_timestamp(),error_code=$2,detail_generation=$3,public_outcome=$4,prior_public_price=$5,was_public=$6 WHERE event_id=$1 AND applied_at IS NULL',
+     [event.event_id,excluded?FORMAL_LISTING_LIMIT_CODE:null,generation,outcome,prior?.price_cny??null,prior?.visible===true]);
+    if(withdraw&&generation)await recordWithdrawalTiming(tx,event.source,event.external_id,generation);
     if(marked.rowCount)await tx.query('UPDATE external_full_sync SET applied_events=applied_events+1 WHERE id=1');
     await releaseSourceReferences(tx,'pending',`full-event:${event.event_id}`);
     return Boolean(marked.rowCount);
@@ -299,7 +315,9 @@ export class FullSyncWorker{
      const updated=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,last_snapshot=$3,verification_pending=false,has_report=$4,
       business_at=$5,csv_hash=$6,state='pending',locales='{}' WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[entry.source,entry.external_id,id,['true','1'].includes(row.has_report),snap.generated_at,rowHash])).rows[0]!;
      if(entry.withdrawn_at)await clearFormalWithdrawal(tx,entry.source,entry.external_id,new Date(snap.generated_at));
-     await queue(tx,entry.source,entry.external_id,'detail',updated.desired_generation,50);
+     await supersedeTiming(tx,entry.source,entry.external_id,String(updated.desired_generation));
+     const priorWork=(await tx.query("SELECT priority FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail'",[entry.source,entry.external_id])).rows[0];
+     await queue(tx,entry.source,entry.external_id,'detail',updated.desired_generation,priorWork?.priority>=100?100:50);
      const refs=await archiveSourceDocuments(tx,docs,workRef(entry.source,entry.external_id,'detail'));
      await tx.query('UPDATE external_full_work SET document_refs=$3 WHERE source=$1 AND external_id=$2 AND kind=\'detail\'',[entry.source,entry.external_id,JSON.stringify(refs)]);
     }else await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
@@ -317,14 +335,16 @@ export class FullSyncWorker{
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
   await this.heavy(sampleOnly);const remaining=await this.sampleRemaining(),restrictToSample=sampleOnly||remaining===0;
   // At the boundary only refresh existing sample members invalidated by newer events; never fetch a new identity.
-  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample])).rows[0];
+  const turn=await this.transaction(async tx=>Number((await tx.query('UPDATE external_full_sync SET detail_turn=detail_turn+1 WHERE id=1 RETURNING detail_turn')).rows[0]!.detail_turn));
+  const oldest=turn%4===0;
+  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY CASE WHEN $2 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample,oldest])).rows[0];
   if(!selected)return 0;const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source])).rows;
+   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY CASE WHEN $4 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source,oldest])).rows;
   if(!jobs.length)return 0;
   for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
    const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale));if(!wanted.length)continue;
    try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale)){
-    await this.heavy(sampleOnly);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
+    await this.heavy(sampleOnly);await this.applyEvents(true);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
     for(const payload of response.results){const job=wanted.find(j=>j.external_id===payload.id)!;
      await this.transaction(async tx=>{
       const current=(await tx.query("SELECT * FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' FOR UPDATE",[source,payload.id])).rows[0];
@@ -354,6 +374,7 @@ export class FullSyncWorker{
    await tx.query(`UPDATE external_full_members SET state=$3,locales=$4,applied_generation=desired_generation,last_detail_at=$5,verification_pending=false,
     sampled=sampled OR (SELECT last_capacity_sample=0 FROM external_full_sync WHERE id=1),has_report=$6,report_state=$7 WHERE source=$1 AND external_id=$2`,[job.source,job.external_id,withdrawn?'withdrawn':'active',current.locales,at,detail?.hasInspectionReport===true||detail?.inspectionAvailable===true,detail?.hasInspectionReport===false&&detail?.inspectionAvailable!==true?'no_report':'pending']);
    await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:canonical,operation:withdrawn?'withdraw':'upsert',documents:docs,at,batchId:member.last_snapshot??randomUUID()});
+   await recordDetailTiming(tx,job.source,job.external_id,String(member.desired_generation));
    await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'detail'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail'",[job.source,job.external_id]);
    await tx.query("UPDATE external_full_members SET photo_expires_at=(SELECT min(e.expires_at) FROM external_media e JOIN external_listings l ON l.id=e.listing_id WHERE l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id=$2 AND e.active) WHERE source=$1 AND external_id=$2",[job.source,job.external_id]);
    if(!withdrawn&&!(detail?.hasInspectionReport===false&&detail?.inspectionAvailable!==true))await queue(tx,job.source,job.external_id,'report',member.desired_generation,10);
@@ -368,7 +389,7 @@ export class FullSyncWorker{
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
   await this.heavy(sampleOnly);const job=(await this.db.pool.query(`SELECT w.*,w.generation<>m.desired_generation OR m.state='withdrawn' AS stale
    FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now() AND ($1=false OR (m.sampled AND m.state<>'withdrawn')) ORDER BY w.priority DESC,w.due_at LIMIT 1`,[sampleOnly])).rows[0];if(!job)return 0;
+   WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now() AND ($1=false OR (m.sampled AND m.state<>'withdrawn')) ORDER BY w.priority DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[sampleOnly])).rows[0];if(!job)return 0;
   let transportMissing=false;
   try{
    const response=job.stale?undefined:await this.client.report(job.source,job.external_id).catch((error:unknown)=>{
@@ -476,6 +497,13 @@ export class FullSyncWorker{
    await tx.query("UPDATE external_full_sync SET receive_cursor=NULL,since_at=NULL,next_snapshot_at=now(),recovery_count=recovery_count+1 WHERE id=1");
   });
  }
+ private async scheduledDetails(sampleOnly=false){
+  try{return await this.details(sampleOnly);}catch(error){
+   if(!(error instanceof FullSyncError)||!['SYNC_TIMEOUT','SYNC_RESPONSE_INVALID','SYNC_TOO_LARGE','SYNC_HTTP_500','SYNC_HTTP_502','SYNC_HTTP_503','SYNC_HTTP_504'].includes(error.code))throw error;
+   await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=clock_timestamp() WHERE id=1',[error.code]);
+   return 1; // A failed attempted batch still limits report quota; there is no immediate detail retry.
+  }
+ }
  async tick(){
   this.phase='startup';
   await this.alive();await mkdir(this.directory,{recursive:true,mode:0o700});const s=await this.state();if(!s.enabled)return;
@@ -493,12 +521,16 @@ export class FullSyncWorker{
     // New events may invalidate the sample after a failed estimate. Repair only that sample before rechecking.
     this.phase='daily';
     if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily(true);
-    this.phase='details';await this.details(true);
-    this.phase='reports';for(let reports=0;reports<20;reports++){if(!await this.report(true))break;}
+    this.phase='details';const repaired=await this.scheduledDetails(true);
+    this.phase='withdrawals';await this.applyEvents(true);
+    this.phase='reports';for(let n=0;n<(repaired?1:20);n++){await this.applyEvents(true);if(!await this.report(true))break;}
     this.phase='capacity';await this.capacityGate();return; // New identities/snapshots resume on a later tick only after the gate passes.
    }
    this.phase='daily';
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
+   // Complete a bounded current-detail batch before CSV admission work.
+   this.phase='details';const refreshed=await this.scheduledDetails();
+   this.phase='withdrawals';await this.applyEvents(true);
    this.phase='snapshot';
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();
@@ -508,8 +540,9 @@ export class FullSyncWorker{
     const bootstrapDetailPending=current.since_at&&(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
     if(!bootstrapDetailPending)await this.snapshot();
    }
-   this.phase='details';await this.details();
-   this.phase='reports';for(let reports=0;reports<20;reports++){if(!await this.report())break;}
+   // Reserve one report per tick: progress survives a continuous stream of high-priority updates.
+   this.phase='withdrawals';await this.applyEvents(true);
+   this.phase='reports';for(let n=0;n<(refreshed?1:20);n++){await this.applyEvents(true);if(!await this.report())break;}
    this.phase='capacity';await this.capacityGate();
    this.phase='rotation';await this.rotate();
    this.phase='archive_cleanup';await this.pruneStaging();

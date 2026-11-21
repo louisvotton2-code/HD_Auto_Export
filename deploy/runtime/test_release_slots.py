@@ -28,6 +28,19 @@ class Slots(unittest.TestCase):
         self.assertEqual(text.count('root /srv/hd-assets;'),2)
         self.assertIn('proxy_set_header X-HD-SSR-Key',files['hd-domains/api-proxy.conf'])
         self.assertNotIn('http://web:3000',text)
+
+    def test_public_route_includes_follow_selected_slot(self):
+        source = Path(__file__).parent
+        for slot, old_slot in (('blue', 'green'), ('green', 'blue')):
+            with self.subTest(slot=slot):
+                files = m.gateway_files(source, web_host=f'web-{slot}', public_api_host=f'api-{slot}',
+                                        admin_api_host=f'api-{old_slot}', freeze_admin=True)
+                contact = files['hd-domains/analytics-contact-count.conf']
+                self.assertIn(f'set $api http://api-{slot}:3320;', contact)
+                self.assertNotIn(f'http://api-{old_slot}:3320', contact)
+                for include in ('sitemap.conf', 'external-media-report.conf'):
+                    self.assertIn(f'set $web http://web-{slot}:3000;', files[f'hd-domains/{include}'])
+
     def test_no_config_injection(self):
         with self.assertRaises(ValueError):m.gateway_files(Path(__file__).parent,web_host='web;bad',public_api_host='api',admin_api_host='api')
         with self.assertRaises(ValueError):m.slot_config(self.config(),slot='bad',release='a'*40,api_ip='172.20.0.21',web_ip='172.20.0.22',mode_root='/srv')

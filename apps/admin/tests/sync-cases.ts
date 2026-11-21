@@ -1,6 +1,6 @@
 /** EXT07 browser contract simulations, run by OPS in server isolation only. */
 import { expect, test, type Page } from '@playwright/test';
-import { ExternalFullSyncControlSchema } from '@hd/contracts/admin';
+import { ExternalFullSyncControlSchema, ExternalSyncTimingsResponseSchema } from '@hd/contracts/admin';
 import { makeExternalAdminFixture } from '@hd/contracts/fixtures';
 import { envelope, error, installApi, reply } from './api-fixture';
 import { syncStatus } from './sync-fixture';
@@ -32,16 +32,22 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
     const metric = panel.locator('.ant-statistic').filter({ has: page.getByText(label, { exact: true }) });
     await expect(metric.locator('.ant-statistic-content-value')).toHaveText(value);
   }
+  const admission = panel.getByRole('region', { name: '准入席位' });
+  await expect(admission.getByText('暂无累计准入席位和批准上限数据。', { exact: true })).toBeVisible();
   const delta = panel.getByRole('region', { name: '增量同步' });
   await expect(delta.getByText('已接收事件', { exact: true })).toBeVisible();
   await expect(delta.getByText('已处理事件', { exact: true })).toBeVisible();
   await expect(delta.getByText('900', { exact: true })).toBeVisible();
   await expect(delta.getByText('870', { exact: true })).toBeVisible();
-  const changes = panel.getByRole('region', { name: '撤回与改价' });
+  await expect(delta.getByText('最早积压收件时间', { exact: true })).toBeVisible();
+  await expect(delta.getByText('暂无积压明细', { exact: true })).toBeVisible();
+  const changes = panel.getByRole('region', { name: '撤回、改价与重挂' });
   await expect(changes.getByText('当前已撤回来源记录', { exact: true })).toBeVisible();
   await expect(changes.getByText('10', { exact: true })).toBeVisible();
-  await expect(changes.getByText('改价事件', { exact: true })).toBeVisible();
-  await expect(changes.getByText('暂无独立统计', { exact: true })).toBeVisible();
+  const missingChanges = changes.getByText('暂无撤回、改价和重挂事件各自的接收、处理及公开变更统计。', { exact: true });
+  await expect(missingChanges).toBeVisible();
+  const latency = panel.getByRole('region', { name: '近 24 小时公开时延' });
+  await expect(latency.getByText('暂无从收件到公开生效的监测数据。', { exact: true })).toBeVisible();
   await expect(panel.getByText('最后成功同步', { exact: true })).toBeVisible();
   const lastSuccess = panel.locator('time[datetime="2026-11-14T00:45:00.000Z"]');
   await expect(lastSuccess).toContainText(/08:45.*上海时间/);
@@ -54,8 +60,10 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
   await expect(page.getByText('ChinaCarAPI', { exact: true })).toBeVisible();
   await expect(panel.locator('.ant-statistic')).toHaveCount(0);
   await expect(initial).toHaveCount(0);
+  await expect(admission).toHaveCount(0);
   await expect(delta).toHaveCount(0);
   await expect(changes).toHaveCount(0);
+  await expect(latency).toHaveCount(0);
   await expect(lastSuccess).toHaveCount(0);
   await expect(panel.getByText('重任务未暂停', { exact: true })).toHaveCount(0);
   const { snapshot, counts } = syncStatus();
@@ -68,13 +76,52 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
   await expect(initial.getByText('暂无独立记录', { exact: true })).toBeVisible();
   await expect(panel.getByText('正在同步与补齐', { exact: true })).toBeVisible();
   await expect(changes.getByText('0', { exact: true })).toBeVisible();
-  await expect(changes.getByText('暂无独立统计', { exact: true })).toBeVisible();
+  await expect(missingChanges).toBeVisible();
   const uncountedSnapshot = syncStatus({ snapshot: { ...snapshot!, complete: false, rows: 0 } });
   await page.route(`**${root}/sync-status`, route => reply(route, envelope(uncountedSnapshot)));
   await panel.getByRole('button', { name: '刷新同步进度' }).click();
   await expect(initial.getByText('待核定', { exact: true })).toBeVisible();
   await expect(initial.getByText('6,000', { exact: true })).toBeVisible();
   expect(writes).toBe(0);
+});
+
+test('EXT07 v2 sync timings distinguish applied, publicly effective, historical gaps and failed work', async ({ page }) => {
+  await setup(page, true);
+  const observed = '2026-11-21T03:30:00.000Z';
+  const base = {
+    received: 4, applied: 3, detailUpdated: 2, publicEffective: 2, incomplete: 2, failed: 1, notPublic: 0, superseded: 0,
+    oldestIncompleteAt: observed, p95SourceToReceivedMs: null, p95ReceivedToAppliedMs: 3000,
+    p95AppliedToDetailMs: 1000, p95ReceivedToPublicMs: 126_000,
+  };
+  const body = ExternalSyncTimingsResponseSchema.parse(envelope({
+    asOf: observed, window: { from: '2026-11-20T03:30:00.000Z', to: observed, lastReceivedAt: observed, nextReceiveAt: '2026-11-21T04:00:00.000Z',
+      complete: false, uninstrumentedEvents: 5, instrumentedSince: '2026-11-21T00:00:00.000Z',
+      coverage: { slotMs: 300_000, expectedSlots: 288, successfulSlots: 38, missingSlots: 249, failedSlots: 1, through: observed } },
+    backlog: { pendingEvents: 3, pendingWork: 10, failedWork: 1, oldestEventAt: '2026-11-21T01:15:00.000Z', oldestWorkAt: null },
+    metrics: [{ ...base, kind: 'removed' }, { ...base, kind: 'price', p95ReceivedToPublicMs: 0 },
+      { ...base, kind: 'relisted', p95ReceivedToPublicMs: null }], events: [],
+  }));
+  let available = true;
+  await page.route(`**${root}/sync-timings`, route => available ? reply(route, body) : reply(route, error('SERVICE_UNAVAILABLE'), 503));
+  await page.goto(ui);
+  const timing = card(page).getByRole('region', { name: '近 24 小时公开时延' });
+  await expect(timing.getByText('监测尚未覆盖完整 24 小时')).toBeVisible();
+  await expect(timing.getByText(/缺少观测证据 5 项/)).toBeVisible();
+  await expect(timing.getByText('38 / 288 个 5 分钟时段成功', { exact: true })).toBeVisible();
+  await expect(timing.getByText(/09:15.*上海时间/)).toBeVisible();
+  await expect(timing.getByRole('row', { name: /^撤回/ })).toContainText('2.1 分钟');
+  await expect(timing.getByRole('row', { name: /^改价/ })).toContainText('0 秒');
+  await expect(timing.getByRole('row', { name: /^重挂/ })).toContainText('无样本');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+
+  available = false;
+  await card(page).getByRole('button', { name: '刷新同步进度' }).click();
+  await expect(timing.getByText('同步观测读取失败')).toBeVisible();
+  await expect(card(page).getByText('最后成功同步', { exact: true })).toBeVisible();
+  available = true;
+  await timing.getByRole('button', { name: '重试观测' }).click();
+  await expect(timing.getByRole('row', { name: /^撤回/ })).toContainText('2.1 分钟');
 });
 
 test('EXT07 administrator confirms versioned pause and resume without duplicate submissions', async ({ page }) => {

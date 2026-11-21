@@ -6,10 +6,12 @@ const flushDelayMs = 700;
 let pending: AnalyticsEvent[] = [];
 let timer: ReturnType<typeof setTimeout> | undefined;
 let sending = false;
+const active = new Set<AbortController>();
 
-async function send(events: AnalyticsEvent[], keepalive: boolean) {
+async function send(events: AnalyticsEvent[], unloading: boolean) {
   const abort = new AbortController();
-  const deadline = setTimeout(() => abort.abort(), keepalive ? 5_000 : 2_500);
+  active.add(abort);
+  const deadline = setTimeout(() => abort.abort(), unloading ? 5_000 : 2_500);
   try {
     await fetch(endpoint, {
       method: 'POST',
@@ -20,12 +22,15 @@ async function send(events: AnalyticsEvent[], keepalive: boolean) {
       referrerPolicy: 'no-referrer',
       redirect: 'error',
       cache: 'no-store',
-      keepalive,
+      keepalive: true,
       signal: abort.signal,
     });
   } catch {
     // Analytics is best-effort and must never retry or block navigation.
-  } finally { clearTimeout(deadline); }
+  } finally {
+    active.delete(abort);
+    clearTimeout(deadline);
+  }
 }
 
 function schedule() {
@@ -56,4 +61,11 @@ export function flushAnalyticsOnExit() {
   pending = [];
   // Unload delivery is best-effort. No retry queue or persistence across sessions.
   void send(events, true);
+}
+
+export function stopAnalyticsTransport() {
+  clearTimeout(timer);
+  timer = undefined;
+  pending = [];
+  for (const controller of active) controller.abort();
 }

@@ -10,6 +10,7 @@ const links = {
 };
 
 test('a thirty-second prompt closes, restores scrolling and observes the repeat interval', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('hd-auto:privacy-choice:v3', 'deny'));
   await page.clock.install({ time: 1_800_000_000_000 });
   await page.clock.pauseAt(1_800_000_001_000);
   await page.goto('/en/parts/');
@@ -37,6 +38,7 @@ test('a thirty-second prompt closes, restores scrolling and observes the repeat 
 });
 
 test('an active form and a vehicle consultation defer the automatic prompt', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('hd-auto:privacy-choice:v3', 'deny'));
   await page.clock.install({ time: 1_800_000_000_000 });
   await page.clock.pauseAt(1_800_000_001_000);
   await page.goto('/en/parts/');

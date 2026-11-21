@@ -5,6 +5,7 @@ import { CloudUploadOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOut
 import { AdminVehicleResponseSchema, type AdminVehicle, type Availability, type PublicationIssue, type StaffMe } from '@hd/contracts/admin';
 import { ApiClientError, request } from '../../shared/api/client';
 import { readVehicleLifecycle } from '../../shared/api/vehicle-lifecycle';
+import { randomUuid } from '../../shared/random-uuid';
 import { availabilityLabels, formatTime, publicationLabels } from './draft-form';
 import { keepPublishIntent, makePublishIntent, publicationAttemptExpired, publicationControlState, publicationFeedback, publicationIssueLabel, publicationIssueDetail, type PublishIntent } from './vehicle-actions-model';
 import styles from './vehicle-actions.module.css';
@@ -122,7 +123,11 @@ export function VehicleActions({ publicationTabActive, vehicle, hasUnsavedChange
         setError('原发布请求已不可用，请先读取当前状态核对结果；没有创建新的发布请求。'); return;
       }
       if (!wasUncertain && (!publishAllowed || !confirmationInput)) return;
-      if (!publishIntent.current) publishIntent.current = makePublishIntent(vehicle, crypto.randomUUID(), Date.now());
+      if (!publishIntent.current) {
+        const key = randomUuid();
+        if (!key) { setError('当前浏览器无法安全发起发布，请更换浏览器后重试。'); return; }
+        publishIntent.current = makePublishIntent(vehicle, key, Date.now());
+      }
       if (publicationAttemptExpired(publishIntent.current, Date.now())) {
         setError('本次发布请求已超过 24 小时，请先读取当前状态核对结果，再决定下一步。');
         setUnconfirmed('publish'); void toast.warning('原发布请求已超过24小时，请先读取当前状态。'); return;
@@ -289,7 +294,7 @@ export function VehicleActions({ publicationTabActive, vehicle, hasUnsavedChange
               disabled={!publishAllowed} loading={busy && activeOperation === 'publish'} onClick={() => void perform('publish')}>{publishLabel}</Button>}
             {canWrite && <Button danger size="large" icon={<StopOutlined />} loading={busy && activeOperation === 'archive'} disabled={unavailable || vehicle.publicationState === 'archived'} onClick={() => void perform('archive')}>下架车辆</Button>}
           </Space>
-          <Typography.Text type="secondary">发布以当前已保存资料为准。下架会立即撤销公开访问。</Typography.Text>
+          <Typography.Text type="secondary">发布以已保存资料为准，无需等待官网预览。下架会立即撤销公开访问。</Typography.Text>
         </div>}
     </Card>
   </section>;

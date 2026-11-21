@@ -2,7 +2,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { makePublishReadinessFixture } from '@hd/contracts/fixtures';
 import { PublicationPreviewFrameMessageSchema, PublicationPreviewResponseSchema, PublishReadinessSchema, type PublishReadiness } from '@hd/contracts/admin';
-import { installApi, vehicle } from './api-fixture';
+import { envelope, installApi, reply, vehicle } from './api-fixture';
 import { openOptionalPublicationPreview } from './publication-test-helpers';
 import { tab } from './ui-helpers';
 
@@ -11,7 +11,7 @@ const frameSelector = 'iframe[title="中文车辆发布预览"]';
 const publish = (page: Page) => page.getByTestId('vehicle-publish');
 const previewReady = (page: Page) => page.getByText('已显示当前草稿', { exact: true });
 
-async function setup(page: Page) {
+async function setup(page: Page, expectFrame = true) {
   await page.clock.install();
   const item = { ...vehicle(), id: '10000000-0000-4000-8000-000000000211' };
   const ready = PublishReadinessSchema.parse({ ...makePublishReadinessFixture(false), vehicleId: item.id, vehicleVersion: item.version });
@@ -25,7 +25,7 @@ async function setup(page: Page) {
   await expect.poll(() => api.readinessReads.length).toBeGreaterThan(0);
   await expect(page.getByText('正在读取发布检查…', { exact: true })).toBeHidden();
   await openOptionalPublicationPreview(page);
-  await expect(page.locator(frameSelector)).toBeVisible();
+  if (expectFrame) await expect(page.locator(frameSelector)).toBeVisible();
   // Freeze only after the initial UI/network work settles; subsequent phase boundaries are exact.
   await page.clock.pauseAt(new Date(Date.now() + 1_000));
   return { item, ready, api };
@@ -97,7 +97,7 @@ for (const terminal of ['error', 'disposed'] as const) {
     await message(page, ready, 'ready'); await expect(previewReady(page)).toBeVisible();
     await message(page, ready, 'loading'); await expect(previewReady(page)).toHaveCount(0);
     const oldLoadId = await message(page, ready, terminal);
-    const terminalMessage = terminal === 'error' ? '车辆预览未能完整显示，请重新载入。' : '预览已关闭，请重新载入。';
+    const terminalMessage = terminal === 'error' ? '车辆预览未能完整显示。' : '预览已关闭，请重新载入。';
     await expect(page.getByText(terminalMessage, { exact: true })).toBeVisible();
     await expect(publish(page)).toBeEnabled();
     await page.clock.fastForward(40_001);
@@ -121,6 +121,46 @@ test('preview deadline treats resize as geometry without clearing ready or exten
   await expect(page.locator(frameSelector)).toHaveCSS('height', '720px');
   await page.clock.fastForward(1_001);
   await expect(page.getByText(timeoutMessage, { exact: true })).toBeVisible(); await expect(previewReady(page)).toHaveCount(0);
+});
+
+test('publication uses secure UUIDs without randomUUID and submits after a preview render error', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window.crypto, 'randomUUID', { value: undefined }));
+  const { item, ready, api } = await setup(page);
+  const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  let publishes = 0;
+  await page.route(`**/api/v1/admin/vehicles/${item.id}/publish`, route => {
+    publishes += 1;
+    expect(api.previewConfirmations).toHaveLength(1);
+    expect(route.request().headers()['idempotency-key']).toMatch(uuidV4);
+    expect(route.request().postDataJSON()).toEqual({ version: item.version });
+    return reply(route, envelope({ ...item, version: item.version + 1, publicationState: 'published',
+      hasUnpublishedChanges: false, publishedRevisionId: '10000000-0000-4000-8000-000000000212', publishedAt: new Date().toISOString() }));
+  });
+  const loadId = await message(page, ready, 'error');
+  expect(loadId).toMatch(uuidV4);
+  await expect(page.getByText('车辆预览未能完整显示。', { exact: true })).toBeVisible();
+  await expect(page.getByText(/如果上方发布检查已通过，可直接点击/)).toBeVisible();
+  expect(publishes).toBe(0);
+  await publish(page).click();
+  await expect.poll(() => publishes).toBe(1);
+});
+
+test('publication reports missing secure randomness without sending a mutation', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperties(window.crypto, {
+      randomUUID: { value: undefined },
+      getRandomValues: { value: undefined },
+    });
+  });
+  const { item, api } = await setup(page, false);
+  await expect(page.getByText('当前浏览器无法打开官网预览。', { exact: true })).toBeVisible();
+  await expect(page.locator(frameSelector)).toHaveCount(0);
+  let publishes = 0;
+  await page.route(`**/api/v1/admin/vehicles/${item.id}/publish`, route => { publishes += 1; return route.abort(); });
+  await publish(page).click();
+  await expect(page.getByText('当前浏览器无法安全发起发布，请更换浏览器后重试。', { exact: true })).toBeVisible();
+  expect(api.previewConfirmations).toEqual([]);
+  expect(publishes).toBe(0);
 });
 
 test('preview deadline ignores a previous load id without extending or cancelling the new deadline', async ({ page }) => {

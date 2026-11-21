@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh HD Auto production reference exchange rates
+Requires=docker.service
+After=docker.service
+RequiresMountsFor=/srv/hd-auto/data /srv/hd-auto/secrets
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec hd-auto-full-worker-1 node /app/production/worker-entrypoint.mjs fx-refresh
+TimeoutStartSec=60s
+UMask=0077

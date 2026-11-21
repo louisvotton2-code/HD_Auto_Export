@@ -88,7 +88,7 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
 
 
 def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_admin=False,
-                  html_cache_host=None):
+                  html_cache_host=None, page_documents=False, page_visits=False):
     for value in (web_host, public_api_host, admin_api_host):
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', value):
             raise ValueError('Only explicit Docker service aliases accepted')
@@ -120,6 +120,10 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
     # Immutable static files from current + previous releases coexist. A query
     # parameter never selects a release or enables a buffered HTML response.
     text=files['default.conf']
+    if page_documents:
+        text = text.replace('set $hd_page_documents_enabled 0;', 'set $hd_page_documents_enabled 1;')
+    if page_visits:
+        text = text.replace('set $hd_page_visits_enabled 0;', 'set $hd_page_visits_enabled 1;')
     block='''    location ^~ /_next/static/ {
         root /srv/hd-assets;
         try_files $uri =404;
