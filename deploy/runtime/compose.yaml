@@ -11,7 +11,7 @@ x-api: &api
     target: api
   platform: ${TARGET_PLATFORM:-linux/arm64}
   init: true
-  environment:
+  environment: &api-environment
     APP_UID: ${APP_UID:-1000}
     APP_GID: ${APP_GID:-1000}
     NODE_ENV: production
@@ -64,6 +64,11 @@ services:
     restart: 'no'
   api:
     <<: *api
+    environment:
+      <<: *api-environment
+      ANALYTICS_V2_ENABLED: '${ANALYTICS_V2_ENABLED:-false}'
+      ANALYTICS_IP_VISITS_ENABLED: 'false'
+      PUBLIC_SEO_ENABLED: '${PUBLIC_SEO_ENABLED:-false}'
     restart: 'on-failure:5'
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3320/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -80,14 +85,20 @@ services:
       args:
         SITE_ORIGIN: ${SITE_ORIGIN}
         SITE_INDEXABLE: ${SITE_INDEXABLE:-false}
+        ANALYTICS_V2_ENABLED: '${ANALYTICS_V2_ENABLED:-false}'
         HD_DEPLOYMENT_ID: ${RELEASE_ID}
+        HD_META_PIXEL_ENABLED: '${HD_META_PIXEL_ENABLED:-false}'
+        HD_META_PIXEL_ID: '${HD_META_PIXEL_ID:-}'
     platform: ${TARGET_PLATFORM:-linux/arm64}
     user: '${APP_UID:-1000}:${APP_GID:-1000}'
     init: true
     environment:
       VEHICLE_API_BASE_URL: http://api:3320
       SITE_INDEXABLE: ${SITE_INDEXABLE:-false}
+      ANALYTICS_V2_ENABLED: '${ANALYTICS_V2_ENABLED:-false}'
       NEXT_PUBLIC_SITE_URL: ${SITE_ORIGIN}
+      HD_META_PIXEL_ENABLED: '${HD_META_PIXEL_ENABLED:-false}'
+      HD_META_PIXEL_ID: '${HD_META_PIXEL_ID:-}'
     depends_on:
       api: {condition: service_healthy}
     restart: 'on-failure:5'

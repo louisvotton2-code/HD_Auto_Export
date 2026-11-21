@@ -153,10 +153,17 @@ class RuntimeFailureTests(unittest.TestCase):
         self.backup.mkdir();(self.backup/'database.dump').write_bytes(b'fixture')
         with r.tarfile.open(self.backup/'media.tar','w'): pass
         (self.backup/'manifest.json').write_text(json.dumps({'format':1,'databaseSha256':r.digest(self.backup/'database.dump'),'mediaTarSha256':r.digest(self.backup/'media.tar'),'media':{}}))
-        def empty(args,**kw):
-            self.calls.append(args);return subprocess.CompletedProcess(args,0,stdout='\n')
-        with patch.object(r,'run',side_effect=empty): self.invoke('restore')
-        self.assertTrue(any('pg_restore' in c for c in self.calls))
+        def empty(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout='\n')
+        with patch.object(r, 'run', side_effect=empty) as run:
+            self.invoke('restore')
+        calls = [(call.args[0], call.kwargs) for call in run.call_args_list]
+        restore = next(index for index, (args, _) in enumerate(calls) if 'pg_restore' in args)
+        args, kwargs = calls[restore + 1]
+        self.assertIn('psql', args)
+        self.assertIn('ON_ERROR_STOP=1', args)
+        self.assertEqual(args[args.index('-d') + 1], calls[restore][0][calls[restore][0].index('-d') + 1])
+        self.assertIn(b'$analytics_retention$', kwargs['input'])
     def test_image_derivative_restore_and_link_rejection(self):
         self.backup.mkdir();(self.backup/'database.dump').write_bytes(b'fixture')
         names={f'01234567-0123-4123-8123-012345678901.{variant}.webp': bytes(variant,'ascii')

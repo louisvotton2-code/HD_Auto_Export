@@ -1,0 +1,28 @@
+[Unit]
+Description=HD Auto private website visit relay
+After=docker.service
+RequiresMountsFor=/srv/hd-auto/staging /srv/hd-auto/data
+ConditionPathExists=/etc/hd-website-visits/relay.json
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+UMask=0077
+RuntimeDirectory=hd-visits
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /srv/hd-auto/staging/v2/current-source/deploy/runtime/production/website-visit-relay.py --config /etc/hd-website-visits/relay.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CPUQuota=15%
+MemoryMax=64M
+TasksMax=8
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

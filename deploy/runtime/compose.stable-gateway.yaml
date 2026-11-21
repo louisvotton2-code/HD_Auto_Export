@@ -3,6 +3,9 @@
 # reproducible after a restart/rebuild. Never run `up` on database/Redis here.
 services:
   proxy:
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/health/proxy']
+      interval: 15s
     volumes:
       - type: bind
         source: ${HD_GATEWAY_ROOT:?persistent reviewed gateway state}/conf.d

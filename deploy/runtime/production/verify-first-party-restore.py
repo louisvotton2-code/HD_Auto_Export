@@ -14,7 +14,7 @@ import stat
 import subprocess
 import tarfile
 
-from first_party_data import SCOPE, fingerprint_sql
+from first_party_data import BACKUP_SCHEMA_SQL, SCOPE, analytics_restore_retention_sql, backup_schema, fingerprint_sql
 
 HERE = Path(__file__).resolve().parent
 COMPONENTS = {'database.dump', 'media.tar.gz', 'first-party.sql', 'controls.tar.gz'}
@@ -133,11 +133,13 @@ def verify_database(point, container, user, manifest):
         with (point/'database.dump').open('rb') as dump:
             subprocess.run([*pg_restore, '--section', 'post-data'], stdin=dump, check=True,
                            capture_output=True, timeout=360)
-        retained = json.loads(read(fingerprint_sql(restored=True)))
+        features = backup_schema(read(BACKUP_SCHEMA_SQL))
+        retained = json.loads(read(fingerprint_sql(restored=True, **features)))
         need(retained == manifest['retainedData'], 'Restored data differs from the protected snapshot')
         safety = json.loads(read(SAFETY_SQL))
         need(safety['workerDisabled'] is True and safety['supplierDataEmpty'] is True
              and safety['migrationLedger'] > 0, 'The restored database cannot start safely')
+        read(analytics_restore_retention_sql())
         return retained, safety
     finally:
         read(f'DROP DATABASE {database}', target='postgres')
@@ -189,7 +191,8 @@ def check(point, container, user, finalize=False):
                       'manifestSha256':manifest_hash, 'retainedTables':len(retained),
                       'mediaOriginalsVerified':media_count, 'mediaReferencesVerified':len(safety['media']),
                       'migrationLedger':safety['migrationLedger'], 'supplierWorkerDisabled':True,
-                      'supplierRawDataExcluded':True, 'verifiedAt':datetime.now(timezone.utc).isoformat()}
+                      'supplierRawDataExcluded':True, 'analyticsRetentionPruned':True,
+                      'verifiedAt':datetime.now(timezone.utc).isoformat()}
         else:
             result = captured_proof
         if finalize:
