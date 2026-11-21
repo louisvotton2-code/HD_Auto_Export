@@ -286,7 +286,8 @@ function segmentGallery(state, row, locale) {
         remote: row.images[0]?.remote ?? { revision: state.segmentRevision, refreshedAt: timestamp, expiresAt: null },
       };
     }
-    return { id, url: `/api/v1/media/${id}`, alt: `Photo ${index + 1}`, altText, width: 640, height: 420, sortOrder: index, isCover: index === 0 };
+    const wide = state.wideCardPhoto && row.id === 'fixture_car_1';
+    return { id, url: `/api/v1/media/${id}`, alt: `Photo ${index + 1}`, altText, width: wide ? 1280 : 640, height: wide ? 840 : 420, sortOrder: index, isCover: index === 0 };
   });
 }
 function segmentConfiguration(state, row, locale) {
@@ -478,8 +479,10 @@ function visibleVehicles(state, locale) {
     rows.push(external);
   }
   if (state.wideCardPhoto) {
-    const photo = rows.find(({ id }) => id === 'fixture_car_1')?.images[0];
-    if (photo) { photo.width = 1280; photo.height = 840; }
+    for (const photo of rows.find(({ id }) => id === 'fixture_car_1')?.images ?? []) {
+      photo.width = 1280;
+      photo.height = 840;
+    }
   }
   if (state.richCatalog) {
     for (const [index, row] of rows.entries()) {
