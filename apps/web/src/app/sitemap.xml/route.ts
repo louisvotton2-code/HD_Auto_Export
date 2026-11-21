@@ -1,7 +1,7 @@
 import { countries } from '@/modules/calculator/config/countries';
 import { getPublicSeoManifest } from '@/modules/vehicles/server';
 import { routing } from '@/i18n/routing';
-import { siteConfig } from '@/shared/config/site';
+import { siteConfig, staticSearchPaths } from '@/shared/config/site';
 import { buildSitemapXml, type SitemapEntry } from '@/shared/lib/public-sitemap';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +13,9 @@ export async function GET() {
   try {
     const entries: SitemapEntry[] = [];
     let validUntil: string | null = null;
+    if (siteConfig.staticIndexable) {
+      for (const path of staticSearchPaths) entries.push({ path, locales: routing.locales });
+    }
     if (siteConfig.indexable) {
       const vehicles = await getPublicSeoManifest();
       if (vehicles !== null) {

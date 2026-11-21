@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { routing, type Locale } from '@/i18n/routing';
-import { siteConfig } from '@/shared/config/site';
+import { siteConfig, staticSearchPaths } from '@/shared/config/site';
 
 const searchLanguage = { zh: 'zh-Hans', en: 'en', ru: 'ru' } satisfies Record<Locale, string>;
 const socialLanguage = { zh: 'zh_CN', en: 'en_US', ru: 'ru_RU' } satisfies Record<Locale, string>;
@@ -34,7 +34,8 @@ export function pageMetadata({
   locale, path, title, description, eligible = true, languages = routing.locales,
   image = siteConfig.brand.logo,
 }: PageSeo): Metadata {
-  const index = siteConfig.indexable && eligible && languages.includes(locale);
+  const indexable = siteConfig.indexable || (siteConfig.staticIndexable && staticSearchPaths.includes(path));
+  const index = indexable && eligible && languages.includes(locale);
   const canonical = localizedPageUrl(locale, path);
   return {
     title,
