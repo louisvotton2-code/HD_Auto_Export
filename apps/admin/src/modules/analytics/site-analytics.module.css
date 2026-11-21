@@ -2,6 +2,10 @@
 .heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; }
 .heading h1 { margin: 0; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rangeControls { display: grid; gap: 8px; min-width: 0; }
+.rangeControls :global(.ant-radio-group) { display: flex; flex-wrap: wrap; }
+.reportTabs { min-width: 0; }
+.reportTabs :global(.ant-tabs-nav) { margin-bottom: 0; }
 .period { display: grid; gap: 4px; min-width: 0; }
 .counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .count { min-width: 0; border-color: #e8e0d0; }
@@ -10,14 +14,10 @@
 .section { min-width: 0; }
 .section :global(.ant-card-head-wrapper) { flex-wrap: wrap; gap: 8px 16px; }
 .metricSelect { min-width: 156px; }
-.trend { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 178px auto; column-gap: 8px; row-gap: 7px; margin: 0; }
-.axis { display: flex; flex-direction: column; justify-content: space-between; align-items: end; color: #716b5f; font-size: 11px; font-variant-numeric: tabular-nums; }
-.bars { list-style: none; display: flex; gap: clamp(2px, .42vw, 7px); margin: 0; padding: 0; border-bottom: 1px solid #dcd7ca; border-top: 1px solid #ede8dd; }
-.bars li { flex: 1 1 0; display: flex; align-items: end; min-width: 0; }
-.bars li span { display: block; width: 100%; border-radius: 3px 3px 0 0; background-color: #987022; }
-.bars li:hover span { background-color: #62470d; }
-.bars .uncollected { background: repeating-linear-gradient(135deg, transparent 0 4px, #ede9df 4px 5px); }
-.dates { grid-column: 2; display: flex; justify-content: space-between; gap: 6px; color: #716b5f; font-size: 11px; }
+.trend { margin: 0; min-width: 0; }
+.chartSurface { width: 100%; height: var(--report-chart-height, 270px); }
+.trendEmpty { min-height: 110px; display: grid; align-content: center; text-align: center; color: #716b5f; margin: 0; }
+.trendNote { margin: 0; color: #716b5f; font-size: 12px; }
 .daily { margin-top: 14px; }
 .daily summary { cursor: pointer; color: #765919; width: fit-content; }
 .daily dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px 14px; margin: 8px 0 0; }
@@ -30,5 +30,6 @@
   .page { gap: 14px; }
   .counts { gap: 8px; }
   .count :global(.ant-card-body) { padding: 12px; }
-  .trend { grid-template-rows: 134px auto; }
+  .chartSurface { height: var(--report-chart-height, 210px); }
 }
+.modeNav { margin-bottom: 12px; }

@@ -4,6 +4,7 @@ import { envelope, error, installApi, reply, staff } from './api-fixture';
 import { select } from './ui-helpers';
 
 const overviewPath = '**/api/v1/admin/analytics/overview?days=*';
+const sessionAnalyticsPage = '/admin/analytics?view=sessions';
 const vehicleId = '10000000-0000-4000-8000-000000000301';
 const supplierVehicleId = 'ext-10000000-0000-4000-8000-000000000304';
 const emptyTotals = { pageViews: 0, detailViews: 0, vehicleClicks: 0, contactClicks: 0 };
@@ -29,6 +30,8 @@ function sampleOverview(days: AnalyticsDays, hasData = true, collectionStartedAt
 
 async function installAnalyticsAdmin(page: Page) {
   await installApi(page, { role: 'admin', permissions: [...staff.permissions, 'staff:manage'] });
+  // An older server has no v2 report; preserve the explicit 404 fallback.
+  await page.route('**/api/v1/admin/analytics/report?*', route => reply(route, error('NOT_FOUND'), 404));
 }
 
 test('an administrator can select website analytics periods, trend metrics and vehicle rankings', async ({ page }) => {
@@ -41,6 +44,7 @@ test('an administrator can select website analytics periods, trend metrics and v
   });
   await page.goto('/admin/vehicles');
   await page.getByRole('link', { name: '网站分析', exact: true }).click();
+  await page.getByText('访客行为', { exact: true }).click();
   await expect(page.getByRole('heading', { name: '网站分析', exact: true })).toBeVisible();
   await expect(page.getByText(/2026-10-21 至 2026-11-19（北京时间）/)).toBeVisible();
   await expect(page.getByText(/采集开始.*2026年11月19日.*00:35/)).toBeVisible();
@@ -50,6 +54,7 @@ test('an administrator can select website analytics periods, trend metrics and v
   await expect(page.getByText('主动联系点击表示联系意向。目前官网接入 WhatsApp 和 Telegram。', { exact: true })).toBeVisible();
   await select(page, '趋势指标', '车辆卡片点击');
   await expect(page.getByRole('figure', { name: '车辆卡片点击每日趋势' })).toBeVisible();
+  await expect(page.getByRole('figure', { name: '车辆卡片点击每日趋势' }).getByRole('img').locator('svg')).toBeVisible();
   await page.getByText('查看每日数据', { exact: true }).click();
   await expect(page.getByText('未采集', { exact: true }).first()).toBeVisible();
   await page.getByText('近 7 天', { exact: true }).click();
@@ -71,7 +76,7 @@ test('website analytics shows no collection history on a narrow screen', async (
   await installAnalyticsAdmin(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route(overviewPath, route => reply(route, sampleOverview(30, false)));
-  await page.goto('/admin/analytics');
+  await page.goto(sessionAnalyticsPage);
   await expect(page.getByText('尚无采集数据', { exact: true })).toBeVisible();
   await expect(page.getByText(/采集开始.*尚无采集记录/)).toBeVisible();
   await expect(page.getByRole('figure')).toHaveCount(0);
@@ -84,7 +89,7 @@ test('website analytics displays a read failure and reloads when the API recover
   await installAnalyticsAdmin(page);
   let recovered = false;
   await page.route(overviewPath, route => recovered ? reply(route, sampleOverview(30)) : reply(route, error('SERVICE_UNAVAILABLE'), 503));
-  await page.goto('/admin/analytics');
+  await page.goto(sessionAnalyticsPage);
   await expect(page.getByRole('alert')).toContainText('网站分析读取失败');
   await expect(page.getByText('尚无采集数据', { exact: true })).toHaveCount(0);
   recovered = true;
@@ -96,7 +101,7 @@ test('website analytics displays a read failure and reloads when the API recover
 test('website analytics shows actual zeros for an empty period after collection started', async ({ page }) => {
   await installAnalyticsAdmin(page);
   await page.route(overviewPath, route => reply(route, sampleOverview(30, false, '2026-09-01T01:00:00.000Z')));
-  await page.goto('/admin/analytics');
+  await page.goto(sessionAnalyticsPage);
   await expect(page.getByText('此期间暂无访问数据', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' }).getByText('0', { exact: true })).toHaveCount(4);
 });
@@ -111,7 +116,7 @@ test('website analytics waits for the current request when quickly switching bac
     if (reads.length === 1) return reply(route, sampleOverview(30));
     waiting.push(route);
   });
-  await page.goto('/admin/analytics');
+  await page.goto(sessionAnalyticsPage);
   await expect(page.getByRole('region', { name: '统计概览' })).toContainText('1,280');
   await page.getByText('近 30 天', { exact: true }).click();
   await page.getByText('近 7 天', { exact: true }).click();
@@ -132,7 +137,7 @@ test('website analytics waits for the current request when quickly switching bac
 test('website analytics shows a permission denial from the service without a loading or empty dashboard', async ({ page }) => {
   await installAnalyticsAdmin(page);
   await page.route(overviewPath, route => reply(route, error('FORBIDDEN'), 403));
-  await page.goto('/admin/analytics');
+  await page.goto(sessionAnalyticsPage);
   await expect(page.getByText('没有访问权限', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' })).toHaveCount(0);
   await expect(page.getByText('尚无采集数据', { exact: true })).toHaveCount(0);

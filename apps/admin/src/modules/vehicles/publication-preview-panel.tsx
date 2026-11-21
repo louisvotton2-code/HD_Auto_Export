@@ -3,6 +3,7 @@ import { Alert, Button, Card, Radio, Space, Tag, Typography } from 'antd';
 import { EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { PublicationPreviewFrameMessageSchema } from '@hd/contracts/admin';
 import type { Locale } from '@hd/contracts/public';
+import { randomUuid } from '../../shared/random-uuid';
 import styles from './publication-preview-panel.module.css';
 
 const languages = { zh: '中文', en: '英文', ru: '俄文' };
@@ -13,8 +14,9 @@ const errors = {
   conflict: '车辆已发生变化，请核对最新草稿后重新载入。',
   invalid_response: '预览资料暂时无法识别，请重试或联系维护人员。',
   unavailable: '预览服务暂时不可用，请稍后重新载入。',
-  render_error: '车辆预览未能完整显示，请重新载入。',
+  render_error: '车辆预览未能完整显示。',
 };
+const publishGuidance = '如果上方发布检查已通过，可直接点击「确认并发布」。也可重新载入或收起预览。';
 
 type Props = {
   vehicleId: string;
@@ -44,11 +46,10 @@ function PublicationPreviewFrame({ vehicleId, version, locale, hasUnsavedChanges
   const frame = useRef<HTMLIFrameElement>(null);
   const invalidated = useRef(false);
   const documentLoaded = useRef<() => void>(() => {});
-  const loadId = useMemo(() => crypto.randomUUID(), [vehicleId, version, locale, reload, hasUnsavedChanges]);
-  const query = new URLSearchParams({ locale, loadId });
-  const src = `/staff/vehicles/${encodeURIComponent(vehicleId)}/publication-preview/?${query}`;
+  const loadId = useMemo(() => randomUuid(), [vehicleId, version, locale, reload, hasUnsavedChanges]);
 
   useLayoutEffect(() => {
+    if (!loadId) return;
     let active = true;
     let deadline: number | undefined;
     let phase = 0;
@@ -122,6 +123,9 @@ function PublicationPreviewFrame({ vehicleId, version, locale, hasUnsavedChanges
     return () => { active = false; documentLoaded.current = () => {}; clearDeadline(); window.removeEventListener('message', receive); };
   }, [loadId, vehicleId, version, locale, hasUnsavedChanges]);
 
+  if (!loadId) return <Alert showIcon type="warning" title="当前浏览器无法打开官网预览。" description="请收起预览。" />;
+  const query = new URLSearchParams({ locale, loadId });
+  const src = `/staff/vehicles/${encodeURIComponent(vehicleId)}/publication-preview/?${query}`;
   return <>
     <div className={styles.toolbar}>
       <Radio.Group aria-label="发布预览语言" value={locale} disabled={disabled || hasUnsavedChanges}
@@ -135,7 +139,7 @@ function PublicationPreviewFrame({ vehicleId, version, locale, hasUnsavedChanges
     </div>
     <Typography.Paragraph type="secondary">可切换语言查看封面、车辆资料、车况和价格。</Typography.Paragraph>
     {hasUnsavedChanges && <Alert showIcon type="warning" title="当前显示的是已保存草稿，请先保存修改" className={styles.notice} />}
-    {error && <Alert showIcon type="error" title={error} className={styles.notice} />}
+    {error && <Alert showIcon type="warning" title={error} description={publishGuidance} className={styles.notice} />}
     <div className={styles.frameWrap}><iframe key={loadId} ref={frame} src={src} onLoad={() => documentLoaded.current()} title={`${languages[locale]}车辆发布预览`}
       className={styles.frame} style={{ height }} referrerPolicy="same-origin" /></div>
   </>;

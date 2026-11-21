@@ -21,7 +21,8 @@
     "react-router-dom": "^7.9.6",
     "antd": "6.7.0",
     "@ant-design/icons": "6.3.4",
-    "dayjs": "1.11.23"
+    "dayjs": "1.11.23",
+    "echarts": "6.1.0"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

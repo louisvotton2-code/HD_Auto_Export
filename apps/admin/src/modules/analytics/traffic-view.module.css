@@ -1,0 +1,21 @@
+.view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.metrics { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 3fr); gap: 12px; }
+.visits { height: 100%; background: #fbf8ee; border-color: #d9c595; }
+.visitNotice { display: block; margin-top: 6px; }
+.contactTotals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.channelCard { --report-chart-height: 190px; }
+.channelCounts { margin: 0; }
+.channelCounts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 7px 0; }
+.channelCounts > div + div { border-top: 1px solid #ede8dd; }
+.channelCounts dt > span { display: inline-block; height: 8px; width: 8px; margin-right: 7px; border-radius: 50%; }
+.channelCounts dd { flex-shrink: 0; margin: 0; font-variant-numeric: tabular-nums; }
+@media (min-width: 1150px) {
+  .view { grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); align-items: start; }
+  .metrics, .channelHint, .ranking { grid-column: 1 / -1; }
+  .trendCard { --report-chart-height: 224px; }
+}
+@media (max-width: 850px) { .metrics { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 550px) {
+  .contactTotals { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .contactTotals > :first-child { grid-column: 1 / -1; }
+}

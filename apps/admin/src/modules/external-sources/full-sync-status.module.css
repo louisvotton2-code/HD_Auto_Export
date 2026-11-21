@@ -3,6 +3,7 @@
 .card :global(.ant-card-extra) { margin-inline-start: 0; }
 .overview { margin-block: 14px; }
 .card .note { margin: 10px 0 0; }
+.card .detail { margin: 0; }
 .section { margin-block: 16px; padding-top: 14px; border-top: 1px solid #e8e2d5; }
 .card .sectionTitle { font-size: 16px; margin-block: 0 10px; }
 .long { white-space: pre-wrap; overflow-wrap: anywhere; }
