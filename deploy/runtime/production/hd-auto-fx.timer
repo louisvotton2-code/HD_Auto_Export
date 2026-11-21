@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the HD Auto production exchange-rate refresh window hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=hd-auto-fx.service
+
+[Install]
+WantedBy=timers.target
