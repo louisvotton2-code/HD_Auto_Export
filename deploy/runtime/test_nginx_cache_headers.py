@@ -58,8 +58,10 @@ class Origin(http.server.BaseHTTPRequestHandler):
             content_type='text/html';body=('<html>readable '+self.path.split('/')[2]+' missing vehicle</html>').encode()
         self.send_response(status);self.send_header('Content-Type',content_type);self.send_header('Cache-Control','public, max-age=600' if self.path=='/zh/guide/' else 'no-store')
         for name in CACHE_CONTROL_HEADERS:self.send_header(name,'synthetic-origin-control')
+        self.send_header('Strict-Transport-Security','max-age=63072000; includeSubDomains; preload')
         if self.path.startswith('/staff/'):
             self.send_header('X-Frame-Options','SAMEORIGIN');self.send_header('Content-Security-Policy',"frame-ancestors 'self'");self.send_header('Referrer-Policy','same-origin')
+            self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Content-Length',str(len(body) if status!=304 else 0));self.end_headers()
         if status!=304 and self.command!='HEAD':self.wfile.write(body)
     do_HEAD=do_GET
@@ -81,7 +83,9 @@ class CacheOrigin(Origin):
     def do_GET(self):
         if self.path=='/ru/':
             self.calls.append(self.path)
-            self.send_error(502)
+            self.send_response(502)
+            self.send_header('Content-Length','0')
+            self.end_headers()
         else:
             super().do_GET()
 
@@ -159,9 +163,39 @@ class DomainCacheHeaders(unittest.TestCase):
             s.sendall(message+(body or b''))
             res=http.client.HTTPResponse(s,method=method);res.begin()
             headers={k.lower():v for k,v in res.getheaders()}
-            if res.headers.get_all('Cache-Control'):
-                headers['cache-control']=', '.join(res.headers.get_all('Cache-Control'))
+            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options'):
+                if values:=res.headers.get_all(name):
+                    headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
+    def test_hsts_is_scoped_to_matching_tls_hosts_and_preserves_response_policy(self):
+        public='cars.hongdingauto.com'
+        admin='admin.hongdingauto.com'
+        for host,path,expected_status,expected_cache in (
+            (public,'/en/',200,'no-store'),  # Cache hit.
+            (public,'/ru/',200,'no-store'),  # Cache origin error, then dynamic Web.
+            (public,'/zh/guide/',200,'public, max-age=600'),
+            (public,'/api/v1/vehicles',200,'no-store'),
+            (public,'/_next/static/missing.js',404,'no-store'),
+            (admin,'/admin/',200,'no-store'),
+            (admin,'/admin/assets/index-Abc12345.js',200,'public, max-age=31536000, immutable'),
+            (admin,'/api/v1/analytics/events',404,'no-store'),
+        ):
+            with self.subTest(host=host,path=path):
+                status,headers,_=self.request(host,path)
+                self.assertEqual(status,expected_status)
+                self.assertEqual(headers['cache-control'],expected_cache)
+                self.assertEqual(headers['strict-transport-security'],'max-age=300')
+        for host,other in ((public,admin),(admin,public)):
+            status,headers,_=self.request(host,'/',tls=False)
+            self.assertEqual(status,308)
+            self.assertNotIn('strict-transport-security',headers)
+            status,headers,_=self.request(host,'/',{'Host':other})
+            self.assertEqual(status,421)
+            self.assertNotIn('strict-transport-security',headers)
+        status,headers,body=self.request('localhost','/health/proxy',tls=False)
+        self.assertEqual((status,body),(200,b'ok'))
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
+        self.assertNotIn('strict-transport-security',headers)
     def test_sitemap_off_switch_public_generation_and_retained_shard(self):
         host='cars.hongdingauto.com'
         root=self.root/'sitemap'
@@ -169,8 +203,10 @@ class DomainCacheHeaders(unittest.TestCase):
         sitemap=importlib.util.module_from_spec(spec);spec.loader.exec_module(sitemap)
         old=sitemap.prepare(root,'https://'+host,[{'path':'/zh/'}])['generation']
         shard=f'/sitemap-{old}-00001.xml'
-        status,_,body=self.request(host,'/sitemap.xml')
+        status,headers,body=self.request(host,'/sitemap.xml')
         self.assertEqual((status,json.loads(body)['path']),(200,'/sitemap.xml'))
+        self.assertEqual(headers['strict-transport-security'],'max-age=300')
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
         self.assertEqual(self.request(host,shard)[0],404)
 
         sitemap.activate(root,old,None)
@@ -178,10 +214,14 @@ class DomainCacheHeaders(unittest.TestCase):
         status,headers,body=self.request(host,'/sitemap.xml')
         self.assertEqual((status,headers['content-type'],headers['cache-control']),
                          (200,'application/xml','no-store'))
+        self.assertEqual(headers['strict-transport-security'],'max-age=300')
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
         self.assertNotIn('etag',headers)
         self.assertIn(('https://'+host+shard).encode(),body)
         status,headers,body=self.request(host,shard)
         self.assertEqual((status,headers['content-type']),(200,'application/xml'))
+        self.assertEqual(headers['strict-transport-security'],'max-age=300')
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
         self.assertIn(b'<loc>https://cars.hongdingauto.com/zh/</loc>',body)
 
         new=sitemap.prepare(root,'https://'+host,[{'path':'/ru/'}])['generation']
@@ -265,6 +305,11 @@ class DomainCacheHeaders(unittest.TestCase):
         status,headers,body=self.request('admin.hongdingauto.com','/robots.txt')
         self.assertEqual((status,body),(200,b'User-agent: *\nDisallow: /\n'))
         self.assertEqual(headers['content-type'],'text/plain')
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
+        status,headers,body=self.request('cars.hongdingauto.com','/robots.txt')
+        self.assertEqual((status,json.loads(body)['path']),(200,'/robots.txt'))
+        self.assertEqual(headers['x-content-type-options'],'nosniff')
+        self.assertEqual(headers['strict-transport-security'],'max-age=300')
         self.assertEqual(headers['cache-control'],'no-store')
 
     def test_public_media_preserves_validator_across_redirect_and_rechecks_visibility(self):
@@ -332,6 +377,7 @@ class DomainCacheHeaders(unittest.TestCase):
         status,headers,_=self.request('cars.hongdingauto.com','/_next/static/missing.js');self.assertEqual(status,404);self.assertEqual(headers['cache-control'],'no-store')
         for path,status,cache in [('/admin/assets/index-Abc12345.js',200,'public, max-age=31536000, immutable'),('/admin/assets/missing-Abc12345.js',404,'no-store'),('/admin/assets/plain.js',200,'no-store'),('/admin/vehicles',200,'no-store')]:
             actual,headers,_=self.request('admin.hongdingauto.com',path);self.assertEqual(actual,status);self.assertEqual(headers['cache-control'],cache)
+            self.assertEqual(headers['x-content-type-options'],'nosniff')
     def test_internal_paths_are_denied_on_both_hosts_and_transports(self):
         for host in ['cars.hongdingauto.com','admin.hongdingauto.com']:
             for tls in [False,True]:
@@ -341,6 +387,7 @@ class DomainCacheHeaders(unittest.TestCase):
         path='/staff/vehicles/11111111-1111-4111-8111-111111111111/publication-preview/?locale=zh&loadId=22222222-2222-4222-8222-222222222222'
         status,headers,body=self.request('admin.hongdingauto.com',path,{'Cookie':'synthetic-session=private'})
         self.assertEqual(status,200);self.assertEqual(headers['cache-control'],'private, no-store');self.assertEqual(headers['x-robots-tag'],'noindex, nofollow')
+        self.assertEqual(headers['strict-transport-security'],'max-age=300');self.assertEqual(headers['x-content-type-options'],'nosniff')
         self.assertEqual(headers['x-frame-options'],'SAMEORIGIN');self.assertEqual(headers['content-security-policy'],"frame-ancestors 'self'");self.assertEqual(headers['referrer-policy'],'same-origin')
         self.assertEqual(json.loads(body)['headers']['Cookie'],'synthetic-session=private')
         self.assertEqual(self.request('admin.hongdingauto.com',path,method='HEAD')[0],200)

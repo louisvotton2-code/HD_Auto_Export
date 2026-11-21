@@ -127,6 +127,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
     block='''    location ^~ /_next/static/ {
         root /srv/hd-assets;
         try_files $uri =404;
+        add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control $hd_asset_cache_control always;
     }'''
     text=re.sub(r'    location \^~ /_next/static/ \{\n.*?\n    \}',lambda _:block,text,flags=re.S)
@@ -139,6 +140,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         include /etc/nginx/hd-domains/web-proxy.conf;
         proxy_intercept_errors on;
         proxy_hide_header Cache-Control;
+        add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;
     }}
     location @hd_home_dynamic {{
@@ -146,6 +148,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         set $web http://{web_host}:3000;
         include /etc/nginx/hd-domains/web-proxy.conf;
         proxy_hide_header Cache-Control;
+        add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;
     }}''')
     files['default.conf']=text
