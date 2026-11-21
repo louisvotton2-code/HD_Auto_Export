@@ -2,6 +2,7 @@
 """Local runtime lifecycle. Never prints credentials. Requires Python 3 + Docker Compose."""
 import argparse, contextlib, fcntl, hashlib, ipaddress, json, os, pathlib, re, secrets, shutil, subprocess, sys, tarfile, tempfile
 from datetime import datetime, timezone
+from importlib.util import module_from_spec, spec_from_file_location
 os.umask(0o077)
 HERE=pathlib.Path(__file__).resolve().parent
 SCALE_PROJECT=re.compile(r'hd-ops-ext02(?:-[a-z0-9][a-z0-9-]*)?')
@@ -196,6 +197,11 @@ def main():
                 compose('up','-d','--wait','postgres')
                 with (backup/'database.dump').open('rb') as f:
                     compose('exec','-T','postgres','pg_restore','-U','postgres','-d',database,'--role=hd_app','--no-owner','--no-acl','--exit-on-error','--single-transaction',stdin=f)
+                spec = spec_from_file_location('first_party_data', HERE/'production/first_party_data.py')
+                first_party = module_from_spec(spec)
+                spec.loader.exec_module(first_party)
+                compose('exec','-T','postgres','psql','-X','-U','postgres','-d',database,'-v','ON_ERROR_STOP=1','-q','-f','-',
+                        input=first_party.analytics_restore_retention_sql().encode())
                 if scale:
                     epoch=compose('exec','-T','postgres','psql','-X','-U','postgres','-d',database,'-v','ON_ERROR_STOP=1','-Atqc',
                         'UPDATE public.public_catalog_state SET epoch=gen_random_uuid() WHERE id=1 RETURNING 1',

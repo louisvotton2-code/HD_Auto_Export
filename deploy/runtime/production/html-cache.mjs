@@ -239,12 +239,13 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     return { stamp, headers: { ...headers, 'cache-control': 'no-store' }, body };
   }
 
-  function sendPage(reply, page, preferGzip = false) {
+  function sendPage(reply, page, preferGzip = false, cacheHit = false) {
     if (reply.destroyed) return;
     const compressed = preferGzip && page.gzipBody;
     const body = compressed || page.body;
     const headers = { ...page.headers, 'content-length': body.length };
     if (compressed) headers['content-encoding'] = 'gzip';
+    if (cacheHit) headers['x-hd-cache-document'] = 'hit';
     reply.writeHead(200, headers).end(body);
   }
 
@@ -285,7 +286,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
           if (cached && cached.signature === live.signature &&
               Math.min(cached.deadline, live.deadline) > now() &&
               Math.min(cached.elapsedDeadline, live.elapsedDeadline) > tick()) {
-            sendPage(reply, cached, preferGzip);
+            sendPage(reply, cached, preferGzip, true);
             return;
           }
 

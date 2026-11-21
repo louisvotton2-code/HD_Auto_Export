@@ -1,0 +1,21 @@
+# Opt in after the isolated receiver and region acceptance. No socket service is published.
+services:
+  api:
+    environment:
+      ANALYTICS_IP_VISITS_ENABLED: 'true'
+      ANALYTICS_IP_VISIT_PEERS: '${HD_ANALYTICS_VISIT_PEERS:?set the verified private relay peer}'
+      ANALYTICS_IP_VISIT_GATEWAY_SECRET_FILE: /run/secrets/analytics_visit_gateway_key
+      ANALYTICS_IP_VISIT_HASH_SECRET_FILE: /run/secrets/analytics_visit_hash_key
+    secrets: [analytics_visit_gateway_key, analytics_visit_hash_key]
+  proxy:
+    volumes:
+      - type: bind
+        source: ${HD_ANALYTICS_VISIT_SOCKET_ROOT:?set the private visit socket directory}
+        target: /run/hd-visits
+        read_only: true
+        bind: {create_host_path: false}
+secrets:
+  analytics_visit_gateway_key:
+    file: ${HD_ANALYTICS_VISIT_GATEWAY_SECRET_FILE:?set the owner-only relay key file}
+  analytics_visit_hash_key:
+    file: ${HD_ANALYTICS_VISIT_HASH_SECRET_FILE:?set the separate owner-only pseudonym key file}

@@ -147,6 +147,8 @@ test('hits require a fresh v2 live version; proof, nonce and request identity st
   const second = await get({ Host: site + ':443' });
   assert.equal(first.status, 200);
   assert.equal(first.body, second.body);
+  assert.equal(first.headers['x-hd-cache-document'], undefined);
+  assert.equal(second.headers['x-hd-cache-document'], 'hit');
   assert.deepEqual(counts, { version: 2, render: 1 });
   assert.deepEqual(calls.map(call => call.path), [versionUrl, renderUrl, versionUrl]);
   assert.equal(calls[1].headers['x-hd-cache-unlisted'], undefined);

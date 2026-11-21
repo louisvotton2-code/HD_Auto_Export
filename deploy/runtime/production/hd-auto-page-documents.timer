@@ -1,0 +1,11 @@
+[Unit]
+Description=HD Auto hourly page document import schedule
+
+[Timer]
+OnCalendar=*-*-* *:02:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1s
+Unit=hd-auto-page-documents.service
+
+[Install]
+WantedBy=timers.target
