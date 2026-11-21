@@ -1,5 +1,6 @@
 import { Card, Empty, Flex, Select, Table, Typography, type TableColumnsType } from 'antd';
 import { AnalyticsChart, type AnalyticsChartOption } from './analytics-chart';
+import { CountryInferenceSource } from './country-inference-source';
 import styles from './site-analytics.module.css';
 
 const dimensionLabels = {
@@ -116,6 +117,7 @@ export function MarketView({ data, dimension, dimensions = allDimensions, onDime
           onChange={onDimensionChange}
         />
       </Flex>
+      {dimension === 'country' && !!data?.rows.length && <CountryInferenceSource />}
       {data ? <>
         <MarketChart rows={data.rows} dimension={dimension} />
         <Table<MarketRow> rowKey="key" columns={columns} dataSource={data.rows} size="small"

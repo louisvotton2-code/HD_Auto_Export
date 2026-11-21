@@ -1,5 +1,6 @@
 import { Card, Descriptions, Empty, Select, Statistic, Typography } from 'antd';
 import { AnalyticsTrend } from './analytics-trend';
+import { CountryInferenceSource } from './country-inference-source';
 import styles from './site-analytics.module.css';
 
 export const overviewMetrics = {
@@ -112,6 +113,7 @@ export function AnalyticsCollectionQuality({ quality }: { quality: CollectionQua
         { key: 'discarded', label: '丢弃', children: formatCount(quality.discarded) },
         { key: 'unknown', label: '国家未知的会话', children: formatCount(quality.unknownDimension) },
       ]} />
+      {quality.unknownDimension !== null && <CountryInferenceSource />}
       {quality.runtimeSince && <Typography.Text type="secondary">限流批次自进程启动计数（{formatTime(quality.runtimeSince)} 起）。</Typography.Text>}
       {quality.missingDates.length > 0 && <details className={styles.daily}>
         <summary>缺失日期（{formatter.format(quality.missingDates.length)} 天）</summary>

@@ -11,7 +11,7 @@ import { AdminVehicleSchema, HomeVehicleIdSchema, VehicleTranslationSuggestionsS
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
-import { readPublicCatalogRevision } from '../external/public-cache.js';
+import { readPublicCatalogRevision, type PublicCatalogRevision } from '../external/public-cache.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
@@ -362,6 +362,13 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:Publ
       modelYears:rows('year').map(row=>({year:Number(row.id),count:row.count})).sort((a,b)=>b.year-a.year)}:{})});
 }
 type CatalogVersion={epoch:string;revision:string};
+type CatalogRevisionObserver=(revision:PublicCatalogRevision)=>void;
+async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,captureRevision:CatalogRevisionObserver) {
+  // Read after acquiring the origin slot and beginning the same snapshot used by the DTO.
+  const revision=await readPublicCatalogRevision({pool:tx},priceView==='usd','catalog');
+  captureRevision(revision);
+  return revision;
+}
 export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'result';
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.
@@ -770,10 +777,11 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english',pixelView?:'eligible',seoView?:'eligible') {
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english',pixelView?:'eligible',seoView?:'eligible',captureRevision?:CatalogRevisionObserver) {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      if(captureRevision)await observeCatalogRevision(tx,priceView,captureRevision);
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       const includePixel=projection==='detail-inline-v1'&&pixelView==='eligible';
       const includeSeo=projection==='detail-inline-v1'&&seoView==='eligible'&&this.publicSeoEnabled;
@@ -799,15 +807,16 @@ export class InventoryService {
         ...(includePixel?{pixelEnabled:row.pixel_enabled===true}:{})},locale);
     });
   }
-  async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void) {
+  async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void,captureRevision?:CatalogRevisionObserver) {
     phase?.('database');
     return this.db.transaction(async tx=>{
       await tx.query(catalogReadTransaction);
       phase?.('revision');
+      const observedRevision=captureRevision?await observeCatalogRevision(tx,query.priceView,captureRevision):null;
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
       const fx=query.priceView==='usd'?(quote?.version??'none'):undefined;
       const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
-      const version=cursorMode?(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!:null;
+      const version=cursorMode?(observedRevision??(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!):null;
       const binding=queryBinding(query,includeExternal);
       const cursor=query.cursor?decodeCursor(query.cursor,binding,version!,fx,query.sort):null;
       if(cursor?.stream==='external'&&!includeExternal)throw new ApiError(400,'INVALID_REQUEST','External cursor is unavailable.');
@@ -939,9 +948,10 @@ export class InventoryService {
       return {version:input.version+1,sections};
     });
   }
-  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd') {
+  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd',captureRevision?:CatalogRevisionObserver) {
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      if(captureRevision)await observeCatalogRevision(tx,priceView,captureRevision);
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       return this.readPublicHome(tx,locale,view,priceView,quote);
     });

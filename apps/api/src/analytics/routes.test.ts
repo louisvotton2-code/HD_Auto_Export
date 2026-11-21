@@ -5,7 +5,7 @@ import {
   analyticsEventBatchLimit, analyticsEventBodyLimit, AnalyticsEventsResponseSchema, AnalyticsOverviewResponseSchema,
   type AnalyticsDays, type AnalyticsEvent, type AnalyticsOverview,
 } from '@hd/contracts/analytics';
-import { ApiErrorSchema, type PublicVehicleQuery } from '@hd/contracts/public';
+import { ApiErrorSchema } from '@hd/contracts/public';
 import { buildApp } from '../app.js';
 import { readConfig } from '../config.js';
 
@@ -35,6 +35,7 @@ async function setup(t: TestContext) {
     TRUST_PROXY:`${proxy}/32`, ANALYTICS_ORIGINS:`${localOrigin},${publicOrigin}`, CATALOG_READ_MODE:'combined',
   }));
   t.after(() => runtime.app.close());
+  const catalogRevision = {epoch:'00000000-0000-4000-8000-000000000001', revision:'1'};
   t.mock.method(runtime.db.pool, 'connect', () => { throw new Error('Analytics route tests use no database.'); });
   t.mock.method(runtime.db.pool, 'query', async (sql: unknown, params?: unknown[]) => {
     if (sql === 'SELECT id,name,role,banned FROM staff WHERE id=$1') {
@@ -44,7 +45,7 @@ async function setup(t: TestContext) {
     }
     assert.equal(typeof sql === 'string' ? sql.replace(/\s+/g, ' ') : sql,
       'SELECT s.epoch::text,s.revision::text AS revision FROM public_catalog_state s WHERE s.id=1');
-    return { rows:[{epoch:'00000000-0000-4000-8000-000000000001', revision:'1'}], rowCount:1 };
+    return { rows:[catalogRevision], rowCount:1 };
   });
   const getSession = t.mock.method(runtime.auth.api, 'getSession', async (options: { headers?: HeadersInit }) => {
     const cookie = new Headers(options.headers).get('cookie');
@@ -55,11 +56,15 @@ async function setup(t: TestContext) {
   const ingest = t.mock.method(runtime.analytics, 'ingest', async (events: readonly AnalyticsEvent[], _allowExternal: boolean) =>
     ({received:events.length,accepted:events.length,duplicates:0,dropped:0}));
   const overview = t.mock.method(runtime.analytics, 'overview', async (days: AnalyticsDays) => overviewData(days));
-  t.mock.method(runtime.inventory, 'listPublic', async (query: PublicVehicleQuery, requestId: string) => ({
-    data:{items:[], page:query.page, pageSize:query.pageSize, hasMore:false},
-    meta:{requestId, catalog:'curated', total:0, totalKind:'exact', accessibleTotal:0,
-      dataAsOf:'2026-11-19T00:00:00.000Z', freshness:'fresh'},
-  }));
+  const listPublic:typeof runtime.inventory.listPublic = async (query, requestId, _phase, captureRevision) => {
+    captureRevision?.(catalogRevision);
+    return {
+      data:{items:[], page:query.page, pageSize:query.pageSize, hasMore:false},
+      meta:{requestId, catalog:'curated', total:0, totalKind:'exact', accessibleTotal:0,
+        dataAsOf:'2026-11-19T00:00:00.000Z', freshness:'fresh'},
+    };
+  };
+  t.mock.method(runtime.inventory, 'listPublic', listPublic);
   const post = (payload: string | object = {events:[pageView]}, headers: Record<string,string> = {},
     remoteAddress = visitor) => runtime.app.inject({ method:'POST', url:eventsPath, remoteAddress, payload,
     headers:{host:localHost, origin:localOrigin, 'content-type':'application/json', ...headers},

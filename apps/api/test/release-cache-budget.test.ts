@@ -158,6 +158,60 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       assert.equal(next.data.total,0);
       assert.equal(next.meta.catalogCache.version,(await version(true)).data.version);
     });
+    await t.test('list, detail and home use the actual PostgreSQL snapshot after a pre-read commit',async context=>{
+      await db.pool.query("UPDATE vehicles SET availability='available' WHERE id=$1",[id]);
+      const transaction=db.transaction;
+      let starts=0;
+      const hook=context.mock.method(db,'transaction',async <T>(work:Parameters<typeof transaction<T>>[0])=>{
+        starts++;
+        // Commit an inventory metadata version between the cache lookup and every actual read.
+        await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+        return transaction<T>(work);
+      });
+      try {
+        for(const route of ['/vehicles?locale=ru&view=localized&pagination=cursor','/vehicles/'+id+'?locale=ru','/home/vehicles?locale=ru']) {
+          for(const internal of [false,true]) {
+            const prefix=internal?'/internal/public-catalog':'/api/v1';
+            const before=starts;
+            const returned=await call(prefix+route,internal,false,internal);
+            assert.equal(starts,before+1);
+            assert.equal(returned.meta.catalogCache.version,(await version()).data.version);
+            const warm=await call(prefix+route,internal,false,internal);
+            assert.equal(starts,before+1);
+            assert.deepEqual(warm.data,returned.data);
+          }
+        }
+      } finally {hook.mock.restore();}
+    });
+    await t.test('a withdrawal committed after the detail snapshot cannot escape in the response',async context=>{
+      const route='/api/v1/vehicles/'+id+'?locale=zh';
+      await call(route);
+      // Ensure a cache miss so the fixture can arrange a real read/withdrawal race.
+      await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+      const transaction=db.transaction;
+      let withdrawn=false;
+      const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+        const wrapped=Object.create(tx) as typeof tx;
+        wrapped.query=(async (text:string,values?:unknown[])=>{
+          const result=await tx.query(text,values);
+          if(!withdrawn && text.includes('s.revision::text AS revision')) {
+            await db.pool.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[id]);
+            withdrawn=true;
+          }
+          return result;
+        }) as typeof tx.query;
+        return work(wrapped);
+      }));
+      try {
+        const r=await app.app.inject({url:route});
+        assert.equal(withdrawn,true);
+        assert.equal(r.statusCode,404,r.body);
+        assert.equal(r.json().meta.catalogCache,undefined);
+        const list=await call('/api/v1/vehicles?locale=zh');
+        assert.equal(list.meta.total,0);
+        assert.deepEqual((await call('/api/v1/home/vehicles?locale=zh')).data.sections,[]);
+      } finally {hook.mock.restore();}
+    });
     await t.test('offset guard precedes SQL and actual totals stay exact; cached DB loss fails closed',async()=>{
       const beyond=await app.app.inject({url:'/api/v1/vehicles?page=10002&pageSize=1'});assert.equal(beyond.statusCode,400);
       const boundary=await call('/api/v1/vehicles?page=10001&pageSize=1');assert.equal(boundary.meta.total,0);

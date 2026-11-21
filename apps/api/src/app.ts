@@ -35,7 +35,7 @@ import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
-import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheRoute } from './external/public-cache.js';
+import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -282,9 +282,17 @@ export async function buildApp(config:Config=readConfig(), options:{
   const actor=(request:{id:string}):Actor=>({id:staff.get(request)!.id,requestId:request.id});
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
   const cacheProtocol=(request:object)=>longCacheRequests.has(request)?2:1;
-  const cached=<T,Q extends {priceView?:'usd'}>(route:PublicCacheRoute,query:Q,load:()=>Promise<T>,request:{id:string})=>
-    catalogCache.getVersioned(route,query,load,query.priceView==='usd',requestSignals.get(request),cacheProtocol(request));
-  const publicResponse=async<T,Q extends {priceView?:'usd'}>(route:PublicCacheRoute,query:Q,load:()=>Promise<T>,request:{id:string})=>{
+  type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
+  type CaptureRevision=(revision:PublicCatalogRevision)=>void;
+  type CatalogLoad<T>=(capture:CaptureRevision)=>Promise<T>;
+  const cached=<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string})=>
+    catalogCache.getCatalogSnapshot(route,query,async()=>{
+      let revision:PublicCatalogRevision|undefined;
+      const value=await load(observed=>{ revision=observed; });
+      if(!revision)throw new PublicCatalogUnavailableError('revision-read');
+      return {value,revision};
+    },query.priceView==='usd',requestSignals.get(request),cacheProtocol(request));
+  const publicResponse=async<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string})=>{
     const {value,stamp}=await cached(route,query,load,request);
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   };
@@ -294,7 +302,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   if(seoDb)app.addHook('onClose',async()=>{await seoDb.close();});
   registerSeoRoutes(app,seoDb??db,config.publicSeoEnabled,config.externalCatalog);
 
-  app.get(SSR_CATALOG_VERSION_PATH,{schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
+  // Service authentication runs before this route's independent rate-limit store.
+  app.get(SSR_CATALOG_VERSION_PATH,{config:{rateLimit:{max:120}},schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
     response:{200:pub.InternalPublicCatalogVersionResponseSchema,...errorResponses}}},async request=>{
     const query=request.query as z.infer<typeof pub.PublicCatalogVersionQuerySchema>;
     return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
@@ -385,8 +394,8 @@ export async function buildApp(config:Config=readConfig(), options:{
     async request=>{
       const query=request.query as pub.PublicVehicleQuery;
       const advance=isCatalogTextSearch(query)?beginCatalogTiming(request,'list'):undefined;
-      const {value:loaded,stamp}=await cached('list',query,async()=>{
-        const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance);
+      const {value:loaded,stamp}=await cached('list',query,async capture=>{
+        const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance,capture);
         advance?.('cache_validate');
         return {data,meta};
       },request);
@@ -397,7 +406,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;
       // Candidate slots can share Redis while using different SEO settings.
       const detailKey={id:p.id,...q,...(q.seoView?{seoPolicy:config.publicSeoEnabled?1:0}:{})};
-      const vehicle=await publicResponse('detail',detailKey,()=>inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView,q.pixelView,q.seoView),request);
+      const vehicle=await publicResponse('detail',detailKey,capture=>inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView,q.pixelView,q.seoView,capture),request);
       if(p.id.startsWith('ext-')) {
         fullSyncHints.hint(listingUuid(p.id));
       }
@@ -425,7 +434,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   });
   app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:home,...errorResponses}})},async request=>{
-    const query=request.query as pub.PublicLocaleQuery;return publicResponse('home',query,()=>inventory.publicHome(query.locale,query.view,query.priceView),request);
+    const query=request.query as pub.PublicLocaleQuery;return publicResponse('home',query,capture=>inventory.publicHome(query.locale,query.view,query.priceView,capture),request);
   });
   }
   const publicMediaSchema=schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema});

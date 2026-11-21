@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
-import { ApiErrorSchema, type PublicMediaQuery, type PublicVehicleQuery } from '@hd/contracts/public';
+import { ApiErrorSchema, type PublicMediaQuery } from '@hd/contracts/public';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
 import type { PublicMediaDeliveryOptions } from './media/storage.js';
@@ -22,12 +22,13 @@ async function setup(t:TestContext,trustProxy='false') {
     DATABASE_URL:'postgresql://unused:unused@127.0.0.1:1/unused',
     AUTH_SECRET:'traffic-limit-test-placeholder-not-a-live-secret',TRUST_PROXY:trustProxy}));
   t.after(()=>runtime.app.close());
+  const catalogRevision={epoch:'00000000-0000-4000-8000-000000000001',revision:'1'};
   t.mock.method(runtime.db.pool,'connect',()=>{throw new Error('This test must not connect to a database.');});
   const query=t.mock.method(runtime.db.pool,'query',async(sql:unknown)=>{
     const statement=typeof sql==='string' ? sql.replace(/\s+/g,' ') : sql;
     if(statement==='SELECT s.epoch::text,s.revision::text AS revision FROM public_catalog_state s WHERE s.id=1' ||
        statement==='SELECT s.epoch::text,s.filter_revision::text AS revision FROM public_catalog_state s WHERE s.id=1')
-      return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'}],rowCount:1};
+      return {rows:[catalogRevision],rowCount:1};
     if(sql==='SELECT id,name,role,banned FROM staff WHERE id=$1') {
       return {rows:[{id:'traffic-test-staff',name:'Test editor',role:'editor',banned:false}],rowCount:1};
     }
@@ -45,17 +46,31 @@ async function setup(t:TestContext,trustProxy='false') {
     authRequests.push(request);
     return new Response('null',{headers:{'Content-Type':'application/json'}});
   });
-  const list=t.mock.method(runtime.inventory,'listPublic',async(query:PublicVehicleQuery,requestId:string)=>({
-    data:{items:[],page:query.page,pageSize:query.pageSize,hasMore:false},
-    meta:{requestId,catalog:'curated' as const,total:0,totalKind:'exact' as const,
-      accessibleTotal:0,dataAsOf:new Date(start).toISOString(),freshness:'fresh' as const},
-  }));
-  t.mock.method(runtime.inventory,'getPublic',async()=>makePublicVehicleFixture());
+  const listPublic:typeof runtime.inventory.listPublic=async(query,requestId,_phase,captureRevision)=>{
+    captureRevision?.(catalogRevision);
+    return {
+      data:{items:[],page:query.page,pageSize:query.pageSize,hasMore:false},
+      meta:{requestId,catalog:'curated',total:0,totalKind:'exact',
+        accessibleTotal:0,dataAsOf:new Date(start).toISOString(),freshness:'fresh'},
+    };
+  };
+  const list=t.mock.method(runtime.inventory,'listPublic',listPublic);
+  const getPublic:typeof runtime.inventory.getPublic=async(
+    _id,_locale,_view,_priceView,_projection,_technicalView,_titleView,_pixelView,_seoView,captureRevision,
+  )=>{
+    captureRevision?.(catalogRevision);
+    return makePublicVehicleFixture();
+  };
+  t.mock.method(runtime.inventory,'getPublic',getPublic);
   t.mock.method(runtime.inventory,'filterSnapshot',async()=>({
     value:{catalog:'curated' as const,makes:[],models:[],powertrains:[]},
-    revision:{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'},
+    revision:catalogRevision,
   }));
-  t.mock.method(runtime.inventory,'publicHome',async()=>({sections:[]}));
+  const publicHome:typeof runtime.inventory.publicHome=async(_locale,_view,_priceView,captureRevision)=>{
+    captureRevision?.(catalogRevision);
+    return {sections:[]};
+  };
+  t.mock.method(runtime.inventory,'publicHome',publicHome);
   const mediaBody=Buffer.from('traffic-limit-test-media');
   t.mock.method(runtime.media,'publicDelivery',async(id:string,variant:PublicMediaQuery['variant'],options:PublicMediaDeliveryOptions)=>({
     filename:`${id}${variant?`.${variant}`:''}.webp`,byteSize:mediaBody.length,etag:'W/"test-public"',
