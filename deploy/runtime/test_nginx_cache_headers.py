@@ -5,6 +5,12 @@ HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
 CATALOG_JSON=json.dumps({'items': [{'id': i, 'name': 'Example vehicle'} for i in range(24)]}).encode()
+HOME_HTML=b'<html>'+b'<p>Example vehicles on the homepage</p>'*60+b'</html>'
+HOME_GZIP=gzip.compress(HOME_HTML,mtime=0)
+NEXT_ASSETS={
+    '/_next/static/chunks/retained-12345678.js': ('application/javascript', b'console.log("retained asset");\n'*80),
+    '/_next/static/css/retained-12345678.css': ('text/css', b'.vehicle-card { color: #101010; }\n'*80),
+}
 ANALYTICS_PATH='/api/v1/analytics/events'
 CONTACT_COUNT_PATH='/api/v1/analytics/contact-count'
 ANALYTICS_BODY=json.dumps({'events':[{'eventId':'11111111-1111-4111-8111-111111111111',
@@ -19,6 +25,7 @@ CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-K
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
+    precompressed_home=None
     def media_reply(self, preview):
         variant=self.path.rsplit('?variant=',1)[-1] if '?variant=' in self.path else 'original'
         suffix,image=MEDIA_REPRESENTATIONS[variant]
@@ -44,6 +51,36 @@ class Origin(http.server.BaseHTTPRequestHandler):
         self.calls.append(self.path)
         if self.path.split('?')[0] in (MEDIA_PATH,MEDIA_PREVIEW):
             return self.media_reply(self.path==MEDIA_PREVIEW)
+        if self.path in NEXT_ASSETS:
+            content_type,body=NEXT_ASSETS[self.path]
+            partial=self.headers.get('Range')=='bytes=5-25'
+            self.send_response(206 if partial else 200)
+            self.send_header('Content-Type',content_type)
+            if any(name in self.headers for name in ('Cookie','Authorization')):
+                self.send_header('X-Test-Origin-Saw-Credentials','yes')
+            if partial:
+                self.send_header('Content-Range',f'bytes 5-25/{len(body)}')
+                body=body[5:26]
+            if self.headers.get('Accept-Encoding')=='gzip':
+                self.send_header('Content-Encoding','gzip')
+                body=gzip.compress(body)
+            self.send_header('Content-Length',str(len(body)))
+            self.end_headers()
+            if self.command!='HEAD':self.wfile.write(body)
+            return
+        if self.headers.get('Accept')=='text/html' and self.path in ('/zh/','/en/','/ru/'):
+            precompressed=self.path==self.precompressed_home and self.headers.get('Accept-Encoding')=='gzip'
+            body=HOME_GZIP if precompressed else HOME_HTML
+            self.send_response(200)
+            self.send_header('Content-Type','text/html')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Content-Security-Policy',"frame-ancestors 'none'")
+            self.send_header('Vary','RSC, Accept-Encoding' if precompressed else 'RSC')
+            if precompressed:self.send_header('Content-Encoding','gzip')
+            self.send_header('Content-Length',str(len(body)))
+            self.end_headers()
+            if self.command!='HEAD':self.wfile.write(body)
+            return
         known={'/_next/static/chunks/chunk-12345678.js':200,'/_next/static/chunks/partial-12345678.js':206,'/_next/static/build-12345678/_buildManifest.js':304}
         status=known.get(self.path,404 if self.path.startswith('/_next/static/') else 200)
         body=json.dumps({'headers':dict(self.headers.items()),'path':self.path}).encode() if not self.path.startswith('/_next/static/') else b'code'
@@ -80,6 +117,7 @@ class Origin(http.server.BaseHTTPRequestHandler):
 
 class CacheOrigin(Origin):
     calls=[]
+    precompressed_home='/en/'
     def do_GET(self):
         if self.path=='/ru/':
             self.calls.append(self.path)
@@ -101,6 +139,10 @@ class DomainCacheHeaders(unittest.TestCase):
         (r/'admin/index.html').write_text('admin');(r/'admin/assets/index-Abc12345.js').write_text('hashed');(r/'admin/assets/plain.js').write_text('plain')
         for suffix,body in MEDIA_REPRESENTATIONS.values():
             (r/'media'/(MEDIA_ID+suffix)).write_bytes(body)
+        for path,(_,body) in NEXT_ASSETS.items():
+            asset=r/'retained'/path.lstrip('/')
+            asset.parent.mkdir(parents=True,exist_ok=True)
+            asset.write_bytes(body)
         subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=cars.hongdingauto.com','-addext','subjectAltName=DNS:cars.hongdingauto.com,DNS:admin.hongdingauto.com','-keyout',str(r/'key.pem'),'-out',str(r/'cert.pem')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         (r/'key.pem').chmod(0o600)
         cls.backend=UnixHttp(str(r/'origin.sock'),Origin);cls.thread=threading.Thread(target=cls.backend.serve_forever,daemon=True);cls.thread.start();cls.addClassCleanup(cls.backend.server_close);cls.addClassCleanup(cls.backend.shutdown)
@@ -124,7 +166,18 @@ class DomainCacheHeaders(unittest.TestCase):
         before,after=inactive.split(marker)
         assert active.startswith(before) and active.endswith(after)
         route=active[len(before):-len(after)].replace('http://web-blue:3000','http://web:3000')
-        config=(HERE/'nginx-domains.conf').read_text().replace(marker,route).replace('/etc/nginx/hd-domains',str(includes)).replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem')).replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin').replace('http://html-cache-blue:3010','http://hd_test_cache').replace('root /srv;',f'root {r};').replace('listen 8080',f'listen unix:{r}/http.sock').replace('listen 8443',f'listen unix:{r}/tls.sock')
+        def fixture_config(source, http_socket, tls_socket):
+            return (source.replace('/etc/nginx/hd-domains',str(includes))
+                    .replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem'))
+                    .replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin')
+                    .replace('http://html-cache-blue:3010','http://hd_test_cache')
+                    .replace('root /srv;',f'root {r};').replace('root /srv/hd-assets;',f'root {r}/retained;')
+                    .replace('listen 8080',f'listen unix:{r}/{http_socket}').replace('listen 8443',f'listen unix:{r}/{tls_socket}'))
+        config=fixture_config((HERE/'nginx-domains.conf').read_text().replace(marker,route),'http.sock','tls.sock')
+        # The second pair of listeners shares the same HTTP-scope maps and log formats.
+        generated=active[active.index('\nserver {')+1:]
+        generated=generated.replace('http://api-blue:3320','http://api:3320').replace('http://web-blue:3000','http://web:3000')
+        generated=fixture_config(generated,'slot-http.sock','slot-tls.sock')
         # Keep the production edge protections; only fixture paths and transport differ.
         edge=(HERE/'nginx-edge.conf').read_text().replace('/etc/nginx/hd-analytics-geo/country.conf',
                                                          str(HERE/'production/analytics-geo-disabled.conf'))
@@ -138,7 +191,7 @@ class DomainCacheHeaders(unittest.TestCase):
         single_config.write_text(rootuser+f'pid {r}/single.pid; events {{}} http {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy;\n'+edge+'\n'+single+'\n}')
         subprocess.run([NGINX,'-t','-e',str(r/'single.log'),'-p',str(r)+'/', '-c',str(single_config)],
                        check=True,capture_output=True,text=True)
-        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n}\n'
+        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\ntypes { application/javascript js; text/css css; }\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n'+generated+'\n}\n'
         (r/'nginx.conf').write_text(full);cls.log=(r/'nginx.log').open('wb');cls.addClassCleanup(cls.log.close);cls.process=subprocess.Popen([NGINX,'-e',str(r/'bootstrap.log'),'-p',str(r)+'/', '-c',str(r/'nginx.conf'),'-g','daemon off;'],stdout=cls.log,stderr=cls.log)
         def stop():
             if cls.process.poll() is None:cls.process.terminate();cls.process.wait(timeout=8)
@@ -146,14 +199,15 @@ class DomainCacheHeaders(unittest.TestCase):
         for _ in range(80):
             if cls.process.poll() is not None:
                 raise RuntimeError((r/'nginx.log').read_text()+(r/'bootstrap.log').read_text())
-            if (r/'tls.sock').is_socket():break
+            if (r/'tls.sock').is_socket() and (r/'slot-tls.sock').is_socket():break
             time.sleep(.05)
         else:raise RuntimeError('Isolated nginx socket did not start')
-    def request(self,host,path,headers=None,tls=True,method='GET',paced=True,body=None):
+    def request(self,host,path,headers=None,tls=True,method='GET',paced=True,body=None,slot=False):
         # Exercise routing without overrunning the unchanged 8r/s production
         # SSR limiter as the independent boundary cases share one Unix peer.
         if paced:time.sleep(.14)
-        r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(r/('tls.sock' if tls else 'http.sock')))
+        r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5)
+        s.connect(str(r/(('slot-' if slot else '')+('tls.sock' if tls else 'http.sock'))))
         if tls:s=ssl.create_default_context(cafile=str(r/'cert.pem')).wrap_socket(s,server_hostname=host)
         with s:
             values={'Host':host,'Connection':'close',**(headers or {})}
@@ -163,7 +217,7 @@ class DomainCacheHeaders(unittest.TestCase):
             s.sendall(message+(body or b''))
             res=http.client.HTTPResponse(s,method=method);res.begin()
             headers={k.lower():v for k,v in res.getheaders()}
-            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options'):
+            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options','Vary'):
                 if values:=res.headers.get_all(name):
                     headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
@@ -378,6 +432,60 @@ class DomainCacheHeaders(unittest.TestCase):
         for path,status,cache in [('/admin/assets/index-Abc12345.js',200,'public, max-age=31536000, immutable'),('/admin/assets/missing-Abc12345.js',404,'no-store'),('/admin/assets/plain.js',200,'no-store'),('/admin/vehicles',200,'no-store')]:
             actual,headers,_=self.request('admin.hongdingauto.com',path);self.assertEqual(actual,status);self.assertEqual(headers['cache-control'],cache)
             self.assertEqual(headers['x-content-type-options'],'nosniff')
+    def test_next_static_negotiates_gzip_and_preserves_identity_ranges(self):
+        for slot in (False,True):
+            for host in ('cars.hongdingauto.com','admin.hongdingauto.com'):
+                for path,(content_type,expected) in NEXT_ASSETS.items():
+                    for request_headers,status,compressed,content in (
+                        ({'Accept-Encoding':'gzip','Cookie':'fixture=only','Authorization':'fixture'},200,True,expected),
+                        ({'Accept-Encoding':'gzip;q=0'},200,False,expected),
+                        ({},200,False,expected),
+                        ({'Range':'bytes=5-25','Accept-Encoding':'gzip'},206,False,expected[5:26]),
+                    ):
+                        with self.subTest(slot=slot,host=host,path=path,headers=request_headers):
+                            actual,headers,body=self.request(host,path,request_headers,paced=False,slot=slot)
+                            self.assertEqual(actual,status)
+                            self.assertEqual(headers['content-type'],content_type)
+                            self.assertEqual(headers['vary'],'Accept-Encoding')
+                            self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
+                            self.assertEqual(headers['strict-transport-security'],'max-age=300')
+                            self.assertNotIn('x-test-origin-saw-credentials',headers)
+                            self.assertEqual(headers.get('content-encoding'),'gzip' if compressed else None)
+                            self.assertEqual(gzip.decompress(body) if compressed else body,content)
+                            if status==206:
+                                self.assertEqual(headers['content-range'],f'bytes 5-25/{len(expected)}')
+                    if slot:
+                        _,headers,_=self.request(host,path,paced=False,slot=True)
+                        status,headers,body=self.request(host,path,{
+                            'If-None-Match':headers['etag'],'Accept-Encoding':'gzip',
+                        },paced=False,slot=True)
+                        self.assertEqual((status,body),(304,b''))
+                        self.assertEqual(headers['vary'],'Accept-Encoding')
+                        self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
+                status,headers,_=self.request(host,'/_next/static/missing.js',{'Accept-Encoding':'gzip'},paced=False,slot=slot)
+                self.assertEqual(status,404)
+                self.assertEqual(headers['cache-control'],'no-store')
+        admin='admin.hongdingauto.com'
+        path=next(iter(NEXT_ASSETS))
+        self.assertEqual(self.request(admin,path,{'Accept-Encoding':'gzip'},method='POST',body=b'{}',paced=False)[0],403)
+
+    def test_http2_negotiates_only_for_the_two_tls_hostnames(self):
+        context=ssl.create_default_context(cafile=str(self.root/'cert.pem'))
+        for filename in ('tls.sock','slot-tls.sock'):
+            for host in ('cars.hongdingauto.com','admin.hongdingauto.com'):
+                for offered,expected in ((['h2','http/1.1'],'h2'),(['http/1.1'],'http/1.1')):
+                    with self.subTest(listener=filename,host=host,offered=offered):
+                        context.set_alpn_protocols(offered)
+                        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as raw:
+                            raw.connect(str(self.root/filename))
+                            with context.wrap_socket(raw,server_hostname=host) as tls:
+                                self.assertEqual(tls.selected_alpn_protocol(),expected)
+            context.set_alpn_protocols(['h2','http/1.1'])
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as raw:
+                raw.connect(str(self.root/filename))
+                with self.assertRaisesRegex(ssl.SSLError,'UNRECOGNIZED_NAME'):
+                    context.wrap_socket(raw,server_hostname='unconfigured.invalid')
+
     def test_internal_paths_are_denied_on_both_hosts_and_transports(self):
         for host in ['cars.hongdingauto.com','admin.hongdingauto.com']:
             for tls in [False,True]:
@@ -431,6 +539,31 @@ class DomainCacheHeaders(unittest.TestCase):
             self.assertTrue(all(status in (200,429) for status in statuses))
             self.assertEqual(CacheOrigin.calls.count('/en/'),statuses.count(200))
         finally:time.sleep(2.3)
+    def test_home_gzip_covers_cache_miss_precompressed_hit_and_dynamic_fallback(self):
+        host='cars.hongdingauto.com'
+        for path,accept_encoding,expected_body,calls in (
+            ('/zh/','gzip',None,(['/zh/'],[])),
+            ('/zh/','gzip;q=0',HOME_HTML,(['/zh/'],[])),
+            ('/en/','gzip',HOME_GZIP,(['/en/'],[])),
+            ('/ru/','gzip',None,(['/ru/'],['/ru/'])),
+        ):
+            with self.subTest(path=path,accept_encoding=accept_encoding):
+                Origin.calls.clear();CacheOrigin.calls.clear()
+                status,headers,body=self.request(host,path,{'Accept':'text/html','Accept-Encoding':accept_encoding,
+                                                           'Via':'1.1 synthetic-proxy'})
+                self.assertEqual(status,200)
+                self.assertEqual((CacheOrigin.calls,Origin.calls),calls)
+                self.assertEqual(headers['cache-control'],'no-store')
+                self.assertEqual(headers['strict-transport-security'],'max-age=300')
+                self.assertEqual(headers['content-security-policy'],"frame-ancestors 'none'")
+                self.assertEqual(set(headers['vary'].lower().split(', ')),{'rsc','accept-encoding'})
+                if accept_encoding=='gzip':
+                    self.assertEqual(headers['content-encoding'],'gzip')
+                    self.assertLess(len(body),len(HOME_HTML))
+                    self.assertEqual(gzip.decompress(body),HOME_HTML)
+                else:
+                    self.assertNotIn('content-encoding',headers)
+                if expected_body is not None:self.assertEqual(body,expected_body)
     def test_public_catalog_json_negotiates_gzip_without_changing_body_or_cache_policy(self):
         paths=[('/api/v1/vehicles/', '/api/v1/vehicles'), ('/api/v1/vehicle-filters/', '/api/v1/vehicle-filters'),
                ('/catalog-facets.json', '/catalog-facets.json')]
