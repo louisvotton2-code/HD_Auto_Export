@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiErrorSchema, type PublicVehicleQuery } from '@hd/contracts/public';
+import { ApiErrorSchema } from '@hd/contracts/public';
 import { type MediaAsset } from '@hd/contracts/admin';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
@@ -28,11 +28,12 @@ async function setup(t:TestContext,trustProxy='false') {
     AUTH_SECRET:'auth-rate-tests-placeholder-not-a-live-secret',TRUST_PROXY:trustProxy,
     EXTERNAL_CATALOG_MODE:'synthetic'}));
   t.after(()=>runtime.app.close());
+  const catalogRevision={epoch:'00000000-0000-4000-8000-000000000001',revision:'1'};
   t.mock.method(runtime.db.pool,'connect',()=>{throw new Error('This test must not connect to a database.');});
   t.mock.method(runtime.db.pool,'query',async(sql:unknown)=>{
     const statement=typeof sql==='string' ? sql.replace(/\s+/g,' ') : sql;
     if(statement==='SELECT s.epoch::text,s.revision::text AS revision FROM public_catalog_state s WHERE s.id=1')
-      return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'}],rowCount:1};
+      return {rows:[catalogRevision],rowCount:1};
     if(typeof statement==='string'&&statement.startsWith('SELECT s.id,a.password FROM staff s'))
       return {rows:[],rowCount:0};
     assert.equal(sql,'SELECT id,name,role,banned FROM staff WHERE id=$1');
@@ -65,11 +66,15 @@ async function setup(t:TestContext,trustProxy='false') {
   const displayTranslation=t.mock.method(runtime.inventory,'displayTranslationSuggestions',async()=>{
     throw new ApiError(503,'SERVICE_UNAVAILABLE','Synthetic translation dependency unavailable.',undefined,true);
   });
-  t.mock.method(runtime.inventory,'listPublic',async(query:PublicVehicleQuery,requestId:string)=>({
-    data:{items:[],page:query.page,pageSize:query.pageSize,hasMore:false},
-    meta:{requestId,catalog:'curated' as const,total:0,totalKind:'exact' as const,accessibleTotal:0,
-      dataAsOf:new Date(start).toISOString(),freshness:'fresh' as const},
-  }));
+  const listPublic:typeof runtime.inventory.listPublic=async(query,requestId,_phase,captureRevision)=>{
+    captureRevision?.(catalogRevision);
+    return {
+      data:{items:[],page:query.page,pageSize:query.pageSize,hasMore:false},
+      meta:{requestId,catalog:'curated',total:0,totalKind:'exact',accessibleTotal:0,
+        dataAsOf:new Date(start).toISOString(),freshness:'fresh'},
+    };
+  };
+  t.mock.method(runtime.inventory,'listPublic',listPublic);
   return {...runtime,authRequests,sessions,create,upload,complete,translation,displayTranslation};
 }
 function limited(response:HttpResponse,retry:string|null='60',max?:number) {

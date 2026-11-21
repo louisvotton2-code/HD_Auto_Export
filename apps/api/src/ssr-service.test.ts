@@ -43,8 +43,15 @@ test('real HTTP disconnect cancels an unneeded queued read while normal GET comp
   const blocked=new Promise<void>(resolve=>{release=resolve;}),start=new Promise<void>(resolve=>{started=resolve;});
   const second=new Promise<void>(resolve=>{secondRead=resolve;}),closed=new Promise<void>(resolve=>{disconnected=resolve;});
   let reads=0;const loads:string[]=[];
-  t.mock.method(runtime.db.pool,'query',async()=>{if(++reads===2)secondRead();return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1'}],rowCount:1};});
-  t.mock.method(runtime.inventory,'publicHome',async(locale:string)=>{loads.push(locale);if(locale==='en'){started();await blocked;}return {sections:[]};});
+  const catalogRevision={epoch:'00000000-0000-4000-8000-000000000001',revision:'1'};
+  t.mock.method(runtime.db.pool,'query',async()=>{if(++reads===2)secondRead();return {rows:[catalogRevision],rowCount:1};});
+  const publicHome:typeof runtime.inventory.publicHome=async(locale,_view,_priceView,captureRevision)=>{
+    captureRevision?.(catalogRevision);
+    loads.push(locale);
+    if(locale==='en'){started();await blocked;}
+    return {sections:[]};
+  };
+  t.mock.method(runtime.inventory,'publicHome',publicHome);
   runtime.app.server.on('request',(request,response)=>{if(request.url?.includes('locale=zh'))response.once('close',disconnected);});
   const origin=await runtime.app.listen({host:'127.0.0.1',port:0});
   try {

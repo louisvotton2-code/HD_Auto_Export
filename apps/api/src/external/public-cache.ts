@@ -55,13 +55,13 @@ type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
 type PublicSourceResult<T> = { value: T; expiresAt?: number };
 type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision };
-type LoadedEnvelope = Envelope & { snapshotOnly?: true };
+type LoadedEnvelope = Envelope & { revision: PublicCatalogRevision; snapshotOnly?: true };
 type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
 type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
 const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
 const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
-function canReturnFilterSnapshot(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision) {
+function orderedSnapshotInDomain(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision) {
   return sameEpochAndFx(start,snapshot) && sameEpochAndFx(snapshot,current) &&
     BigInt(start.revision) <= BigInt(snapshot.revision) && BigInt(snapshot.revision) <= BigInt(current.revision);
 }
@@ -159,6 +159,11 @@ export class PublicCatalogCache {
     } catch { return null; }
   }
   private slot(key: string) { return `${this.options.namespace}:slot:${parseInt(key.slice(0, 8), 16) % this.maxEntries}`; }
+  private resourceKey(route: PublicCacheRoute, input: string, revision: PublicCatalogRevision,
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol) {
+    const version = this.stamp(revision,usd,scope,protocol).version;
+    return createHash('sha256').update(canonicalJson(protocol === 2 ? [version,route,input,protocol] : [version,route,input])).digest('hex');
+  }
   private deadline(value: unknown, protocol: CacheProtocol): number {
     let deadline = this.now() + (protocol === 2 ? maxLifetime(protocol) : Math.min(this.ttlMs,maxLifetime(protocol)));
     const stack: unknown[] = [value];
@@ -212,7 +217,8 @@ export class PublicCatalogCache {
       this.remember(key, encoded, envelope.expiresAt); this.values.redisHits++; return envelope;
     } catch { this.values.redisErrors++; return null; }
   }
-  private async load<T>(key: string, revision: PublicCatalogRevision, load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
+  private async load<T>(route: PublicCacheRoute, input: string, key: string, revision: PublicCatalogRevision,
+    load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
     usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal): Promise<LoadedEnvelope> {
     await this.acquireLoad(deadline,signal);
     try {
@@ -222,31 +228,37 @@ export class PublicCatalogCache {
       const snapshot = await load(revision);
       const value = JSON.parse(json(snapshot.value)) as T;
       const current = await this.revision(usd,scope);
-      const moved = !sameRevision(revision,snapshot.revision) || !sameRevision(revision,current);
-      if (moved && (scope !== 'filters' || !canReturnFilterSnapshot(revision,snapshot.revision,current))) {
+      const matchesLookup = sameRevision(revision,snapshot.revision);
+      const stillCurrent = sameRevision(snapshot.revision,current);
+      const moved = !matchesLookup || !stillCurrent;
+      if (moved && ((!stillCurrent && scope !== 'filters') || !orderedSnapshotInDomain(revision,snapshot.revision,current))) {
         this.values.versionRetries++;
         throw changedRevision;
       }
       const expiresAt = Math.min(this.deadline(value,protocol),snapshot.expiresAt ?? Infinity,snapshot.revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
       if (!(expiresAt > this.now())) throw unavailable('expired');
-      const envelope = { format: 1 as const, key, expiresAt, value };
-      if (moved) {
+      if (moved && scope === 'filters') {
         // The response is exact for its own read snapshot. It cannot populate either version's cache.
         this.values.uncachedFilterLoads++;
-        return { ...envelope, snapshotOnly: true };
+        return { format:1,key,expiresAt,value,revision:snapshot.revision,snapshotOnly:true };
       }
-      if (this.options.enabled === false) return envelope;
+      // A queued miss may only now have opened its transaction. Use the version it
+      // actually read and post-validated, even if the original cache key is older.
+      const sourceKey = matchesLookup ? key : this.resourceKey(route,input,snapshot.revision,usd,scope,protocol);
+      const envelope = { format: 1 as const, key:sourceKey, expiresAt, value };
+      const loaded = { ...envelope, revision:snapshot.revision };
+      if (this.options.enabled === false) return loaded;
       const encoded = JSON.stringify(envelope);
-      if (Buffer.byteLength(encoded) > this.maxValueBytes) { this.values.oversizedValues++; return envelope; }
-      this.remember(key, encoded, expiresAt);
+      if (Buffer.byteLength(encoded) > this.maxValueBytes) { this.values.oversizedValues++; return loaded; }
+      this.remember(sourceKey, encoded, expiresAt);
       if (this.dependencies.store) {
         const ttl = Math.floor(expiresAt - this.now());
-        if (ttl > 0) try { await this.dependencies.store.set(this.slot(key), encoded, ttl); }
+        if (ttl > 0) try { await this.dependencies.store.set(this.slot(sourceKey), encoded, ttl); }
         catch { this.values.redisErrors++; }
       }
       if (expiresAt <= this.now()) throw unavailable('expired');
-      return envelope;
+      return loaded;
     } finally { this.releaseLoad(); }
   }
   private async acquireLoad(deadline:number,signal:AbortSignal) {
@@ -282,6 +294,11 @@ export class PublicCatalogCache {
     const result = await this.read(route,normalizedInput,async revision=>({...await load(),revision}),usd,'catalog',protocol,signal);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
+  async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
+    load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1) {
+    const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal);
+    return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
+  }
   async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,protocol:CacheProtocol=1) {
     const result = await this.read('filters',normalizedInput,load,usd,'filters',protocol,signal);
     if (result.snapshotOnly && result.expiresAt <= this.now()) throw unavailable('expired');
@@ -298,9 +315,7 @@ export class PublicCatalogCache {
       for (let attempt = 0; attempt < 2; attempt++) {
         const revision = await this.revision(usd,scope);
         if(requestSignal.aborted)throw interrupted(requestSignal);
-        const version = this.stamp(revision,usd,scope,protocol).version;
-        const keyParts = protocol === 2 ? [version,route,input,protocol] : [version,route,input];
-        const key = createHash('sha256').update(canonicalJson(keyParts)).digest('hex');
+        const key = this.resourceKey(route,input,revision,usd,scope,protocol);
         const cached = await this.lookup(key,protocol);
         if(requestSignal.aborted)throw interrupted(requestSignal);
         if (cached) return { value: cached.value as T, revision, expiresAt: cached.expiresAt, snapshotOnly: false };
@@ -308,7 +323,7 @@ export class PublicCatalogCache {
         let flight = this.flights.get(key);
         if (!flight) {
           const controller=new AbortController();
-          flight={promise:this.load(key,revision,load,usd,scope,protocol,deadline,controller.signal),controller,waiters:0};
+          flight={promise:this.load(route,input,key,revision,load,usd,scope,protocol,deadline,controller.signal),controller,waiters:0};
           this.flights.set(key, flight);
           const own=flight;
           void own.promise.finally(() => { if (this.flights.get(key) === own) this.flights.delete(key); }).catch(() => {});
@@ -316,7 +331,7 @@ export class PublicCatalogCache {
         flight.waiters++;
         try {
           const envelope = await waitFor(flight.promise,requestSignal);
-          return { value: JSON.parse(json(envelope.value)) as T, revision, expiresAt: envelope.expiresAt, snapshotOnly: !!envelope.snapshotOnly };
+          return { value: JSON.parse(json(envelope.value)) as T, revision:envelope.revision, expiresAt:envelope.expiresAt, snapshotOnly:!!envelope.snapshotOnly };
         }
         catch (error) { if (error !== changedRevision) throw error; }
         finally {if(--flight.waiters===0)flight.controller.abort();}

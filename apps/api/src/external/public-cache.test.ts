@@ -59,6 +59,111 @@ test('a publication changing during source reads retries once and never tags old
   await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503, reason: 'revision-changed' });
 });
 
+test('a queued catalog miss loads once and caches under its newer authoritative snapshot', async () => {
+  const now = Date.parse('2026-11-22T00:00:00Z');
+  const earlier = { ...version(), fx: { version: 'quote', expiresAt: now + 3_000 } };
+  const newer = { ...earlier, revision: '2' };
+  let revision = earlier;
+  const store = new Store();
+  const options = { namespace: 'hd:queued-snapshot', maxConcurrentLoads: 1, maxQueuedLoads: 1 };
+  const dependencies = { readRevision: async () => revision, store, now: () => now };
+  const cache = new PublicCatalogCache(options, dependencies);
+  const before = await cache.currentVersion(true);
+  const started = deferred<void>(), release = deferred<void>();
+  const blocker = assert.rejects(cache.getCatalogSnapshot('home', {}, async () => {
+    started.resolve();
+    await release.promise;
+    throw new ApiError(404, 'NOT_FOUND', 'Missing');
+  }), { status: 404 });
+  await started.promise;
+  let loads = 0;
+  const query = { locale: 'zh', page: 1 };
+  const load = async () => {
+    loads++;
+    return { value: { items: ['still-visible'] }, revision, expiresAt: now + 900 };
+  };
+  const pending = [cache.getCatalogSnapshot('list', query, load, true), cache.getCatalogSnapshot('list', query, load, true)] as const;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cache.metrics().activeLoads, 1);
+  assert.equal(cache.metrics().queuedLoads, 1);
+  assert.equal(loads, 0);
+  await assert.rejects(cache.getCatalogSnapshot('detail', { id: 'other' }, load, true), { status: 503, reason: 'load-capacity' });
+  revision = newer;
+  release.resolve();
+  await blocker;
+  const [first, joined] = await Promise.all(pending);
+  assert.deepEqual(first.value, { items: ['still-visible'] });
+  assert.deepEqual(joined, first);
+  assert.equal(first.stamp.version, (await cache.currentVersion(true)).version);
+  assert.notEqual(first.stamp.version, before.version);
+  assert.equal(Date.parse(first.stamp.validUntil), now + 900);
+  assert.deepEqual(store.ttls, [900]);
+  assert.equal(loads, 1);
+  assert.equal(cache.metrics().versionRetries, 0);
+  assert.equal(cache.metrics().activeLoads, 0);
+  assert.equal(cache.metrics().queuedLoads, 0);
+
+  const unexpected = async () => { throw new Error('Unexpected origin load'); };
+  assert.deepEqual(await cache.getCatalogSnapshot('list', query, unexpected, true), first);
+  const replica = new PublicCatalogCache(options, dependencies);
+  assert.deepEqual(await replica.getCatalogSnapshot('list', query, unexpected, true), first);
+  assert.equal(replica.metrics().redisHits, 1);
+  const earlierReplica = new PublicCatalogCache(options, { ...dependencies, readRevision: async () => earlier });
+  const isolated = await earlierReplica.getCatalogSnapshot('list', query, async () => ({ value: { items: ['earlier'] }, revision: earlier }), true);
+  assert.deepEqual(isolated.value, { items: ['earlier'] });
+  assert.equal(isolated.stamp.version, before.version);
+  assert.equal(earlierReplica.metrics().redisHits, 0);
+});
+
+test('a withdrawal during the actual detail snapshot retries once and never publishes the withdrawn DTO', async () => {
+  let revision = version(), loads = 0;
+  const started = deferred<void>(), release = deferred<void>(), store = new Store();
+  const cache = new PublicCatalogCache({ namespace: 'hd:withdrawn-snapshot' }, { readRevision: async () => revision, store });
+  const query = { id: 'withdrawn' };
+  const load = async () => {
+    loads++;
+    const snapshot = revision;
+    if (snapshot.revision === '2') throw new ApiError(404, 'NOT_FOUND', 'Missing');
+    started.resolve();
+    await release.promise;
+    return { value: { id: 'withdrawn' }, revision: snapshot };
+  };
+  const read = assert.rejects(cache.getCatalogSnapshot('detail', query, load), { status: 404 });
+  await started.promise;
+  revision = version('2');
+  release.resolve();
+  await read;
+  assert.equal(loads, 2);
+  assert.equal(cache.metrics().versionRetries, 1);
+  assert.equal(cache.metrics().entries, 0);
+  assert.equal(store.values.size, 0);
+});
+
+test('catalog snapshots do not bridge epoch, FX or revision rollback and do not hide failed post-checks', async () => {
+  const now = Date.parse('2026-11-22T00:00:00Z');
+  for (const mode of ['epoch', 'fx', 'rollback', 'database'] as const) {
+    let revision: PublicCatalogRevision = { ...version('3'), fx: { version: 'first', expiresAt: now + 3_000 } };
+    let loads = 0;
+    const store = new Store();
+    const cache = new PublicCatalogCache({ namespace: 'hd:unsafe-catalog-snapshot' }, {
+      now: () => now, store, readRevision: async () => {
+        if (mode === 'database' && loads) throw new Error('private connection data');
+        return revision;
+      },
+    });
+    await assert.rejects(cache.getCatalogSnapshot('home', {}, async () => {
+      loads++;
+      if (mode === 'epoch') revision = { ...revision, epoch: epoch.replace(/1$/, String(loads + 1)) };
+      if (mode === 'fx') revision = { ...revision, fx: { version: String(loads), expiresAt: now + 3_000 } };
+      if (mode === 'rollback') revision = { ...revision, revision: String(3 - loads) };
+      return { value: { items: ['unsafe'] }, revision };
+    }, true), { status: 503, reason: mode === 'database' ? 'revision-read' : 'revision-changed', message: 'Public catalog is temporarily unavailable.' });
+    assert.equal(loads, mode === 'database' ? 1 : 2);
+    assert.equal(cache.metrics().entries, 0);
+    assert.equal(store.values.size, 0);
+  }
+});
+
 test('filters return a coherent uncached snapshot during repeated directory commits, then cache a stable read', async () => {
   let revision = version(), loads = 0;
   const store = new Store();
