@@ -132,6 +132,8 @@ test('withholds only selected unverifiable public inspection reports, invalidate
   const rawBefore = await untouched();
   const setsBefore = await inspectionSets();
   const catalogRevision = async () => (await db.pool.query('SELECT epoch,revision,filter_revision FROM public_catalog_state WHERE id=1')).rows[0];
+  const precedingListing = async (id: string) => (await db.pool.query<{id: string}>(
+    'SELECT id FROM external_listings WHERE id<$1 ORDER BY id DESC LIMIT 1', [id])).rows[0]?.id;
   const detail = (id: string, locale: Locale, inline = false, internal = false) => app.inject({
     url: `${internal ? '/internal/public-catalog' : '/api/v1'}/vehicles/ext-${id}?locale=${locale}&view=localized${inline ? '&projection=detail-inline-v1' : ''}`,
     ...(internal ? { remoteAddress: peer, headers: { 'x-hd-ssr-key': secret } } : {}),
@@ -231,11 +233,82 @@ test('withholds only selected unverifiable public inspection reports, invalidate
     assert.deepEqual(await catalogRevision(), revisionAfter);
   });
 
+  await t.test('reprojects a matching report without detail heads and replaces the warm public report', async () => {
+    const reportSummary = 'Rebuilt synthetic report summary';
+    const reportFinding = 'Synthetic repair marks at the rear edge';
+    const oldReportPage = await evidence(valid.id, 'en');
+    assert.equal(oldReportPage.statusCode, 200, oldReportPage.body);
+    const oldReport = inspect.parse(oldReportPage.json().data);
+    assert.equal(oldReport.items[0]?.value.text, 'Synthetic archive summary');
+    assert.ok(oldReport.nextCursor);
+    for (const { inline, internal } of views) {
+      const cached = await detail(valid.id, 'en', inline, internal);
+      assert.equal(cached.statusCode, 200, cached.body);
+      assert.equal(cached.json().data.inspectionSummary.checked, 4);
+      if (inline) assert.equal(PublicVehicleInlineSchema.parse(cached.json().data).inspectionInline.defects[0]?.value.text, finding);
+      const loads = calls.mock.callCount();
+      assert.equal((await detail(valid.id, 'en', inline, internal)).statusCode, 200);
+      assert.equal(calls.mock.callCount(), loads, 'the legacy projection is warm on this route');
+    }
+    const before = await catalogRevision();
+    await db.transaction(async tx => {
+      await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+      await persistSourceDocument(tx, { ...valid.report, observedAt: '2026-11-14T02:00:00.000Z',
+        payload: { id: valid.externalId, source: 'che168', available: true,
+          summary: [{ area: 'Body', result: reportSummary }],
+          counts: [{ category: 'Accident items', checked: 9, faults: 2 }],
+          checks: [{ category: 'Major accident check', groups: [{ name: 'Body', items: [
+            { part: 'Rear door', result: reportFinding, ok: false },
+          ] }] }] } });
+    });
+    assert.equal((await db.pool.query(`SELECT 1 FROM external_source_heads
+      WHERE provider='chinacarapi' AND source='che168' AND external_id=$1 AND kind='detail'`, [valid.externalId])).rowCount, 0);
+    assert.deepEqual(await catalogRevision(), before, 'archiving alone must not publish a new report');
+    const options = { after: await precedingListing(valid.id), limit: 1 };
+    const allBefore = await inspectionSets();
+    assert.deepEqual(await reprojectStoredInspections(db, options), { scanned: 1, changed: 1, nextCursor: valid.id });
+    const after = await catalogRevision();
+    assert.equal(BigInt(after.revision), BigInt(before.revision) + 1n);
+    assert.deepEqual((await inspectionSets()).filter(row => row.listing_id !== valid.id), allBefore.filter(row => row.listing_id !== valid.id));
+    for (const { inline, internal } of views) {
+      const projected = await detail(valid.id, 'en', inline, internal);
+      assert.equal(projected.statusCode, 200, projected.body);
+      const data = projected.json().data;
+      const inlineData = inline ? PublicVehicleInlineSchema.parse(data) : null;
+      const car = inlineData ?? PublicVehicleSchema.parse(data);
+      assert.deepEqual([car.inspectionSummary?.status, car.inspectionSummary?.checked, car.inspectionSummary?.faults], ['available', 9, 2]);
+      if (inlineData) {
+        assert.deepEqual(inlineData.inspectionInline.defects.map(item => item.value.text), [reportFinding]);
+        assert.deepEqual(inlineData.inspectionInline.conclusions.map(item => item.value.text), [reportSummary]);
+      }
+      assert.doesNotMatch(projected.body, /Synthetic dent at the front edge|Synthetic archive summary/);
+    }
+    assert.equal((await evidence(valid.id, 'en', oldReport.nextCursor!)).statusCode, 409);
+    const currentResponse = await evidence(valid.id, 'en');
+    assert.equal(currentResponse.statusCode, 200, currentResponse.body);
+    const current = inspect.parse(currentResponse.json().data);
+    assert.deepEqual([current.status, current.total, current.summary?.checked, current.items[0]?.value.text],
+      ['available', 2, 9, reportSummary]);
+    assert.ok(current.nextCursor);
+    const remaining = await evidence(valid.id, 'en', current.nextCursor);
+    assert.equal(remaining.statusCode, 200, remaining.body);
+    const last = inspect.parse(remaining.json().data);
+    assert.deepEqual([last.items[0]?.value.text, last.nextCursor], [reportFinding, null]);
+
+    const repaired = await inspectionSets();
+    assert.deepEqual(await reprojectStoredInspections(db, options), { scanned: 1, changed: 0, nextCursor: valid.id });
+    assert.deepEqual(await withholdUnverifiableInspections(db, { listingIds: [valid.id] }), {
+      reports: [{ listingId: valid.id, result: 'rebuildable', revisions: [] }],
+    });
+    assert.deepEqual(await inspectionSets(), repaired);
+    assert.deepEqual(await catalogRevision(), after);
+  });
+
   await db.transaction(async tx => {
     await tx.query('SELECT pg_advisory_xact_lock(78291332)');
     for (const doc of [...missing.details, missing.report]) await persistSourceDocument(tx, doc);
   });
-  const previous = [mismatched, malformed, newerUnavailable, valid, unavailable, hidden, unselected].map(item => item.id).filter(id => id < missing.id).sort().at(-1);
+  const previous = await precedingListing(missing.id);
   const repaired = await reprojectStoredInspections(db, { after: previous, limit: 1 });
   assert.equal(repaired.changed, 1);
   assert.equal(repaired.nextCursor, missing.id);
@@ -274,6 +347,26 @@ test('withholds only selected unverifiable public inspection reports, invalidate
     assert.deepEqual(await attempt, { reports: [{ listingId: unselected.id, result: 'rebuildable', revisions: [] }] });
     assert.deepEqual(await catalogRevision(), beforeRace);
     assert.equal(inspect.parse((await evidence(unselected.id, 'en')).json().data).status, 'available');
+  });
+
+  await t.test('report-only reprojection keeps wrong-bound and hidden reports out of public reads', async () => {
+    const removed = await db.pool.query(`DELETE FROM external_source_heads
+      WHERE provider='chinacarapi' AND source='che168' AND external_id=ANY($1::text[]) AND kind='detail'`,
+    [[mismatched.externalId, hidden.externalId]]);
+    assert.equal(removed.rowCount, 2 * locales.length);
+    const theseSets = async () => (await inspectionSets()).filter(row => row.listing_id === mismatched.id || row.listing_id === hidden.id);
+    const before = await theseSets();
+    assert.deepEqual(await reprojectStoredInspections(db, { after: await precedingListing(mismatched.id), limit: 1 }),
+      { scanned: 1, changed: 0, nextCursor: mismatched.id });
+    // Run this scan last because skipping the hidden target may advance to a different listing.
+    const result = await reprojectStoredInspections(db, { after: await precedingListing(hidden.id), limit: 1 });
+    assert.notEqual(result.nextCursor, hidden.id);
+    assert.deepEqual(await theseSets(), before);
+    const withheld = await evidence(mismatched.id, 'en');
+    assert.equal(withheld.statusCode, 200, withheld.body);
+    const report = inspect.parse(withheld.json().data);
+    assert.deepEqual([report.status, report.items, report.conclusions], ['unavailable', [], []]);
+    assert.equal((await evidence(hidden.id, 'en')).statusCode, 404);
   });
   assert.equal(network.mock.callCount(), 0);
 });
