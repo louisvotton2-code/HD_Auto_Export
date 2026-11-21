@@ -1,26 +1,59 @@
 import {z} from 'zod';
 import type {Locale} from '@hd/contracts/public';
+import type {PoolClient} from 'pg';
 import type {Database} from '../db/index.js';
 import {jsonHash} from './normalize.js';
-import {loadSourceDocuments,type SourceIdentity} from './sources/documents.js';
+import {loadSourceDocuments,type SourceDocument,type SourceIdentity} from './sources/documents.js';
 import {selectInspection} from './sources/inspection-projection.js';
 import {projectVehicleEvidence,refreshInspectionEvidence} from './sources/public-evidence.js';
+
+const inspectionLocales=['zh','en','ru'] as const;
+const publicListing=`l.upstream_state='active' AND l.formal_primary
+ AND EXISTS(SELECT 1 FROM external_catalog c WHERE c.listing_id=l.id)`;
+
+function rebuildableInspections(documents:SourceDocument[],identity:SourceIdentity){
+ const projections=inspectionLocales.map(locale=>({locale,inspection:selectInspection(documents,identity,{},locale)}));
+ return projections.every(({inspection})=>inspection.status==='available')?projections:null;
+}
+
+async function lockInspectionMaintenance(tx:PoolClient){
+ await tx.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+ await tx.query("SET LOCAL lock_timeout='1s'; SET LOCAL statement_timeout='5s'; SET LOCAL transaction_timeout='20s'");
+ await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+}
+
+async function lockInspectionArchive(tx:PoolClient,identity:SourceIdentity){
+ await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[[identity.provider,identity.source,identity.externalId].join(':')]);
+}
 
 export const InspectionReprojectOptions=z.strictObject({after:z.uuid().optional(),limit:z.number().int().min(1).max(100).default(25)});
 /** Bounded offline projection repair: source heads are read under the normal writer lock; no import, media or inventory writes. */
 export async function reprojectStoredInspections(db:Database,input:z.input<typeof InspectionReprojectOptions>){
  const {after,limit}=InspectionReprojectOptions.parse(input);
- const picked=await db.pool.query<{id:string}>(`SELECT l.id FROM external_listings l WHERE provider='chinacarapi' AND platform_id IN('che168','dongchedi')
-  AND ($1::uuid IS NULL OR l.id>$1) AND EXISTS(SELECT 1 FROM external_source_heads h WHERE h.provider=l.provider AND h.source=l.platform_id AND h.external_id=l.external_id AND h.kind='detail')
+ const picked=await db.pool.query<{id:string}>(`SELECT l.id FROM external_listings l WHERE l.provider='chinacarapi' AND l.platform_id IN('che168','dongchedi')
+  AND ($1::uuid IS NULL OR l.id>$1) AND EXISTS(SELECT 1 FROM external_source_heads h
+   WHERE h.provider=l.provider AND h.source=l.platform_id AND h.external_id=l.external_id
+    AND (h.kind='detail' OR (h.kind='report' AND ${publicListing})))
   ORDER BY l.id LIMIT $2`,[after??null,limit]);
  let changed=0;
  for(const {id} of picked.rows)await db.transaction(async tx=>{
-  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
-  const row=(await tx.query<{platform_id:'che168'|'dongchedi';external_id:string}>("SELECT platform_id,external_id FROM external_listings WHERE id=$1 AND provider='chinacarapi' FOR UPDATE",[id])).rows[0];if(!row)return;
-  const documents=await loadSourceDocuments(tx,{provider:'chinacarapi',source:row.platform_id,externalId:row.external_id});
-  if(!documents.some(d=>d.kind==='detail'))return;
-  const projection=projectVehicleEvidence(documents);let updated=false;
-  for(const locale of ['zh','en','ru'] as const){const result=await refreshInspectionEvidence(tx,id,locale,projection[locale].inspection);updated=updated||result;}
+  await lockInspectionMaintenance(tx);
+  const row=(await tx.query<{platform_id:SourceIdentity['source'];external_id:string;is_public:boolean}>(`SELECT l.platform_id,l.external_id,(${publicListing}) AS is_public
+   FROM external_listings l WHERE l.id=$1 AND l.provider='chinacarapi' AND l.platform_id IN('che168','dongchedi') FOR NO KEY UPDATE`,[id])).rows[0];
+  if(!row)return;
+  const identity:SourceIdentity={provider:'chinacarapi',source:row.platform_id,externalId:row.external_id};
+  await lockInspectionArchive(tx,identity);
+  const documents=await loadSourceDocuments(tx,identity);
+  const hasDetail=documents.some(d=>d.kind==='detail');
+  if(!hasDetail&&!row.is_public)return;
+  let projections=rebuildableInspections(documents,identity);
+  if(!projections){
+   if(!hasDetail)return;
+   const legacy=projectVehicleEvidence(documents);
+   projections=inspectionLocales.map(locale=>({locale,inspection:legacy[locale].inspection}));
+  }
+  let updated=false;
+  for(const {locale,inspection} of projections){const result=await refreshInspectionEvidence(tx,id,locale,inspection);updated=updated||result;}
   if(updated)changed++;
  });
  return {scanned:picked.rows.length,changed,nextCursor:picked.rows.length===limit?picked.rows.at(-1)!.id:null};
@@ -34,26 +67,23 @@ type WithholdReport={listingId:string;result:'withheld'|'rebuildable'|'skipped';
 export function withholdUnverifiableInspections(db:Database,input:z.input<typeof InspectionWithholdOptions>) {
  const listingIds=[...new Set(InspectionWithholdOptions.parse(input).listingIds.map(id=>id.toLowerCase()))].sort();
  return db.transaction(async tx=>{
-  await tx.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
-  await tx.query("SET LOCAL lock_timeout='1s'; SET LOCAL statement_timeout='5s'; SET LOCAL transaction_timeout='20s'");
-  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+  await lockInspectionMaintenance(tx);
   const reports:WithholdReport[]=[];
   for(const listingId of listingIds){
    const listing=(await tx.query<{platform_id:SourceIdentity['source'];external_id:string}>(`SELECT l.platform_id,l.external_id
     FROM external_listings l WHERE l.id=$1 AND l.provider='chinacarapi' AND l.platform_id IN('che168','dongchedi')
-    AND l.upstream_state='active' AND l.formal_primary
-    AND EXISTS(SELECT 1 FROM external_catalog c WHERE c.listing_id=l.id) FOR NO KEY UPDATE`,[listingId])).rows[0];
+    AND ${publicListing} FOR NO KEY UPDATE`,[listingId])).rows[0];
    const report:WithholdReport={listingId,result:'skipped',revisions:[]};
    reports.push(report);
    if(!listing)continue;
    const identity:SourceIdentity={provider:'chinacarapi',source:listing.platform_id,externalId:listing.external_id};
    // Serialize with archive updates as well as the public supplier writer.
-   await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[[identity.provider,identity.source,identity.externalId].join(':')]);
+   await lockInspectionArchive(tx,identity);
    const current=(await tx.query<{locale:Locale;source_revision:string}>(`SELECT locale,source_revision FROM external_vehicle_evidence_sets
     WHERE listing_id=$1 AND kind='inspection' AND status='available' ORDER BY locale FOR UPDATE`,[listingId])).rows;
    if(!current.length)continue;
    const sources=await loadSourceDocuments(tx,identity,'report');
-   if(current.every(({locale})=>selectInspection(sources,identity,{},locale).status==='available')){
+   if(rebuildableInspections(sources,identity)){
     report.result='rebuildable';
     continue;
    }

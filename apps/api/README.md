@@ -260,7 +260,7 @@ node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATAB
 node dist/external/inspection-reproject-cli.js --apply --database EXISTING_DATABASE_NAME --limit 25 --after PREVIOUS_NEXT_CURSOR
 ```
 
-读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。limit默认25、最大100，每次仅一批，返回 `{scanned,changed,nextCursor}`，nextCursor非null才沿同一命令续跑。失败退出1，不打印数据库连接/原文；成功0仅表示该批完成。末页nextCursor=null才表示该次有界遍历结束；重复运行相同内容不会重复改版本。只覆盖具有当前detail存档的ChinaCarAPI身份，缺档不虚构报告；现场处理数/异常和是否完成须由OPS另记，不能把本说明视为已经执行。
+读取 `DATABASE_URL_FILE`，命令指定库名必须与实际连接库名一致；生产还要求有效 `HD_RELEASE_ID`。`limit` 默认 25、最大 100，每次处理一批，返回 `{scanned,changed,nextCursor}`。`nextCursor` 非空时继续同一命令，空值表示遍历结束。失败退出 1，已完成的单车事务保留，从同一游标重试即可；重复处理同一内容不会推进版本。候选包含有详情归档的既有范围，以及仍公开且持有报告归档的挂牌。仅有报告归档时，同源绑定和三语投影校验均通过才写入。实际处理数和异常由 OPS 记录。
 
 ### 按挂牌暂停无法复核的旧检测
 
