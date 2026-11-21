@@ -293,29 +293,51 @@ test('previously stored supplier copy with private costs or contacts stays out o
 
 test('powertrain and year overview count unpriced listings and preserve visibility and facet availability',async()=>{
   const make={id:'facet-test-make',name:'Facet test make'};
+  const search='纯电回归唯一样本';
   for(const [position,index] of [1,2,3].entries()) {
     const id=external[index]!;
     await db.pool.query(`UPDATE external_catalog
       SET facts=facts||$2::jsonb,price_cny=CASE WHEN $3 THEN NULL ELSE price_cny END,
-        localized=CASE WHEN $3 THEN localized-'en' ELSE localized END WHERE listing_id=$1`,[id,JSON.stringify({
+        localized=jsonb_set(jsonb_set(CASE WHEN $3 THEN localized-'en' ELSE localized END,
+          '{zh,display,make,text}',to_jsonb($4::text)),'{zh,title,text}',to_jsonb($5::text)) WHERE listing_id=$1`,[id,JSON.stringify({
       make,model:{id:'facet-test-model',name:'Facet test model'},trim:{id:'facet-test-trim',name:'Facet test trim'},
-      generation:{id:'facet-test-generation',name:'Facet test generation'},powertrain:'bev',modelYear:position===1?2019:2020,
-    }),position===2]);
+      generation:{id:'facet-test-generation',name:'Facet test generation'},powertrain:'bev',
+      modelYear:[2020,2019,2022][position],drivetrain:position===2?'awd':'fwd',
+    }),position===2,position===2?'合成新品牌':'合成旧品牌',position===0?search:'其他合成样本']);
   }
-  const options={make:make.id,powertrain:'bev',yearMin:2020,projection:'overview'};
-  const read=(locale:'zh'|'en')=>service.filters(filters({...options,locale}));
-  const zh=await read('zh');
+  const options={locale:'zh',catalog:'curated',powertrain:'bev',yearMin:2020};
+  const compareToFull=async(extra:Record<string,unknown>={},expectedPhases?:string[])=>{
+    const full=await service.filters(filters({...options,...extra}));
+    const {trims,generations,priceCurrencies,models,...shared}=full;
+    const overview={...shared,hasTrims:Boolean(trims?.length),hasGenerations:Boolean(generations?.length)};
+    const supplierPhases:string[]=[];
+    const {value:result}=await service.filterResult(filters({...options,...extra,projection:'overview'}),phase=>{
+      if(phase.startsWith('supplier_'))supplierPhases.push(phase);
+    });
+    if(expectedPhases)assert.deepEqual(supplierPhases,expectedPhases);
+    assert.deepEqual(result,{...overview,models:[]});
+    assert.deepEqual(await service.filters(filters({...options,...extra,projection:'overview-models'})),{...overview,models});
+    return result;
+  };
+  const supplierFacets=['supplier_facets'];
+  const zh=await compareToFull({},supplierFacets);
   assert.equal(zh.total,2);
-  assert.equal(zh.makes.find(option=>option.id===make.id)?.count,2);
-  assert.deepEqual(zh.modelYears,[{year:2020,count:2}]);
+  assert.deepEqual(zh.makes,[{id:make.id,name:'合成新品牌',count:2}]);
+  assert.deepEqual(zh.modelYears,[{year:2022,count:1},{year:2020,count:1}]);
   assert.deepEqual(zh.powertrains,[{id:'bev',count:2}]);
+  assert.deepEqual(zh.drivetrains,[{id:'awd',count:1},{id:'fwd',count:1}]);
   assert.equal(zh.hasTrims,true);
   assert.equal(zh.hasGenerations,true);
-  assert.equal((await read('en')).total,1);
+  assert.equal((await compareToFull({make:make.id,q:search})).total,1);
+  assert.equal((await compareToFull({locale:'en'})).total,1);
+  assert.equal((await compareToFull({yearMin:2023},supplierFacets)).total,0);
+
+  await db.pool.query("UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1 AND locale='zh'",[external[3]]);
+  assert.deepEqual((await compareToFull({},[...supplierFacets,'supplier_label_fallback'])).makes,[{id:make.id,name:'合成旧品牌',count:2}]);
   await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[external[3]]);
-  assert.equal((await read('zh')).total,1);
-  await db.pool.query('UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1',[external[1]]);
-  const safe=await read('zh');
+  assert.equal((await compareToFull()).total,1);
+  await db.pool.query("UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1 AND locale='zh'",[external[1]]);
+  const safe=await compareToFull();
   assert.equal(safe.total,1);
   assert.deepEqual(safe.makes,[{id:make.id,name:'外部挂牌',count:1}]);
 });

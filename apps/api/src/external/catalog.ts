@@ -461,7 +461,22 @@ const externalFacetGroups = {
   generation: ['generation_id','make_id','model_id'], powertrain: ['powertrain'],
   drivetrain: ['drivetrain'], year: ['model_year'], currency: ['price_available'],
 } as const;
-const namedFacetKinds: ReadonlySet<string> = new Set(['make','model','trim','generation']);
+const facetLabelKinds = ['make','model','trim','generation'] as const;
+const namedFacetKinds: ReadonlySet<string> = new Set(facetLabelKinds);
+type FacetLabelKind = typeof facetLabelKinds[number];
+
+function externalFacetLabel(kind:FacetLabelKind) {
+  const label=`label.${kind}_label`;
+  if(kind==='generation')return label;
+  return `CASE WHEN coalesce(overrides.data->'facts' ? '${kind}',false)
+    OR labels.localized->$1::text->'display'->'${kind}'->>'provenance'='human' THEN ${label}
+    ELSE coalesce(extra.data->'names'->'${kind}'->>'text',${label}) END`;
+}
+
+const facetLabelJoins = `JOIN external_catalog labels ON labels.listing_id=label.listing_id
+  LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=label.listing_id
+  LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`;
+
 function externalFacetGroup(kind: keyof typeof externalFacetGroups, currency:'CNY'|'USD') {
   const columns = externalFacetGroups[kind];
   const [id, make, model] = columns;
@@ -481,6 +496,31 @@ const projectedFacetDimensions = {
   variants: ['make_id','model_id','trim_id','generation_id'],
 };
 
+function externalOverviewGroups(withModels:boolean) {
+  // Model groups include make_id too, so check the model key before make.
+  const kinds=withModels?['model',...overviewFacetKinds] as const:overviewFacetKinds;
+  const groupSets=kinds.map(kind=>`(${externalFacetGroups[kind].join(',')})`);
+  const axis=kinds.map(kind=>`WHEN GROUPING(${externalFacetGroups[kind][0]})=0 THEN '${kind}'`);
+  const facetIds=kinds.map(kind=>`WHEN '${kind}' THEN ${externalFacetGroups[kind][0]}::text`);
+  return `, rollups AS MATERIALIZED (
+    SELECT CASE ${axis.join(' ')} ELSE 'total' END AS kind,
+      ${projectedFacetDimensions[withModels?'overview-models':'overview'].join(',')},
+      coalesce(sum(row_count),0)::int AS total,min(label_order COLLATE "C") AS label_order,
+      bool_or(has_trims) AS has_trims,bool_or(has_generations) AS has_generations
+    FROM atoms GROUP BY GROUPING SETS (${groupSets.join(',')},())
+  ), facets AS (
+    SELECT kind,id,make_id,NULL::text AS model_id,count,label_order FROM (
+      SELECT kind,CASE kind ${facetIds.join(' ')} END AS id,
+        CASE WHEN kind='model' THEN make_id END AS make_id,total AS count,
+        CASE WHEN kind IN ('make','model') THEN label_order END AS label_order
+      FROM rollups
+    ) grouped WHERE kind='total' OR (id IS NOT NULL AND (kind<>'model' OR make_id IS NOT NULL)
+      AND (kind<>'powertrain' OR id<>'unknown'))
+    UNION ALL SELECT 'hasTrims',NULL,NULL,NULL,coalesce(has_trims,false)::int,NULL FROM rollups WHERE kind='total'
+    UNION ALL SELECT 'hasGenerations',NULL,NULL,NULL,coalesce(has_generations,false)::int,NULL FROM rollups WHERE kind='total'
+  )`;
+}
+
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
   observe?: (phase:'supplier_label_fallback')=>void) {
   const { where: filters, values } = matches(query,quote);
@@ -490,17 +530,22 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;
   const dimensions=projection?projectedFacetDimensions[projection]:fullFacetDimensions;
   const overview=isFacetOverview(projection);
-  const includeTotal=overview||projection===undefined;
+  const full=projection===undefined;
   const currency=query.priceView==='usd'?'USD':'CNY';
   let priceAvailable='f.price_cny IS NOT NULL';
-  if(projection===undefined && query.priceView==='usd') {
+  if(full && query.priceView==='usd') {
     const range=usdSourceRange('CNY',quote);priceAvailable='false';
     if(range){values.push(range.minimum,range.maximum);priceAvailable=`coalesce(f.price_cny>=$${values.length-1}::numeric AND f.price_cny<=$${values.length}::numeric,false)`;}
   }
   const inputColumns=overview?[...new Set([...dimensions,'model_id','trim_id','generation_id'])]:dimensions;
   const matchedDimensions=inputColumns.map(column=>column==='price_available'?`${priceAvailable} AS price_available`:`f.${column}`);
   const groupBy=dimensions.join(',');
-  const facets=kinds.map(kind=>externalFacetGroup(kind,currency));
+  const groups=overview?externalOverviewGroups(projection==='overview-models'):
+    `${full?', summary AS (SELECT coalesce(sum(row_count),0)::int AS total FROM atoms)':''}, facets AS (
+      ${kinds.map(kind=>externalFacetGroup(kind,currency)).join('\n      UNION ALL ')}
+      ${full?"UNION ALL SELECT 'total',NULL,NULL,NULL,total,NULL FROM summary":''}
+    )`;
+  const needed=facetLabelKinds.filter(kind=>kinds.some(value=>value===kind));
   // First coalesce identical complete facet tuples. Counts and minimum winner
   // keys are distributive, so grouping these atoms by each dimension preserves
   // exact counts. Overview keeps only overview dimensions in the grouping; variant
@@ -512,33 +557,22 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     SELECT ${groupBy},${overview?`${facetAvailability},`:''}
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count
     FROM matched GROUP BY ${groupBy}
-  )${includeTotal?`, summary AS (SELECT coalesce(sum(row_count),0)::int AS total${overview?',bool_or(has_trims) AS has_trims,bool_or(has_generations) AS has_generations':''} FROM atoms)`:''}, facets AS (
-    ${facets.join('\n    UNION ALL ')}
-    ${includeTotal?"UNION ALL SELECT 'total',NULL,NULL,NULL,total,NULL FROM summary":''}
-    ${overview?facetOverviewRows:''}
-  ) SELECT g.kind,g.id,
-      CASE g.kind WHEN 'make' THEN winner.make_label WHEN 'model' THEN winner.model_label
-        WHEN 'trim' THEN winner.trim_label WHEN 'generation' THEN winner.generation_label END AS name,
-      g.make_id,g.model_id,g.count
-    FROM facets g LEFT JOIN LATERAL (
-      SELECT CASE WHEN coalesce(overrides.data->'facts' ? 'make',false) OR labels.localized->$1::text->'display'->'make'->>'provenance'='human' THEN label.make_label ELSE coalesce(extra.data->'names'->'make'->>'text',label.make_label) END AS make_label,
-        CASE WHEN coalesce(overrides.data->'facts' ? 'model',false) OR labels.localized->$1::text->'display'->'model'->>'provenance'='human' THEN label.model_label ELSE coalesce(extra.data->'names'->'model'->>'text',label.model_label) END AS model_label,
-        CASE WHEN coalesce(overrides.data->'facts' ? 'trim',false) OR labels.localized->$1::text->'display'->'trim'->>'provenance'='human' THEN label.trim_label ELSE coalesce(extra.data->'names'->'trim'->>'text',label.trim_label) END AS trim_label,label.generation_label
-      FROM external_catalog_search label JOIN external_catalog labels ON labels.listing_id=label.listing_id
-      LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=label.listing_id
-      LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale
-      WHERE label.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid AND label.locale=$1::text
-        AND g.kind IN ('make','model','trim','generation') LIMIT 1
-    ) winner ON true`,values);
+  )${groups}, winner_ids AS (
+    SELECT DISTINCT substring(label_order FROM 19 FOR 36)::uuid AS listing_id FROM facets WHERE label_order IS NOT NULL
+  ), winner_labels AS MATERIALIZED (
+    SELECT label.listing_id,${needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ')}
+    FROM winner_ids JOIN external_catalog_search label ON label.listing_id=winner_ids.listing_id AND label.locale=$1::text
+    ${facetLabelJoins}
+  ) SELECT g.kind,g.id,g.make_id,g.model_id,g.count,
+    CASE g.kind ${needed.map(kind=>`WHEN '${kind}' THEN winner.${kind}`).join(' ')} END AS name
+  FROM facets g LEFT JOIN winner_labels winner ON winner.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid`,values);
   // Historical projections may contain a null label despite a present ID. The
   // previous min(order || name) ignored those rows; preserve that rare fallback
   // without probing labels for every normal matched vehicle.
   const missing=result.rows.filter(row=>namedFacetKinds.has(row.kind)&&row.name===null);
   if(missing.length) {
     observe?.('supplier_label_fallback');
-    const name=`CASE missing.kind WHEN 'make' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'make',false) OR labels.localized->$1::text->'display'->'make'->>'provenance'='human' THEN label.make_label ELSE coalesce(extra.data->'names'->'make'->>'text',label.make_label) END
-      WHEN 'model' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'model',false) OR labels.localized->$1::text->'display'->'model'->>'provenance'='human' THEN label.model_label ELSE coalesce(extra.data->'names'->'model'->>'text',label.model_label) END
-      WHEN 'trim' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'trim',false) OR labels.localized->$1::text->'display'->'trim'->>'provenance'='human' THEN label.trim_label ELSE coalesce(extra.data->'names'->'trim'->>'text',label.trim_label) END WHEN 'generation' THEN label.generation_label END`;
+    const name=`CASE missing.kind ${facetLabelKinds.map(kind=>`WHEN '${kind}' THEN ${externalFacetLabel(kind)}`).join(' ')} END`;
     const fallback=await tx.query<Pick<CatalogFacetRow,'kind'|'id'|'name'|'make_id'|'model_id'>>(`SELECT missing.*,selected.name
       FROM jsonb_to_recordset($${matchingValues.length+1}::jsonb) AS missing(kind text,id text,make_id text,model_id text)
       CROSS JOIN LATERAL (
