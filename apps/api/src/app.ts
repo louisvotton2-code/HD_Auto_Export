@@ -302,7 +302,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   if(seoDb)app.addHook('onClose',async()=>{await seoDb.close();});
   registerSeoRoutes(app,seoDb??db,config.publicSeoEnabled,config.externalCatalog);
 
-  app.get(SSR_CATALOG_VERSION_PATH,{schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
+  // Service authentication runs before this route's independent rate-limit store.
+  app.get(SSR_CATALOG_VERSION_PATH,{config:{rateLimit:{max:120}},schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
     response:{200:pub.InternalPublicCatalogVersionResponseSchema,...errorResponses}}},async request=>{
     const query=request.query as z.infer<typeof pub.PublicCatalogVersionQuerySchema>;
     return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
