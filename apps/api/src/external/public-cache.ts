@@ -39,6 +39,8 @@ export async function readPublicCatalogRevision(db: DatabaseReader, usd = false,
 }
 
 export type PublicCacheRoute = 'list' | 'filters' | 'detail' | 'home';
+export type PublicCacheReadPhase = 'cache_revision' | 'cache_lookup' | 'origin_queue' | 'origin_shared';
+type CacheReadObserver = (phase: PublicCacheReadPhase) => void;
 export type PublicCatalogCacheOptions = {
   namespace: string; redis?: RedisPublicCacheOptions; ttlMs?: number; maxConcurrentLoads?: number; maxConcurrentRevisionReads?: number;
   maxEntries?: number; maxBytes?: number; maxValueBytes?: number; requestTimeoutMs?: number;
@@ -238,7 +240,7 @@ export class PublicCatalogCache {
       const expiresAt = Math.min(this.deadline(value,protocol),snapshot.expiresAt ?? Infinity,snapshot.revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
       if (!(expiresAt > this.now())) throw unavailable('expired');
-      if (moved && scope === 'filters') {
+      if (!stillCurrent && scope === 'filters') {
         // The response is exact for its own read snapshot. It cannot populate either version's cache.
         this.values.uncachedFilterLoads++;
         return { format:1,key,expiresAt,value,revision:snapshot.revision,snapshotOnly:true };
@@ -290,8 +292,8 @@ export class PublicCatalogCache {
     return this.getBoundedVersioned(route,normalizedInput,async()=>({value:await load()}),usd,signal,protocol);
   }
   async getBoundedVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<PublicSourceResult<T>>,
-    usd = false, signal?: AbortSignal, protocol:CacheProtocol=1) {
-    const result = await this.read(route,normalizedInput,async revision=>({...await load(),revision}),usd,'catalog',protocol,signal);
+    usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?: CacheReadObserver) {
+    const result = await this.read(route,normalizedInput,async revision=>({...await load(),revision}),usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
@@ -299,13 +301,14 @@ export class PublicCatalogCache {
     const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
-  async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,protocol:CacheProtocol=1) {
-    const result = await this.read('filters',normalizedInput,load,usd,'filters',protocol,signal);
+  async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,
+    protocol:CacheProtocol=1, observe?: CacheReadObserver) {
+    const result = await this.read('filters',normalizedInput,load,usd,'filters',protocol,signal,observe);
     if (result.snapshotOnly && result.expiresAt <= this.now()) throw unavailable('expired');
     return { value: result.value, stamp: result.snapshotOnly ? undefined : this.stamp(result.revision,usd,'filters',protocol,result.expiresAt) };
   }
   private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal) {
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal, observe?: CacheReadObserver) {
     const deadline=performance.now()+this.timeoutMs;
     if (this.closed) throw unavailable('closed');
     if (!['list', 'filters', 'detail', 'home'].includes(route)) throw unavailable('invalid-input');
@@ -313,14 +316,17 @@ export class PublicCatalogCache {
     if (Buffer.byteLength(input) > 16_384) throw unavailable('invalid-input');
     const work = async (requestSignal:AbortSignal) => {
       for (let attempt = 0; attempt < 2; attempt++) {
+        observe?.('cache_revision');
         const revision = await this.revision(usd,scope);
         if(requestSignal.aborted)throw interrupted(requestSignal);
         const key = this.resourceKey(route,input,revision,usd,scope,protocol);
+        observe?.('cache_lookup');
         const cached = await this.lookup(key,protocol);
         if(requestSignal.aborted)throw interrupted(requestSignal);
         if (cached) return { value: cached.value as T, revision, expiresAt: cached.expiresAt, snapshotOnly: false };
         this.values.misses++;
         let flight = this.flights.get(key);
+        observe?.(flight ? 'origin_shared' : 'origin_queue');
         if (!flight) {
           const controller=new AbortController();
           flight={promise:this.load(route,input,key,revision,load,usd,scope,protocol,deadline,controller.signal),controller,waiters:0};

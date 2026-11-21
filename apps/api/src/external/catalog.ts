@@ -452,10 +452,11 @@ const externalFacetGroups = {
   generation: ['generation_id','make_id','model_id'], powertrain: ['powertrain'],
   drivetrain: ['drivetrain'], year: ['model_year'], currency: ['price_available'],
 } as const;
+const namedFacetKinds: ReadonlySet<string> = new Set(['make','model','trim','generation']);
 function externalFacetGroup(kind: keyof typeof externalFacetGroups, currency:'CNY'|'USD') {
   const columns = externalFacetGroups[kind];
   const [id, make, model] = columns;
-  const label = ['make','model','trim','generation'].includes(kind) ? 'min(label_order COLLATE "C")' : 'NULL::text';
+  const label = namedFacetKinds.has(kind) ? 'min(label_order COLLATE "C")' : 'NULL::text';
   const valid = kind==='currency' ? 'price_available'
     : columns.map(column=>`${column} IS NOT NULL`).concat(kind==='powertrain'?["powertrain<>'unknown'"]:[]).join(' AND ');
   return `SELECT '${kind}' AS kind,${kind==='currency'?`'${currency}'`:id+'::text'} AS id,
@@ -471,7 +472,8 @@ const projectedFacetDimensions = {
   variants: ['make_id','model_id','trim_id','generation_id'],
 };
 
-export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[]) {
+export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
+  observe?: (phase:'supplier_label_fallback')=>void) {
   const { where: filters, values } = matches(query,quote);
   const where = pairs ? `${filters} AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}` : filters;
   const matchingValues=[...values];
@@ -522,8 +524,9 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // Historical projections may contain a null label despite a present ID. The
   // previous min(order || name) ignored those rows; preserve that rare fallback
   // without probing labels for every normal matched vehicle.
-  const missing=result.rows.filter(row=>['make','model','trim','generation'].includes(row.kind)&&row.name===null);
+  const missing=result.rows.filter(row=>namedFacetKinds.has(row.kind)&&row.name===null);
   if(missing.length) {
+    observe?.('supplier_label_fallback');
     const name=`CASE missing.kind WHEN 'make' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'make',false) OR labels.localized->$1::text->'display'->'make'->>'provenance'='human' THEN label.make_label ELSE coalesce(extra.data->'names'->'make'->>'text',label.make_label) END
       WHEN 'model' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'model',false) OR labels.localized->$1::text->'display'->'model'->>'provenance'='human' THEN label.model_label ELSE coalesce(extra.data->'names'->'model'->>'text',label.model_label) END
       WHEN 'trim' THEN CASE WHEN coalesce(overrides.data->'facts' ? 'trim',false) OR labels.localized->$1::text->'display'->'trim'->>'provenance'='human' THEN label.trim_label ELSE coalesce(extra.data->'names'->'trim'->>'text',label.trim_label) END WHEN 'generation' THEN label.generation_label END`;
@@ -547,7 +550,8 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     const names=new Map(fallback.rows.map(row=>[key(row),row.name]));
     for(const row of missing)row.name=names.get(key(row))??null;
   }
-  return result.rows.map(row=>row.name && !isPublicText(row.name) ? {...row,name:fallbackExternalTitle(query.locale).text} : row);
+  return result.rows.map(row=>namedFacetKinds.has(row.kind) && (!row.name || !isPublicText(row.name))
+    ? {...row,name:fallbackExternalTitle(query.locale).text}:row);
 }
 
 export async function reportMediaFailure(db: Database, mediaId: string, revision: number) {
