@@ -1,6 +1,7 @@
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages, setRequestLocale } from 'next-intl/server';
 import { getCalculatorCommonMessages } from '@/i18n/client-messages';
+import '@/modules/calculator/ui/reference-calculator.css';
 
 /** Shared calculator vocabulary stays cached across destination changes. */
 export default async function CalculatorLayout({

@@ -18,7 +18,6 @@ import '../globals.css';
 import '@/shared/ui/brand.css';
 import '@/shared/ui/navigation.css';
 import '@/modules/calculator/ui/calculator-refinement.css';
-import '@/modules/calculator/ui/reference-calculator.css';
 import '@/shared/ui/interaction-motion.css';
 
 export const dynamicParams = false;
