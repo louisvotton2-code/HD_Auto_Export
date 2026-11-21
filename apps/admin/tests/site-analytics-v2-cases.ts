@@ -202,12 +202,17 @@ test('v2 website analytics keeps all four views on a 390 px screen and shows unk
   await checkWidth();
 
   await tab(page, '市场来源');
+  const attribution = page.getByRole('link', { name: 'IP Geolocation by DB-IP', exact: true });
   const unknownRegion = page.getByRole('row').filter({ hasText: '未知国家或地区' });
   await expect(unknownRegion).toBeVisible();
+  await expect(attribution).toBeVisible();
+  await expect(attribution).toHaveAttribute('href', 'https://db-ip.com/');
+  await expect(attribution).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(page.getByRole('img', { name: '按国家或地区的浏览过程次数', exact: true }).locator('svg')).toBeVisible();
   await expect(unknownRegion.getByRole('cell').first()).toHaveText('1');
   await select(page, '统计维度', '访问来源');
   await expect(page.getByRole('table').getByText('未知', { exact: true })).toBeVisible();
+  await expect(attribution).toHaveCount(0);
   await checkWidth();
 
   await tab(page, '车型排行');
@@ -229,9 +234,31 @@ test('v2 website analytics keeps all four views on a 390 px screen and shows unk
   await checkWidth();
   await tab(page, '历史总览');
   await expect(region(page)).toBeVisible();
+  await expect(page.getByText('国家未知的会话', { exact: true })).toBeVisible();
+  await expect(attribution).toBeVisible();
   await expect(figure(page, '页面浏览（PV）每日趋势').getByRole('img').locator('svg')).toBeVisible();
   await checkWidth();
   expect(reads).toHaveLength(1);
+});
+
+test('v2 website analytics keeps uncollected country data distinct from inferred locations', async ({ page }) => {
+  await installReport(page);
+  await page.route(`**${reportPath}?*`, route => {
+    const query = AnalyticsReportQuerySchema.parse(Object.fromEntries(new URL(route.request().url()).searchParams));
+    const report = sampleReport(query);
+    return reply(route, AnalyticsReportResponseSchema.parse({
+      ...report,
+      data: { ...report.data, coverage: 'not_collected', markets: { ...report.data.markets, countries: [] } },
+    }));
+  });
+  const attribution = page.getByRole('link', { name: 'IP Geolocation by DB-IP', exact: true });
+  await page.goto(analyticsPage);
+  await tab(page, '市场来源');
+  await expect(page.getByText('所选期间暂无可用的市场来源数据', { exact: true })).toBeVisible();
+  await expect(attribution).toHaveCount(0);
+  await tab(page, '历史总览');
+  await expect(page.getByText('国家未知的会话', { exact: true }).locator('..')).toContainText('未采集');
+  await expect(attribution).toHaveCount(0);
 });
 
 test('v2 website analytics requests ranked pages from the entire result for each selected metric', async ({ page }) => {
