@@ -51,6 +51,8 @@ test('missing, pending, explicit absence, unavailable and mismatched evidence ne
  assert.equal(selectInspection([doc({...report,available:false})],identity,{},'en').status,'unavailable');
  assert.equal(selectInspection([doc({id:identity.externalId,hasReport:false})],identity,{},'en').status,'no_report');
  assert.equal(selectInspection([doc({...report,id:'900009'})],identity,{},'en').status,'unknown');
+ assert.equal(selectInspection([doc({...report,id:[identity.externalId]})],identity,{},'en').status,'unknown');
+ assert.equal(selectInspection([doc({...report,id:Number(identity.externalId)})],identity,{},'en').status,'available');
  assert.equal(selectInspection([doc({id:identity.externalId,checks:[],counts:[],summary:[],defects:[]})],identity,{},'en').status,'unavailable');
  const unsafe=projectInspectionReport({checks:[{category:'https://private.invalid',groups:[{name:'Contact: +12345678901',items:[{part:'Door',result:'OK',ok:true}]}]}]},'en');
  assert.equal(unsafe.status,'unavailable');assert.equal(unsafe.items.length,0);

@@ -57,8 +57,11 @@ export async function persistSourceDocument(tx:PoolClient,document:SourceDocumen
     AND NOT EXISTS(SELECT 1 FROM external_source_responses r JOIN external_source_blob_refs p ON p.hash=r.response_hash WHERE r.document_id=d.id)`,[...identity,document.kind,document.locale]);
   return {id,hash,headChanged:head.rowCount===1};
 }
-export async function loadSourceDocuments(tx:PoolClient,identity:SourceIdentity):Promise<SourceDocument[]>{
-  const rows=await tx.query<{kind:SourceDocument['kind'];locale:SourceDocument['locale'];payload:unknown;source_updated_at:Date|null;observed_at:Date;event_sequence:string|null}>(`SELECT d.*,h.observed_at,h.merged_payload AS payload FROM external_source_heads h JOIN external_source_documents d ON d.id=h.document_id WHERE h.provider=$1 AND h.source=$2 AND h.external_id=$3`,[identity.provider,identity.source,identity.externalId]);
+export async function loadSourceDocuments(tx:PoolClient,identity:SourceIdentity,kind?:'report'):Promise<SourceDocument[]>{
+  const rows=await tx.query<{kind:SourceDocument['kind'];locale:SourceDocument['locale'];payload:unknown;source_updated_at:Date|null;observed_at:Date;event_sequence:string|null}>(`SELECT d.kind,d.locale,d.source_updated_at,d.event_sequence,h.observed_at,h.merged_payload AS payload
+   FROM external_source_heads h JOIN external_source_documents d ON d.id=h.document_id
+    AND ((h.kind<>'report' AND d.kind<>'report') OR (d.provider,d.source,d.external_id,d.kind,d.locale)=(h.provider,h.source,h.external_id,h.kind,h.locale))
+   WHERE h.provider=$1 AND h.source=$2 AND h.external_id=$3 AND ($4::text IS NULL OR h.kind=$4)`,[identity.provider,identity.source,identity.externalId,kind??null]);
   return rows.rows.map(row=>({identity,kind:row.kind,locale:row.locale,payload:row.payload,observedAt:row.observed_at.toISOString(),sourceUpdatedAt:row.source_updated_at?.toISOString()??null,...(row.event_sequence===null?{}:{eventSequence:row.event_sequence})}));
 }
 export async function persistTrimDocument(tx:PoolClient,trimId:string,locale:SourceDocument['locale'],payload:unknown,observedAt:string){

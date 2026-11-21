@@ -91,7 +91,8 @@ export function selectInspection(documents:SourceDocument[],identity:SourceIdent
  const newest=new Map<string,SourceDocument>();
  for(const d of documents.filter(d=>d.kind==='report').sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt))){
   const r=obj(d.payload);
-  if(d.identity.provider!==identity.provider||d.identity.source!==identity.source||d.identity.externalId!==identity.externalId||String(r.id)!==identity.externalId||r.source!==undefined&&r.source!==identity.source)continue;
+  const reportId=typeof r.id==='string'?r.id:typeof r.id==='number'&&Number.isSafeInteger(r.id)?String(r.id):null;
+  if(d.identity.provider!==identity.provider||d.identity.source!==identity.source||d.identity.externalId!==identity.externalId||reportId!==identity.externalId||r.source!==undefined&&r.source!==identity.source)continue;
   if(!newest.has(d.locale))newest.set(d.locale,d);
  }
  const preference=locale==='ru'?['ru','en','und','zh']:['en','und','ru','zh'];
