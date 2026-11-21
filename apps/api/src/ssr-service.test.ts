@@ -28,12 +28,51 @@ test('SSR credentials and actual socket peer are both required; forged public he
       assert.equal((await app.inject({url:internal,remoteAddress:peer,headers:{'x-hd-ssr-key':secret}})).statusCode,400);
     for(let i=0;i<120;i++)assert.equal((await app.inject({url:'/api/v1/vehicles?locale=invalid',remoteAddress:'198.51.100.20',headers:{'x-hd-ssr-key':secret}})).statusCode,400);
     assert.equal((await app.inject({url:'/api/v1/vehicles?locale=invalid',remoteAddress:'198.51.100.20',headers:{'x-hd-ssr-key':secret}})).statusCode,429);
-    const version={url:'/internal/public-catalog/version?unexpected=1',remoteAddress:'192.0.2.10',headers:{'x-hd-ssr-key':secret,'x-forwarded-for':'198.51.100.30'}};
-    for(let i=0;i<120;i++)assert.equal((await app.inject(version)).statusCode,400);
-    assert.equal((await app.inject(version)).statusCode,429);
-    assert.equal((await app.inject({...version,headers:{...version.headers,'x-forwarded-for':'198.51.100.31'}})).statusCode,400);
     assert.equal((await app.inject({method:'POST',url:'/internal/public-catalog/vehicles',remoteAddress:'192.0.2.10',headers:{'x-hd-ssr-key':secret},payload:{}})).statusCode,404);
   } finally {await app.close();}
+});
+
+test('authenticated version checks have a separate bounded quota for the resolved visitor',async t=>{
+  const peer='192.0.2.10', visitor='198.51.100.30';
+  const config=readConfig({NODE_ENV:'test',DATABASE_URL:'postgresql://unused@127.0.0.1:1/unused',AUTH_SECRET:'a'.repeat(32),TRUST_PROXY:`${peer}/32`});
+  const runtime=await buildApp({...config,ssrService:{secret,peers:[`${peer}/32`]}});
+  const {app,db}=runtime;
+  t.after(()=>app.close());
+  let available=true;
+  const query=t.mock.method(db.pool,'query',async()=>{
+    if(!available)throw new Error('Isolated version read failed.');
+    return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1',fx_version:null,fx_expires_at:null}],rowCount:1};
+  });
+  const path='/internal/public-catalog/version?priceView=usd';
+  const headers={'x-hd-ssr-key':secret,'x-forwarded-for':visitor,'x-hd-cache-protocol':'2'};
+  const readVersion=(scope='')=>app.inject({url:`${path}${scope}`,remoteAddress:peer,headers});
+  const publicRequest=()=>app.inject({url:'/api/v1/vehicles?locale=invalid',remoteAddress:visitor});
+
+  assert.equal((await app.inject({url:path,remoteAddress:peer,headers:{'x-forwarded-for':visitor}})).statusCode,404);
+  assert.equal((await app.inject({url:path,remoteAddress:visitor,headers})).statusCode,404);
+  assert.equal(query.mock.callCount(),0);
+
+  const catalog=await readVersion(), filters=await readVersion('&scope=filters');
+  assert.equal(catalog.statusCode,200);
+  assert.equal(filters.statusCode,200);
+  assert.equal(catalog.headers['x-hd-cache-protocol'],'2');
+  assert.equal(catalog.headers['cache-control'],'no-store');
+  assert.notEqual(catalog.json().data.version,filters.json().data.version);
+
+  for(let i=0;i<120;i++)assert.equal((await publicRequest()).statusCode,400,`public request ${i+1}`);
+  assert.equal((await publicRequest()).statusCode,429);
+  assert.equal(query.mock.callCount(),2);
+
+  available=false;
+  assert.equal((await readVersion()).statusCode,503);
+  available=true;
+  for(let i=3;i<120;i++)assert.equal((await readVersion()).statusCode,200,`version request ${i+1}`);
+  const limited=await readVersion('&scope=filters');
+  assert.equal(limited.statusCode,429);
+  assert.equal(limited.json().error.code,'RATE_LIMITED');
+  assert.ok(Number(limited.headers['retry-after'])>0);
+  assert.equal(query.mock.callCount(),120);
+  assert.equal((await app.inject({url:path,remoteAddress:peer,headers:{...headers,'x-forwarded-for':'198.51.100.31'}})).statusCode,200);
 });
 
 test('real HTTP disconnect cancels an unneeded queued read while normal GET completion stays usable',async t=>{
