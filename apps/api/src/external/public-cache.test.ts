@@ -202,6 +202,52 @@ test('Redis failures allow only bounded live loads; unknown source errors are ne
   assert.equal(failures, 2);
 });
 
+test('cold same-key callers share one Redis attempt and one bounded origin load during a Redis outage',async()=>{
+  const redis=deferred<void>(),origin=deferred<void>(),originStarted=deferred<void>();
+  const store=new Store();
+  let gets=0,loads=0;
+  store.get=async()=>{gets++;await redis.promise;throw new Error('Private Redis outage');};
+  store.fail=true;
+  const cache=new PublicCatalogCache({namespace:'hd:redis-burst',maxConcurrentLoads:1},{readRevision:async()=>version(),store});
+  const request=()=>cache.get('filters',{locale:'ru',projection:'overview'},async()=>{
+    loads++;originStarted.resolve();await origin.promise;return {total:1};
+  });
+  const waiting=Array.from({length:20},request);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(gets,1);
+  redis.resolve();
+  await originStarted.promise;
+  const joiner=request();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(gets,1);
+  assert.equal(cache.metrics().activeLoads,1);
+  origin.resolve();
+  for(const result of await Promise.all([...waiting,joiner]))assert.deepEqual(result,{total:1});
+  assert.equal(loads,1);
+  assert.equal(cache.metrics().activeLoads,0);
+  assert.equal(cache.metrics().rejectedLoads,0);
+});
+
+test('same-key coalesced Redis hits keep caller DTOs independent',async()=>{
+  const store=new Store();
+  const options={namespace:'hd:redis-coalesced-hit'},dependencies={readRevision:async()=>version(),store};
+  const writer=new PublicCatalogCache(options,dependencies);
+  await writer.get('list',{locale:'ru'},async()=>({items:[{id:'valid'}]}));
+  const original=store.get.bind(store),release=deferred<void>();
+  let gets=0;
+  store.get=async key=>{gets++;await release.promise;return original(key);};
+  const reader=new PublicCatalogCache(options,dependencies);
+  const load=async()=>{throw new Error('Unexpected origin fetch');};
+  const first=reader.get<{items:{id:string}[]}>('list',{locale:'ru'},load);
+  const second=reader.get<{items:{id:string}[]}>('list',{locale:'ru'},load);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(gets,1);
+  release.resolve();
+  const [a,b]=await Promise.all([first,second]);
+  a.items[0]!.id='caller edit';
+  assert.equal(b.items[0]!.id,'valid');
+});
+
 test('caller timeout retains the actual source concurrency slot until the source settles', async () => {
   const release = deferred<{ ok: boolean }>();
   const cache = new PublicCatalogCache({ namespace: 'hd:test', maxConcurrentLoads: 1, requestTimeoutMs: 15 }, { readRevision: async () => version() });

@@ -52,7 +52,8 @@ async function setup(t: TestContext) {
     if (cookie === editorCookie) return {user:{id:'editor'}};
     return null;
   });
-  const ingest = t.mock.method(runtime.analytics, 'ingest', async (_events: readonly AnalyticsEvent[], _allowExternal: boolean) => {});
+  const ingest = t.mock.method(runtime.analytics, 'ingest', async (events: readonly AnalyticsEvent[], _allowExternal: boolean) =>
+    ({received:events.length,accepted:events.length,duplicates:0,dropped:0}));
   const overview = t.mock.method(runtime.analytics, 'overview', async (days: AnalyticsDays) => overviewData(days));
   t.mock.method(runtime.inventory, 'listPublic', async (query: PublicVehicleQuery, requestId: string) => ({
     data:{items:[], page:query.page, pageSize:query.pageSize, hasMore:false},
@@ -96,7 +97,7 @@ test('analytics accepts anonymous JSON and gives the same acknowledgement for a 
     cookie:adminCookie, authorization:'Bearer analytics-test-ignored', 'sec-fetch-site':'same-origin',
   });
   assertAccepted(hidden);
-  assert.deepEqual(ingest.mock.calls.map(call => call.arguments), [[[pageView], true], [[hiddenClick], true]]);
+  assert.deepEqual(ingest.mock.calls.map(call => call.arguments), [[[pageView], true, undefined], [[hiddenClick], true, undefined]]);
   assert.equal(getSession.mock.callCount(), 0);
   assert.equal(hidden.headers['set-cookie'], undefined);
 });

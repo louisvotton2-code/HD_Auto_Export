@@ -200,6 +200,27 @@ export const SaveVehicleTranslationBundleSchema = z.strictObject({
 });
 export type SaveVehicleTranslationBundle = z.infer<typeof SaveVehicleTranslationBundleSchema>;
 export const VersionRequestSchema = z.strictObject({ version: VersionSchema });
+export const VehiclePixelSettingsSchema = z.strictObject({
+  vehicleId: z.union([z.uuid(), ExternalListingIdSchema]),
+  pixelEnabled: z.boolean(),
+  version: VersionSchema,
+});
+export type VehiclePixelSettings = z.infer<typeof VehiclePixelSettingsSchema>;
+export const VehiclePixelSettingsResponseSchema = responseSchema(VehiclePixelSettingsSchema);
+export const SaveVehiclePixelSettingsSchema = VersionRequestSchema.extend({ pixelEnabled: z.boolean() });
+export type SaveVehiclePixelSettings = z.infer<typeof SaveVehiclePixelSettingsSchema>;
+export const EnabledPixelVehicleSchema = VehiclePixelSettingsSchema.pick({ vehicleId: true }).extend({
+  code: AdminVehicleSchema.shape.stockCode,
+  title: TranslatableFieldSchema.shape.sourceText.unwrap(),
+});
+export const EnabledPixelVehiclesQuerySchema = z.strictObject({
+  page: AdminVehicleQuerySchema.shape.page, pageSize: AdminVehicleQuerySchema.shape.pageSize,
+});
+export type EnabledPixelVehiclesQuery = z.infer<typeof EnabledPixelVehiclesQuerySchema>;
+export const EnabledPixelVehiclesResponseSchema = responseSchema(AdminVehicleListSchema.shape.data
+  .pick({ page: true, pageSize: true, total: true })
+  .extend({ items: z.array(EnabledPixelVehicleSchema).max(48) }));
+export type EnabledPixelVehicles = z.infer<typeof EnabledPixelVehiclesResponseSchema>['data'];
 export const PublishVehicleRequestSchema = VersionRequestSchema;
 export const ArchiveVehicleRequestSchema = VersionRequestSchema;
 export const DeleteVehicleRequestSchema = VersionRequestSchema;
@@ -397,3 +418,5 @@ export type StaffRecord = z.infer<typeof StaffRecordSchema>;
 export const StaffRecordResponseSchema = responseSchema(StaffRecordSchema);
 export const StaffDirectoryResponseSchema = responseSchema(z.strictObject({items:z.array(StaffRecordSchema)}));
 export const StaffMutationResponseSchema = responseSchema(z.strictObject({id:IdSchema}));
+
+export * from './sync-timings.js';

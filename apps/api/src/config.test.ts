@@ -17,6 +17,19 @@ test('capacity mode is isolated from the original synthetic guard and accepts on
     EXTERNAL_REDIS_USER:'scale_cache',EXTERNAL_REDIS_PASSWORD_FILE:'/run/secrets/scale-cache'});
   assert.equal(redis.publicCache?.redis?.host,'redis-scale');
 });
+test('capacity mode can opt in to the formal queue without increasing its active-load budget',()=>{
+  const fixture={...base,HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),EXTERNAL_CATALOG_MODE:'synthetic-scale',
+    DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/hd_ext_scale_config',EXTERNAL_PUBLIC_CACHE:'memory'};
+  assert.equal(readConfig(fixture).publicCache.maxQueuedLoads,0);
+  const optIn=readConfig({...fixture,EXTERNAL_CACHE_MAX_QUEUED_LOADS:'16'}).publicCache;
+  assert.equal(optIn.maxQueuedLoads,16);
+  assert.equal(optIn.maxConcurrentLoads,4);
+  for(const value of ['','-1','1.5','17','1e1',' 16'])
+    assert.throws(()=>readConfig({...fixture,EXTERNAL_CACHE_MAX_QUEUED_LOADS:value}),/EXTERNAL_CACHE_MAX_QUEUED_LOADS/);
+  const formal={...base,HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'a'.repeat(40),PUBLIC_CATALOG_CACHE:'memory'};
+  assert.equal(readConfig(formal).publicCache.maxQueuedLoads,16);
+  assert.throws(()=>readConfig({...formal,EXTERNAL_CACHE_MAX_QUEUED_LOADS:'16'}),/requires isolated synthetic-scale mode/);
+});
 test('synthetic source ingestion is restricted to isolated loopback databases without a translation provider',()=>{
   const fixture={...base,DATABASE_URL:'postgresql://local:local@127.0.0.1:55432/hd_ext_config_test',EXTERNAL_CATALOG_MODE:'synthetic'};
   assert.equal(readConfig(base).externalCatalog,false);
