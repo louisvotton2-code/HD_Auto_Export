@@ -10,7 +10,7 @@ import {FullSyncWorker,configureFullSync} from '../src/external/full-sync/engine
 import type {FullSyncClient} from '../src/external/full-sync/client.js';
 import {FullSyncError} from '../src/external/full-sync/types.js';
 import type {Change,Source} from '../src/external/full-sync/types.js';
-import {fullSyncTimings} from '../src/external/full-sync/timing.js';
+import {fullSyncTimings,recordDetailTiming,recordWithdrawalTiming} from '../src/external/full-sync/timing.js';
 import {ExternalStore} from '../src/external/store.js';
 import {InventoryService} from '../src/vehicles/service.js';
 import {buildApp} from '../src/app.js';
@@ -105,6 +105,60 @@ test('sync priority, fairness and five-stage observations persist without confus
    await next(1002,'price','2026-11-14T01:02:00.000Z');await worker.details();assert.equal((await timeline(1002)).public_effective_at,null,'same prior public price cannot be counted as a known effective price change');
    await next(1003,'removed','2026-11-14T01:03:00.000Z');assert.equal((await timeline(1003)).public_outcome,'effective');assert.equal((await timeline(1003)).detail_updated_at,null);await assert.rejects(inventory.getPublic(`ext-${id}`,'en','localized'));
    await next(1004,'relisted','2026-11-14T01:04:00.000Z');assert.equal((await timeline(1004)).public_effective_at,null);await worker.details();assert.equal((await timeline(1004)).public_outcome,'effective');assert.equal((await inventory.getPublic(`ext-${id}`,'en','localized')).content.title.text,'Staff title stays');
+   await ctx.test('timing writes only pending events for the requested identity and generation',async timingCtx=>{
+    const tx=await database.pool.connect();
+    try{
+     await tx.query('BEGIN');
+     const oldAt=new Date('2026-11-14T01:04:00.000Z');
+     assert.equal((await tx.query('SELECT locale_mask FROM external_catalog_filter WHERE listing_id=$1',[id])).rows[0].locale_mask,7);
+     await tx.query(`INSERT INTO external_full_events(event_id,payload_hash,source,external_id,operation,business_at,document_refs,
+      source_type,detail_generation,public_outcome,prior_public_price,was_public,public_effective_at)
+      SELECT event_id,'fixture','che168',identity,operation,$1::timestamptz,'[]',kind,generation,outcome,prior_price,was_public,
+       CASE WHEN has_time THEN $1::timestamptz END
+      FROM (VALUES
+       (1100,'9001','upsert','price',990,'pending',70000,true,false),
+       (1101,'9001','upsert','price',990,'pending',65000,true,false),
+       (1102,'9001','upsert',NULL,990,'unknown',NULL,NULL,false),
+       (1103,'9001','upsert','price',990,'effective',70000,true,true),
+       (1104,'9001','upsert','price',990,'effective',70000,true,false),
+       (1105,'9001','upsert','price',991,'pending',70000,true,false),
+       (1106,'9002','upsert','price',990,'pending',70000,true,false),
+       (1107,'9001','withdraw','removed',990,'pending',65000,true,false),
+       (1108,'9001','withdraw','removed',990,'pending',NULL,false,false)
+      ) AS v(event_id,identity,operation,kind,generation,outcome,prior_price,was_public,has_time)`,[oldAt]);
+     const observations=async()=>(await tx.query(`SELECT event_id::int,public_outcome,detail_updated_at,public_effective_at
+      FROM external_full_events WHERE event_id BETWEEN 1100 AND 1108 ORDER BY event_id`)).rows;
+     const pending=await observations();
+     const record=async(fn:typeof recordDetailTiming,generation='990')=>{
+      const query=timingCtx.mock.method(tx,'query');
+      try{await fn(tx,'che168','9001',generation);assert.equal(query.mock.callCount(),1);}finally{query.mock.restore();}
+     };
+     await record(recordDetailTiming);
+     const detail=await observations();
+     assert.equal(detail[0].public_outcome,'effective');
+     assert.ok(detail[0].detail_updated_at>=oldAt&&detail[0].public_effective_at>=detail[0].detail_updated_at);
+     assert.equal(detail[1].public_outcome,'not_public');
+     assert.ok(detail[1].detail_updated_at>=oldAt);
+     assert.equal(detail[1].public_effective_at,null);
+     assert.deepEqual(detail.slice(2),pending.slice(2));
+     await record(recordDetailTiming);
+     await record(recordDetailTiming,'999');
+     assert.deepEqual(await observations(),detail);
+
+     await tx.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[id]);
+     await tx.query('DELETE FROM external_catalog WHERE listing_id=$1',[id]);
+     await record(recordWithdrawalTiming);
+     const withdrawn=await observations();
+     assert.deepEqual(withdrawn.slice(0,7),detail.slice(0,7));
+     assert.equal(withdrawn[7].public_outcome,'effective');
+     assert.ok(withdrawn[7].public_effective_at>=oldAt);
+     assert.equal(withdrawn[7].detail_updated_at,null);
+     assert.deepEqual(withdrawn[8],{...pending[8],public_outcome:'not_public'});
+     await record(recordWithdrawalTiming);
+     await record(recordWithdrawalTiming,'999');
+     assert.deepEqual(await observations(),withdrawn);
+    }finally{await tx.query('ROLLBACK');tx.release();}
+   });
    const before=await fullSyncTimings(database);assert.equal(before.metrics.find(m=>m.kind==='price')!.publicEffective,1);assert.equal(before.metrics.find(m=>m.kind==='relisted')!.publicEffective,1);
    // Actual memory-cache hit, not a mocked publicResponse: the member hint is outside the cached loader.
    const servingFile=path.join(directory,'serving-mode');await writeFile(servingFile,'candidate',{mode:0o600});

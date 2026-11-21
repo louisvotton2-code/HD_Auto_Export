@@ -7,28 +7,33 @@ export async function supersedeTiming(tx:PoolClient,source:string,id:string,gene
  await tx.query(`UPDATE external_full_events SET public_outcome='superseded'
   WHERE source=$1 AND external_id=$2 AND detail_generation<$3 AND public_outcome='pending'`,[source,id,generation]);
 }
+
+// Stamp the indexed pending row in the same update as its outcome. Terminal
+// history and refreshes without a pending event need no second lookup.
+const observedPublicTiming = (verified: string) => `(
+  WITH observation AS MATERIALIZED (SELECT (${verified}) AS effective)
+  SELECT CASE WHEN effective THEN 'effective' ELSE 'not_public' END,
+   CASE WHEN effective THEN coalesce(e.public_effective_at, statement_timestamp()) ELSE e.public_effective_at END
+  FROM observation
+ )`;
+
 export async function recordWithdrawalTiming(tx:PoolClient,source:string,id:string,generation:string){
- await tx.query(`UPDATE external_full_events e SET public_outcome=CASE WHEN e.was_public AND EXISTS(
+ await tx.query(`UPDATE external_full_events e SET (public_outcome, public_effective_at)=${observedPublicTiming(`e.was_public AND EXISTS(
    SELECT 1 FROM external_listings l WHERE l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
-   AND l.upstream_state='withdrawn' AND NOT EXISTS(SELECT 1 FROM external_catalog c WHERE c.listing_id=l.id)) THEN 'effective' ELSE 'not_public' END
+   AND l.upstream_state='withdrawn' AND NOT EXISTS(SELECT 1 FROM external_catalog c WHERE c.listing_id=l.id))`)}
   WHERE e.source=$1 AND e.external_id=$2 AND e.detail_generation=$3 AND e.operation='withdraw' AND e.public_outcome='pending'`,[source,id,generation]);
- await tx.query(`UPDATE external_full_events SET public_effective_at=clock_timestamp() WHERE source=$1 AND external_id=$2
-  AND detail_generation=$3 AND public_outcome='effective' AND public_effective_at IS NULL`,[source,id,generation]);
 }
 export async function recordDetailTiming(tx:PoolClient,source:string,id:string,generation:string){
  // A detail fetched for this generation may still contain stale supplier data. Keep that unresolved.
  // A hidden, disputed, non-representative or unpriced listing does not count as publicly effective.
- await tx.query(`UPDATE external_full_events e SET detail_updated_at=clock_timestamp(),
-   public_outcome=CASE WHEN EXISTS(SELECT 1 FROM external_listings l
+ await tx.query(`UPDATE external_full_events e SET detail_updated_at=statement_timestamp(),
+   (public_outcome, public_effective_at)=${observedPublicTiming(`EXISTS(SELECT 1 FROM external_listings l
     JOIN external_catalog c ON c.listing_id=l.id JOIN external_catalog_filter f ON f.listing_id=l.id
     WHERE l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
      AND l.upstream_state='active' AND l.formal_primary AND f.active AND f.locale_mask=7
      AND l.source_updated_at>=e.business_at AND (e.source_type<>'price' OR
-      (e.was_public AND l.source_updated_at=e.business_at AND c.price_cny IS NOT NULL AND c.price_cny IS DISTINCT FROM e.prior_public_price)))
-    THEN 'effective' ELSE 'not_public' END
+      (e.was_public AND l.source_updated_at=e.business_at AND c.price_cny IS NOT NULL AND c.price_cny IS DISTINCT FROM e.prior_public_price)))`)}
   WHERE e.source=$1 AND e.external_id=$2 AND e.detail_generation=$3 AND e.operation<>'withdraw' AND e.public_outcome='pending'`,[source,id,generation]);
- await tx.query(`UPDATE external_full_events SET public_effective_at=clock_timestamp() WHERE source=$1 AND external_id=$2
-  AND detail_generation=$3 AND public_outcome='effective' AND public_effective_at IS NULL`,[source,id,generation]);
 }
 /** A slot counts only after its whole received page and cursor commit; an attempted or partial page is not coverage. */
 export async function recordReceiveObservation(tx:PoolClient,error:string|null=null){
