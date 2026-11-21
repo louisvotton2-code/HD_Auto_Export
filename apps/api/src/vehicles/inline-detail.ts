@@ -22,7 +22,7 @@ export function configurationSemanticKey(id:string,label:string|null):Configurat
 }
 
 /** Called inside the same visibility-checked REPEATABLE READ transaction as the ordinary detail. No stored DTO changes. */
-export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle & Pick<PublicVehicleInline,'englishTitle'>,locale:Locale,technicalView?:'verified'){
+export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle & Pick<PublicVehicleInline,'englishTitle'|'pixelEnabled'>,locale:Locale,technicalView?:'verified'){
  const inspectionSummary=vehicle.inspectionSummary??emptyInspectionSummary(vehicle.report?.hasReport?'unavailable':'unknown');
  let conclusions:unknown[]=[],defects:unknown[]=[],normalItemCount=0;
  let items:Array<{id:string;name:ReturnType<typeof sourceDisplay>;value:ReturnType<typeof sourceDisplay>}>=vehicle.configuration?.items??[];

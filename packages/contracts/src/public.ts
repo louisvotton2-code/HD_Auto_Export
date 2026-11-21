@@ -1,3 +1,5 @@
+import { PublicVehicleSeoSchema } from './seo.js';
+export * from './seo.js';
 import { z } from 'zod';
 import {VehicleIdentifiersSchema,ManufactureEvidenceSchema,ExportStatusSchema,PublicInspectionEntrySchema,PublicPriceHistoryEntrySchema,InspectionStatusSchema,InspectionOutcomeSchema,InspectionKeySchema,PublicInspectionSummarySchema,PublicInspectionConclusionSchema} from './catalog-enhancements.js';
 export * from './catalog-enhancements.js';
@@ -86,6 +88,7 @@ export const PublicVehicleSchema = z.strictObject({
   // Detail-only. Lists omit the potentially large configuration payload.
   configuration: ConfigurationDisplaySchema.nullable().optional(),
   report: PublicReportSchema.optional(),
+  seo: PublicVehicleSeoSchema.optional(),
   inspectionSummary:PublicInspectionSummarySchema.optional(),
   availability: AvailabilitySchema,
   availabilityCheckedAt: TimestampSchema.nullable(),
@@ -142,6 +145,7 @@ export const PublicEnglishVehicleTitleSchema = PublicTextSchema.extend({
 });
 export type PublicEnglishVehicleTitle = z.infer<typeof PublicEnglishVehicleTitleSchema>;
 export const PublicVehicleInlineSchema=PublicVehicleSchema.safeExtend({projection:z.literal('detail-inline-v1'),
+  pixelEnabled:z.boolean().optional(),
   inspectionSummary:PublicInspectionSummarySchema,inspectionInline:PublicInspectionInlineSchema,
   configurationInline:z.array(PublicConfigurationInlineItemSchema).max(200),technicalDetails:VehicleTechnicalDetailsSchema.optional(),
   englishTitle:PublicEnglishVehicleTitleSchema.optional()}).superRefine((value, ctx) => {
@@ -198,10 +202,13 @@ export const PublicLocaleQuerySchema = z.strictObject({ locale: LocaleSchema.def
 export type PublicLocaleQuery = z.infer<typeof PublicLocaleQuerySchema>;
 export const PublicVehicleDetailQuerySchema=PublicLocaleQuerySchema.safeExtend({
   projection:z.literal('detail-inline-v1').optional(),technicalView:z.literal('verified').optional(),titleView:z.literal('english').optional(),
+  pixelView:z.literal('eligible').optional(),seoView:z.literal('eligible').optional(),
 }).superRefine((value,ctx)=>{
   if(value.projection && value.view!=='localized')ctx.addIssue({code:'custom',path:['view'],message:'Inline detail requires localized view'});
   if(value.technicalView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'Verified technical view requires inline detail'});
   if(value.titleView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'English title view requires inline detail'});
+  if(value.pixelView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'Pixel eligibility requires inline detail'});
+  if(value.seoView && !value.projection)ctx.addIssue({code:'custom',path:['projection'],message:'SEO eligibility requires inline detail'});
 });
 export type PublicVehicleDetailQuery=z.infer<typeof PublicVehicleDetailQuerySchema>;
 

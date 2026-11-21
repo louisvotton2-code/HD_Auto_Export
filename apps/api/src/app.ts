@@ -1,3 +1,4 @@
+import { registerSeoRoutes } from './seo/routes.js';
 import {ServingGate} from './serving-gate.js';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
@@ -13,17 +14,21 @@ import { classifyCapacityFailure, createDatabase, type PublicFailureDiagnostic }
 import { LoginAccountLimiter } from './login-account-limiter.js';
 import { createAuth, authHeaders, requireStaff, requireTrustedOrigin, staffSignInCredential } from './auth.js';
 import { InventoryService, type Actor, type HomeModelFilterPhase, type PublicListReadPhase } from './vehicles/service.js';
+import { getVehiclePixel, listEnabledVehiclePixels, setVehiclePixel } from './vehicles/pixel.js';
 import { staffUploadStats } from './vehicles/upload-attribution.js';
 import { StaffManagement } from './staff-management.js';
 import { TranslationPlanService } from './vehicles/translation-plans.js';
 import { PgTranslationBudget } from './vehicles/translation-budget.js';
 import { VehicleEvidence } from './vehicles/evidence.js';
+import {FullSyncAccessHints} from './external/full-sync/access.js';
 import {markFullSyncAccess} from './external/full-sync/engine.js';
 import {listingUuid} from './external/catalog.js';
 import { externalInquiryNumber } from './external/inquiry-code.js';
 import { VehicleSegments } from './vehicles/segments.js';
 import { ActivityService } from './activity/service.js';
-import { analyticsEventsPath, registerAnalyticsRoutes } from './analytics/routes.js';
+import { analyticsContactPath, analyticsEventsPath, registerAnalyticsRoutes } from './analytics/routes.js';
+import { analyticsIpVisitPath } from '@hd/contracts/analytics';
+import { registerIpVisitRoutes } from './analytics/ip-visits.js';
 import { MAX_VEHICLE_MEDIA, MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
 import { trimHttpWhitespace } from './media/conditional.js';
@@ -35,9 +40,12 @@ import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH,
 
 const IdParams=z.strictObject({id:z.uuid()});
 const staffPath='/api/v1/admin/staff';
+const staffVehiclePixelPath='/api/v1/admin/vehicles/:id/pixel';
+const externalVehiclePixelPath='/api/v1/admin/external/listings/:id/pixel';
+const enabledPixelVehiclesPath='/api/v1/admin/vehicle-pixel/enabled';
 const StaffIdParams=z.strictObject({id:adm.StaffRecordSchema.shape.id});
 const signInResultSchema=z.object({token:z.string().min(1),user:z.object({id:z.string().min(1)})});
-const externalAdminReadPaths=new Set(['/api/v1/admin/external/provider-status','/api/v1/admin/external/sync-status']);
+const externalAdminReadPaths=new Set(['/api/v1/admin/external/provider-status','/api/v1/admin/external/sync-status','/api/v1/admin/external/sync-timings']);
 const versionHeader=z.object({'if-match':z.string().regex(/^\d+$/)});
 const idemHeader=z.object({'idempotency-key':adm.IdempotencyKeySchema});
 // Full drafts include two source fields, six translations and bounded private/media metadata.
@@ -63,7 +71,7 @@ function rateLimitKey(request:FastifyRequest) {
     '/api/v1/admin/vehicles/:id/translation-plans/:planId/generate'].includes(route);
   // Matched route families, never a caller-supplied ID/query/header, select the budget.
   const bucket=route===externalMediaFailurePath?'external-media-report':
-    route===analyticsEventsPath?'public-analytics':
+    route===analyticsEventsPath?'public-analytics':route===analyticsContactPath?'anonymous-contact':route===analyticsIpVisitPath?'internal-ip-visits':
     request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
     upload?'admin-upload':translate?'admin-translation':
     route==='/api/v1/media/:id'?'public-media':
@@ -96,6 +104,7 @@ export async function buildApp(config:Config=readConfig(), options:{
 }={}) {
   const serving=new ServingGate(config.servingModeFile);
   const db=createDatabase(config.databaseUrl,config.poolMax,Boolean(options.onPublicFailure));
+  const fullSyncHints=new FullSyncAccessHints(id=>markFullSyncAccess(db,id),work=>serving.optionalEffect(work));
   let catalogCache;
   try { catalogCache = await createPublicCatalogCache(db, {
     ...config.publicCache, maxConcurrentRevisionReads: config.externalScale ? 128 : 32,
@@ -105,7 +114,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const staffManagement=new StaffManagement(db,auth);
   const loginAccounts=new LoginAccountLimiter(config.authSecret);
   const mediaStore=new LocalMediaStore(config.mediaRoot);
-  const inventory=new InventoryService(db,config.externalCatalog,mediaStore);
+  const inventory=new InventoryService(db,config.externalCatalog,mediaStore,config.publicSeoEnabled);
   const translator=options.translator??createVehicleTranslator(config.translation,new PgTranslationBudget(db));
   const translationPlans=new TranslationPlanService(db,translator,(id,who,scope)=>inventory.translationPlanInput(id,who,scope));
   const media=new MediaService(db,mediaStore);
@@ -113,7 +122,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const segments=new VehicleSegments(db,inventory);
   const isSsrService=createSsrServiceIdentity(config.ssrService);
   const ssrOriginLimiter=new SsrOriginLimiter();
-  const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.headers.x-hd-ssr-key','req.body','res.headers.set-cookie']} : false,
+  const app=Fastify({logger: options.logger ? {redact:['req.headers.cookie','req.headers.authorization','req.headers.x-hd-ssr-key','req.headers.x-hd-analytics-gateway-key','req.headers.x-hd-analytics-visit-key','req.body','res.headers.set-cookie']} : false,
     genReqId:()=>randomUUID(),requestIdHeader:false,bodyLimit:100_000,requestTimeout:30_000,trustProxy:config.trustProxy,
     logController:new LogController({disableRequestLogging:true})}).withTypeProvider<ZodTypeProvider>();
   app.addHook('onRoute',route=>{const handler=route.handler;route.handler=async function(request,reply){
@@ -191,6 +200,9 @@ export async function buildApp(config:Config=readConfig(), options:{
       const member=await requireStaff(request,auth,db);
       staff.set(request,member);
       requireTrustedOrigin(request,config);
+      if((route===staffVehiclePixelPath||route===externalVehiclePixelPath||route===enabledPixelVehiclesPath)&&member.role!=='admin') {
+        throw new ApiError(403,'FORBIDDEN','Administrator role is required for vehicle Pixel settings.');
+      }
       if ((route===staffPath || route.startsWith(`${staffPath}/`)) && !member.permissions.includes('staff:manage')) {
         throw new ApiError(403,'FORBIDDEN','Staff management permission is required.');
       }
@@ -217,6 +229,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
   app.addHook('onResponse',async(request,reply)=>{
     serving.response(request);
+    if(request.routeOptions.url===analyticsContactPath||request.routeOptions.url===analyticsIpVisitPath)return;
     app.log.info({requestId:request.id,method:request.method,route:request.routeOptions.url,statusCode:reply.statusCode,elapsedMs:reply.elapsedTime,
       ...(reply.statusCode<400&&reply.elapsedTime>=750?catalogReadDiagnostics(request):{}),
     },'Request completed');
@@ -248,7 +261,7 @@ export async function buildApp(config:Config=readConfig(), options:{
       try {options.onPublicFailure({route:route as PublicFailureDiagnostic['route'],status:problem.status,...classifyCapacityFailure(error)});}
       catch {/* capacity observer only */}
     }
-    if(problem.status>=500) {
+    if(problem.status>=500&&route!==analyticsContactPath&&route!==analyticsIpVisitPath) {
       const catalogError=error instanceof PublicCatalogUnavailableError?error:undefined;
       const metrics=catalogError&&catalogCache.metrics();
       app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,...catalogReadDiagnostics(request),
@@ -265,7 +278,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     return reply.code(problem.status).send({error:{code:problem.code,message:problem.message,...(problem.fields?{fields:problem.fields}:{}),retryable:problem.retryable},meta:{requestId:request.id}});
   });
   app.setNotFoundHandler((request,reply)=>reply.code(404).send({error:{code:'NOT_FOUND',message:'Resource is not available.',retryable:false},meta:{requestId:request.id}}));
-  app.addHook('onClose',async()=>{try{await catalogCache.close();}finally{await db.close();}});
+  app.addHook('onClose',async()=>{try{await fullSyncHints.close();await catalogCache.close();}finally{await db.close();}});
   const actor=(request:{id:string}):Actor=>({id:staff.get(request)!.id,requestId:request.id});
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
   const cacheProtocol=(request:object)=>longCacheRequests.has(request)?2:1;
@@ -275,6 +288,11 @@ export async function buildApp(config:Config=readConfig(), options:{
     const {value,stamp}=await cached(route,query,load,request);
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
   };
+
+  // Independent bounded generation lane; disabled deployments allocate no SEO connection pool.
+  const seoDb=config.publicSeoEnabled?createDatabase(config.databaseUrl,1,false,1000):null;
+  if(seoDb)app.addHook('onClose',async()=>{await seoDb.close();});
+  registerSeoRoutes(app,seoDb??db,config.publicSeoEnabled,config.externalCatalog);
 
   app.get(SSR_CATALOG_VERSION_PATH,{schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
     response:{200:pub.InternalPublicCatalogVersionResponseSchema,...errorResponses}}},async request=>{
@@ -295,15 +313,19 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN translation_plans tp ON false LEFT JOIN translation_plan_segments ts ON false
         LEFT JOIN backup_gc_leases bg ON false LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
         LEFT JOIN analytics_collection_state ac ON false
+        LEFT JOIN vehicle_pixel_settings vp ON false
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false
         LEFT JOIN external_listings el ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
+      if(config.publicSeoEnabled) await db.pool.query('SELECT 1 FROM seo_external_selection LIMIT 0');
       if(config.externalCatalog) {
-        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
+        const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview FROM external_catalog_state state
           JOIN public_catalog_state s ON s.id=state.id
           LEFT JOIN external_catalog c ON false LEFT JOIN external_catalog_search x ON false LEFT JOIN external_catalog_filter f ON false
           LEFT JOIN external_media m ON false LEFT JOIN external_translation_trials t ON false
-          LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false LEFT JOIN external_full_sync fs ON fs.id=1 LEFT JOIN external_vehicle_extras ve ON false LEFT JOIN external_vehicle_evidence_sets ev ON false WHERE state.id=1 AND fs.id=1`);
+          LEFT JOIN external_listings el ON false LEFT JOIN external_ingestion_jobs j ON false LEFT JOIN external_source_blobs sb ON false LEFT JOIN external_source_segment_sets ss ON false LEFT JOIN external_listing_overrides o ON false LEFT JOIN external_full_sync fs ON fs.id=1
+          LEFT JOIN external_full_receive_observations obs ON false LEFT JOIN external_vehicle_extras ve ON false LEFT JOIN external_vehicle_evidence_sets ev ON false
+          LEFT JOIN external_listing_pixel_settings ep ON false WHERE state.id=1 AND fs.id=1`);
         if(externalReady.rowCount!==1) throw new Error('External catalog migration is required');
       }
       return {status:'ready' as const};
@@ -372,13 +394,15 @@ export async function buildApp(config:Config=readConfig(), options:{
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([detail,inline]),...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;return publicResponse('detail',{id:p.id,...q},async()=>{
-      const vehicle=await inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView);
+    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;
+      // Candidate slots can share Redis while using different SEO settings.
+      const detailKey={id:p.id,...q,...(q.seoView?{seoPolicy:config.publicSeoEnabled?1:0}:{})};
+      const vehicle=await publicResponse('detail',detailKey,()=>inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView,q.pixelView,q.seoView),request);
       if(p.id.startsWith('ext-')) {
-        try{await serving.optionalEffect(()=>markFullSyncAccess(db,listingUuid(p.id)));}catch{request.log.debug('Full-sync access hint unavailable');}
+        fullSyncHints.hint(listingUuid(p.id));
       }
       return vehicle;
-    },request);});
+    });
   app.get(`${prefix}/vehicle-filters`,{config:routeConfig,schema:publicSchema('vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:filters,...errorResponses}})},async request=>{
     const query=request.query as pub.PublicFilterQuery;
     // Previous Web releases still compare the filter response with the global version.
@@ -445,6 +469,19 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.head('/api/v1/media/:id',{schema:{...publicMediaSchema,hide:true},onSend:async()=>null},deliverPublicMedia);
 
   const adminSchema=(operationId:string,options:Record<string,unknown>)=>schema('admin',operationId,{security:[{staffSession:[]}],...options});
+  app.get(enabledPixelVehiclesPath,{schema:adminSchema('listEnabledVehiclePixels',{
+    querystring:adm.EnabledPixelVehiclesQuerySchema,response:{200:adm.EnabledPixelVehiclesResponseSchema,...errorResponses},
+  })},async request=>response(await listEnabledVehiclePixels(db,request.query as adm.EnabledPixelVehiclesQuery,config.externalCatalog),request));
+  for(const [path,kind,operation,params] of [
+    [staffVehiclePixelPath,'staff','StaffVehiclePixel',IdParams],
+    [externalVehiclePixelPath,'external','ExternalVehiclePixel',z.strictObject({id:pub.ExternalListingIdSchema})],
+  ] as const) {
+    const responses={200:adm.VehiclePixelSettingsResponseSchema,...errorResponses};
+    app.get(path,{schema:adminSchema(`get${operation}`,{params,response:responses})},async request=>
+      response(await getVehiclePixel(db,kind,(request.params as {id:string}).id),request));
+    app.put(path,{bodyLimit:1024,schema:adminSchema(`set${operation}`,{params,body:adm.SaveVehiclePixelSettingsSchema,response:responses})},async request=>
+      response(await setVehiclePixel(db,kind,(request.params as {id:string}).id,request.body as adm.SaveVehiclePixelSettings,actor(request)),request));
+  }
   const PlanParams=z.strictObject({id:z.uuid(),planId:z.uuid()});
   app.get('/api/v1/admin/vehicles/:id/translation-bundle',{schema:adminSchema('getVehicleTranslationBundle',{params:IdParams,response:{200:adm.VehicleTranslationBundleResponseSchema,...errorResponses}})},async request=>response(await inventory.getTranslationBundle((request.params as {id:string}).id,actor(request)),request));
   const evidence=new VehicleEvidence(db,inventory);
@@ -475,8 +512,9 @@ export async function buildApp(config:Config=readConfig(), options:{
     const {id,planId}=request.params as {id:string;planId:string};return response(await translationPlans.status(id,planId,actor(request)),request);
   });
   registerExternalRoutes(app,db,actor,config.providerAccountKey);
+  const ipVisitQuality=registerIpVisitRoutes(app,config,work=>serving.optionalEffect(work));
   const analytics=registerAnalyticsRoutes(app,config,request=>staff.get(request)?.permissions.includes('staff:manage')===true,
-    work=>serving.optionalEffect(work));
+    work=>serving.optionalEffect(work),ipVisitQuality);
   app.get('/api/v1/admin/me',{schema:adminSchema('staffMe',{response:{200:adm.StaffMeResponseSchema,...errorResponses}})},async request=>response(staff.get(request),request));
   app.get('/api/v1/admin/me/upload-stats',{schema:adminSchema('staffUploadStats',{response:{200:adm.StaffUploadStatsResponseSchema,...errorResponses}})},
     async request=>response(await staffUploadStats(db.pool,staff.get(request)!.id),request));
