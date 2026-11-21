@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
-import { App, ConfigProvider } from 'antd';
+import { Alert, App, Button, ConfigProvider, Space, Spin } from 'antd';
+import { lazy, Suspense, type ReactNode } from 'react';
 import zhCN from 'antd/locale/zh_CN';
 import 'antd/dist/reset.css';
 import { HomeSectionsPage } from './modules/home';
@@ -8,10 +9,11 @@ import { createBrowserRouter, Navigate, RouterProvider, useOutletContext, usePar
 import type { StaffMe, StaffPermission } from '@hd/contracts/admin';
 import { Workspace, AccessDenied } from './modules/auth';
 import { StaffManagementPage } from './modules/staff/staff-management-page';
-import { SiteAnalyticsPage } from './modules/analytics/site-analytics-page';
 import { VehiclesPage, VehicleEditorPage, PublicCatalogPage } from './modules/vehicles';
-import type { ReactNode } from 'react';
 import './styles.css';
+
+const SiteAnalyticsPage = lazy(async () => ({ default: (await import('./modules/analytics/site-analytics-page')).SiteAnalyticsPage }));
+const VehiclePixelPage = lazy(async () => ({ default: (await import('./modules/vehicle-pixel/vehicle-pixel-page')).VehiclePixelPage }));
 
 function RequirePermission({ permission, children }: { permission: StaffPermission; children: ReactNode }) {
   const staff = useOutletContext<StaffMe>();
@@ -20,6 +22,18 @@ function RequirePermission({ permission, children }: { permission: StaffPermissi
 function VehicleEditorRoute() {
   const { id } = useParams();
   return <RequirePermission permission="vehicles:write"><VehicleEditorPage key={id ?? 'new'} /></RequirePermission>;
+}
+function VehiclePixelRoute() {
+  const staff = useOutletContext<StaffMe>();
+  return staff.role === 'admin'
+    ? <Suspense fallback={<Spin description="正在打开 Pixel 推广…" />}><VehiclePixelPage /></Suspense>
+    : <AccessDenied>只有管理员可以管理车辆的 Facebook Pixel。</AccessDenied>;
+}
+function AnalyticsRouteError() {
+  return <Alert type="error" showIcon title="网站分析页面加载失败" action={<Space wrap>
+    <Button onClick={() => window.location.reload()}>重新加载页面</Button>
+    <Link to="/vehicles">返回精品车辆管理</Link>
+  </Space>} />;
 }
 const router = createBrowserRouter([{
   element: <Workspace />,
@@ -32,7 +46,10 @@ const router = createBrowserRouter([{
     { path: 'home-sections', element: <RequirePermission permission="home:write"><HomeSectionsPage /></RequirePermission> },
     { path: 'public-catalog', element: <RequirePermission permission="vehicles:read"><ExternalCatalogPage /></RequirePermission> },
     { path: 'public-catalog/verification', element: <RequirePermission permission="vehicles:read"><PublicCatalogPage /></RequirePermission> },
-    { path: 'analytics', element: <RequirePermission permission="staff:manage"><SiteAnalyticsPage /></RequirePermission> },
+    { path: 'analytics', errorElement: <AnalyticsRouteError />,
+      element: <RequirePermission permission="staff:manage"><Suspense fallback={<Spin description="正在打开网站分析…" />}><SiteAnalyticsPage /></Suspense></RequirePermission> },
+    { path: 'vehicle-pixel', element: <VehiclePixelRoute />, errorElement: <Alert type="error" showIcon title="Pixel 推广页面加载失败"
+      action={<Button onClick={() => window.location.reload()}>重新加载页面</Button>} /> },
     { path: 'staff', element: <RequirePermission permission="staff:manage"><StaffManagementPage /></RequirePermission> },
     { path: 'external-sources', element: <RequirePermission permission="vehicles:read"><ExternalWorkspace /></RequirePermission>, children: [
       { index: true, element: <RequirePermission permission="staff:manage"><ExternalStatusPage /></RequirePermission> },

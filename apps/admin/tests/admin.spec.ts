@@ -1,6 +1,9 @@
 import './sync-cases';
 import './staff-management-cases';
 import './site-analytics-cases';
+import './site-analytics-v2-cases';
+import './site-traffic-cases';
+import './vehicle-pixel-cases';
 import './activity-cases';
 import './report-cases';
 import './configuration-cases';

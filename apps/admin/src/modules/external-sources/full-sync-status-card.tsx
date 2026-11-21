@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
-import { ExternalFullSyncStatusResponseSchema, type ExternalFullSyncStatus, type StaffMe } from '@hd/contracts/admin';
+import { ExternalFullSyncStatusResponseSchema, ExternalSyncTimingsResponseSchema, type ExternalFullSyncStatus, type StaffMe } from '@hd/contracts/admin';
 import { usePrivateResource } from '../../shared/api/use-private-resource';
 import { formatTime } from '../vehicles/draft-form';
 import { externalRoot } from './external-labels';
 import { FullSyncControls } from './full-sync-controls';
+import { FullSyncTimings } from './full-sync-timings';
 import { IngestionCounts } from './ingestion-counts';
 import { ResourceContent } from './resource-content';
 import styles from './full-sync-status.module.css';
@@ -18,10 +19,15 @@ const states: Record<ExternalFullSyncStatus['state'], string> = {
 export function FullSyncStatusCard() {
   const staff = useOutletContext<StaffMe>();
   const [revision, setRevision] = useState(0);
+  const [timingRevision, setTimingRevision] = useState(0);
   const [controlBusy, setControlBusy] = useState(false);
   const resource = usePrivateResource(`${externalRoot}/sync-status`, ExternalFullSyncStatusResponseSchema, revision);
+  const timingResource = usePrivateResource(staff.role === 'admin' ? `${externalRoot}/sync-timings` : null,
+    ExternalSyncTimingsResponseSchema, timingRevision, 12_000);
   const status = resource.data?.data;
-  const reload = () => { setRevision(value => value + 1); resource.resume(); };
+  const timings = timingResource.data?.data;
+  const reloadTimings = () => { setTimingRevision(value => value + 1); timingResource.resume(); };
+  const reload = () => { setRevision(value => value + 1); resource.resume(); reloadTimings(); };
   return <Card className={styles.card} title="全量与持续同步" extra={<Button disabled={controlBusy} loading={resource.loading} onClick={reload}>刷新同步进度</Button>}>
     <ResourceContent {...resource} failureTitle="同步进度读取失败" retry={reload}>{status && <>
       <Space wrap><Tag>{status.mode === 'continuous' ? '正式持续同步' : '正式全量同步'}</Tag>
@@ -54,21 +60,28 @@ export function FullSyncStatusCard() {
         ]} />
         <Typography.Paragraph type="secondary" className={styles.note}>一辆车可关联多条来源记录。公开车辆的详情、语言或报告仍可能待补齐。</Typography.Paragraph>
       </section>
+      <section aria-labelledby="full-sync-admission" className={styles.section}>
+        <Typography.Title level={3} id="full-sync-admission" className={styles.sectionTitle}>准入席位</Typography.Title>
+        <Typography.Paragraph type="secondary" className={styles.detail}>暂无累计准入席位和批准上限数据。</Typography.Paragraph>
+      </section>
       <section aria-labelledby="full-sync-delta" className={styles.section}>
         <Typography.Title level={3} id="full-sync-delta" className={styles.sectionTitle}>增量同步</Typography.Title>
         <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
           { key: 'received', label: '已接收事件', children: status.receivedEvents.toLocaleString('zh-CN') },
           { key: 'applied', label: '已处理事件', children: status.appliedEvents.toLocaleString('zh-CN') },
           { key: 'next', label: '下次增量计划时间', children: status.nextRunAt ? formatTime(status.nextRunAt) : '暂无计划时点' },
+          ...(!timings ? [{ key: 'oldest', label: '最早积压收件时间', children: '暂无积压明细' }] : []),
         ]} />
       </section>
       <section aria-labelledby="full-sync-changes" className={styles.section}>
-        <Typography.Title level={3} id="full-sync-changes" className={styles.sectionTitle}>撤回与改价</Typography.Title>
+        <Typography.Title level={3} id="full-sync-changes" className={styles.sectionTitle}>撤回、改价与重挂</Typography.Title>
         <Descriptions column={{ xs: 1, md: 2 }} size="small" items={[
           { key: 'withdrawn', label: '当前已撤回来源记录', children: status.counts.withdrawn.toLocaleString('zh-CN') },
-          { key: 'price', label: '改价事件', children: '暂无独立统计' },
         ]} />
+        {!timings && <Typography.Paragraph type="secondary" className={styles.note}>暂无撤回、改价和重挂事件各自的接收、处理及公开变更统计。</Typography.Paragraph>}
       </section>
+      <FullSyncTimings data={timings} loading={timingResource.loading} disabled={status.state === 'disabled'}
+        error={timingResource.errorStatus === 404 ? undefined : timingResource.error} refresh={reloadTimings} />
       <section aria-labelledby="full-sync-pending" className={styles.section}>
         <Typography.Title level={3} id="full-sync-pending" className={styles.sectionTitle}>待补齐资料</Typography.Title>
         <IngestionCounts items={[
