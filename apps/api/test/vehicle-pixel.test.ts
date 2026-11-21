@@ -3,8 +3,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
-import { EnabledPixelVehiclesResponseSchema } from '@hd/contracts/admin';
+import { ActivityResponseSchema, EnabledPixelVehiclesResponseSchema } from '@hd/contracts/admin';
 import { makeExternalCandidateFixture, makeExternalImportFixture, makeExternalWithdrawalFixture, makePublicVehicleFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
 import type { Locale } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
@@ -230,6 +231,7 @@ test('vehicle Pixel is an administrator setting with isolated detail and cache b
     assert.equal(hidden.json().data.items[0].status, 'applied');
     assertSetting(await read(externalId), externalId, 4, true);
     assert.equal((await detail(externalId, 'zh')).statusCode, 404);
+    assert.equal((await save(externalId, 4, true)).statusCode, 404);
     assert.deepEqual((await enabledPage()).items.map(item => item.vehicleId), [staffId, externalId]);
     await importVehicles(makeExternalWithdrawalFixture(1, 3));
     assert.equal((await db.pool.query('SELECT listing_id FROM external_catalog WHERE listing_id=$1', [externalUuid])).rowCount, 0);
@@ -237,6 +239,10 @@ test('vehicle Pixel is an administrator setting with isolated detail and cache b
     assert.equal(withdrawn.total, 2);
     assert.deepEqual(withdrawn.items[1], { vehicleId: externalId, code: `HX${inquiry_number}`, title: '示例 R1 混动' });
     assertSetting(await save(externalId, 4, false), externalId, 5, false);
+    const withdrawnVersion = await version();
+    assert.equal((await save(externalId, 5, true)).statusCode, 404);
+    assertSetting(await read(externalId), externalId, 5, false);
+    assert.equal(await version(), withdrawnVersion);
     assert.deepEqual((await enabledPage()).items.map(item => item.vehicleId), [staffId]);
     assertSetting(await save(draftId, 1, true), draftId, 2, true);
     assert.equal((await detail(draftId, 'zh')).statusCode, 404);
@@ -270,5 +276,91 @@ test('vehicle Pixel is an administrator setting with isolated detail and cache b
     } finally {
       await db.pool.query('ALTER TABLE audit_events DROP CONSTRAINT pixel_test_reject_audit');
     }
+  });
+
+  await t.test('a supplier representative change commits before Pixel eligibility is checked', async () => {
+    const candidate = makeExternalCandidateFixture(2);
+    await importVehicles({ ...makeExternalImportFixture(1), records: [{ candidate, raw: JSON.stringify(candidate) }] });
+    const { id } = (await db.pool.query<{ id: string }>('SELECT id FROM external_listings WHERE external_id=$1', [candidate.externalId])).rows[0]!;
+    const publicId = `ext-${id}`;
+    await assertDetail(publicId, 'zh', false);
+    const writer = await db.pool.connect();
+    let committed = false;
+    let attempt: ReturnType<typeof save> | undefined;
+    try {
+      await writer.query('BEGIN');
+      await writer.query('SELECT pg_advisory_xact_lock(78291332)');
+      const { pid } = (await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!;
+      // Leave the old catalog projection in place to exercise the current representative check.
+      await writer.query('UPDATE external_listings SET formal_primary=false WHERE id=$1', [id]);
+      attempt = save(publicId, 1, true);
+      const deadline = Date.now() + 2500;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const waiting = await db.pool.query<{ blocked: boolean }>(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+          WHERE datname=current_database() AND wait_event_type='Lock' AND wait_event='advisory'
+            AND $1=ANY(pg_blocking_pids(pid))) AS blocked`, [pid]);
+        blocked = waiting.rows[0]!.blocked;
+        if (!blocked) await delay(10);
+      }
+      assert.equal(blocked, true, 'The Pixel write must wait for the supplier transaction');
+      await writer.query('COMMIT');
+      committed = true;
+    } finally {
+      try { if (!committed) await writer.query('ROLLBACK'); }
+      finally { writer.release(); }
+    }
+    const rejected = await attempt;
+    assert.equal(rejected?.statusCode, 404, rejected?.body);
+    assertSetting(await read(publicId), publicId, 1, false);
+
+    await db.pool.query('UPDATE external_listings SET formal_primary=true WHERE id=$1', [id]);
+    assertSetting(await save(publicId, 1, true), publicId, 2, true);
+    const listing = await app.inject({ url: `/api/v1/admin/external/listings/${publicId}?locale=zh`, headers: adminHeaders });
+    assert.equal(listing.statusCode, 200, listing.body);
+    const hidden = await app.inject({ method: 'POST', url: '/api/v1/admin/external/listings/bulk-visibility',
+      headers: { ...adminHeaders, 'idempotency-key': randomUUID() }, payload: { hidden: true, items: [{ id: publicId, version: listing.json().data.version }] } });
+    assert.equal(hidden.statusCode, 200, hidden.body);
+    assert.equal(hidden.json().data.items[0].status, 'applied');
+    assertSetting(await save(publicId, 2, false), publicId, 3, false);
+    assertSetting(await save(publicId, 1, false), publicId, 3, false);
+  });
+
+  await t.test('editor vehicle history paginates normal events ahead of administrator-only Pixel events', async () => {
+    const actor = { id: admin.staffId, requestId: randomUUID() };
+    const activityDraft = makeVehicleDraftFixture();
+    activityDraft.media = [];
+    activityDraft.facts.trim = { id: 'pixel_activity_trim', name: 'Synthetic trim' };
+    activityDraft.facts.location = { country: 'CN', city: '隔离样例城市', displayName: null };
+    const vehicle = await runtime!.inventory.create(activityDraft, actor, randomUUID());
+    assertSetting(await save(vehicle.id, 1, true), vehicle.id, 2, true);
+    const edited = { ...vehicle.draft, facts: { ...vehicle.draft.facts, modelYear: 2025 } };
+    await runtime!.inventory.save(vehicle.id, vehicle.version, edited, { id: editor.staffId, requestId: randomUUID() });
+    assertSetting(await save(vehicle.id, 2, false), vehicle.id, 3, false);
+    const readActivity = async (cookie: string, cursor?: string) => {
+      const reply = await app.inject({ url: `/api/v1/admin/vehicles/${vehicle.id}/activity?limit=1${cursor ? `&cursor=${cursor}` : ''}`,
+        headers: { cookie } });
+      assert.equal(reply.statusCode, 200, reply.body);
+      return ActivityResponseSchema.parse(reply.json()).data;
+    };
+    const recentAdmin = await readActivity(admin.cookie);
+    assert.equal(recentAdmin.items[0]?.action, 'vehicle.pixel.update');
+    assert.ok(recentAdmin.nextCursor);
+    const nextAdmin = await readActivity(admin.cookie, recentAdmin.nextCursor);
+    assert.equal(nextAdmin.items[0]?.action, 'vehicle.save');
+    assert.ok(nextAdmin.nextCursor);
+    assert.equal((await readActivity(admin.cookie, nextAdmin.nextCursor)).items[0]?.action, 'vehicle.pixel.update');
+
+    const recentEditor = await readActivity(editor.cookie);
+    assert.equal(recentEditor.items[0]?.action, 'vehicle.save');
+    assert.equal(recentEditor.items[0]?.actor.staffId, editor.staffId);
+    const detail=await app.inject({url:`/api/v1/admin/vehicles/${vehicle.id}`,headers:{cookie:editor.cookie}});
+    assert.equal(detail.statusCode,200,detail.body);
+    assert.equal(detail.json().data.activity.lastModified.at,recentEditor.items[0]?.at);
+    assert.equal(detail.json().data.activity.lastModified.actor.staffId,editor.staffId);
+    assert.ok(recentEditor.nextCursor);
+    const nextEditor = await readActivity(editor.cookie, recentEditor.nextCursor);
+    assert.equal(nextEditor.items[0]?.action, 'vehicle.create');
+    assert.equal(nextEditor.nextCursor, null);
   });
 });

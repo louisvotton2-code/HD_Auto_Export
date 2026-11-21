@@ -5,7 +5,7 @@ import {
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
 import type { Database } from '../db/index.js';
-import { displayText, publicText, type ExternalProjection } from './normalize.js';
+import { displayText, fallbackExternalTitle, isPublicText, publicText, safeExternalDisplayText, safeExternalInspectionSummary, type ExternalProjection } from './normalize.js';
 import { externalInquiryCode, externalInquiryNumber } from './inquiry-code.js';
 import { publicExternalDisplay, publicExternalSource } from './public-source.js';
 import type { ReportSourceRow } from './report-evidence.js';
@@ -42,26 +42,39 @@ type ImageRow = {
   width: number | null; height: number | null; position: number; revision: number; refreshed_at: Date; expires_at: Date | null;
 };
 const iso = (value: Date | null) => value?.toISOString() ?? null;
+function publicName(fact: CatalogRow['facts']['make'], text: string | null) {
+  if (!fact) return null;
+  if (text) return {...fact,name:text};
+  return isPublicText(fact.name) ? fact : null;
+}
 const localizedFacts = (facts: CatalogRow['facts'], display: VehicleDisplay): CatalogRow['facts'] => ({
   ...facts,
-  make: facts.make && { ...facts.make, name: display.make.text ?? facts.make.name },
-  model: facts.model && { ...facts.model, name: display.model.text ?? facts.model.name },
-  trim: facts.trim && { ...facts.trim, name: display.trim.text ?? facts.trim.name },
-  generation: facts.generation && { ...facts.generation, name: display.generation.text ?? facts.generation.name },
+  make: publicName(facts.make, display.make.text),
+  model: publicName(facts.model, display.model.text),
+  trim: publicName(facts.trim, display.trim.text),
+  ...(facts.generation === undefined ? {} : {generation:publicName(facts.generation,display.generation.text)}),
   location: facts.location && { ...facts.location, city: display.city.text, displayName: display.location.text },
 });
 
+function catalogTitle(row: CatalogRow, locale: Locale) {
+  const title = row.localized.title;
+  return isPublicText(title.text) ? title : fallbackExternalTitle(locale);
+}
+function publicPhoto(photo: ImageRow, locale: Locale, isCover: boolean): PublicMedia {
+  const alt = photo.alt && isPublicText(photo.alt.text) ? photo.alt : null;
+  return {
+    id: publicMediaId(photo.id), url: photo.url, alt: alt?.text ?? '', altText: displayText(locale,alt), width: photo.width, height: photo.height,
+    sortOrder: photo.position, isCover,
+    remote: { revision: photo.revision, refreshedAt: photo.refreshed_at.toISOString(), expiresAt: iso(photo.expires_at) },
+  };
+}
 function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: number,priceView?:'usd',quote:FxQuote|null=null): PublicVehicle {
   const issues = [...row.issues];
   const available = photos.filter(photo => !photo.expires_at || photo.expires_at.getTime() > time);
   if (available.length !== photos.length && !issues.some(issue => issue.field === 'images')) issues.push({ field: 'images', code: 'expired' });
-  const images: PublicMedia[] = available.slice(0,30).map((photo, i) => ({
-    id: publicMediaId(photo.id), url: photo.url, alt: photo.alt?.text ?? '', altText:displayText(locale,photo.alt), width: photo.width, height: photo.height,
-    sortOrder: photo.position, isCover: i === 0,
-    remote: { revision: photo.revision, refreshedAt: photo.refreshed_at.toISOString(), expiresAt: iso(photo.expires_at) },
-  }));
-  const { title, description } = row.localized;
-  const display = { ...catalogDisplay(row, locale), mediaAlt: available.slice(0,30).map(photo => ({ mediaId: publicMediaId(photo.id), value: displayText(locale, photo.alt) })) };
+  const images = available.slice(0,30).map((photo,i)=>publicPhoto(photo,locale,i===0));
+  const { description } = row.localized;
+  const display = { ...catalogDisplay(row, locale), mediaAlt: images.map(image=>({mediaId:image.id,value:image.altText!})) };
   const id = publicListingId(row.listing_id);
   const source: ReportSourceRow = { id: row.listing_id, provider: row.provider!, platform_id: row.platform_id!,
     external_id: row.external_id!, source_revision: row.source_revision!, source_hash: row.source_hash!, source_data: row.source_data ?? null,
@@ -69,24 +82,27 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
   const enriched = row.details ? applyInspectionEnrichment(source, row.details, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : undefined;
   // Reports are paged only on the separate inspection endpoint, including legacy/enriched projections.
-  const detail = enriched ? { ...enriched, inspection: null, relatedListingUrls: [] } : undefined;
+  const detail = enriched ? { ...enriched, inspection: null, relatedListingUrls: [],
+    specifications: enriched.specifications.filter(entry=>isPublicText(entry.name.text)&&isPublicText(entry.value.text)) } : undefined;
   const report = detail ? projectSourceReport(source, row.inspection_binding
     ? { binding: row.inspection_binding, content: row.inspection_content } : null) : null;
   const parsedSummary=PublicInspectionSummarySchema.safeParse(row.inspection_summary);
   const summaryStatus=row.inspection_status??(report?.hasReport?'unavailable':'unknown');
-  const inspectionSummary=detail?(parsedSummary.success&&summaryStatus==='available'?{...parsedSummary.data,status:summaryStatus}:emptyInspectionSummary(summaryStatus)):undefined;
+  const inspectionSummary=detail?(parsedSummary.success&&summaryStatus==='available'
+    ?safeExternalInspectionSummary(locale,{...parsedSummary.data,status:summaryStatus}):emptyInspectionSummary(summaryStatus)):undefined;
   const original = (field: keyof ExternalProjection['details']['original']) => {
     const value = detail?.original[field];
-    return value ? publicText(locale, value) : null;
+    return value && isPublicText(value.text) ? publicText(locale, value) : null;
   };
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   return PublicVehicleSchema.parse({
     id, stockCode: externalInquiryCode(row.inquiry_number), detailPath: `/${locale}/cars/${id}/`,
     source: publicExternalSource(),
     facts: { ...localizedFacts(row.facts, display), ...(row.extras?.powerHp !== undefined ? {powerHp:row.extras.powerHp} : {}) }, display,
-    ...publicExtras(row),
+    ...publicExtras(row,locale),
     price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),
-    content: { title, description }, images, mediaTotal:available.length, ...(row.configuration_total!==undefined?{configurationTotal:row.configuration_total}:{}),
+    content: { title:catalogTitle(row,locale), description:description && isPublicText(description.text) ? description : null },
+    images, mediaTotal:available.length, ...(row.configuration_total!==undefined?{configurationTotal:row.configuration_total}:{}),
     ...(report ? { report: { hasReport: inspectionSummary?.status==='available'||inspectionSummary?.status!=='no_report'&&report.hasReport } } : {}),
     ...(inspectionSummary?{inspectionSummary}:{}),
     availability: 'unknown', availabilityCheckedAt: null, sourceUpdatedAt: iso(row.source_updated_at),
@@ -101,6 +117,8 @@ function toPublic(row: CatalogRow, photos: ImageRow[], locale: Locale, time: num
 function catalogDisplay(row: CatalogRow, locale: Locale): VehicleDisplay {
   const display = publicExternalDisplay(row.localized.display, locale);
   for (const key of catalogNameKeys) display[key] = catalogName(row, key, display[key], row.extras?.names?.[key]) ?? display[key];
+  for (const key of [...catalogNameKeys,'generation','city','location'] as const)
+    display[key] = safeExternalDisplayText(locale,display[key]);
   return display;
 }
 function catalogName(row: CatalogRow, key: CatalogName, localized: CatalogNames[CatalogName], extra: CatalogNames[CatalogName]) {
@@ -109,26 +127,24 @@ function catalogName(row: CatalogRow, key: CatalogName, localized: CatalogNames[
     ? extra : localized;
 }
 // Stored evidence still carries the supplier reference for internal use.
-function publicExtras(row: CatalogRow) {
+function publicExtras(row: CatalogRow, locale: Locale) {
   const manufacture=row.overridden_names?.includes('manufacturedAt')
     ? {date:row.facts.manufacturedAt,range:null,source:'staff',basis:null}
     : row.extras?.manufacture;
   return { identifiers: { sourceId: null, source: null, inquiryCode: externalInquiryCode(row.inquiry_number), vin: row.extras?.identifiers?.vin ?? null },
     ...(manufacture ? { manufacture } : {}),
-    ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass } : {}),
+    ...(row.extras?.vehicleClass !== undefined ? { vehicleClass: row.extras.vehicleClass && safeExternalDisplayText(locale,row.extras.vehicleClass) } : {}),
     exportStatus: row.extras?.exportStatus ?? 'unknown' };
 }
 function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?: 'usd', quote: FxQuote|null=null): PublicVehicleCard {
-  const images: PublicMedia[] = photos.map(photo => ({ id:publicMediaId(photo.id),url:photo.url,alt:photo.alt?.text??'',altText:displayText(locale,photo.alt),
-    width:photo.width,height:photo.height,sortOrder:photo.position,isCover:true,
-    remote:{revision:photo.revision,refreshedAt:photo.refreshed_at.toISOString(),expiresAt:iso(photo.expires_at)} }));
+  const images = photos.map(photo=>publicPhoto(photo,locale,true));
   const display={...catalogDisplay(row, locale),mediaAlt:images.map(photo=>({mediaId:photo.id,value:photo.altText!}))};
   const price:PublicVehicle['price']=row.price_cny===null?{kind:'on_request',money:null,includes:[]}:{kind:'reference',money:{amount:row.price_cny,currency:'CNY'},includes:[]};
   const id=publicListingId(row.listing_id);
   return PublicVehicleCardSchema.parse({ id,stockCode:externalInquiryCode(row.inquiry_number),detailPath:`/${locale}/cars/${id}/`,
     source:publicExternalSource(),
-    facts:{...localizedFacts(row.facts,display),...(row.extras?.powerHp!==undefined?{powerHp:row.extras.powerHp}:{})},display,...publicExtras(row),
-    price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),content:{title:row.localized.title},images,
+    facts:{...localizedFacts(row.facts,display),...(row.extras?.powerHp!==undefined?{powerHp:row.extras.powerHp}:{})},display,...publicExtras(row,locale),
+    price,...(priceView==='usd'?{displayPrice:projectUsdPrice(price,quote)}:{}),content:{title:catalogTitle(row,locale)},images,
     availability:'unknown',availabilityCheckedAt:null,sourceUpdatedAt:iso(row.source_updated_at),fetchedAt:row.fetched_at.toISOString(),publishedAt:row.published_at.toISOString() });
 }
 
@@ -344,10 +360,10 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
   for (const key of catalogNameKeys) {
     if (!row.facts[key]) continue;
     const name = catalogName(row, key, english.display?.[key], english.names?.[key]);
-    if (name) display[key] = name;
+    if (name) display[key] = safeExternalDisplayText('en',name);
   }
   const englishTitle = englishCatalogTitle(display, row.facts.modelYear);
-  return englishTitle ? { ...vehicle, englishTitle } : vehicle;
+  return englishTitle && isPublicText(englishTitle.text) ? { ...vehicle, englishTitle } : vehicle;
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
@@ -531,7 +547,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     const names=new Map(fallback.rows.map(row=>[key(row),row.name]));
     for(const row of missing)row.name=names.get(key(row))??null;
   }
-  return result.rows;
+  return result.rows.map(row=>row.name && !isPublicText(row.name) ? {...row,name:fallbackExternalTitle(query.locale).text} : row);
 }
 
 export async function reportMediaFailure(db: Database, mediaId: string, revision: number) {

@@ -1,9 +1,11 @@
 import type {PoolClient} from 'pg';
 import {CONFIGURATION_SEMANTIC_ALIASES,SUPPLIER_TECHNICAL_CONFIGURATION_KEYS,type ConfigurationSemanticKey,type VehicleDetailMatchKey,type VehicleTechnicalDetails} from '@hd/contracts/public';
-import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,PublicInspectionConclusionSchema,type PublicVehicle,type PublicVehicleInline,type Locale} from '@hd/contracts/public';
+import {PublicVehicleInlineSchema,PublicConfigurationInlineItemSchema,PublicInspectionEntrySchema,type PublicVehicle,type PublicVehicleInline,type Locale} from '@hd/contracts/public';
+import {safeExternalInspectionSummary} from '../external/normalize.js';
 import {emptyInspectionSummary} from '../external/sources/inspection-projection.js';
 import {sourceDisplay} from '../external/sources/display.js';
 import {configurationTechnicalKey} from './configuration-technical-facts.js';
+import {safeExternalDisplayPair,safeExternalInspectionConclusion,safeExternalInspectionEntry} from './evidence.js';
 import {projectSupplierTechnicalDetails} from './supplier-technical-detail.js';
 
 const supplierTechnicalIds=Object.keys(SUPPLIER_TECHNICAL_CONFIGURATION_KEYS);
@@ -23,11 +25,12 @@ export function configurationSemanticKey(id:string,label:string|null):Configurat
 
 /** Called inside the same visibility-checked REPEATABLE READ transaction as the ordinary detail. No stored DTO changes. */
 export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle & Pick<PublicVehicleInline,'englishTitle'|'pixelEnabled'>,locale:Locale,technicalView?:'verified'){
+ const isExternal=vehicle.id.startsWith('ext-');
  const inspectionSummary=vehicle.inspectionSummary??emptyInspectionSummary(vehicle.report?.hasReport?'unavailable':'unknown');
  let conclusions:unknown[]=[],defects:unknown[]=[],normalItemCount=0;
  let items:Array<{id:string;name:ReturnType<typeof sourceDisplay>;value:ReturnType<typeof sourceDisplay>}>=vehicle.configuration?.items??[];
  let technicalDetails:VehicleTechnicalDetails|undefined;
- if(vehicle.id.startsWith('ext-')){
+ if(isExternal){
   const id=vehicle.id.slice(4);
   if(inspectionSummary.status==='available'){
    // All grouping stays in PostgreSQL: transfer at most 4 conclusions + 9 defects, never the complete report.
@@ -59,12 +62,23 @@ export async function inlineDetail(tx:PoolClient,vehicle:PublicVehicle & Pick<Pu
      WHERE listing_id=$1 AND kind='configuration' AND locale IN ('zh','en','ru') AND data->>'id'=ANY($2::text[])
      ORDER BY locale,position LIMIT $3`,[id,supplierTechnicalIds,supplierTechnicalRowLimit]);
     if(technical.rows.length<supplierTechnicalRowLimit){
-     technicalDetails=projectSupplierTechnicalDetails(vehicle.facts,technical.rows,new Set(items.map(item=>item.id)));
+     const safeRows=technical.rows.map(({locale,data})=>({locale,data:
+      typeof data?.name?.text==='string'&&typeof data?.value?.text==='string'?{...data,...safeExternalDisplayPair(locale,data)}:data}));
+     technicalDetails=projectSupplierTechnicalDetails(vehicle.facts,safeRows,new Set(items.map(item=>item.id)));
     }
    }
-  }else items=(vehicle.external?.detail?.specifications??[]).slice(0,200).map((entry,index)=>({id:`legacy.${index}`,name:sourceDisplay(entry.name.text,locale),value:sourceDisplay(entry.value.text,locale)}));
+  }else items=(vehicle.external?.detail?.specifications??[]).slice(0,200).map((entry,index)=>{
+   const name=sourceDisplay(entry.name.text,locale);
+   return {id:`legacy.${index}`,name,value:name.status==='ready'?sourceDisplay(entry.value.text,locale):name};
+  });
  }
- return PublicVehicleInlineSchema.parse({...vehicle,...(technicalDetails?{technicalDetails}:{}),projection:'detail-inline-v1',inspectionSummary,
-  inspectionInline:{conclusions:conclusions.slice(0,3).map(v=>PublicInspectionConclusionSchema.parse(v)),defects:defects.slice(0,8).map(v=>PublicInspectionEntrySchema.parse(v)),normalItemCount,hasMoreConclusions:conclusions.length>3,hasMoreDefects:defects.length>8},
-  configurationInline:items.slice(0,200).map(item=>PublicConfigurationInlineItemSchema.parse({...item,semanticKey:configurationSemanticKey(item.id,item.name.text)}))});
+ return PublicVehicleInlineSchema.parse({...vehicle,...(technicalDetails?{technicalDetails}:{}),projection:'detail-inline-v1',
+  inspectionSummary:isExternal?safeExternalInspectionSummary(locale,inspectionSummary):inspectionSummary,
+  inspectionInline:{conclusions:conclusions.slice(0,3).map(item=>safeExternalInspectionConclusion(locale,item)),
+   defects:defects.slice(0,8).map(item=>safeExternalInspectionEntry(locale,PublicInspectionEntrySchema.parse(item))),
+   normalItemCount,hasMoreConclusions:conclusions.length>3,hasMoreDefects:defects.length>8},
+  configurationInline:items.slice(0,200).map(item=>{
+   const {name,value}=isExternal?safeExternalDisplayPair(locale,item):item;
+   return PublicConfigurationInlineItemSchema.parse({...item,name,value,semanticKey:configurationSemanticKey(item.id,name.text)});
+  })});
 }

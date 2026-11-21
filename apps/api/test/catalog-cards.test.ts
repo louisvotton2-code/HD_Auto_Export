@@ -250,3 +250,43 @@ test('retained text in immutable snapshots projects consistently and whitespace 
   assert.deepEqual(featured.map(vehicle=>vehicle.id),[retained]);
   assert.equal(featured[0]?.facts.model?.name,'Retained archived model');
 });
+
+test('previously stored supplier copy with private costs or contacts stays out of public detail, cards and facets',async()=>{
+  const id=external[1]!;
+  const cost='内部采购成本 CNY 73421', contact='Seller contact (202) 555-0142';
+  const original=(await db.pool.query('SELECT facts,localized,details FROM external_catalog WHERE listing_id=$1',[id])).rows[0]!;
+  const stored=structuredClone(original);
+  stored.localized.en.title.text=contact;
+  stored.localized.en.description={...stored.localized.en.title,text:cost};
+  stored.localized.en.display.model={...stored.localized.en.display.make,text:contact};
+  stored.facts.model.name=contact;
+  stored.details.original.description={text:cost,contentLocale:'zh'};
+  stored.details.specifications=[{name:{text:'内部采购成本',contentLocale:'zh'},value:{text:'CNY 73421',contentLocale:'und'}}];
+  await db.transaction(async tx=>{
+    await tx.query('UPDATE external_catalog SET facts=$2,localized=$3,details=$4 WHERE listing_id=$1',
+      [id,JSON.stringify(stored.facts),JSON.stringify(stored.localized),JSON.stringify(stored.details)]);
+    await tx.query('UPDATE external_media SET alt=$2 WHERE listing_id=$1', [id,JSON.stringify({text:contact,contentLocale:'en'})]);
+  });
+  try {
+    const detail=await service.getPublic(`ext-${id}`,'en','localized');
+    assert.equal(detail.content.title.kind,'catalog');
+    assert.equal(detail.content.description,null);
+    assert.equal(detail.external?.detail?.original.description,null);
+    assert.deepEqual(detail.external?.detail?.specifications,[]);
+    assert.equal(detail.images[0]?.alt,'');
+    const card=(await service.listPublic(query(),'private-supplier-copy')).data.items.find(item=>item.id===`ext-${id}`);
+    assert.ok(card);
+    assert.equal(card.content.title.kind,'catalog');
+    const facet=await service.filters(filters({model:original.facts.model.id}));
+    assert.ok(facet.models.some(item=>item.id===original.facts.model.id));
+    for(const value of [detail,card,facet]) assert.doesNotMatch(JSON.stringify(value),/73421|555-0142/);
+    const persisted=(await db.pool.query('SELECT details FROM external_catalog WHERE listing_id=$1',[id])).rows[0]!;
+    assert.equal(persisted.details.original.description.text,cost);
+  } finally {
+    await db.transaction(async tx=>{
+      await tx.query('UPDATE external_catalog SET facts=$2,localized=$3,details=$4 WHERE listing_id=$1',
+        [id,JSON.stringify(original.facts),JSON.stringify(original.localized),JSON.stringify(original.details)]);
+      await tx.query('UPDATE external_media SET alt=NULL WHERE listing_id=$1',[id]);
+    });
+  }
+});

@@ -1,13 +1,27 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { type PublicVehicleSegmentQuery, type PublicMedia, type PublicVehicleConfigurationResponse } from '@hd/contracts/public';
+import type { Locale, PublicVehicleSegmentQuery, PublicMedia, PublicVehicleConfigurationResponse } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import type { InventoryService } from './service.js';
 import { ApiError, conflict } from '../errors.js';
 import { readSourceSegment } from '../external/sources/index.js';
-import { displayText } from '../external/normalize.js';
+import { displayText, isPublicText, safeExternalDisplayText } from '../external/normalize.js';
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const Cursor=z.strictObject({id:z.string(),locale:z.enum(['zh','en','ru']),kind:z.enum(['gallery','configuration']),revision:z.string().regex(/^[a-f0-9]{64}$/),offset:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)});
+type SegmentItem=PublicMedia|PublicVehicleConfigurationResponse['data']['items'][number];
+
+function publicSegmentItem(item:SegmentItem,locale:Locale):SegmentItem {
+  if('alt' in item){
+    const alt=isPublicText(item.alt)?item.alt:'';
+    const altText=item.altText&&safeExternalDisplayText(locale,item.altText);
+    const blocked=(!alt&&/\S/.test(item.alt))||(item.altText?.status==='ready'&&altText?.status==='missing');
+    return {...item,alt:blocked?'':alt,...(altText?{altText:blocked?displayText(locale,null):altText}:{})};
+  }
+  const name=safeExternalDisplayText(locale,item.name);
+  return {...item,name,value:item.name.status==='ready'&&name.status==='missing'
+    ?displayText(locale,null):safeExternalDisplayText(locale,item.value)};
+}
+
 export class VehicleSegments {
   constructor(private db:Database,private inventory:InventoryService){}
   private async stamp(){const row=(await this.db.pool.query('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0];if(!row)throw new Error('Catalog state missing.');return digest(row);}
@@ -19,8 +33,9 @@ export class VehicleSegments {
     // Reuses the exact public visibility/language gates; private previews never use this service.
     const vehicle=await this.inventory.getPublic(id,query.locale,'localized');
     const offset=cursor?.offset??0;
-    let items:Array<PublicMedia|PublicVehicleConfigurationResponse['data']['items'][number]>;let total:number;let sourceRevision:string;
-    const page=id.startsWith('ext-')?await this.db.transaction(async tx=>{
+    const external=id.startsWith('ext-');
+    let items:SegmentItem[];let total:number;let sourceRevision:string;
+    const page=external?await this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       return readSourceSegment(tx,id.slice(4),query.locale,kind==='gallery'?'photos':'configuration',offset,query.limit);
     }):null;
@@ -31,6 +46,7 @@ export class VehicleSegments {
     const revision=digest([before,id,query.locale,kind,sourceRevision]);
     if(cursor&&cursor.revision!==revision)throw conflict();
     const nextOffset=offset+items.length;
-    return {vehicleId:id,locale:query.locale,revision,total,items,nextCursor:nextOffset<total?Buffer.from(JSON.stringify({id,locale:query.locale,kind,revision,offset:nextOffset})).toString('base64url'):null};
+    // Neutralize persisted text in place so existing cursor positions and totals still describe the same items.
+    return {vehicleId:id,locale:query.locale,revision,total,items:external?items.map(item=>publicSegmentItem(item,query.locale)):items,nextCursor:nextOffset<total?Buffer.from(JSON.stringify({id,locale:query.locale,kind,revision,offset:nextOffset})).toString('base64url'):null};
   }
 }

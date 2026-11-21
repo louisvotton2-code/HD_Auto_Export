@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   ExternalFactFieldSchema, MoneySchema, brandLabel, findBrand,
-  type DisplayText, type ExternalInspection, type ExternalIssue, type Locale, type PublicText, type VehicleDisplay,
+  type DisplayText, type ExternalInspection, type ExternalIssue, type Locale, type PublicInspectionSummary, type PublicText, type VehicleDisplay,
 } from '@hd/contracts/public';
 import { ExternalCopySchema, type ExternalOverrides, type ExternalTrialField, type ExternalUpsertCandidate } from '@hd/contracts/admin';
 import { ApiError } from '../errors.js';
@@ -65,6 +65,10 @@ export function isDatabaseJson(value: unknown): boolean {
   return true;
 }
 
+const privateCommerce = /采购\s*(?:成本|价格?|费用)|进货\s*(?:成本|价格?)|收车\s*(?:成本|价格?)|内部\s*(?:成本|采购价|费用)|\b(?:internal|acquisition|procurement|wholesale|dealer)\s+(?:costs?|fees?|pric(?:e|es))\b|закупочн\p{L}{0,12}\s+(?:цен\p{L}{0,8}|стоимост\p{L}{0,8})|внутренн\p{L}{0,12}\s+расход\p{L}{0,8}/iu;
+const privateSellerContact = /卖家联系|车商联系|销售电话|\b(?:seller|dealer|sales)\s+(?:contact|phone|telephone|mobile)\b|контакт\p{L}{0,8}\s+(?:продавц\p{L}{0,8}|дилер\p{L}{0,8})/iu;
+const privateContactLabel = /^(?:contact(?:\s+(?:details|number))?|(?:phone|telephone|mobile|tel)(?:\s+(?:no\.?|number))?|контакты?|телефон)\s*:?$/iu;
+
 /** Promote only candidate display fields. Untrusted text remains plain data even after filtering. */
 export function isPublicText(value: string): boolean {
   if (!/\S/.test(value) || unsafeDatabaseText(value) || /[\u0001-\u0008\u000B-\u001F\u007F]/u.test(value)) return false;
@@ -72,7 +76,8 @@ export function isPublicText(value: string): boolean {
   return !/<(?:[!/]|[A-Za-z])|(?:https?:\/\/|javascript:)|[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(text) &&
     !/微信|联系方式|电话|手机号|whatsapp|telegram|телефон|\b(?:contact|phone|call|tel)\s*[:+]/i.test(text) &&
     !/\+\d(?:[\p{Zs}\t().-]{0,6}\d){6,}/u.test(text) &&
-    !/\b(?:1[3-9]\d{9}|[A-HJ-NPR-Z0-9]{17})\b/i.test(text);
+    !/\b(?:1[3-9]\d{9}|[A-HJ-NPR-Z0-9]{17})\b/i.test(text) &&
+    !privateCommerce.test(text) && !privateSellerContact.test(text) && !privateContactLabel.test(text.trim());
 }
 
 type Copy = ExternalUpsertCandidate['copy'];
@@ -182,15 +187,19 @@ export function displayText(locale: Locale, value: Tagged | null, provenance: No
   return value ? { status: 'ready', ...value, requestedLocale: locale, provenance, reviewed: false }
     : { status: 'missing', text: null, requestedLocale: locale, contentLocale: null, provenance: null, reviewed: false };
 }
+export function safeExternalDisplayText(locale: Locale, value: DisplayText): DisplayText {
+  return value.text !== null && !isPublicText(value.text) ? displayText(locale, null) : value;
+}
 export const publicText = (locale: Locale, value: Tagged, kind: PublicText['kind'] = 'original'): PublicText =>
   ({ ...value, requestedLocale: locale, kind, reviewed: false });
+export const fallbackExternalTitle = (locale: Locale) => publicText(locale, { text: fallbackTitle[locale], contentLocale: locale }, 'catalog');
 
 function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy, overrides: ExternalOverrides, platform: Tagged, locale: Locale, identities: TextSourceIdentities, hashes: ReturnType<typeof sourceHashes>): Localized {
   const choose = (field: ExternalTrialField) => {
     const item = copy[field];
     if (!item) return null;
     const staff = eligibleTextOverride(source, overrides, identities, field, locale, hashes[field]);
-    if (staff) return publicText(locale, { text: staff.text, contentLocale: locale }, 'human');
+    if (staff && isPublicText(staff.text)) return publicText(locale, { text: staff.text, contentLocale: locale }, 'human');
     const translated = item.translations[locale];
     return translated ? publicText(locale, translated, 'supplier') : publicText(locale, item.original);
   };
@@ -200,7 +209,7 @@ function localizedCopy(source: ExternalUpsertCandidate, facts: Facts, copy: Copy
   const glossary = model?.kind === 'original' && model.contentLocale.split('-')[0] !== locale && copy.model
     ? glossaryModel(source, locale, copy.model.original) : null;
   return {
-    title: choose('title') ?? publicText(locale, { text: fallbackTitle[locale], contentLocale: locale }, 'catalog'),
+    title: choose('title') ?? fallbackExternalTitle(locale),
     description: choose('description'),
     display: {
       make: knownBrand ? displayText(locale, { text: knownBrand, contentLocale: locale }, 'catalog') : displayText(locale, name(facts.make?.name)),
@@ -261,3 +270,9 @@ export function buildProjection(source: ExternalUpsertCandidate, overrides: Exte
 }
 
 export type ExternalProjection = ReturnType<typeof buildProjection>;
+
+export function safeExternalInspectionSummary(locale: Locale, summary: PublicInspectionSummary): PublicInspectionSummary {
+  return { ...summary, categories: summary.categories.map(category => ({
+    ...category, label: safeExternalDisplayText(locale, category.label),
+  })) };
+}

@@ -4,6 +4,7 @@ import { activityChanges } from '../activity/changes.js';
 import { recordAudit } from '../activity/service.js';
 import type { Database } from '../db/index.js';
 import { conflict, notFound } from '../errors.js';
+import { eligibleExternalHomeIds } from '../external/catalog.js';
 import { externalInquiryCode } from '../external/inquiry-code.js';
 import { isPublicText } from '../external/normalize.js';
 import type { Actor } from './service.js';
@@ -84,6 +85,8 @@ export function setVehiclePixel(db: Database, kind: PixelKind, pathId: string, i
   const id = databaseId(kind, pathId);
   const { parent, active, settings, key } = target[kind];
   return db.transaction(async tx => {
+    // Public eligibility takes the supplier writer lock before we lock the listing row.
+    if (kind === 'external' && input.pixelEnabled && !(await eligibleExternalHomeIds(tx, [id])).length) throw notFound();
     // The parent row serializes writers even before the first setting exists. Read the setting in a fresh statement after the lock.
     const locked = await tx.query(`SELECT id FROM ${parent} parent WHERE parent.id = $1 ${active} FOR NO KEY UPDATE`, [id]);
     if (!locked.rowCount) throw notFound();
