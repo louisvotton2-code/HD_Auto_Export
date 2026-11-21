@@ -290,3 +290,32 @@ test('previously stored supplier copy with private costs or contacts stays out o
     });
   }
 });
+
+test('powertrain and year overview count unpriced listings and preserve visibility and facet availability',async()=>{
+  const make={id:'facet-test-make',name:'Facet test make'};
+  for(const [position,index] of [1,2,3].entries()) {
+    const id=external[index]!;
+    await db.pool.query(`UPDATE external_catalog
+      SET facts=facts||$2::jsonb,price_cny=CASE WHEN $3 THEN NULL ELSE price_cny END,
+        localized=CASE WHEN $3 THEN localized-'en' ELSE localized END WHERE listing_id=$1`,[id,JSON.stringify({
+      make,model:{id:'facet-test-model',name:'Facet test model'},trim:{id:'facet-test-trim',name:'Facet test trim'},
+      generation:{id:'facet-test-generation',name:'Facet test generation'},powertrain:'bev',modelYear:position===1?2019:2020,
+    }),position===2]);
+  }
+  const options={make:make.id,powertrain:'bev',yearMin:2020,projection:'overview'};
+  const read=(locale:'zh'|'en')=>service.filters(filters({...options,locale}));
+  const zh=await read('zh');
+  assert.equal(zh.total,2);
+  assert.equal(zh.makes.find(option=>option.id===make.id)?.count,2);
+  assert.deepEqual(zh.modelYears,[{year:2020,count:2}]);
+  assert.deepEqual(zh.powertrains,[{id:'bev',count:2}]);
+  assert.equal(zh.hasTrims,true);
+  assert.equal(zh.hasGenerations,true);
+  assert.equal((await read('en')).total,1);
+  await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[external[3]]);
+  assert.equal((await read('zh')).total,1);
+  await db.pool.query('UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1',[external[1]]);
+  const safe=await read('zh');
+  assert.equal(safe.total,1);
+  assert.deepEqual(safe.makes,[{id:make.id,name:'外部挂牌',count:1}]);
+});

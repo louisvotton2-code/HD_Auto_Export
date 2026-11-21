@@ -59,6 +59,37 @@ test('a publication changing during source reads retries once and never tags old
   await assert.rejects(unstable.get('detail', {}, async () => { revision = version(String(Number(revision.revision) + 1)); return {}; }), { status: 503, reason: 'revision-changed' });
 });
 
+test('a queued filter read shares a new authoritative stamp and warms only the current version', async () => {
+  let revision=version();
+  const store=new Store();
+  const cache=new PublicCatalogCache({namespace:'hd:filter-queue',maxConcurrentLoads:1,maxQueuedLoads:1},
+    {readRevision:async()=>revision,store,now:()=>Date.parse('2026-11-22T00:00:00Z')});
+  const before=await cache.currentVersion(false,undefined,'filters');
+  const started=deferred<void>(), release=deferred<void>();
+  const blocker=cache.get('home',{},async()=>{started.resolve();await release.promise;return {sections:[]};});
+  await started.promise;
+  const query={locale:'zh',projection:'overview',powertrain:'bev',yearMin:2020};
+  const events:string[][]=[[],[]];
+  let loads=0;
+  const pending=events.map(trace=>cache.getFilterSnapshot(query,async()=>{
+    loads++;
+    return {value:{total:7},revision};
+  },false,undefined,1,phase=>trace.push(phase)));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(cache.metrics().queuedLoads,1);
+  revision=version('2');
+  release.resolve();
+  await blocker;
+  const [first, second]=await Promise.all(pending);
+  assert.deepEqual(first,second);
+  assert.equal(first?.stamp?.version,(await cache.currentVersion(false,undefined,'filters')).version);
+  assert.notEqual(first?.stamp?.version,before.version);
+  assert.deepEqual(events,[['cache_revision','cache_lookup','origin_queue'],['cache_revision','cache_lookup','origin_shared']]);
+  assert.equal(cache.metrics().uncachedFilterLoads,0);
+  assert.deepEqual((await cache.getFilterSnapshot(query,async()=>{throw new Error('Expected a warm hit.');})).value,{total:7});
+  assert.equal(loads,1);
+});
+
 test('a queued catalog miss loads once and caches under its newer authoritative snapshot', async () => {
   const now = Date.parse('2026-11-22T00:00:00Z');
   const earlier = { ...version(), fx: { version: 'quote', expiresAt: now + 3_000 } };
