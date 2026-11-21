@@ -161,7 +161,7 @@ def locations(base, path, public, root_tag):
     return paths
 
 
-def check(base, public, closed):
+def check(base, public, closed, require_vehicle=False):
     body, _ = fetch(base, "/robots.txt", 512 * 1024)
     groups = robots_groups(body)
     if closed:
@@ -188,12 +188,18 @@ def check(base, public, closed):
     # Sample the first and last shard. A production catalog can contain hundreds of thousands of vehicles.
     sampled = list(dict.fromkeys([shards[0], shards[-1]]))
     sample = None
+    vehicle_sample = None
     for shard in sampled:
         paths = locations(base, shard, public, "urlset")
         require(0 < len(paths) <= 10000, f"{shard} contains {len(paths)} URLs (expected 1–10,000)")
         require(all(PUBLIC_PAGE.fullmatch(p) for p in paths), f"{shard} contains a non-release page URL")
         if sample is None:
             sample = paths[0]
+        if vehicle_sample is None:
+            vehicle_sample = next((p for p in paths if re.fullmatch(r"/(?:zh|en|ru)/cars/[\w-]+/", p)), None)
+    if require_vehicle:
+        require(vehicle_sample is not None, "no eligible vehicle detail found in sampled sitemap shards")
+    sample = vehicle_sample or sample
     check_crawlable(groups, sample)
     metadata = catalog if sample == CATALOG else page(base, sample, False)
     require(metadata.canonical == [public + sample], f"sampled URL {sample} has an incorrect canonical")
@@ -210,10 +216,13 @@ if __name__ == "__main__":
     parser.add_argument("--base", type=origin, required=True, help="gateway to fetch, e.g. http://127.0.0.1:3363")
     parser.add_argument("--public-origin", type=origin, required=True, help="origin expected in canonical and sitemap URLs")
     parser.add_argument("--phase", choices=("open", "closed"), required=True)
+    parser.add_argument("--require-vehicle", action="store_true", help="require the open sitemap sample to include a vehicle detail")
     args = parser.parse_args()
+    if args.require_vehicle and args.phase != "open":
+        parser.error("--require-vehicle needs --phase open")
     signal.signal(signal.SIGALRM, timeout)
     signal.alarm(90)
     try:
-        check(args.base, args.public_origin, args.phase == "closed")
+        check(args.base, args.public_origin, args.phase == "closed", args.require_vehicle)
     except (ValueError, OSError, http.client.HTTPException, ET.ParseError) as error:
         sys.exit(f"SEO {args.phase} check failed: {error}")
