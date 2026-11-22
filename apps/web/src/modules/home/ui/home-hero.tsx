@@ -40,10 +40,6 @@ export function HomeHero({
     imageSizes: roadImageSizes,
     fetchPriority: 'high',
   });
-  preload('/fonts/inter-latin.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
-  if (locale === 'ru') {
-    preload('/fonts/inter-cyrillic.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
-  }
 
   useEffect(() => {
     const node = hero.current;

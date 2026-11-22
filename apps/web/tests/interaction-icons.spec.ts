@@ -25,7 +25,7 @@ test('SVG controls retain their labels, keyboard actions and state while flags u
   await decorativeControlIcon(catalog);
   await expect(catalog).toHaveAttribute('href', '/en/cars/');
   const russia = page.locator('[data-home-section="calculator"]').getByRole('link', { name: 'Russia', exact: true });
-  await expect(russia.locator('img')).toHaveAttribute('src', '/flags/ru.svg');
+  await expect(russia.locator('img')).toHaveAttribute('src', /\/_next\/static\/media\/ru\.[\w-]+\.svg$/);
   await expect(russia.locator('img')).toHaveAttribute('aria-hidden', 'true');
   await expect.poll(() => russia.locator('img').evaluate(node => (node as HTMLImageElement).complete && (node as HTMLImageElement).naturalWidth > 0)).toBe(true);
 

@@ -455,7 +455,7 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
       for (const [name, slug, code] of [['Россия', 'russia', 'ru'], ['Казахстан', 'kazakhstan', 'kz']] as const) {
         const countryLink = page.locator(`.country-nav a[href="/ru/calculator/${slug}/"]`);
         await expect(countryLink).toHaveText(name);
-        await expect(countryLink.locator('img')).toHaveAttribute('src', `/flags/${code}.svg`);
+        await expect(countryLink.locator('img')).toHaveAttribute('src', new RegExp(`/static/media/${code}\\.[\\w-]+\\.svg$`));
         await expect(countryLink.locator('img')).toHaveAttribute('alt', '');
         await expect(countryLink.locator('img')).toHaveAttribute('aria-hidden', 'true');
       }

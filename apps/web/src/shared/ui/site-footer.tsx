@@ -1,4 +1,3 @@
-import Image from 'next/image';
 import type { ReactNode } from 'react';
 import { getTranslations } from 'next-intl/server';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
@@ -25,12 +24,12 @@ export async function SiteFooter({ privacyAction }: { privacyAction?: ReactNode 
               className={`hd-footer-brand ${styles.footerBrand}`}
               aria-label={`${siteConfig.name} — ${t('Nav.home')}`}
             >
-              <Image
+              <img
                 src={siteConfig.brand.logo.src}
                 width={siteConfig.brand.logo.width}
                 height={siteConfig.brand.logo.height}
                 alt={t('Brand.logoAlt')}
-                sizes="49px"
+                loading="lazy"
                 className={styles.footerLogo}
               />
               <strong>
