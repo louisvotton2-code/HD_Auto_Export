@@ -1,4 +1,5 @@
 import type { CountryRecord } from '../config/countries';
+import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import type { CalculationInput, CalculationResult } from '../core/types';
 import type { ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 
@@ -39,7 +40,7 @@ export function getCopyQuoteFacts(
       value: { namespace: valueNamespace, key: value },
     });
   const electric = input.powertrain === 'bev';
-  if (country.needsPrice) literal('price', `${input.price} ${input.currency}`);
+  if (country.needsPrice) literal(country.code === 'TJ' ? 'tjCustomsValue' : 'price', `${input.price} ${input.currency}`);
   translated('powertrain', input.powertrain);
   if (!electric && !(country.code === 'KG' && input.powertrain === 'erev'))
     literal('displacement', input.displacementCc);
@@ -56,14 +57,17 @@ export function getCopyQuoteFacts(
   }
   if (country.needsPrice)
     literal('transactionRate', `${input.transactionRate} ${country.currency}/${input.currency}`);
-  if (country.needsEuroRate && !(country.code === 'RU' && electric))
+  if (country.needsEuroRate && !(electric && (country.code === 'RU' || country.code === 'TJ')))
     literal('euroRate', `${input.euroRate} ${country.currency}/EUR`);
-  if (country.code === 'UZ' && input.currency !== 'USD')
-    literal('usdRate', `${input.usdRate ?? ''} UZS/USD`);
+  if (needsTajikTariffInputs(country.code, input.powertrain)) {
+    for (const field of TAJIK_TARIFF_FIELDS) literal(field, `${input[field] ?? ''} ${field === 'tjExciseMinimum' ? 'EUR/cc' : '%'}`);
+  }
+  if (country.needsUsdRate && input.currency !== 'USD')
+    literal('usdRate', `${input.usdRate ?? ''} ${country.currency}/USD`);
   if (!country.needsPrice) {
     // GE's market USD rate affects display only, not the GEL taxes.
     literal('usdRate', `${snapshot.rates[country.currency]} ${country.currency}/USD`);
-  } else if (input.currency === 'CNY' && country.code !== 'UZ') {
+  } else if (input.currency === 'CNY' && !country.needsUsdRate) {
     // Preserve the market leg used alongside an explicitly overridden local/CNY rate.
     literal('marketCrossRate', `${snapshot.rates.CNY} CNY/USD`, 'CopyQuote');
   }

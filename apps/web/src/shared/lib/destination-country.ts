@@ -1,9 +1,18 @@
 /** Only these public destination codes may be persisted; vehicle facts never belong here. */
 export const DESTINATION_COUNTRIES = {
-  RU: 'russia', KZ: 'kazakhstan', UZ: 'uzbekistan', GE: 'georgia',
-  AM: 'armenia', KG: 'kyrgyzstan', AL: 'albania',
+  KG: 'kyrgyzstan',
+  UZ: 'uzbekistan',
+  KZ: 'kazakhstan',
+  TJ: 'tajikistan',
+  TM: 'turkmenistan',
+  RU: 'russia',
+  GE: 'georgia',
+  AM: 'armenia',
+  AL: 'albania',
 } as const;
 export type DestinationCountryCode = keyof typeof DESTINATION_COUNTRIES;
+export const DESTINATION_COUNTRY_CODES: readonly DestinationCountryCode[] =
+  Object.keys(DESTINATION_COUNTRIES) as DestinationCountryCode[];
 export const DESTINATION_COUNTRY_STORAGE_KEY = 'hd-auto.destination-country.v1';
 export const DESTINATION_COUNTRY_EVENT = 'hd-auto:destination-country';
 export const DESTINATION_COUNTRY_URL_EVENT = 'hd-auto:destination-country-url';
@@ -18,7 +27,7 @@ export function resolveDestinationCountry(explicit: unknown, stored: unknown): D
 
 export function destinationCountryFromLocation(pathname: string, search = ''): DestinationCountryCode | undefined {
   const match = /^(?:\/(?:zh|en|ru))?\/calculator\/([^/]+)\/?$/.exec(pathname);
-  const code = match && (Object.keys(DESTINATION_COUNTRIES) as DestinationCountryCode[])
+  const code = match && DESTINATION_COUNTRY_CODES
     .find(country => DESTINATION_COUNTRIES[country] === match[1]);
   if (code) return code;
   const selected = new URLSearchParams(search).get('country');

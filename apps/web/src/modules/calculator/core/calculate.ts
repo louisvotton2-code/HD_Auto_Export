@@ -5,24 +5,37 @@ import { calculateUzReference, UZ_REFERENCE_VERSION } from '../policies/uz/refer
 import { calculateKgReference, KG_REFERENCE_VERSION } from '../policies/kg/reference';
 import { calculateAmReference, AM_REFERENCE_VERSION } from '../policies/am/reference';
 import { calculateAlReference, AL_REFERENCE_VERSION } from '../policies/al/reference';
+import { calculateTjReference, TJ_REFERENCE_VERSION } from '../policies/tj/reference';
+import { calculateTmReference, TM_REFERENCE_VERSION } from '../policies/tm/reference';
 import { ageInMonths, parseCustomsDate, parseManufactureMonth } from './dates';
 import { Amount } from './decimal';
+import { COUNTRY_CURRENCIES } from './country-currencies';
+import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from './tajik-input';
 import type {
   CalculationInput,
   CalculationResult,
   CountryCode,
+  ReferencePolicyFacts,
   ReferencePolicyResult,
 } from './types';
 
-const CURRENCIES: Record<CountryCode, string> = {
-  RU: 'RUB',
-  KZ: 'KZT',
-  UZ: 'UZS',
-  GE: 'GEL',
-  AM: 'AMD',
-  KG: 'KGS',
-  AL: 'ALL',
-};
+const POLICIES = {
+  RU: { version: RU_REFERENCE_VERSION, calculate: calculateRuReference },
+  KZ: { version: KZ_REFERENCE_VERSION, calculate: calculateKzReference },
+  UZ: { version: UZ_REFERENCE_VERSION, calculate: calculateUzReference },
+  KG: { version: KG_REFERENCE_VERSION, calculate: calculateKgReference },
+  AM: { version: AM_REFERENCE_VERSION, calculate: calculateAmReference },
+  AL: { version: AL_REFERENCE_VERSION, calculate: calculateAlReference },
+  TJ: { version: TJ_REFERENCE_VERSION, calculate: calculateTjReference },
+  TM: { version: TM_REFERENCE_VERSION, calculate: calculateTmReference },
+  GE: {
+    version: GE_REFERENCE_VERSION,
+    calculate: ({ input, ageYears }: ReferencePolicyFacts) => ({
+      lines: calculateGeReference({ ...input, ageYears }), additionalCosts: [],
+    }),
+  },
+} satisfies Record<CountryCode, { version: string; calculate: (facts: ReferencePolicyFacts) => ReferencePolicyResult }>;
+
 const FREIGHT_COUNTRIES = new Set<CountryCode>(['UZ', 'AM', 'KG', 'AL']);
 type NumericField =
   | 'price'
@@ -32,7 +45,9 @@ type NumericField =
   | 'euroRate'
   | 'usdRate'
   | 'freight'
-  | 'insurance';
+  | 'insurance'
+  | TajikTariffField;
+const zeroAllowed = new Set<NumericField>(['freight', 'insurance', ...TAJIK_TARIFF_FIELDS]);
 
 /** Pure, deterministic 2026 reference preview. Dates and exchange rates are explicit. */
 export function calculateImportEstimate(input: CalculationInput): CalculationResult {
@@ -44,7 +59,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
   };
   const result: CalculationResult = {
     status: 'incomplete',
-    currency: CURRENCIES[input.country] ?? '',
+    currency: Object.hasOwn(COUNTRY_CURRENCIES, input.country) ? COUNTRY_CURRENCIES[input.country] : '',
     lines: [],
     total: null,
     missingFields: [],
@@ -75,9 +90,8 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
   const seriesInKg = input.country === 'KG' && input.powertrain === 'erev';
   const numericFields = new Set<NumericField>();
   if (active) {
-    if (input.country === 'GE') {
-      required.add('steering');
-    } else {
+    if (input.country === 'GE' || input.country === 'TM') required.add('steering');
+    if (input.country !== 'GE') {
       required.add('currency');
       numericFields.add('price');
       numericFields.add('transactionRate');
@@ -88,10 +102,12 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
       if (!electric) numericFields.add('euroRate');
     }
     if (['KZ', 'KG', 'AM'].includes(input.country)) numericFields.add('euroRate');
-    if (input.country === 'UZ') {
-      numericFields.add('usdRate');
-      required.add('condition');
+    if (needsTajikTariffInputs(input.country, input.powertrain)) {
+      numericFields.add('euroRate');
+      TAJIK_TARIFF_FIELDS.forEach(field => numericFields.add(field));
     }
+    if (['UZ', 'TJ', 'TM'].includes(input.country)) numericFields.add('usdRate');
+    if (input.country === 'UZ') required.add('condition');
     for (const field of numericFields) required.add(field);
     if (FREIGHT_COUNTRIES.has(input.country)) {
       // Unknown transport is an explicit estimate assumption, never a complete cost quote.
@@ -107,7 +123,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
       result.missingFields.push(field);
   }
   const enums: Partial<Record<keyof CalculationInput, readonly string[]>> = {
-    country: Object.keys(CURRENCIES),
+    country: Object.keys(COUNTRY_CURRENCIES),
     importerType: ['individual', 'company'],
     powertrain: ['petrol', 'diesel', 'hev', 'phev', 'erev', 'bev'],
     currency: ['CNY', 'USD'],
@@ -130,8 +146,10 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     if (!value.trim()) continue;
     if (!/^\d{1,18}(?:\.\d{1,12})?$/.test(value.trim()))
       result.fieldErrors[field] = 'invalid_decimal';
-    else if (!['freight', 'insurance'].includes(field) && new Amount(value.trim()).isZero())
+    else if (!zeroAllowed.has(field) && new Amount(value.trim()).isZero())
       result.fieldErrors[field] = 'must_be_positive';
+    else if ((field === 'tjDutyPercent' || field === 'tjExcisePercent') && new Amount(value.trim()).gt(100))
+      result.fieldErrors[field] = 'invalid_decimal';
     else (facts[field] as string) = value.trim();
   }
   const manufactureText =
@@ -168,47 +186,12 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     ageMonths: manufacture ? ageInMonths(manufacture, customs!) : 0,
     ageYears: manufacture ? customs!.year - manufacture.year : 0,
   };
-  let policy: ReferencePolicyResult;
-  switch (input.country) {
-    case 'RU':
-      policy = calculateRuReference(policyFacts);
-      result.ruleVersion = RU_REFERENCE_VERSION;
-      break;
-    case 'KZ':
-      policy = calculateKzReference(policyFacts);
-      result.ruleVersion = KZ_REFERENCE_VERSION;
-      break;
-    case 'UZ':
-      policy = calculateUzReference(policyFacts);
-      result.ruleVersion = UZ_REFERENCE_VERSION;
-      break;
-    case 'KG':
-      policy = calculateKgReference(policyFacts);
-      result.ruleVersion = KG_REFERENCE_VERSION;
-      break;
-    case 'AM':
-      policy = calculateAmReference(policyFacts);
-      result.ruleVersion = AM_REFERENCE_VERSION;
-      break;
-    case 'AL':
-      policy = calculateAlReference(policyFacts);
-      result.ruleVersion = AL_REFERENCE_VERSION;
-      break;
-    case 'GE':
-      policy = {
-        lines: calculateGeReference({
-          powertrain: input.powertrain,
-          displacementCc: facts.displacementCc,
-          ageYears: policyFacts.ageYears,
-          steering: input.steering,
-        }),
-        additionalCosts: [],
-      };
-      result.ruleVersion = GE_REFERENCE_VERSION;
-      break;
-  }
-  result.lines = policy!.lines;
-  result.additionalCosts = policy!.additionalCosts;
+  const { calculate, version } = POLICIES[input.country];
+  const policy: ReferencePolicyResult = calculate(policyFacts);
+  result.ruleVersion = version;
+  if (policy.reason) return pending(policy.reason);
+  result.lines = policy.lines;
+  result.additionalCosts = policy.additionalCosts;
   if (FREIGHT_COUNTRIES.has(input.country) && (!facts.freight.trim() || !facts.insurance.trim()))
     result.assumptions.push('transport_not_in_tax_base');
   if (input.country === 'AM' && electric) result.assumptions.push('am_electric_relief_assumed');
@@ -229,6 +212,6 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     reason: 'reference_preview_only',
     total: result.lines
       .reduce((sum, line) => sum.add(line.amount), new Amount(0))
-      .toFixed(input.country === 'KG' ? 2 : 0),
+      .toFixed(['KG', 'TJ', 'TM'].includes(input.country) ? 2 : 0),
   };
 }

@@ -27,7 +27,7 @@ test('anonymous contact increments once, keeps only a vehicle/hour/channel total
   const target=new URL(address);target.pathname=`/${dbName}`;
   const host='127.0.0.1:3363',origin=`http://${host}`,path='/api/v1/analytics/contact-count';
   const env={NODE_ENV:'test',DATABASE_URL:target.href,AUTH_SECRET:randomBytes(32).toString('hex'),
-    AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin,ANALYTICS_ORIGINS:origin,TRUST_PROXY:'loopback',ANALYTICS_CONTACT_LOCAL_ENABLED:'true'};
+    AUTH_BASE_URL:origin,TRUSTED_ORIGINS:origin,ANALYTICS_ORIGINS:origin,TRUST_PROXY:'loopback'};
   const runtime=await buildApp(readConfig(env));
   instances.push(runtime);
   const {app,db,auth}=runtime;
@@ -75,6 +75,7 @@ test('anonymous contact increments once, keeps only a vehicle/hour/channel total
       const result=AnalyticsTrafficResponseSchema.parse(read.json()).data;
       assert.deepEqual(result.totals,{documentRequests:0,totalContactClicks:1,whatsappClicks:1,telegramClicks:0});
       assert.equal(result.quality.documents.coverage,'not_collected');
+      assert.equal(result.quality.contacts.configured,true);
       assert.equal(result.quality.contacts.accepted,1);
       assert.equal(result.ranking.items[0]?.vehicleId,vehicleId);
     }
@@ -87,20 +88,27 @@ test('anonymous contact increments once, keeps only a vehicle/hour/channel total
   assert.equal(legacy.statusCode,202,legacy.body);
   assert.equal((await db.pool.query('SELECT clicks::int FROM analytics_contact_hourly')).rows[0]?.clicks,1);
 
-  const publicOrigin='https://cars.example.invalid',key=randomBytes(32).toString('hex');
-  const gated=await buildApp({...readConfig({...env,HD_DEPLOYMENT_ENV:'production',HD_RELEASE_ID:'0'.repeat(40),
-    ANALYTICS_ORIGINS:publicOrigin,ANALYTICS_CONTACT_ALLOWED_COUNTRIES:'KZ'}),analyticsGatewaySecret:key});
-  instances.push(gated);
-  const viaGateway=(country:string,secret=key,peer='127.0.0.1')=>gated.app.inject({
-    method:'POST',url:path,remoteAddress:peer,headers:{...headers,host:'cars.example.invalid',origin:publicOrigin,
-      'x-forwarded-proto':'https','x-forwarded-for':'198.51.100.9','x-hd-analytics-country':country,'x-hd-analytics-gateway-key':secret},
+  const publicHost='cars.example.invalid',publicOrigin=`https://${publicHost}`;
+  const release=await buildApp(readConfig({...env,NODE_ENV:'production',HD_DEPLOYMENT_ENV:'production',HD_RELEASE_ID:'0'.repeat(40),
+    AUTH_BASE_URL:publicOrigin,TRUSTED_ORIGINS:publicOrigin,ANALYTICS_ORIGINS:publicOrigin}));
+  instances.push(release);
+  const viaGateway=(extra:Record<string,string>={})=>release.app.inject({
+    method:'POST',url:path,remoteAddress:'127.0.0.1',headers:{...headers,host:publicHost,origin:publicOrigin,
+      'x-forwarded-proto':'https','x-forwarded-for':'198.51.100.9',...extra},
     payload:{...payload,channel:'telegram'},
   });
-  assert.equal((await viaGateway('ZZ')).statusCode,403);
-  assert.equal((await viaGateway('CN')).statusCode,403);
-  assert.equal((await viaGateway('KZ','bad')).statusCode,403);
-  assert.equal((await viaGateway('KZ',key,'198.51.100.10')).statusCode,403);
-  assert.equal((await viaGateway('KZ')).statusCode,204);
+  // Neither new gateways without geo data nor legacy ones with region headers need a country to count.
+  const regionHeaders:Record<string,string>[]=[{},{'x-hd-analytics-country':'CN'},
+    {'x-hd-analytics-country':'ZZ','x-hd-analytics-gateway-key':'ignored'}];
+  for(const extra of regionHeaders) {
+    const response=await viaGateway(extra);
+    assert.equal(response.statusCode,204,response.body);
+  }
+  const rejectedOrigins:Record<string,string>[]=[{origin:''},{origin:'null'},
+    {origin:'https://other.example.invalid'},{'sec-fetch-site':'same-site'}];
+  for(const extra of rejectedOrigins) {
+    assert.equal((await viaGateway(extra)).statusCode,403);
+  }
   assert.deepEqual((await db.pool.query('SELECT channel,clicks::int FROM analytics_contact_hourly ORDER BY channel')).rows,
-    [{channel:'telegram',clicks:1},{channel:'whatsapp',clicks:1}]);
+    [{channel:'telegram',clicks:3},{channel:'whatsapp',clicks:1}]);
 });

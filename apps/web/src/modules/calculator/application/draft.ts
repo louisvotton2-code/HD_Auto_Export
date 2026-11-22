@@ -1,5 +1,6 @@
 import type { CountryRecord } from '../config/countries';
 import type { CalculationInput, Powertrain } from '../core/types';
+import { TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, createDefaultInput } from './defaults';
 import { readManufactureEstimate } from './manufacture-estimate';
@@ -15,8 +16,18 @@ export const CALCULATOR_POWERTRAINS: readonly Powertrain[] = [
   'bev',
 ];
 
+export function isEnginePowerPrefill(marker: unknown, powertrain: unknown, powerHp: unknown): boolean {
+  return marker === true && powertrain !== 'bev'
+    && CALCULATOR_POWERTRAINS.includes(powertrain as Powertrain)
+    && typeof powerHp === 'string' && /^\d{1,18}(?:\.\d{1,12})?$/.test(powerHp) && Number(powerHp) > 0;
+}
+
 export function createCalculatorFormInput(country: CountryRecord, date: string, rates: ExchangeRateSnapshot): CalculationInput {
-  return { ...createDefaultInput(country.code, date, rates), manufactureDate: '' };
+  const defaults = createDefaultInput(country.code, date, rates);
+  // Standalone examples have admissible sample dates. Vehicle-detail seeds keep unknown dates blank.
+  if (country.code === 'TM') return defaults;
+  if (country.code === 'TJ') return { ...defaults, manufactureDate: `${date.slice(0, 4)}-01` };
+  return { ...defaults, manufactureDate: '' };
 }
 
 export interface StoredCalculatorDraft {
@@ -27,6 +38,7 @@ export interface StoredCalculatorDraft {
 export interface RestoredCalculatorDraft {
   input: CalculationInput;
   manualRates: boolean;
+  enginePowerPrefill?: true;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -62,6 +74,8 @@ export function restoreCalculatorDraft(
       'freight',
       'insurance',
     ] as const) {
+      // The TJ price field is an assessed customs value and is specific to that route.
+      if (key === 'price' && draft.country === 'TJ' && country.code !== 'TJ') continue;
       if (
         typeof draft[key] === 'string' &&
         draft[key].length <= 64 &&
@@ -97,8 +111,14 @@ export function restoreCalculatorDraft(
       for (const key of ['transactionRate', 'euroRate', 'usdRate'] as const)
         if (typeof draft[key] === 'string' && draft[key].length <= 64) next[key] = draft[key];
     }
+    if (country.code === 'TJ' && draft.country === country.code) {
+      for (const key of TAJIK_TARIFF_FIELDS)
+        if (typeof draft[key] === 'string' && draft[key].length <= 64) next[key] = draft[key];
+    }
     if (current && readManufactureEstimate(record.manufactureEstimate, draft.manufactureDate)) next.manufactureDate = '';
-    return { input: next, manualRates };
+    const enginePowerPrefill = current && draft.powerHp === next.powerHp
+      && isEnginePowerPrefill(record.enginePowerPrefill, next.powertrain, next.powerHp);
+    return { input: next, manualRates, ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}) };
   } catch {
     return { input: fallback, manualRates: false };
   }

@@ -3,11 +3,12 @@
 import { useTranslations } from 'next-intl';
 import { Icon } from '@/shared/ui/icon';
 import type { CalculationInput } from '../core/types';
-import { getCountryReferenceNotes, getCountryReferenceUrl } from '../application/reference-notes';
+import { getCountryOfficialSources, getCountryReferenceNotes, getCountryReferenceUrl } from '../application/reference-notes';
 
 export function CountryPolicyNotes({ input }: { input: CalculationInput }) {
   const t = useTranslations('CountryPolicies');
   const tc = useTranslations('Countries');
+  const sources = getCountryOfficialSources(input.country);
   return (
     <section
       className="country-policy-notes"
@@ -26,10 +27,14 @@ export function CountryPolicyNotes({ input }: { input: CalculationInput }) {
         ))}
       </ul>
       <p className="policy-reference-hint">{t('referenceHint')}</p>
-      <a href={getCountryReferenceUrl(input.country)} target="_blank" rel="noreferrer">
+      {sources.length ? <ul aria-label={t('officialSources')}>
+        {sources.map(({ name, url }) => <li key={url}><a href={url} target="_blank" rel="noreferrer">
+          {t('officialSource', { name })}<Icon name="diagonal" size={11} />
+        </a></li>)}
+      </ul> : <a href={getCountryReferenceUrl(input.country)} target="_blank" rel="noreferrer">
         {t('source', { date: '2026-10-23' })}
         <Icon name="diagonal" size={11} />
-      </a>
+      </a>}
     </section>
   );
 }

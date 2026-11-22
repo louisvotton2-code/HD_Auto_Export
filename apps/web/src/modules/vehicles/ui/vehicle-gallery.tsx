@@ -598,7 +598,7 @@ export function VehicleBudgetPanel({
 }) {
   const t = detailContent[locale];
   const [enhanced, setEnhanced] = useState(false);
-  const [selected, setSelected] = useState(destinations[0]?.slug ?? siteConfig.defaultCountrySlug);
+  const [selected, setSelected] = useState(siteConfig.defaultCountrySlug);
   const choices = destinations.filter((item) => /^[a-z][a-z-]*$/.test(item.slug));
   const current =
     choices.find((item) => item.slug === selected)?.slug ??

@@ -249,6 +249,7 @@ const resetState = () => ({
   previewImageCount: 1,
   estimateDateRange: false,
   estimateDisplacementMl: null,
+  estimateEnginePower: false,
   segmentGalleryCount: null,
   segmentConfigurationCount: null,
   segmentFailure: 'none',
@@ -344,12 +345,17 @@ function inspectionEntries(state, row, locale) {
 // Synthetic opt-in detail payload; old response schemas remain strict and unchanged.
 function inlineDetail(row, locale, state) {
   const available = row.inspectionSummary?.status === 'available';
+  const engineExample = state.estimateEnginePower && row.id === 'fixture_car_1';
   const rawItems = row.configuration?.items ?? row.external?.detail?.specifications?.map((item,index) => ({
     id: `config-${index}`, name: segmentDisplay(item.name.text,locale,item.name.contentLocale),
     value: segmentDisplay(item.value.text,locale,item.value.contentLocale),
   })) ?? [];
   const semanticKeys = { displacementCc: 'displacementCc', engineKw: 'engineKw', motorKw: 'motorKw', batteryKwh: 'batteryKwh', driveType: 'driveType', lengthMm: 'lengthMm', doors: 'doors', wheelbaseMm: 'wheelbaseMm' };
   return { ...row, projection: 'detail-inline-v1',
+    ...(engineExample ? {
+      facts: { ...row.facts, powertrain: 'phev', powerKw: null, powerHp: null, engineCc: 2993 },
+      technicalDetails: { power: { engineKw: 265, systemKw: 395, motorKw: 130 }, configurationMatches: [] },
+    } : {}),
     inspectionSummary: row.inspectionSummary ?? { status: 'unknown', contentLocale: null, checked: null, faults: null, categories: [] },
     inspectionInline: {
       conclusions: available ? [{ id: 'stored-fire', name: segmentDisplay('Fire inspection',locale,'en'), value: segmentDisplay('Recorded issue',locale,'en') }] : [],
@@ -693,7 +699,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
-    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDisplacementMl', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
       'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
@@ -786,6 +792,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
           estimateDateRange: (v) => typeof v === 'boolean',
           estimateDisplacementMl: (v) => [null, 'configuration', 'structured', 'machine'].includes(v),
+          estimateEnginePower: (v) => typeof v === 'boolean',
           segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
           segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
           segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),

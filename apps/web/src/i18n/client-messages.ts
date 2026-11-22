@@ -37,12 +37,14 @@ export function getCalculatorCountryMessages(
       title: policy.title,
       referenceHint: policy.referenceHint,
       source: policy.source,
+      officialSources: policy.officialSources,
+      officialSource: policy.officialSource,
       [country]: policy[country],
     },
   };
 }
 
-/** Detail-page budget uses the same vocabulary and seven method tables as the full tool. */
+/** Detail-page budget uses the same vocabulary and country method tables as the full tool. */
 export function getVehicleCalculatorMessages(messages: AbstractIntlMessages): AbstractIntlMessages {
   return {
     ...getCalculatorCommonMessages(messages),

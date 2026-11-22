@@ -1,9 +1,9 @@
 import type { Locale } from '@/i18n/routing';
-import { DESTINATION_COUNTRIES, type DestinationCountryCode } from '@/shared/lib/destination-country';
+import { DESTINATION_COUNTRIES, DESTINATION_COUNTRY_CODES, type DestinationCountryCode } from '@/shared/lib/destination-country';
 
 const calculatorCountries = (locale: Locale) => {
   const names = new Intl.DisplayNames(locale, { type: 'region' });
-  return (Object.keys(DESTINATION_COUNTRIES) as DestinationCountryCode[]).map(countryCode => ({
+  return DESTINATION_COUNTRY_CODES.map(countryCode => ({
     name: names.of(countryCode) ?? countryCode, slug: DESTINATION_COUNTRIES[countryCode], countryCode,
   }));
 };

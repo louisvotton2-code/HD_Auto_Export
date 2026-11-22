@@ -67,8 +67,13 @@ describe('calculation method and live translation contract', () => {
               powerHp: '220',
               freight: '1000',
               insurance: '100',
+              ...(code === 'TJ' ? { tjDutyPercent: '10', tjExcisePercent: '14', tjExciseMinimum: '0.15' } : {}),
             });
-            expect(result.status).toBe('reference');
+            if ((code === 'TJ' || code === 'TM') && result.status === 'needs_review') {
+              expect(result).toMatchObject({ total: null, lines: [], additionalCosts: [] });
+              continue;
+            }
+            expect(result.status, `${code} ${powertrain} ${manufactureDate}`).toBe('reference');
             for (const fee of [...result.lines, ...result.additionalCosts]) {
               expect(fee.method, `${code} ${fee.id}`).toBeDefined();
               for (const language of messages) {
