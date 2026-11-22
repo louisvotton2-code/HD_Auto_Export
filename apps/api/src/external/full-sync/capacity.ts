@@ -1,5 +1,6 @@
 import {constants} from 'node:fs';
 import {open} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {z} from 'zod';
 import type {PoolClient} from 'pg';
@@ -52,11 +53,12 @@ export type CapacitySample={details:number;active_details:number;withdrawn:numbe
 /** One consistent SQL statement; at most 10001 rows, with a partial index. Identity rows never leave PostgreSQL. */
 export async function capacitySample(db:Database):Promise<CapacitySample>{
  return (await db.pool.query<CapacitySample>(`WITH cohort AS MATERIALIZED (
-  SELECT * FROM external_full_members WHERE sampled AND last_detail_at IS NOT NULL ORDER BY source COLLATE "C",external_id COLLATE "C" LIMIT 10001
+  SELECT source,external_id,canonical_id,state,locales,report_state FROM external_full_members
+  WHERE sampled AND last_detail_at IS NOT NULL ORDER BY source COLLATE "C",external_id COLLATE "C" LIMIT 10001
  ), fingerprints AS (
   SELECT *,encode(sha256(convert_to(jsonb_build_array(source,external_id)::text,'UTF8')),'hex') AS identity_hash,
-   encode(sha256(convert_to(jsonb_build_array(source,external_id,canonical_id,state,event_order::text,desired_generation::text,applied_generation::text,
-    ARRAY(SELECT l FROM unnest(locales) l ORDER BY l COLLATE "C"),report_state,extract(epoch FROM last_detail_at)::text,extract(epoch FROM report_checked_at)::text)::text,'UTF8')),'hex') AS member_hash FROM cohort
+   encode(sha256(convert_to(jsonb_build_array(source,external_id,canonical_id,state,
+    ARRAY(SELECT l FROM unnest(locales) l ORDER BY l COLLATE "C"),report_state)::text,'UTF8')),'hex') AS member_hash FROM cohort
  ) SELECT count(*)::integer AS details,count(*) FILTER(WHERE state<>'withdrawn')::integer AS active_details,
  count(*) FILTER(WHERE state='withdrawn')::integer AS withdrawn,count(*) FILTER(WHERE state<>'withdrawn' AND cardinality(locales)=3)::integer AS three_locales,
  count(*) FILTER(WHERE state<>'withdrawn' AND report_state IN('available','unavailable'))::integer AS reports,
@@ -69,10 +71,16 @@ export function validMeasuredCohort(value:unknown,sample:CapacitySample):value i
  if(!value||typeof value!=='object')return false;const p=value as Partial<MeasuredCohort>;
  return p.model==='measured-cohort-v2'&&p.cohortHash===sample.cohort_hash&&p.sampleRows===sample.details&&typeof p.stateHash==='string'&&/^[a-f0-9]{64}$/.test(p.stateHash)&&typeof p.snapshotId==='string'&&typeof p.targetRows==='number'&&Number.isSafeInteger(p.targetRows)&&p.targetRows>0&&typeof p.bytesPerDetail==='number'&&Number.isFinite(p.bytesPerDetail)&&p.bytesPerDetail>0;
 }
-export function capacityBinding(snapshotId:string,targetRows:number,sample:CapacitySample,baseline:MeasuredCohort|null):CapacityBinding{
- // Canonical JSON: recursively lexicographic object keys, arrays retain order, UTF-8, no whitespace; no polling time or live sizes.
+export function capacityBinding(snapshotId:string,targetRows:number,sample:CapacitySample,baseline:MeasuredCohort|null,lifecycleEpoch:string|null=null):CapacityBinding{
+ // A checked same-shape refresh can reuse a receipt. Lifecycle changes still
+ // retire the old receipt even if the sampled vehicle later has the same shape.
  const history=baseline?{model:baseline.model,cohortHash:baseline.cohortHash,stateHash:baseline.stateHash,sampleRows:baseline.sampleRows,snapshotId:baseline.snapshotId,targetRows:baseline.targetRows,bytesPerDetail:baseline.bytesPerDetail}:null;
- return {snapshotId,targetRows,sampleRows:sample.details,evidenceHash:jsonHash({model:'hd-ext07-evidence-v1',snapshotId,targetRows,cohortHash:sample.cohort_hash,stateHash:sample.state_hash,history})};
+ return {snapshotId,targetRows,sampleRows:sample.details,evidenceHash:jsonHash({model:'hd-ext07-evidence-v2',snapshotId,targetRows,cohortHash:sample.cohort_hash,stateHash:sample.state_hash,lifecycleEpoch,history})};
+}
+
+export async function advanceCapacitySampleLifecycle(tx:PoolClient) {
+ await tx.query(`UPDATE external_full_sync SET capacity_baseline=coalesce(capacity_baseline,'{}'::jsonb)
+  || jsonb_build_object('sampleLifecycleEpoch',$1::text) WHERE id=1`,[randomUUID()]);
 }
 
 /** One verified target includes admitted identities absent from the current CSV. */

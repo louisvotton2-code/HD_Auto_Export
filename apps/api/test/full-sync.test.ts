@@ -186,8 +186,8 @@ test('formal full synchronization has durable independent receipt/application an
    await database.pool.query("INSERT INTO external_full_members(source,external_id,canonical_id,state,sampled,last_detail_at,locales,report_state) SELECT 'dongchedi',(100000+g)::text,'sample:'||g,'active',true,now(),ARRAY['zh','en','ru'],'pending' FROM generate_series(1,10000) g");
    const originalSpace=worker!.space.bind(worker!),originalBudget=process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES,originalDecision=process.env.FULL_SYNC_CAPACITY_DECISION_FILE;
    const capacityDir=await mkdtemp(path.join(tmpdir(),'hd-full-decision-')),decisionFile=path.join(capacityDir,'decision.json');
-   const approveCurrent=async()=>{
-    const e=(await worker!.state()).capacity_estimate,measuredAt=Date.now();
+   const approveCurrent=async(measuredAt=Date.now())=>{
+    const e=(await worker!.state()).capacity_estimate;
     const decision={schemaVersion:1,model:'hd-ext07-peak-v1',snapshotId:e.snapshotId,targetRows:e.targetRows,sampleRows:e.sampleRows,evidenceHash:e.evidenceHash,
      measuredAt:new Date(measuredAt).toISOString(),expiresAt:new Date(measuredAt+600000).toISOString(),decision:'allow',reason:'SYNC_CAPACITY_VERIFIED',projectedPeakBytes:500000000,diskTotalBytes:1024**4,currentUsedBytes:0,components:{fixtureMeasuredPeak:500000000}};
     await writeFile(decisionFile+'.next',JSON.stringify(decision),{mode:0o600});await rename(decisionFile+'.next',decisionFile);
@@ -219,10 +219,17 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await worker!.state()).capacity_estimate.estimatedBytes,null);
    await assert.rejects(worker!.heavy(),/SYNC_CAPACITY_PENDING/);
    await database.pool.query("UPDATE external_full_members SET report_state='no_report' WHERE sampled");
-   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_AWAITING_DECISION/);
-   const stableHash=(await worker!.state()).capacity_estimate.evidenceHash;await approveCurrent();
-   await worker!.estimateCapacity(snapshotId,20000000);
+   await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+   const offered=(await worker!.state()).capacity_estimate;
+   const stableHash=offered.evidenceHash;
+   await approveCurrent();
+   // Maintenance can allocate pages between measurement and the host's receipt.
+   // The scheduler checks the receipt against the observation it offered.
+   await database.pool.query('VACUUM external_full_members');
+   assert.equal(await worker!.capacityGate(),true);
    const estimate=(await worker!.state()).capacity_estimate;
+   assert.equal(estimate.at,offered.at,'Accepting the receipt must preserve the physical observation time');
+   assert.equal(Number((await worker!.state()).last_capacity_sample),10000);
    const stageBytes=Number((await database.pool.query("SELECT pg_total_relation_size('external_full_stage')::text AS bytes")).rows[0].bytes);
    assert.equal(estimate.sqlStagingBytes,stageBytes);assert.ok(stageBytes>estimate.businessBytes);
    assert.equal(estimate.archiveDirectoryBytes,archive.length);
@@ -231,7 +238,52 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal(estimate.estimatedBytes,500000000,'Only the external component model supplies the peak; BE must not multiply it');
    assert.equal(estimate.evidenceHash,stableHash,'Polling/WAL/metadata writes must not invalidate the evidence hash');
    assert.equal(estimate.allowed,true);
+   await database.pool.query(`UPDATE external_full_members SET event_order=event_order+1,desired_generation=desired_generation+1,
+    applied_generation=desired_generation+1,last_detail_at=clock_timestamp(),report_checked_at=clock_timestamp()
+    WHERE source='dongchedi' AND external_id='100010'`);
+   await worker!.heavy();
+   await database.pool.query("INSERT INTO external_full_work(source,external_id,kind,generation) VALUES('dongchedi','100010','detail',2)");
+   await database.pool.query('UPDATE external_full_sync SET capacity_pending=true WHERE id=1');
+   await worker!.tick();
+   let resumed=await worker!.state();
+   assert.equal(resumed.capacity_pending,false);
+   assert.equal(resumed.capacity_estimate.evidenceHash,stableHash,'Completed equivalent refreshes retain the same approval');
+   assert.equal(resumed.capacity_estimate.at,estimate.at,'Checking a ready receipt should not repeat the physical measurement');
+   assert.equal((await database.pool.query("DELETE FROM external_full_work WHERE external_id='100010'")).rowCount,1,
+    'A complete sample should validate the receipt before fetching a queued routine refresh');
+   await approveCurrent(Date.now()-601_000);
+   await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+   assert.equal((await worker!.state()).capacity_pending,true,'A recent measurement cannot authorize an expired receipt');
+   await approveCurrent();
+   await worker!.capacityGate();
+   await database.pool.query(`UPDATE external_full_sync SET capacity_estimate=jsonb_set(capacity_estimate,'{at}',
+    to_jsonb((clock_timestamp()-interval '31 seconds')::text)) WHERE id=1`);
+   const sameMeasurementBinding=await worker!.capacityGate().catch((error:unknown)=>{
+    assert.equal((error as {code?:string}).code,'SYNC_CAPACITY_AWAITING_DECISION');return false;
+   });
+   resumed=await worker!.state();
+   assert.ok(Date.now()-Date.parse(resumed.capacity_estimate.at)<30_000,'Physical evidence must be measured again after its reuse limit');
+   const beforeGrowthCost=resumed.capacity_baseline.detailSample.bytesPerDetail;
+   if(sameMeasurementBinding)assert.equal(resumed.capacity_estimate.evidenceHash,stableHash);
+   else {
+    // Updating sampled rows can allocate real heap pages, especially in a small fixture.
+    assert.ok(beforeGrowthCost>estimate.historicalBytesPerDetail);
+    assert.equal(resumed.capacity_pending,true);
+    await approveCurrent();
+    await worker!.capacityGate();
+   }
+   await database.pool.query(`CREATE TABLE external_capacity_growth_fixture AS SELECT repeat(md5(g::text), 32) AS payload
+    FROM generate_series(1,500) g`);
+   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_AWAITING_DECISION/);
+   const higherCost=(await worker!.state()).capacity_baseline.detailSample.bytesPerDetail;
+   assert.ok(higherCost>beforeGrowthCost,'Observed physical growth must raise the measured cost floor');
+   await database.pool.query('DROP TABLE external_capacity_growth_fixture');
+   await approveCurrent();
+   await worker!.estimateCapacity(snapshotId,20000000);
+   assert.equal((await worker!.state()).capacity_estimate.projectedBytesPerDetail,higherCost,
+    'Later pruning must retain the historical cost floor');
    worker!.space=async()=>({used:.70,available:Math.floor(.30*1024**4),total:1024**4});
+   await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_LIMIT/);
    await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_LIMIT/);
    assert.equal((await worker!.state()).capacity_estimate.allowed,false,'70% remains a hard limit despite an approved budget');
    worker!.space=async()=>({used:0,available:1024**4,total:1024**4});
@@ -267,9 +319,12 @@ test('formal full synchronization has durable independent receipt/application an
     return {payload,rawResponse:raw(payload)};
    };
    await database.pool.query("UPDATE external_full_sync SET next_maintenance_at=now()-interval '1 day' WHERE id=1");
-   // No approved override: the next estimate may pass only after actual sample repair and ample measured headroom.
+   // The sample cannot use the receipt while incomplete. Repair restores the
+   // same approved shape and may resume without issuing another receipt.
    delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
-   await waitForDecision();
+   const beforeEquivalentRepair=(await worker!.state()).capacity_estimate.evidenceHash;
+   await worker!.tick();
+   assert.equal((await worker!.state()).capacity_estimate.evidenceHash,beforeEquivalentRepair);
    assert.deepEqual(repairs,['zh','en','ru']);assert.deepEqual(reportRepairs,['100001']);
    assert.deepEqual(dailyKinds,['account']);
    const repaired=(await database.pool.query("SELECT cardinality(locales) AS locales,report_state,applied_generation,desired_generation FROM external_full_members WHERE source='dongchedi' AND external_id='100001'")).rows[0];
