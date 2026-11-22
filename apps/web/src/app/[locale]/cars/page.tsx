@@ -9,6 +9,7 @@ import { routing, type Locale } from '@/i18n/routing';
 import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
 import {
   catalogFacetProjection,
+  createCatalogVersionScope,
   getPublicCatalog,
   getPublicFilters,
   projectCatalogFacetOverview,
@@ -23,10 +24,19 @@ type Props = {
   params: Promise<{ locale: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
-const readBaseCatalog = cache((locale: Locale) => {
+const catalogRender = cache(async () => {
+  // Same-origin navigation fetches can load facets after the cards.
+  const incoming = await headers();
+  const deferFilters = incoming.get('sec-fetch-dest') === 'empty' &&
+    incoming.get('sec-fetch-site') === 'same-origin' && incoming.get('accept') === '*/*';
+  return { deferFilters, versions: deferFilters ? undefined : createCatalogVersionScope() };
+});
+
+const readBaseCatalog = cache(async (locale: Locale) => {
   const request = parseCatalogPageRequest({}, locale);
   if (!request || request.kind === 'offset_limit') notFound();
-  return getPublicCatalog(request.query);
+  const { versions } = await catalogRender();
+  return getPublicCatalog(request.query, versions?.catalog);
 });
 
 export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
@@ -52,16 +62,12 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
   const { make, model } = query;
-  // Next hides its internal routing headers. A same-origin navigation fetch can
-  // load dictionaries after the cards, while document requests keep the full GET form.
-  const incoming = await headers();
-  const deferFilters = incoming.get('sec-fetch-dest') === 'empty' &&
-    incoming.get('sec-fetch-site') === 'same-origin' && incoming.get('accept') === '*/*';
+  const { deferFilters, versions } = await catalogRender();
   const [result, filters, brandFilters, modelFilters] = await Promise.allSettled([
-    base ? readBaseCatalog(locale) : getPublicCatalog(query),
-    deferFilters ? null : getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model })),
-    !deferFilters && make ? getPublicFilters(locale, query, catalogFacetProjection({ make })) : null,
-    !deferFilters && make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model })) : null,
+    base ? readBaseCatalog(locale) : getPublicCatalog(query, versions?.catalog),
+    deferFilters ? null : getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model }), versions?.filters),
+    !deferFilters && make ? getPublicFilters(locale, query, catalogFacetProjection({ make }), versions?.filters) : null,
+    !deferFilters && make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model }), versions?.filters) : null,
   ]);
   const t = publicVehicleMessages(locale);
   return <>

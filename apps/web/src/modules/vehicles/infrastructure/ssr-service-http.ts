@@ -1,6 +1,7 @@
 import {
   INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER,
   InternalPublicCatalogCacheStampSchema,
+  InternalPublicCatalogHomepageVersionResponseSchema,
   InternalPublicCatalogVersionResponseSchema,
   PublicCatalogCacheStampSchema,
   PublicCatalogVersionResponseSchema,
@@ -25,7 +26,7 @@ export function internalCatalogPath(publicPath: string) {
 }
 
 type SnapshotOptions = Pick<SsrPublicDescriptor<SsrPublicEnvelope>, 'allowOffsetSnapshot' | 'allowInlineSnapshot'>;
-async function requestInternal(path: string, visitorHeaders?: Record<string, string>, scope?: 'filters', snapshot?: SnapshotOptions) {
+async function requestInternal(path: string, visitorHeaders?: Record<string, string>, scope?: 'filters', snapshot?: SnapshotOptions, signal?: AbortSignal) {
   try {
     const origin = publicApiOrigin();
     const target = new URL(path, origin);
@@ -36,7 +37,7 @@ async function requestInternal(path: string, visitorHeaders?: Record<string, str
       || (snapshot?.allowInlineSnapshot && (!target.pathname.startsWith(`${prefix}/vehicles/`)
         || target.searchParams.get('projection') !== 'detail-inline-v1'))) throw new PublicApiError(503);
     const response = await fetch(target.href, {
-      method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(5000),
+      method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', signal: signal ?? AbortSignal.timeout(5000),
       headers: {
         Accept: 'application/json', 'Cache-Control': 'no-store', 'X-HD-SSR-Key': getSsrServiceSecret(),
         [INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]: '2',
@@ -47,12 +48,12 @@ async function requestInternal(path: string, visitorHeaders?: Record<string, str
       },
     });
     if (!response.ok) {
-      await response.body?.cancel();
+      await response.body?.cancel().catch(() => undefined);
       throw new PublicApiError([400, 404, 429].includes(response.status) ? response.status : 503,
         response.status === 429 ? String(retryAfterSeconds(response.headers.get('retry-after'))) : undefined);
     }
     if (!response.headers.get('cache-control')?.toLowerCase().split(',').some(value => value.trim() === 'no-store')) {
-      await response.body?.cancel();
+      await response.body?.cancel().catch(() => undefined);
       throw new PublicApiError(503);
     }
     return response;
@@ -85,17 +86,69 @@ export async function readSsrServiceVersion(
   priceView: PublicCatalogCacheStamp['priceView'],
   visitorHeaders: Record<string, string>,
   scope?: 'filters',
+  signal?: AbortSignal,
 ) {
   const query = new URLSearchParams();
   if (priceView === 'usd') query.set('priceView', 'usd');
   if (scope) query.set('scope', scope);
   try {
-    const response = await requestInternal(`${prefix}/version${query.size ? `?${query}` : ''}`, visitorHeaders);
+    const response = await requestInternal(`${prefix}/version${query.size ? `?${query}` : ''}`, visitorHeaders, undefined, undefined, signal);
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      throw new PublicApiError(503);
+    }
     const protocol = confirmedProtocol(response);
     const schema = protocol === 2 ? InternalPublicCatalogVersionResponseSchema : PublicCatalogVersionResponseSchema;
     return { protocol, value: await readPublicJsonBody(response, schema, 16_384) };
   } catch (error) {
     // A missing control endpoint/credential is an outage, never a missing vehicle.
+    if (error instanceof PublicApiError && error.status === 429) throw error;
+    throw new PublicApiError(503);
+  }
+}
+
+function validateAtomicVersions(catalog: PublicCatalogCacheStamp, filters: PublicCatalogCacheStamp) {
+  if (catalog.priceView !== 'usd' || filters.priceView !== 'usd'
+    || catalog.fx?.version !== filters.fx?.version || catalog.fx?.expiresAt !== filters.fx?.expiresAt
+    || Date.parse(catalog.checkedAt) !== Date.parse(filters.checkedAt)) {
+    throw new PublicApiError(503);
+  }
+}
+
+type SsrVersionOutcome = PromiseSettledResult<Awaited<ReturnType<typeof readSsrServiceVersion>>>;
+
+/** Both live scopes share one authenticated check and, for old APIs, one fallback deadline. */
+export async function readSsrServiceVersions(visitorHeaders: Record<string, string>, signal?: AbortSignal):
+  Promise<{ catalog: Promise<SsrVersionOutcome>; filters: Promise<SsrVersionOutcome> }> {
+  const timeout = AbortSignal.timeout(5000);
+  const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  try {
+    const response = await requestInternal(`${prefix}/version?priceView=usd&scope=homepage`,
+      visitorHeaders, undefined, undefined, deadline).catch((error: unknown) => {
+      if (error instanceof PublicApiError && error.status === 400) return null;
+      throw error;
+    });
+    if (response) {
+      if (response.status !== 200 || confirmedProtocol(response) !== 2) {
+        await response.body?.cancel();
+        throw new PublicApiError(503);
+      }
+      const { data, meta } = await readPublicJsonBody(response, InternalPublicCatalogHomepageVersionResponseSchema, 16_384);
+      validateAtomicVersions(data.catalog, data.filters);
+      return {
+        catalog: Promise.resolve({ status: 'fulfilled', value: { protocol: 2, value: { data: data.catalog, meta } } }),
+        filters: Promise.resolve({ status: 'fulfilled', value: { protocol: 2, value: { data: data.filters, meta } } }),
+      };
+    }
+    deadline.throwIfAborted();
+    // Preserve independent completion on old APIs. The HTML proof consumer still requires both.
+    const read = (scope?: 'filters'): Promise<SsrVersionOutcome> =>
+      readSsrServiceVersion('usd', visitorHeaders, scope, deadline).then(
+        value => ({ status: 'fulfilled', value }),
+        (reason: unknown) => ({ status: 'rejected', reason }),
+      );
+    return { catalog: read(), filters: read('filters') };
+  } catch (error) {
     if (error instanceof PublicApiError && error.status === 429) throw error;
     throw new PublicApiError(503);
   }

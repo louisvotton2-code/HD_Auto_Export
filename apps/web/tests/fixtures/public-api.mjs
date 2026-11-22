@@ -238,6 +238,8 @@ const resetState = () => ({
   usdRateAvailable: true,
   usdRateDivisor: 8,
   cacheVersionFailure: false,
+  legacyHomepageVersion: false,
+  legacyFiltersUnavailable: false,
   cacheMismatch: 'none',
   cachePayloadTtlMs: 15_000,
   cacheFxTtlMs: 3_600_000,
@@ -707,8 +709,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
       fxVersion = randomUUID();
     mismatchesRemaining = state.cacheMismatch === 'once' ? 1 : 0;
   };
-  const stamp = (priceView, mismatch = false, scope = 'catalog') => {
-    const now = Date.now();
+  const stamp = (priceView, mismatch = false, scope = 'catalog', now = Date.now()) => {
     const fx = priceView === 'usd' && state.usdRateAvailable && now < stateChangedAt + state.cacheFxTtlMs
       ? { version: fxVersion, expiresAt: new Date(stateChangedAt + state.cacheFxTtlMs).toISOString() }
       : null;
@@ -781,6 +782,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           usdRateAvailable: (v) => typeof v === 'boolean',
           usdRateDivisor: (v) => [4, 8].includes(v),
           cacheVersionFailure: (v) => typeof v === 'boolean',
+          legacyHomepageVersion: (v) => typeof v === 'boolean',
+          legacyFiltersUnavailable: (v) => typeof v === 'boolean',
           cacheMismatch: (v) => ['none', 'once', 'always'].includes(v),
           cachePayloadTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 15_000,
           cacheFxTtlMs: (v) => Number.isInteger(v) && v >= 50 && v <= 3_600_000,
@@ -846,13 +849,19 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           const query = InternalPublicCatalogVersionQuerySchema.safeParse(Object.fromEntries(url.searchParams));
           if (!query.success) return send(res, 400, error('INVALID_REQUEST'));
           const homepage = query.data.scope === 'homepage';
-          if (homepage && (query.data.priceView !== 'usd' || req.headers['x-hd-cache-protocol'] !== '2'))
+          if (homepage && (state.legacyHomepageVersion || query.data.priceView !== 'usd' || req.headers['x-hd-cache-protocol'] !== '2'))
             return send(res, 400, error('INVALID_REQUEST'));
           if (state.cacheVersionFailure) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
           // This is the entry quota check: a warm DTO is not allowed to bypass it.
           if (state.publicRateLimited) return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
+          if (state.legacyHomepageVersion && state.legacyFiltersUnavailable && query.data.scope === 'filters') {
+            await new Promise(resolve => setTimeout(resolve, 700));
+            requests.push({ path: '/__fixtures/legacy-filters-completed', method: 'GET', query: {} });
+            return send(res, 503, error('SERVICE_UNAVAILABLE', true));
+          }
           if (homepage) {
-            const data = { catalog: stamp('usd'), filters: stamp('usd', false, 'filters') };
+            const checkedAt = Date.now();
+            const data = { catalog: stamp('usd', false, 'catalog', checkedAt), filters: stamp('usd', false, 'filters', checkedAt) };
             return data.catalog && data.filters
               ? send(res, 200, InternalPublicCatalogHomepageVersionResponseSchema.parse({ data, meta: { requestId: 'fixture-version' } }),
                 { 'x-hd-cache-protocol': '2' })
