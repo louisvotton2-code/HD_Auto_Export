@@ -23,7 +23,7 @@ import type { TranslationPlanInput, TranslationPlanInputField } from './translat
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -316,21 +316,28 @@ function publicConditions(query:Omit<PublicFilterQuery,'projection'>,params:unkn
 function staffFacetSelection(query:PublicFilterQuery,params:unknown[],quote:FxQuote|null=null,pairs?:readonly CatalogModelPair[]) {
   const conditions=publicConditions(query,params,quote),fact="p.data->'facts'";
   const where=pairs ? `${conditions} AND ${catalogModelScope(params,pairs,`${fact}->'make'->>'id'`,`${fact}->'model'->>'id'`)}` : conditions;
+  const overview=query.projection==='overview';
+  // The overview displays make names and needs variant IDs for availability.
+  const nameFields=overview?['make']:['make','model','trim','generation'];
   const names:Record<string,string>={};
   if(query.view==='localized') {
     params.push(query.locale);const language=`$${params.length}::text`;
     params.push(JSON.stringify(brandLabels));const dictionary=`$${params.length}::jsonb`;
     params.push({zh:'待翻译',en:'Awaiting translation',ru:'Ожидает перевода'}[query.locale]);const placeholder=`$${params.length}::text`;
     const knownBrand=`coalesce(${dictionary}->'ids'->lower(${fact}->'make'->>'id'),${dictionary}->'aliases'->lower(btrim(regexp_replace(normalize(${fact}->'make'->>'name',NFKC),'[\\s﻿]+',' ','g'))))->>${language}`;
-    for(const field of ['make','model','trim','generation'])
+    for(const field of nameFields)
       names[field]=`coalesce(${field==='make'?`${knownBrand},`:''}${staffDisplayTextSql(field,language)},${placeholder})`;
-  } else for(const field of ['make','model','trim','generation']) names[field]=`${fact}->'${field}'->>'name'`;
-  const currency=query.priceView==='usd'?`CASE WHEN ${staffUsdCondition(params,quote)} THEN 'USD'::text END`:"p.data->'price'->'money'->>'currency'";
+  } else for(const field of nameFields) names[field]=`${fact}->'${field}'->>'name'`;
+  let currency='';
+  if(!overview) {
+    const currencyValue=query.priceView==='usd'?`CASE WHEN ${staffUsdCondition(params,quote)} THEN 'USD'::text END`:"p.data->'price'->'money'->>'currency'";
+    currency=`,${currencyValue} AS currency`;
+  }
   return `SELECT ${facetLabelOrder('v.published_at','v.id')} AS label_order,${fact}->'make'->>'id' AS make_id,${fact}->'model'->>'id' AS model_id,
     ${fact}->'trim'->>'id' AS trim_id,pl.data->'facts'->'generation'->>'id' AS generation_id,
-    ${names.make} AS make_name,${names.model} AS model_name,${names.trim} AS trim_name,${names.generation} AS generation_name,
+    ${nameFields.map(field=>`${names[field]} AS ${field}_name`).join(',')},
     ${fact}->>'powertrain' AS powertrain,pl.data->'facts'->>'drivetrain' AS drivetrain,
-    (${fact}->>'modelYear')::integer AS model_year,${currency} AS currency
+    (${fact}->>'modelYear')::integer AS model_year${currency}
     ${publicFrom} WHERE ${where}`;
 }
 function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:PublicFilterQuery,includeExternal:boolean) {
@@ -369,7 +376,7 @@ async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,ca
   captureRevision(revision);
   return revision;
 }
-export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|'supplier_overview_rollup'|'supplier_label_priority'|'supplier_label_fallback'|'result';
+export type HomeModelFilterPhase = 'database'|'revision'|'home_scope'|'staff_facets'|'supplier_facets'|SupplierFacetPhase|'result';
 type FilterReadBudget = {deadline:number; signal?:AbortSignal; onBackend?:(pid:number)=>void};
 export type PublicListReadPhase = 'database'|'revision'|'staff_count'|'staff_page'|'supplier_count'|'supplier_page'|'result';
 // These short indexed catalog queries should spend their budget on data, not LLVM compilation.

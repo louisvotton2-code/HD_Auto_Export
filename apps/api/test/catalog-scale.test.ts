@@ -127,6 +127,12 @@ test('scoped filter views preserve exact three-language facets and leave the ful
   assert.equal(empty.total,0);
   assert.equal(empty.hasTrims,false);
   assert.equal(empty.hasGenerations,false);
+  const staffOnly=new InventoryService(db);
+  const usdRange={priceView:'usd',priceCurrency:'USD',priceMin:'23500.00',priceMax:'23500.00',projection:'overview'};
+  const staffOverview=await staffOnly.filters(filters(usdRange));
+  assert.equal(staffOverview.total,3);
+  assert.deepEqual(staffOverview.makes,[{id:'fixture_make',name:'Awaiting translation',count:3}]);
+  assert.equal((await staffOnly.filters(filters({...usdRange,priceMin:'23500.01',priceMax:'23501.00'}))).total,0);
   assert.equal(PublicFilterQuerySchema.safeParse({projection:'overview'}).success,false);
   assert.equal(PublicFilterQuerySchema.safeParse({view:'localized',projection:'models'}).success,false);
   assert.equal(PublicFilterQuerySchema.safeParse({view:'localized',projection:'variants',make:'fixture_make'}).success,false);
