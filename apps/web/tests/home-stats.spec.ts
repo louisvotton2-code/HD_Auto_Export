@@ -239,13 +239,22 @@ test('all hero counters grow from their server-rendered zero to the exact values
       expect(values.every((value, index) => index === 0 || value >= values[index - 1])).toBe(true);
     }
   }
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.reload();
-  const reducedValues = { catalog: '26', parts: '48,689', years: '23 years' };
-  for (const id of metrics) {
-    const metric = page.getByTestId(`hero-stat-${id}`);
-    await expect(metric.locator('strong')).toHaveText(reducedValues[id], { useInnerText: true });
-    await expect(metric.locator('[data-counter-value]')).toBeHidden();
+  // Start with a clean asset cache after intentionally aborting styles above.
+  const reducedContext = await browser.newContext({
+    reducedMotion: 'reduce',
+    baseURL: new URL(page.url()).origin,
+  });
+  try {
+    const reducedPage = await reducedContext.newPage();
+    await reducedPage.goto('/en/');
+    const reducedValues = { catalog: '26', parts: '48,689', years: '23 years' };
+    for (const id of metrics) {
+      const metric = reducedPage.getByTestId(`hero-stat-${id}`);
+      await expect(metric.locator('strong')).toHaveText(reducedValues[id], { useInnerText: true });
+      await expect(metric.locator('[data-counter-value]')).toBeHidden();
+    }
+  } finally {
+    await reducedContext.close();
   }
   const noScript = await browser.newContext({
     javaScriptEnabled: false,
@@ -360,6 +369,37 @@ test('a delayed counter asset reveals the real numbers and does not rewind on ar
     allowCount();
     await expect(counter).toHaveText('48,689');
     await expect(stat.locator('strong')).toHaveText('48,689', { useInnerText: true });
+  } finally {
+    allowCount();
+  }
+});
+
+test('a slow foreground refresh still animates when the counter script arrives after the old deadline', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/zh/');
+  await expect(page.getByTestId('hero-stat-parts').locator('[data-counter-value]')).toHaveText('48,689');
+  await page.addInitScript(() => {
+    const values: number[] = [];
+    Reflect.set(window, '__refreshedHomeCount', values);
+    new MutationObserver(() => {
+      const value = document.querySelector('[data-hero-stat="parts"] [data-counter-value]')?.getAttribute('data-counter-value');
+      if (value != null && values.at(-1) !== Number(value)) values.push(Number(value));
+    }).observe(document, { subtree: true, childList: true, attributes: true });
+  });
+  let allowCount!: () => void;
+  const gate = new Promise<void>((resolve) => { allowCount = resolve; });
+  await page.route(homeCountScript, async (route) => { await gate; await route.continue(); });
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 1000)));
+    const stat = page.getByTestId('hero-stat-parts');
+    await expect(stat.locator('strong')).toHaveText('0', { useInnerText: true });
+    allowCount();
+    await expect(stat.locator('[data-counter-value]')).toHaveText('48,689');
+    const values = await page.evaluate(() => Reflect.get(window, '__refreshedHomeCount') as number[]);
+    expect(values[0]).toBe(0);
+    expect(values.filter((value) => value > 0 && value < 48_689).length).toBeGreaterThan(2);
+    expect(values.every((value, index) => index === 0 || value >= values[index - 1])).toBe(true);
   } finally {
     allowCount();
   }

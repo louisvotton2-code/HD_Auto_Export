@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { resetPublicFixture } from './helpers/public-fixture';
 
 test.beforeEach(async ({ request }) => {
@@ -117,9 +117,19 @@ test('the mobile light crosses a fixed frame in both directions and settles afte
 test.describe('touch scrolling on the homepage', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
+  async function openLegacyTouchHome(page: Page) {
+    await page.addInitScript(() => {
+      const supports = CSS.supports.bind(CSS);
+      CSS.supports = (property: string, value?: string) =>
+        property === 'animation-timeline' ? false : value === undefined ? supports(property) : supports(property, value);
+    });
+    await page.goto('/en/');
+    await page.addStyleTag({ content: '[data-testid="hero-road-light"], [data-home-section="hero"] img { animation: none !important; }' });
+  }
+
   test('the light is visible on the first large touch scroll step in either direction', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await page.goto('/en/');
+    await openLegacyTouchHome(page);
     const hero = page.locator('[data-home-section="hero"]');
     const light = hero.getByTestId('hero-road-light');
     await expect(hero).toHaveAttribute('style', /--drive-progress:\s*0\.000/);
@@ -160,7 +170,7 @@ test.describe('touch scrolling on the homepage', () => {
 
   test('toolbar height changes cannot reverse the light during a swipe', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await page.goto('/en/');
+    await openLegacyTouchHome(page);
     const hero = page.locator('[data-home-section="hero"]');
     const progress = () =>
       hero.evaluate((node) => Number.parseFloat(node.style.getPropertyValue('--drive-progress')));
@@ -222,6 +232,52 @@ test.describe('touch scrolling on the homepage', () => {
       behavior: 'instant',
     }));
     await expect(arrows).toHaveCSS('animation-name', 'none');
+  });
+
+  test('legacy touch scrolling advances the light while the browser is still holding its scroll offset', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await openLegacyTouchHome(page);
+    const hero = page.locator('[data-home-section="hero"]');
+    const progress = () => hero.evaluate((node) => Number.parseFloat(node.style.getPropertyValue('--drive-progress')));
+    await expect.poll(progress).toBe(0);
+    await hero.evaluate((node) => {
+      const send = (type: string, screenY: number) => {
+        const event = new Event(type, { bubbles: true });
+        Object.defineProperty(event, 'touches', { value: [{ screenX: 180, screenY }] });
+        node.dispatchEvent(event);
+      };
+      send('touchstart', 520);
+      send('touchmove', 75);
+    });
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await expect.poll(progress).toBeGreaterThan(0.25);
+    expect(await progress()).toBeLessThan(0.4);
+    await hero.evaluate((node) => node.dispatchEvent(new Event('touchcancel', { bubbles: true })));
+    await expect.poll(progress).toBe(0);
+  });
+
+  test('native touch sweep follows fast down and up scrolls without waiting for hydration', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.route('**/_next/static/**/*.js*', (route) => route.abort());
+    await page.goto('/en/');
+    test.skip(!await page.evaluate(() => CSS.supports('animation-timeline', 'scroll(root block)')
+      && CSS.supports('animation-range', '0px clamp(190px, 72vw, 330px)')), 'Requires native scroll animations.');
+    const light = page.getByTestId('hero-road-light');
+    const translation = () => light.evaluate((node) =>
+      new DOMMatrixReadOnly(getComputedStyle(node).transform).m41);
+    const scroll = (top: number) => page.evaluate((y) => window.scrollTo({ top: y, behavior: 'instant' }), top);
+    await expect.poll(translation).toBeLessThan(-100);
+    await scroll(150);
+    await expect.poll(translation).toBeGreaterThan(100);
+    await scroll(320);
+    await expect.poll(translation).toBeGreaterThan(390);
+    await scroll(95);
+    await expect.poll(translation).toBeLessThan(100);
+    await expect.poll(translation).toBeGreaterThan(10);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await expect.poll(translation).toBeLessThan(100);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(light).toHaveCSS('opacity', '0');
   });
 });
 

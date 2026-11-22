@@ -202,6 +202,27 @@
   }
 }
 
+@supports (animation-timeline: scroll(root block)) and (animation-range: 0px clamp(190px, 72vw, 330px)) {
+  @media (pointer: coarse) and (prefers-reduced-motion: no-preference) {
+    .roadImage { animation: road-scroll-image auto linear both; }
+    .roadLight { animation: road-scroll-light auto linear both; }
+    .roadImage, .roadLight {
+      animation-timeline: scroll(root block);
+      animation-range: 0px clamp(190px, 72vw, 330px);
+    }
+  }
+}
+
+@keyframes road-scroll-image {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(-2%, 5%, 0) scale(1.16); }
+}
+
+@keyframes road-scroll-light {
+  from { transform: translate3d(var(--light-start), 0, 0); }
+  to { transform: translate3d(calc(var(--light-start) + var(--light-travel)), 0, 0); }
+}
+
 @keyframes scroll-label {
   0%, 100% { opacity: .65; }
   50% { opacity: 1; }

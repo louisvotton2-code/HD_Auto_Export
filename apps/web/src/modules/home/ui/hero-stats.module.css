@@ -49,10 +49,10 @@
 
 /* Keep a timed fallback even when the browser doesn't support the motion media feature. */
 .animatedValue:where(:not([data-count-started])) {
-  animation: hide-initial-count .8s step-end forwards;
+  animation: hide-initial-count 2.4s step-end forwards;
 }
 .animatedValue:where(:not([data-count-started])) + .finalValue {
-  animation: show-final-count .8s step-end forwards;
+  animation: show-final-count 2.4s step-end forwards;
 }
 @keyframes hide-initial-count { to { visibility: hidden; } }
 @keyframes show-final-count { to { visibility: visible; } }

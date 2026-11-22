@@ -51,6 +51,9 @@ export function HomeHero({
 
     const preference = matchMedia('(prefers-reduced-motion: reduce)');
     const touchPointer = matchMedia('(pointer: coarse)');
+    const hasScrollTimeline = CSS.supports('animation-timeline', 'scroll(root block)')
+      && CSS.supports('animation-range', '0px clamp(190px, 72vw, 330px)');
+    const usesNativeDrive = () => hasScrollTimeline && touchPointer.matches;
     let visible = false;
     let frame = 0;
     let lastFrame = 0;
@@ -59,6 +62,8 @@ export function HomeHero({
     let displayed = Number.parseFloat(node.style.getPropertyValue('--drive-progress')) || 0;
     let target = displayed;
     let touchY: number | null = null;
+    let swipeOrigin: { x: number; y: number; scroll: number } | null = null;
+    let touchFrame = 0;
     let touchDirection = 0;
     let releaseTimer: number | undefined;
 
@@ -85,9 +90,9 @@ export function HomeHero({
       else lastFrame = 0;
     }
 
-    function schedule() {
-      if (!visible || preference.matches) return;
-      let next = Math.max(0, Math.min(1, window.scrollY / distance));
+    function schedule(scrollPosition = window.scrollY) {
+      if (usesNativeDrive() || !visible || preference.matches) return;
+      let next = Math.max(0, Math.min(1, scrollPosition / distance));
       // A mobile toolbar can move the document against the current swipe.
       if (touchDirection > 0) next = Math.max(next, target, displayed);
       if (touchDirection < 0) next = Math.min(next, target, displayed);
@@ -105,35 +110,59 @@ export function HomeHero({
 
     function clearTouch() {
       window.clearTimeout(releaseTimer);
+      cancelAnimationFrame(touchFrame);
+      touchFrame = 0;
       touchY = null;
+      swipeOrigin = null;
       touchDirection = 0;
     }
 
     function startTouch(event: TouchEvent) {
+      if (usesNativeDrive() || preference.matches) return;
       if (event.touches.length !== 1) {
         clearTouch();
         return;
       }
       window.clearTimeout(releaseTimer);
-      touchY = event.touches[0].screenY;
+      const finger = event.touches[0];
+      touchY = finger.screenY;
+      touchDirection = 0;
+      swipeOrigin = { x: finger.screenX, y: finger.screenY, scroll: window.scrollY };
     }
 
     function moveTouch(event: TouchEvent) {
-      if (touchY === null || event.touches.length !== 1) return;
-      const nextY = event.touches[0].screenY;
+      if (touchY === null || !swipeOrigin || event.touches.length !== 1) return;
+      const finger = event.touches[0];
+      const nextY = finger.screenY;
+      const total = swipeOrigin.y - nextY;
+      if (Math.abs(finger.screenX - swipeOrigin.x) > Math.abs(total)) return;
       const delta = touchY - nextY;
       if (Math.abs(delta) < 5) return;
       touchY = nextY;
       const direction = Math.sign(delta);
       if ((target - displayed) * direction < 0) target = displayed;
       touchDirection = direction;
+      cancelAnimationFrame(touchFrame);
+      touchFrame = requestAnimationFrame(() => {
+        touchFrame = 0;
+        // Older iOS can deliver the gesture before it reports the native scroll offset.
+        if (swipeOrigin && window.scrollY === swipeOrigin.scroll) {
+          const lead = Math.max(-96, Math.min(96, total));
+          schedule(swipeOrigin.scroll + lead);
+        }
+      });
     }
 
     function endTouch() {
       touchY = null;
+      swipeOrigin = null;
+      cancelAnimationFrame(touchFrame);
       if (!touchDirection) return;
       window.clearTimeout(releaseTimer);
-      releaseTimer = window.setTimeout(clearTouch, 240);
+      releaseTimer = window.setTimeout(() => {
+        clearTouch();
+        schedule();
+      }, 240);
     }
 
     function onScroll() {
