@@ -10,9 +10,10 @@ import {
   ApiErrorSchema,
   ExternalMediaFailureRequestSchema,
   IdSchema,
+  InternalPublicCatalogHomepageVersionResponseSchema,
+  InternalPublicCatalogVersionQuerySchema,
   PublicFilterQuerySchema,
   PublicCatalogCacheStampSchema,
-  PublicCatalogVersionQuerySchema,
   PublicCatalogVersionResponseSchema,
   PublicHomeSectionsSchema,
   PublicLocaleQuerySchema,
@@ -842,11 +843,21 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (versionRequest) {
           if ([...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1))
             return send(res, 400, error('INVALID_REQUEST'));
-          const query = PublicCatalogVersionQuerySchema.safeParse(Object.fromEntries(url.searchParams));
+          const query = InternalPublicCatalogVersionQuerySchema.safeParse(Object.fromEntries(url.searchParams));
           if (!query.success) return send(res, 400, error('INVALID_REQUEST'));
+          const homepage = query.data.scope === 'homepage';
+          if (homepage && (query.data.priceView !== 'usd' || req.headers['x-hd-cache-protocol'] !== '2'))
+            return send(res, 400, error('INVALID_REQUEST'));
           if (state.cacheVersionFailure) return send(res, 503, error('SERVICE_UNAVAILABLE', true));
           // This is the entry quota check: a warm DTO is not allowed to bypass it.
           if (state.publicRateLimited) return send(res, 429, error('RATE_LIMITED', true), { 'retry-after': '2' });
+          if (homepage) {
+            const data = { catalog: stamp('usd'), filters: stamp('usd', false, 'filters') };
+            return data.catalog && data.filters
+              ? send(res, 200, InternalPublicCatalogHomepageVersionResponseSchema.parse({ data, meta: { requestId: 'fixture-version' } }),
+                { 'x-hd-cache-protocol': '2' })
+              : send(res, 503, error('SERVICE_UNAVAILABLE', true));
+          }
           const current = stamp(query.data.priceView ?? 'original', false, query.data.scope);
           return current ? send(res, 200, PublicCatalogVersionResponseSchema.parse({ data: current, meta: { requestId: 'fixture-version' } }))
             : send(res, 503, error('SERVICE_UNAVAILABLE', true));

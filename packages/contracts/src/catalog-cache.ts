@@ -13,6 +13,10 @@ export const PublicCatalogVersionQuerySchema = z.strictObject({
   priceView: z.literal('usd').optional(),
   scope: z.literal('filters').optional(),
 });
+export const InternalPublicCatalogVersionQuerySchema = z.union([
+  PublicCatalogVersionQuerySchema,
+  z.strictObject({ priceView: z.literal('usd'), scope: z.literal('homepage') }),
+]);
 function catalogCacheStampSchema(maxLifetimeMs: number) {
   return z.strictObject({
     version: z.string().regex(/^[a-f0-9]{64}$/),
@@ -39,6 +43,10 @@ export type PublicCatalogVersionResponse = z.infer<typeof PublicCatalogVersionRe
 /** For authenticated service responses that explicitly negotiate protocol 2. */
 export const InternalPublicCatalogCacheStampSchema = catalogCacheStampSchema(INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS);
 export const InternalPublicCatalogVersionResponseSchema = responseSchema(InternalPublicCatalogCacheStampSchema);
+export const InternalPublicCatalogHomepageVersionResponseSchema = responseSchema(z.strictObject({
+  catalog: InternalPublicCatalogCacheStampSchema,
+  filters: InternalPublicCatalogCacheStampSchema,
+}));
 export const PublicCatalogResponseMetaSchema = RequestMetaSchema.extend({
   // Optional for older servers/fixtures. An absent stamp prohibits SSR reuse.
   catalogCache: PublicCatalogCacheStampSchema.optional(),

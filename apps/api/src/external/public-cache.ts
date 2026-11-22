@@ -9,6 +9,7 @@ import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCac
 export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
 export type CatalogRevisionProof = (deadline: number, signal: AbortSignal) => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
+type HomepageRevisions = Record<RevisionScope, PublicCatalogRevision>;
 type CacheProtocol = 1 | 2;
 const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
@@ -21,14 +22,16 @@ export class PublicCatalogUnavailableError extends ApiError {
   }
 }
 const unavailable = (reason: CatalogUnavailableReason) => new PublicCatalogUnavailableError(reason);
-export async function readPublicCatalogRevision(db: DatabaseReader, usd = false, scope: RevisionScope = 'catalog'): Promise<PublicCatalogRevision> {
+const validRevision = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value);
+async function readRevisionRow(db: DatabaseReader, usd: boolean, scope: RevisionScope, includeFilters = false) {
   const revisionColumn = scope === 'filters' ? 'filter_revision' : 'revision';
   try {
-    const result = await db.pool.query<PublicCatalogRevision & {fx_version?:string|null;fx_expires_at?:Date|null}>(`SELECT s.epoch::text,s.${revisionColumn}::text AS revision
+    const result = await db.pool.query<PublicCatalogRevision & {filter_revision?:string;fx_version?:string|null;fx_expires_at?:Date|null}>(`SELECT s.epoch::text,s.${revisionColumn}::text AS revision
+      ${includeFilters ? ',s.filter_revision::text AS filter_revision' : ''}
       ${usd ? ',f.version::text AS fx_version,f.expires_at AS fx_expires_at' : ''} FROM public_catalog_state s
       ${usd ? `LEFT JOIN public_fx_quote f ON ${ACTIVE_FX_SQL}` : ''} WHERE s.id=1`);
     const row = result.rows[0];
-    if (result.rowCount !== 1 || !row || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.epoch) || !/^[1-9][0-9]{0,18}$/.test(row.revision)) throw unavailable('revision-read');
+    if (result.rowCount !== 1 || !row || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.epoch) || !validRevision(row.revision)) throw unavailable('revision-read');
     const revision:PublicCatalogRevision = {epoch:row.epoch,revision:row.revision};
     if (usd) {
       if (row.fx_version === null && row.fx_expires_at === null) revision.fx = null;
@@ -36,13 +39,21 @@ export async function readPublicCatalogRevision(db: DatabaseReader, usd = false,
         revision.fx = {version:row.fx_version,expiresAt:row.fx_expires_at.getTime()};
       else throw unavailable('revision-read');
     }
-    return revision;
+    return { revision, filterRevision:row.filter_revision };
   } catch(error) {
     if(error && typeof error==='object' && 'code' in error && error.code==='57014') {
       throw new PublicCatalogUnavailableError('revision-read',undefined,'57014');
     }
     throw unavailable('revision-read');
   }
+}
+export async function readPublicCatalogRevision(db: DatabaseReader, usd = false, scope: RevisionScope = 'catalog'): Promise<PublicCatalogRevision> {
+  return (await readRevisionRow(db,usd,scope)).revision;
+}
+async function readHomepageRevisions(db: DatabaseReader): Promise<HomepageRevisions> {
+  const {revision,filterRevision}=await readRevisionRow(db,true,'catalog',true);
+  if (!validRevision(filterRevision)) throw unavailable('revision-read');
+  return { catalog:revision, filters:{...revision,revision:filterRevision} };
 }
 
 export type PublicCacheRoute = 'list' | 'filters' | 'detail' | 'home';
@@ -67,7 +78,8 @@ type PublicSourceResult<T> = { value: T; expiresAt?: number };
 type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision; verifyAfterAdvance?: CatalogRevisionProof };
 type LoadedEnvelope = Envelope & { revision: PublicCatalogRevision; snapshotOnly?: true };
 type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
-type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
+type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>;
+  readHomepageRevisions?: () => Promise<HomepageRevisions>; store?: PublicCacheStore; now?: () => number };
 const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
 const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
@@ -126,8 +138,8 @@ export class PublicCatalogCache {
   }
 
   metrics(): PublicCacheMetrics { return { ...this.values, entries: this.memory.size }; }
-  private stamp(revision: PublicCatalogRevision, usd: boolean, scope: RevisionScope, protocol: CacheProtocol, expiresAt = Infinity): PublicCatalogCacheStamp {
-    const checkedAt = this.now();
+  private stamp(revision: PublicCatalogRevision, usd: boolean, scope: RevisionScope, protocol: CacheProtocol, expiresAt = Infinity,
+    checkedAt = this.now()): PublicCatalogCacheStamp {
     const validUntil = Math.min(expiresAt, checkedAt + maxLifetime(protocol), revision.fx?.expiresAt ?? Infinity);
     if (validUntil <= checkedAt) throw unavailable('expired');
     // Includes deployment read policy: toggling external visibility cannot reuse a broader DTO.
@@ -142,11 +154,24 @@ export class PublicCatalogCache {
   async currentVersion(usd = false,signal?:AbortSignal,scope:RevisionScope='catalog',protocol:CacheProtocol=1) {
     return this.withDeadline(async () => this.stamp(await this.revision(usd,scope), usd, scope, protocol),signal);
   }
-  private async revision(usd: boolean, scope: RevisionScope) {
+  async currentHomepageVersions(signal?:AbortSignal) {
+    return this.withDeadline(async()=>{
+      const read=this.dependencies.readHomepageRevisions;
+      if(!read)throw unavailable('revision-read');
+      const {catalog,filters}=await this.checkedRevisionRead(read);
+      const checkedAt=this.now();
+      return {catalog:this.stamp(catalog,true,'catalog',2,Infinity,checkedAt),
+        filters:this.stamp(filters,true,'filters',2,Infinity,checkedAt)};
+    },signal);
+  }
+  private revision(usd: boolean, scope: RevisionScope) {
+    return this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+  }
+  private async checkedRevisionRead<T>(read:()=>Promise<T>) {
     // A slow/unavailable database cannot grow an unbounded pool wait queue through cache lookups.
     if (this.closed || this.values.activeRevisionReads >= this.maxRevisionReads) { this.values.rejectedLoads++; throw unavailable(this.closed?'closed':'revision-capacity'); }
     this.values.activeRevisionReads++;
-    try { return await this.dependencies.readRevision(usd,scope); }
+    try { return await read(); }
     catch { throw unavailable('revision-read'); }
     finally { this.values.activeRevisionReads--; }
   }
@@ -441,5 +466,6 @@ export class PublicCatalogCache {
 }
 export async function createPublicCatalogCache(db: DatabaseReader, options: PublicCatalogCacheOptions): Promise<PublicCatalogCache> {
   const store = options.redis ? await createRedisPublicCacheStore(options.redis, options.maxValueBytes ?? 1_048_576) : undefined;
-  return new PublicCatalogCache(options, { readRevision: (usd,scope) => readPublicCatalogRevision(db, usd,scope), store });
+  return new PublicCatalogCache(options, { readRevision: (usd,scope) => readPublicCatalogRevision(db, usd,scope),
+    readHomepageRevisions:()=>readHomepageRevisions(db), store });
 }

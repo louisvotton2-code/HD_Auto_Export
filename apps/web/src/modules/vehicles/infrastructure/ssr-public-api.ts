@@ -11,7 +11,7 @@ import {
 import { publicApiOrigin, PublicApiError } from './public-http';
 import { publicRequestHeaders } from './public-request-context';
 import { SsrDtoCache } from './ssr-dto-cache';
-import { canonicalPublicPath, createSsrPublicReader, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
+import { canonicalPublicPath, createSsrPublicReader, type SsrInitialVersionRead, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
 import { readAnonymousPublicResource, readSsrServiceVersion } from './ssr-service-http';
 
 // One bounded store for this Node process, including separate Next route bundles.
@@ -20,7 +20,7 @@ const processStores = globalThis as typeof globalThis & { [cacheSymbol]?: SsrDto
 function store() { return processStores[cacheSymbol] ??= new SsrDtoCache(); }
 
 async function readSsr<T extends SsrPublicEnvelope>(
-  descriptor: SsrPublicDescriptor<T>, incoming?: Pick<Headers, 'get'>,
+  descriptor: SsrPublicDescriptor<T>, incoming?: Pick<Headers, 'get'>, initialVersion?: SsrInitialVersionRead,
 ) {
   let ticket: string | null = null;
   try {
@@ -35,7 +35,7 @@ async function readSsr<T extends SsrPublicEnvelope>(
         else invalidatePublicHtmlRender(ticket);
       } : undefined,
     });
-    const resource = await read(descriptor);
+    const resource = await read(descriptor, initialVersion);
     const { catalogCache: _internalStamp, ...meta } = resource.meta;
     return { ...resource, meta };
   } catch (error) {
@@ -56,8 +56,30 @@ export function getSsrPublicFilters(
   scope: UsdFilterScope,
   projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
 ) {
+  return readSsrFilters(locale, scope, projection);
+}
+
+function readSsrFilters(
+  locale: Locale,
+  scope: UsdFilterScope,
+  projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
+  initialVersion?: SsrInitialVersionRead,
+) {
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', { ...publicUsdFilterQuery(locale, scope), ...projection }),
-    priceView: 'usd', scope: 'filters', schema: publicFiltersSchema });
+    priceView: 'usd', scope: 'filters', schema: publicFiltersSchema }, undefined, initialVersion);
+}
+
+export function getSsrPublicHomeFilters(locale: Locale) {
+  // This closure belongs to one homepage render. A resource retry bypasses it.
+  let initial: ReturnType<SsrInitialVersionRead> | undefined;
+  const readInitialVersion: SsrInitialVersionRead = startedAt => initial ??= {
+    startedAt,
+    result: publicRequestHeaders().then(visitor => readSsrServiceVersion('usd', visitor, 'filters')),
+  };
+  return [
+    readSsrFilters(locale, {}, { projection: 'overview' }, readInitialVersion),
+    readSsrFilters(locale, {}, { projection: 'home-models' }, readInitialVersion),
+  ] as const;
 }
 export function getSsrPublicCatalog(query: PublicVehicleQuery) {
   const effective = PublicVehicleQuerySchema.parse(publicUsdCatalogQuery(query));

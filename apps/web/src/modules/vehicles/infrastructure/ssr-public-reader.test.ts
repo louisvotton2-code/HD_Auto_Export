@@ -72,6 +72,17 @@ describe('SSR-only versioned anonymous data reader', () => {
     expect(state.cache.loaded[0]).not.toMatch(/requestId|UPSTREAM_TRACE_SENTINEL|current-1/);
   });
 
+  it('uses the actual shared check start time for a reader that joins later', async () => {
+    const state = setup();
+    const initial = () => ({ startedAt: 100, result: Promise.resolve(versionDto(stamp(), 'shared-version')) });
+    state.setTime(15_099);
+    await state.read(descriptor, initial);
+    state.setTime(15_100);
+    await expect(state.read(descriptor, initial)).rejects.toMatchObject({ status: 503 });
+    expect(state.readVersion).not.toHaveBeenCalled();
+    expect(state.readAnonymous).toHaveBeenCalledTimes(1);
+  });
+
   it('coalesces matching DTO loads without coalescing visitor version checks or traces', async () => {
     const state = setup();
     const original = state.readAnonymous.getMockImplementation()!;

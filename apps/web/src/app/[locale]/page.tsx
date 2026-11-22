@@ -10,7 +10,7 @@ import { JsonLd } from '@/shared/ui/json-ld';
 import { InterFontFaces, interFontUrls } from '@/shared/ui/inter-fonts';
 import { markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 import { PublicHome } from '@/modules/home';
-import { getPublicCatalog, getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
+import { getPublicCatalog, getPublicHome, getPublicHomeFilters, publicRetryAfter } from '@/modules/vehicles/server';
 
 const metadataByLocale = {
   zh: {
@@ -44,8 +44,7 @@ export default async function Home({ params }: Props) {
   await connection();
   const [home, overview, models] = await Promise.allSettled([
     getPublicHome(locale),
-    getPublicFilters(locale, {}, { projection: 'overview' }),
-    getPublicFilters(locale, {}, { projection: 'home-models' }),
+    ...getPublicHomeFilters(locale),
   ]);
   const facets = overview.status === 'fulfilled' ? overview.value.data : null;
   let initialRetryAfter = publicRetryAfter(home, overview, models);

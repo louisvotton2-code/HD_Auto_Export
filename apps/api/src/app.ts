@@ -322,9 +322,14 @@ export async function buildApp(config:Config=readConfig(), options:{
   registerSeoRoutes(app,seoDb??db,config.publicSeoEnabled,config.externalCatalog);
 
   // Service authentication runs before this route's independent rate-limit store.
-  app.get(SSR_CATALOG_VERSION_PATH,{config:{rateLimit:{max:120}},schema:{hide:true,querystring:pub.PublicCatalogVersionQuerySchema,
-    response:{200:pub.InternalPublicCatalogVersionResponseSchema,...errorResponses}}},async request=>{
-    const query=request.query as z.infer<typeof pub.PublicCatalogVersionQuerySchema>;
+  const versionQuery=pub.InternalPublicCatalogVersionQuerySchema;
+  app.get(SSR_CATALOG_VERSION_PATH,{config:{rateLimit:{max:120}},schema:{hide:true,querystring:versionQuery,
+    response:{200:z.union([pub.InternalPublicCatalogVersionResponseSchema,pub.InternalPublicCatalogHomepageVersionResponseSchema]),...errorResponses}}},async request=>{
+    const query=request.query as z.infer<typeof versionQuery>;
+    if(query.scope==='homepage') {
+      if(cacheProtocol(request)!==2) throw new ApiError(400,'INVALID_REQUEST','Cache protocol 2 is required.');
+      return response(await catalogCache.currentHomepageVersions(requestSignals.get(request)),request);
+    }
     return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
   });
 
