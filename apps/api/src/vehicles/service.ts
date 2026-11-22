@@ -399,6 +399,18 @@ async function boundFilterStatement(tx:PoolClient,budget:FilterReadBudget) {
   remainingFilterTime(budget);
   return result.rows[0]!.pid;
 }
+function proofClient(tx:PoolClient,budget:FilterReadBudget):PoolClient {
+  const bounded=Object.create(tx) as PoolClient;
+  // SET LOCAL statement_timeout limits individual statements. Recompute it for
+  // every proof query, including nested projections, against the original deadline.
+  bounded.query=(async(text:string,params?:unknown[])=>{
+    await boundFilterStatement(tx,budget);
+    const result=await tx.query(text,params);
+    remainingFilterTime(budget);
+    return result;
+  }) as typeof tx.query;
+  return bounded;
+}
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
 const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
   const {page,cursor,pagination,...filters}=query;
@@ -800,19 +812,34 @@ export class InventoryService {
     const result=await this.db.pool.query<{facts:VehicleDraftInput['facts']}>("SELECT d.data->'facts' AS facts FROM vehicles v JOIN vehicle_drafts d ON d.vehicle_id=v.id WHERE v.deleted_at IS NULL ORDER BY v.updated_at DESC,v.id");
     return {scope:'all_inventory' as const,...vehicleOptions(result.rows.map(row=>row.facts),query.make)};
   }
-  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english',pixelView?:'eligible',seoView?:'eligible',captureRevision?:CatalogRevisionObserver) {
+  async getPublic(id:string,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',projection?:'detail-inline-v1',technicalView?:'verified',titleView?:'english',pixelView?:'eligible',seoView?:'eligible',captureRevision?:CatalogRevisionObserver,
+    proofBudget?:FilterReadBudget):Promise<PublicVehicle|Awaited<ReturnType<typeof inlineDetail>>> {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
-    return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    return this.db.transaction(async connection=>{
+      await connection.query(proofBudget?catalogReadTransaction:'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const tx=proofBudget?proofClient(connection,proofBudget):connection;
       const revision=captureRevision?await observeCatalogRevision(tx,priceView,captureRevision):undefined;
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       const includePixel=projection==='detail-inline-v1'&&pixelView==='eligible';
       const includeSeo=projection==='detail-inline-v1'&&seoView==='eligible'&&this.publicSeoEnabled;
+      const proveInline=(item:Awaited<ReturnType<typeof inlineDetail>>)=>{
+        if(revision&&captureRevision&&!proofBudget) {
+          // Reuse the exact inline projection so Pixel, SEO, titles and report/media
+          // visibility are all checked under the same snapshot as the proof version.
+          captureRevision(revision,async(deadline,signal)=>{
+            let checked:PublicCatalogRevision|undefined;
+            const latest=await this.getPublic(id,locale,view,priceView,projection,technicalView,titleView,pixelView,seoView,
+              observed=>{checked=observed;},{deadline,signal});
+            return checked&&canonical(latest)===canonical(item)?checked:null;
+          });
+        }
+        return item;
+      };
       if(id.startsWith('ext-')) {
         const item=await getExternalPublic(tx,listingUuid(id),locale,Date.now(),priceView,quote,projection?titleView:undefined,includePixel);
         if(!item)throw notFound();
         if(includeSeo)item.seo=await vehicleSeo(tx,item.id,locale,true);
-        return projection?inlineDetail(tx,item,locale,technicalView):item;
+        return projection?proveInline(await inlineDetail(tx,item,locale,technicalView)):item;
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
       const eligibility=`WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`;
@@ -827,8 +854,9 @@ export class InventoryService {
         await attachVersionedMediaUrls(tx,vehicle.images);
         if(revision&&originalMedia&&captureRevision) {
           const versionedUrls=vehicle.images.map(image=>image.url);
-          captureRevision(revision,()=>this.db.transaction(async current=>{
-            await current.query(catalogReadTransaction);
+          captureRevision(revision,(deadline,signal)=>this.db.transaction(async connection=>{
+            await connection.query(catalogReadTransaction);
+            const current=proofClient(connection,{deadline,signal});
             const checked=await readPublicCatalogRevision({pool:current},priceView==='usd','catalog');
             const {rows:[guard]}=await current.query<{detail_guard:string}>(`SELECT ${manualDetailGuard}
               ${publicFrom} ${eligibility} AND p.data#>>'{source,kind}'='manual'`,params);
@@ -844,9 +872,9 @@ export class InventoryService {
       if(includeSeo)vehicle.seo=await vehicleSeo(tx,vehicle.id,locale,true);
       if (!projection) return vehicle;
       const englishTitle = titleView ? staffEnglishTitle(row, vehicle, locale) : undefined;
-      return inlineDetail(tx,{...vehicle,...projectTechnicalDetail(vehicle.facts,row.published_localization?.facts,
+      return proveInline(await inlineDetail(tx,{...vehicle,...projectTechnicalDetail(vehicle.facts,row.published_localization?.facts,
         row.publication_data?.configuration,vehicle.configuration,locale),...(englishTitle?{englishTitle}:{}),
-        ...(includePixel?{pixelEnabled:row.pixel_enabled===true}:{})},locale);
+        ...(includePixel?{pixelEnabled:row.pixel_enabled===true}:{})},locale));
     });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void,captureRevision?:CatalogRevisionObserver) {
@@ -917,11 +945,41 @@ export class InventoryService {
       const page=cursor?.page??query.page,hasMore=cursorMode?items.length>query.pageSize:offset+items.length<total;
       items.splice(query.pageSize);anchors.splice(query.pageSize);
       await attachVersionedMediaUrls(tx,items.flatMap(vehicle=>vehicle.source.kind==='manual'?vehicle.images:[]));
+      if (!cursorMode&&observedRevision&&captureRevision) {
+        captureRevision(observedRevision,(deadline,signal)=>this.verifyOffsetPage(query,items,{deadline,signal}));
+      }
       const last=anchors.at(-1);
       const nextCursor=hasMore&&last&&version?Buffer.from(JSON.stringify({v:2,...version,query:binding,...last,page:page+1,
         ...(fx!==undefined?{fx}: {}),...(usdPriceOrder?{usdSort:1}:{})} satisfies Cursor)).toString('base64url'):null;
       return {data:{items,page,pageSize:query.pageSize,hasMore,...(cursorMode?{nextCursor}: {})},
         meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date(time).toISOString(),freshness:'fresh' as const}};
+    });
+  }
+  private async verifyOffsetPage(query:PublicVehicleQuery,items:readonly (PublicVehicle|PublicVehicleCard)[],budget:FilterReadBudget) {
+    return this.db.transaction(async connection=>{
+      await connection.query(catalogReadTransaction);
+      const tx=proofClient(connection,budget);
+      const checked=await readPublicCatalogRevision({pool:tx},query.priceView==='usd','catalog');
+      const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+      const staffIds=items.filter(item=>!item.id.startsWith('ext-')).map(item=>item.id);
+      const supplierIds=items.filter(item=>item.id.startsWith('ext-')).map(item=>listingUuid(item.id));
+      const projected:Array<PublicVehicle|PublicVehicleCard>=[];
+      if(staffIds.length) {
+        const params:unknown[]=[staffIds];
+        const visible=publicConditions(query,params,quote);
+        const selection=query.projection==='card'?staffCardSelect(query.locale,params):publicSelect;
+        const {rows}=await tx.query<Row>(`${selection} WHERE v.id=ANY($1::uuid[]) AND ${visible}`,params);
+        projected.push(...rows.map(row=>query.projection==='card'?toCard(row,query.locale,query.view,query.priceView,quote)
+          :toPublic(row,query.locale,query.view,query.priceView,quote)));
+        await attachVersionedMediaUrls(tx,projected.flatMap(item=>item.source.kind==='manual'?item.images:[]));
+      }
+      if(supplierIds.length) {
+        const {items:external}=await listExternalPage(tx,query,supplierIds.length,0,Date.now(),undefined,quote,false,supplierIds);
+        projected.push(...external);
+      }
+      if(projected.length!==items.length)return null;
+      const byId=new Map(projected.map(item=>[item.id,canonical(item)]));
+      return items.every(item=>byId.get(item.id)===canonical(item))?checked:null;
     });
   }
   async filters(query:PublicFilterQuery) {

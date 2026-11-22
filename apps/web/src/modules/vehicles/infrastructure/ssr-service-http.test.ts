@@ -107,6 +107,22 @@ describe('authenticated server-only catalog transport', () => {
     await expect(readSsrServiceVersion('usd', {})).rejects.toMatchObject({ status: 503 });
   });
 
+  it('negotiates inline snapshots only on the authenticated inline detail route', async () => {
+    vi.stubEnv('VEHICLE_API_BASE_URL', 'http://api.example.invalid');
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ data: { sections: [] }, meta: { requestId: 'upstream', catalogCache: longStamp } },
+      { headers: { ...negotiated, 'X-HD-Catalog-Inline-Snapshot': '1' } }));
+    vi.stubGlobal('fetch', fetcher);
+    const inline = { ...descriptor, path: '/api/v1/vehicles/car_1?locale=en&view=localized&priceView=usd&projection=detail-inline-v1', allowInlineSnapshot: true as const };
+    await expect(readAnonymousPublicResource(inline)).resolves.toMatchObject({ protocol: 2, inlineSnapshot: true });
+    expect(fetcher.mock.calls[0][0]).toContain('/internal/public-catalog/vehicles/car_1?');
+    expect(fetcher.mock.calls[0][1].headers).toMatchObject({ 'X-HD-SSR-Key': serviceKey, 'X-HD-Catalog-Inline-Snapshot': '1' });
+    expect(await readAnonymousPublicResource({ ...inline, allowInlineSnapshot: undefined })).not.toHaveProperty('inlineSnapshot');
+    expect(fetcher.mock.calls[1][1].headers).not.toHaveProperty('X-HD-Catalog-Inline-Snapshot');
+    await expect(readAnonymousPublicResource({ ...inline, path: inline.path.replace('&projection=detail-inline-v1', '') })).rejects.toMatchObject({ status: 503 });
+    await expect(readAnonymousPublicResource({ ...descriptor, allowInlineSnapshot: true })).rejects.toMatchObject({ status: 503 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('retains public DTO validation and refuses invalid negotiated metadata', async () => {
     const cases = [
       { data: { sections: [], purchaseCost: 'private' }, meta: { requestId: 'data', catalogCache: longStamp } },

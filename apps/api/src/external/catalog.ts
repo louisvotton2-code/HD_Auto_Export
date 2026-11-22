@@ -368,7 +368,7 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
-const filterFrom = (query: CatalogMatchQuery) => 'FROM external_catalog_filter f' +
+const filterFrom = (query: CatalogMatchQuery, table:'external_catalog_filter'|'selected_filter'='external_catalog_filter') => `FROM ${table} f` +
   (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
 const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
@@ -422,15 +422,21 @@ function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
     THEN ${exactUsdSortValue('f.price_cny',`$${last}::numeric`)} END`;
 }
 
-export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null, countMatches=false):
+export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null, countMatches=false,
+  selectedIds?:readonly string[]):
 Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];total?:number}> {
   const { where, values } = matches(query,quote);
   const sort=query.sort??'newest',numeric=numericSort(sort);
   let column=sort==='mileage_asc'?'f.mileage_km':sort==='year_desc'?'f.model_year':'f.price_cny';
   if(sort.startsWith('price_')&&query.priceView==='usd')column=externalUsdSort(quote,values);
   const sortSelect=numeric?`,(${column}) AS sort_value`:',f.published_at';
-  const matched=`SELECT f.listing_id${sortSelect} ${filterFrom(query)} ${filterVisible}${where}`;
-  const includeTotal=countMatches&&!after&&canCountExternalSearchPage(query);
+  // A late offset proof reads only the selected keys before applying text and
+  // export joins, and never re-runs the full match set or exact count.
+  const selected=selectedIds?`selected_filter AS MATERIALIZED (
+    SELECT * FROM external_catalog_filter WHERE listing_id=ANY($${values.push(selectedIds)}::uuid[])
+  ), `:'';
+  const matched=`SELECT f.listing_id${sortSelect} ${filterFrom(query,selectedIds?'selected_filter':'external_catalog_filter')} ${filterVisible}${where}`;
+  const includeTotal=countMatches&&!selectedIds&&!after&&canCountExternalSearchPage(query);
   // A newest search can reuse exact matches for both the total and the page.
   // Keep the wide public projection out of the match set.
   const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${maxCombinedSearchMatches}`:matched;
@@ -460,7 +466,7 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
       totals AS MATERIALIZED (SELECT count(*)::int AS total FROM matching), picked AS MATERIALIZED (${picked})
       SELECT page.*, totals.total FROM totals
       LEFT JOIN (${page}) page ON true ORDER BY page.published_at DESC,page.listing_id`
-    : `WITH picked AS MATERIALIZED (${picked}) ${page}
+    : `WITH ${selected}picked AS MATERIALIZED (${picked}) ${page}
       ${numeric?`ORDER BY ${catalogOrder('picked.sort_value','c.listing_id',sort)}`:ordered}`,values);
   const total=result.rows[0]?.total;
   // Common terms may match most of the catalog. In that case keep the usual

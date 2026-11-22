@@ -68,19 +68,23 @@ test('a publication changing during source reads retries once and never tags old
 test('an offset refresh shares the original load slot and neither stores data nor tolerates an unsafe second read', async () => {
   const now=Date.parse('2026-11-22T00:00:00Z');
   const fx={version:'quote-a',expiresAt:now+60_000};
-  for(const changeFx of [false,true]){
+  for(const conflict of [null,'fx-changed','offset-page-changed']){
     let current={...version(),fx};
-    let loads=0;
+    let loads=0,proofs=0;
     const store=new Store();
     const cache=new PublicCatalogCache({namespace:'hd:offset-proof',maxConcurrentLoads:1}, {readRevision:async()=>current,store,now:()=>now});
     const read=cache.getOffsetListSnapshot({},async()=>{
       assert.equal(cache.metrics().activeLoads,1);
       const observed=current;
       current={...current,revision:String(++loads+1)};
-      if(loads===2&&changeFx)current={...current,fx:{...fx,version:'quote-b'}};
-      return {value:{total:loads===1?1:0},revision:observed};
+      if(loads===2&&conflict==='fx-changed')current={...current,fx:{...fx,version:'quote-b'}};
+      return {value:{total:loads===1?1:0},revision:observed,verifyAfterAdvance:async()=>{
+        assert.equal(cache.metrics().activeLoads,1);
+        proofs++;
+        return conflict==='offset-page-changed'?null:current;
+      }};
     },true);
-    if(changeFx) await assert.rejects(read,{status:503,reason:'revision-changed',revisionConflicts:['catalog-advanced','fx-changed']});
+    if(conflict) await assert.rejects(read,{status:503,reason:'revision-changed',revisionConflicts:['catalog-advanced',conflict]});
     else {
       const result=await read;
       assert.deepEqual(result.value,{total:0});
@@ -88,8 +92,9 @@ test('an offset refresh shares the original load slot and neither stores data no
       assert.equal(result.offsetSnapshot?.fx?.version,fx.version);
     }
     assert.equal(loads,2);
+    assert.equal(proofs,conflict==='fx-changed'?0:1);
     assert.equal(cache.metrics().activeLoads,0);
-    assert.equal(cache.metrics().uncachedListLoads,changeFx?0:1);
+    assert.equal(cache.metrics().uncachedListLoads,conflict?0:1);
     assert.equal(store.values.size,0);
   }
 });
@@ -116,6 +121,23 @@ test('a detail proof cannot promote across epoch, FX or revision regression', as
     assert.equal(cache.metrics().detailRevalidations,0);
     assert.equal(store.values.size,0);
   }
+});
+
+test('statement timeout during the final page proof releases the load slot without caching', async () => {
+  let revision = version(), loads = 0;
+  const store = new Store();
+  const cache = new PublicCatalogCache({ namespace: 'hd:proof-timeout', maxConcurrentLoads: 1 },
+    { readRevision: async () => revision, store });
+  await assert.rejects(cache.getOffsetListSnapshot({}, async () => {
+    const observed = revision;
+    revision = version(String(++loads + 1));
+    return { value: {}, revision: observed, verifyAfterAdvance: async () => {
+      throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    } };
+  }, true), { status: 503, reason: 'deadline', sqlState: '57014' });
+  assert.equal(loads, 2);
+  assert.equal(cache.metrics().activeLoads, 0);
+  assert.equal(store.values.size, 0);
 });
 
 test('a queued filter read shares a new authoritative stamp and warms only the current version', async () => {

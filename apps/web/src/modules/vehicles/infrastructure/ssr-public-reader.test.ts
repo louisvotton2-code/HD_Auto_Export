@@ -156,6 +156,39 @@ describe('SSR-only versioned anonymous data reader', () => {
     expect(state.readAnonymous).toHaveBeenCalledTimes(4);
   });
 
+  it('renders an explicitly acknowledged inline detail after a revision advance without caching it', async () => {
+    const state = setup();
+    const vehicle = makeLocalizedPublicVehicleFixture('en');
+    const inline = {
+      path: canonicalPublicPath(`/api/v1/vehicles/${vehicle.id}`, { locale: 'en', view: 'localized', priceView: 'usd', projection: 'detail-inline-v1', pixelView: 'eligible' }),
+      priceView: 'usd' as const, allowInlineSnapshot: true as const, schema: PublicVehicleInlineResponseSchema,
+    };
+    const data = {
+      ...vehicle, projection: 'detail-inline-v1', pixelEnabled: true, configurationInline: [],
+      inspectionSummary: { status: 'no_report', contentLocale: null, checked: null, faults: null, categories: [] },
+      inspectionInline: { conclusions: [], defects: [], normalItemCount: 0, hasMoreConclusions: false, hasMoreDefects: false },
+    };
+    const newer = stamp('b'.repeat(64), 500);
+    const response = (catalogCache: PublicCatalogCacheStamp) => dto(inline.schema.parse({ data, meta: { requestId: 'upstream', catalogCache } }), 2);
+    state.readAnonymous.mockImplementation(async () => ({ ...response(newer), inlineSnapshot: true }));
+    expect((await state.read(inline)).data).toMatchObject({ id: vehicle.id, projection: 'detail-inline-v1', pixelEnabled: true });
+    expect((await state.read(inline)).meta.catalogCache).toBeUndefined();
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.cache.stats).toMatchObject({ entries: 0, inFlight: 0 });
+    expect(state.onStamp).toHaveBeenLastCalledWith(null, undefined);
+    state.readAnonymous.mockResolvedValue(response(newer));
+    await expect(state.read(inline)).rejects.toMatchObject({ status: 503 });
+    const fx = { version: '00000000-0000-4000-8000-000000000001', expiresAt: new Date(checked + 60_000).toISOString() };
+    state.readAnonymous.mockImplementation(async () => ({ ...response({ ...newer, fx }), inlineSnapshot: true }));
+    await expect(state.read(inline)).rejects.toMatchObject({ status: 503 });
+    state.readAnonymous.mockImplementation(async () => {
+      state.setTime(state.now() + 600);
+      return { ...response(newer), inlineSnapshot: true };
+    });
+    await expect(state.read(inline)).rejects.toMatchObject({ status: 503 });
+    expect(state.cache.stats.entries).toBe(0);
+  });
+
   it('discards a mismatched DTO and retries once using a newly checked version', async () => {
     const state = setup();
     const newer = stamp('b'.repeat(64));
