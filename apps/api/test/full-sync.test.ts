@@ -176,7 +176,7 @@ test('formal full synchronization has durable independent receipt/application an
     });
    }
   });
-  await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async()=>{
+  await t.test('a full CSV staging table is fixed cost and sample waiting freezes expansion but permits reports and withdrawals',async ctx=>{
    const snapshotId=randomUUID(),archivePath=path.join(directory,`${snapshotId}.csv.gz`),archive=Buffer.alloc(8192,1);
    await writeFile(archivePath,archive);
    await database.pool.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,apply_cursor,bytes) VALUES($1,$2,'applying',$3,50000,50000,10000,20000000)",[snapshotId,at,archivePath]);
@@ -219,7 +219,13 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await worker!.state()).capacity_estimate.estimatedBytes,null);
    await assert.rejects(worker!.heavy(),/SYNC_CAPACITY_PENDING/);
    await database.pool.query("UPDATE external_full_members SET report_state='no_report' WHERE sampled");
-   await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+   const measurementQueries=ctx.mock.method(database.pool,'query');
+   try {
+    await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+    assert.ok(measurementQueries.mock.callCount()>0);
+    assert.equal(measurementQueries.mock.calls.some(({arguments:[sql]})=>
+     typeof sql==='string'&&/\bFROM\s+external_source_blobs\b/i.test(sql)),false,'A capacity measurement must not scan stored source payloads');
+   } finally { measurementQueries.mock.restore(); }
    const offered=(await worker!.state()).capacity_estimate;
    const stableHash=offered.evidenceHash;
    await approveCurrent();
@@ -232,6 +238,12 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal(Number((await worker!.state()).last_capacity_sample),10000);
    const stageBytes=Number((await database.pool.query("SELECT pg_total_relation_size('external_full_stage')::text AS bytes")).rows[0].bytes);
    assert.equal(estimate.sqlStagingBytes,stageBytes);assert.ok(stageBytes>estimate.businessBytes);
+   const rawArchiveBytes=Number((await database.pool.query("SELECT pg_total_relation_size('external_source_blobs')::text AS bytes")).rows[0].bytes);
+   assert.ok(rawArchiveBytes>0);
+   const relations=estimate.relations as {relation:string;total_bytes:string}[];
+   assert.equal(Number(relations.find(relation=>relation.relation==='external_source_blobs')?.total_bytes),rawArchiveBytes);
+   assert.equal(estimate.businessBytes,relations.filter(relation=>relation.relation!=='external_full_stage')
+    .reduce((total,relation)=>total+Number(relation.total_bytes),0));
    assert.equal(estimate.archiveDirectoryBytes,archive.length);
    assert.equal(estimate.actualBytesPerDetail,estimate.businessBytes/10000);
    assert.equal(estimate.fixedBytes,stageBytes+archive.length+estimate.walBytes);

@@ -249,11 +249,11 @@ export class FullSyncWorker{
   const wal=(await this.db.pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes',[state.capacity_baseline?.walLsn??'0/0'])).rows[0]!.bytes;
   const details=sample.details;
   const processed=Number((await this.db.pool.query('SELECT count(*) AS n FROM external_full_members WHERE last_detail_at IS NOT NULL')).rows[0].n);
-  const compressed=(await this.db.pool.query('SELECT sum(octet_length(compressed))::text AS bytes,count(*) FILTER(WHERE compressed IS NULL)::integer AS uncompacted FROM external_source_blobs')).rows[0]!;
   let archiveBytes=0;for(const entry of await readdir(this.directory,{withFileTypes:true})){if(entry.isFile())archiveBytes+=(await stat(path.join(this.directory,entry.name))).size;}
   const rows=snapshot?capacityTarget(snapshot):0;
   // CSV staging already contains the full export, including its indexes/TOAST. It is not a detail sample.
   const sqlStagingBytes=relations.filter(r=>r.relation==='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
+  // Relation sizes include the archive heap, indexes and TOAST without reading archived payloads.
   const businessBytes=relations.filter(r=>r.relation!=='external_full_stage').reduce((n,r)=>n+Number(r.total_bytes),0);
   // The cohort stays fixed after first acceptance; later catalog growth must not be divided by just those 10000 members.
   const ready=completeCapacitySample(snapshot,sample);
@@ -269,7 +269,7 @@ export class FullSyncWorker{
   const admission=enoughSample?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE',decision:null};
   const allowed=admission.allowed&&state.enabled&&!state.paused;
   const code=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':admission.code;
-  const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,compressedRawBytes:compressed.bytes===null?null:Number(compressed.bytes),uncompactedRawBlobs:compressed.uncompacted,
+  const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,
     estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 or hd-ext09-daily-two-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
   await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2,
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);

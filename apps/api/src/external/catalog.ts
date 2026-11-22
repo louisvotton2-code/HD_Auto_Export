@@ -374,8 +374,19 @@ const filterFrom = (query: CatalogMatchQuery) => 'FROM external_catalog_filter f
 const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
   WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[]`;
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(${visibleLocaleMasks})`;
+const groupVisible = `WHERE f.locale_mask=ANY(${visibleLocaleMasks})`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 const maxCombinedSearchMatches = 8_192;
+
+function canUseExternalPowerYearGroups(query:CatalogMatchQuery) {
+  // Known powertrain and a year bound exclude every row omitted by the groups.
+  return Boolean(query.powertrain) && query.powertrain!=='unknown'
+    && (query.yearMin!==undefined||query.yearMax!==undefined)
+    && !query.q && !query.model && !query.trim && !query.generation
+    && query.mileageMin===undefined && query.mileageMax===undefined
+    && query.priceMin===undefined && query.priceMax===undefined
+    && (!query.exportStatus||query.exportStatus==='all');
+}
 
 export function canCountExternalSearchPage(query:PublicVehicleQuery) {
   // Keep the direct ordered scan for deep pages, cursors and short searches.
@@ -392,6 +403,11 @@ export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quot
     const total = result.rows[0]?.total;
     if (total == null) throw new ApiError(503,'SERVICE_UNAVAILABLE','Public catalog is temporarily unavailable.',undefined,true);
     return total;
+  }
+  if(canUseExternalPowerYearGroups(query)) {
+    const result=await tx.query<{total:number}>(`SELECT coalesce(sum(f.row_count),0)::int AS total
+      FROM external_catalog_overview_groups f ${groupVisible}${where}`,values);
+    return result.rows[0]!.total;
   }
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
   return result.rows[0]!.total;
@@ -542,16 +558,6 @@ function externalOverviewGroups(withModels:boolean) {
   )`;
 }
 
-function canUseExternalOverviewRollup(query:PublicFilterQuery) {
-  // Every membership predicate must be represented by the rollup's keys.
-  return query.projection==='overview' && !!query.powertrain && query.powertrain!=='unknown'
-    && (query.yearMin!==undefined||query.yearMax!==undefined)
-    && !query.q && !query.model && !query.trim && !query.generation
-    && query.mileageMin===undefined && query.mileageMax===undefined
-    && query.priceMin===undefined && query.priceMax===undefined
-    && (!query.exportStatus||query.exportStatus==='all');
-}
-
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
   observe?: (phase:SupplierFacetPhase)=>void, beforeSupplement?:()=>Promise<void>) {
   const { where: filters, values } = matches(query,quote);
@@ -581,13 +587,13 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // keys are distributive, so grouping these atoms by each dimension preserves
   // exact counts. Overview keeps only overview dimensions in the grouping; variant
   // IDs contribute to availability without producing per-variant dictionaries.
-  const useRollup=!pairs&&canUseExternalOverviewRollup(query);
+  const useRollup=!pairs&&projection==='overview'&&canUseExternalPowerYearGroups(query);
   const atoms=useRollup?`atoms AS MATERIALIZED (
     SELECT f.make_id,f.powertrain,f.drivetrain,f.model_year,f.trim_count>0 AS has_trims,
       f.generation_count>0 AS has_generations,f.label_order,f.row_count,
       f.make_winner_labels[array_position(ARRAY['zh','en','ru']::text[],$1::text)] AS make_name,
       f.make_winner_labels IS NULL AS label_pending
-    FROM external_catalog_overview_groups f WHERE f.locale_mask=ANY(${visibleLocaleMasks})${where}
+    FROM external_catalog_overview_groups f ${groupVisible}${where}
   )`:`matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
     ${filterFrom(query)} ${filterVisible}${where}
