@@ -5,13 +5,12 @@ import path from 'node:path';
 import sharp, { type OutputInfo } from 'sharp';
 import type { PublicMediaQuery } from '@hd/contracts/public';
 import { matchesIfNoneMatch } from './conditional.js';
+import { MEDIA_RECIPE, type MediaContentDigests } from './versions.js';
 
 export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 export const MAX_MEDIA_PIXELS = 40_000_000;
-const MAX_DISPLAY_DIMENSION = 2_400;
-const THUMBNAIL_WIDTH = 240;
-const CARD_DIMENSION = 800;
 const MAX_CARD_PREPARATIONS = 2;
+const MAX_VERIFIED_FILES = 1024;
 type MediaVariant = NonNullable<PublicMediaQuery['variant']>;
 // Share an in-flight derivative across store instances in this API process.
 const derivativePreparations: Record<MediaVariant, Map<string, Promise<void>>> = {
@@ -33,6 +32,7 @@ export type MediaStorageErrorCode =
   | 'MEDIA_NOT_FOUND'
   | 'MEDIA_ALREADY_EXISTS'
   | 'MEDIA_DERIVATIVE_BUSY'
+  | 'MEDIA_VERSION_BUSY'
   | 'MEDIA_STORAGE_ERROR';
 
 export class MediaStorageError extends Error {
@@ -77,6 +77,32 @@ function canonicalId(id: string): string {
   return id.toLowerCase();
 }
 
+function mediaFilename(id: string, variant?: MediaVariant): string {
+  if (variant !== undefined && variant !== 'thumb' && variant !== 'card') {
+    throw new MediaStorageError('INVALID_MEDIA_ID', 'The media variant is invalid.');
+  }
+  return variant ? `${id}.${variant}.webp` : `${id}.webp`;
+}
+
+function fileFingerprint(filename: string, stat: BigIntStats): string {
+  return [filename, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+}
+
+async function readStableBody(file: FileHandle, stat: BigIntStats): Promise<Buffer> {
+  const bytes = Buffer.allocUnsafe(Number(stat.size));
+  let read = 0;
+  while (read < bytes.length) {
+    const part = await file.read(bytes, read, bytes.length - read, read);
+    if (!part.bytesRead) break;
+    read += part.bytesRead;
+  }
+  const after = await file.stat({ bigint: true });
+  if (read !== bytes.length || after.size !== stat.size || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
+    throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The image file changed during delivery.');
+  }
+  return bytes;
+}
+
 // Some PNG loaders decode only the first APNG frame. Check its animation control
 // chunk as well as the decoder metadata so an animation cannot pass as a still.
 function isAnimatedPng(bytes: Buffer): boolean {
@@ -101,6 +127,7 @@ function isAnimatedPng(bytes: Buffer): boolean {
 export class LocalMediaStore {
   private readonly directory: string;
   private resolvedDirectory: string | undefined;
+  private readonly verifiedDigests = new Map<string, string>();
 
   constructor(rootDirectory: string) {
     if (typeof rootDirectory !== 'string' || rootDirectory.trim().length === 0) {
@@ -190,11 +217,11 @@ export class LocalMediaStore {
         throw new MediaStorageError('INVALID_MEDIA', 'The image type or dimensions are invalid, or the image is animated.');
       }
       processed = await input.rotate().resize({
-        width: MAX_DISPLAY_DIMENSION,
-        height: MAX_DISPLAY_DIMENSION,
+        width: MEDIA_RECIPE.displayDimension,
+        height: MEDIA_RECIPE.displayDimension,
         fit: 'inside',
         withoutEnlargement: true,
-      }).webp({ quality: 85 }).toBuffer({ resolveWithObject: true });
+      }).webp({ quality: MEDIA_RECIPE.displayQuality }).toBuffer({ resolveWithObject: true });
     } catch (error) {
       if (error instanceof MediaStorageError) throw error;
       throw new MediaStorageError('INVALID_MEDIA', 'The file could not be decoded as a supported still image.');
@@ -266,32 +293,70 @@ export class LocalMediaStore {
     return this.withPrivateFile(target, async (file, stat) => {
       // The store publishes immutable files. A replacement or in-place change
       // changes this fingerprint, which avoids reading bytes on a warm hit.
-      const fingerprint = [filename, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      const fingerprint = fileFingerprint(filename, stat);
       const etag = `W/"${createHash('sha256').update(fingerprint).digest('base64url')}"`;
       const notModified = matchesIfNoneMatch(ifNoneMatch, etag);
-      let body:Buffer|undefined;
-      if (readBody && !notModified) {
-        body = await file.readFile();
-        const after = await file.stat({ bigint: true });
-        if (BigInt(body.length) !== stat.size || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
-          throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The image file changed during delivery.');
-        }
-      }
+      const body = readBody && !notModified ? await readStableBody(file, stat) : undefined;
       return { filename, byteSize: Number(stat.size), etag, notModified, body };
+    });
+  }
+
+  /** Build missing legacy derivatives once before exposing a version bundle. */
+  async hashPublicRepresentations(id: string): Promise<MediaContentDigests> {
+    const hash = async (variant?: MediaVariant) => {
+      const { target } = await this.deliveryLocation(id, variant);
+      return this.withPrivateFile(target, async (file, stat) => {
+        const bytes = await readStableBody(file, stat);
+        try {
+          const metadata = await sharp(bytes, { failOn: 'warning', limitInputPixels: MAX_MEDIA_PIXELS }).metadata();
+          if (metadata.format !== 'webp' || !metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1) {
+            throw new Error('Invalid display image');
+          }
+        } catch {
+          throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The image version does not contain a valid display image.');
+        }
+        return createHash('sha256').update(bytes).digest('hex');
+      });
+    };
+    return { original: await hash(), thumb: await hash('thumb'), card: await hash('card') };
+  }
+
+  /** Deliver the verified representation itself. The gateway must not reopen a mutable filename. */
+  async prepareVersionedPublicDelivery(id: string, variant: MediaVariant | undefined, expectedDigest: string,
+    { ifNoneMatch, readBody }: PublicMediaDeliveryOptions): Promise<PublicMediaDelivery> {
+    const safeId = canonicalId(id);
+    const root = await this.root(false);
+    const filename = mediaFilename(safeId, variant);
+    if (variant) await this.inspectFile(path.join(root, mediaFilename(safeId)));
+    return this.withPrivateFile(path.join(root, filename), async (file, stat) => {
+      const etag = `W/"sha256-${expectedDigest}"`;
+      const notModified = matchesIfNoneMatch(ifNoneMatch, etag);
+      const sendBody = readBody && !notModified;
+      const fingerprint = fileFingerprint(filename, stat);
+      let digest = this.verifiedDigests.get(fingerprint);
+      let bytes: Buffer | undefined;
+      if (sendBody || digest === undefined) {
+        bytes = await readStableBody(file, stat);
+        digest = createHash('sha256').update(bytes).digest('hex');
+      }
+      if (digest !== expectedDigest) throw new MediaStorageError('MEDIA_NOT_FOUND', 'The requested image version is unavailable.');
+      if (!this.verifiedDigests.has(fingerprint)) {
+        const oldest = this.verifiedDigests.keys().next().value;
+        if (this.verifiedDigests.size >= MAX_VERIFIED_FILES && oldest !== undefined) this.verifiedDigests.delete(oldest);
+        this.verifiedDigests.set(fingerprint, digest);
+      }
+      return { filename, byteSize: Number(stat.size), etag, notModified, body: sendBody ? bytes : undefined };
     });
   }
 
   private async deliveryLocation(id: string, variant?: MediaVariant) {
     const safeId = canonicalId(id);
-    if (variant !== undefined && variant !== 'thumb' && variant !== 'card') {
-      throw new MediaStorageError('INVALID_MEDIA_ID', 'The media variant is invalid.');
-    }
+    const filename = mediaFilename(safeId, variant);
     const root = await this.root(false);
-    const originalPath = path.join(root, `${safeId}.webp`);
-    if (!variant) return { filename: `${safeId}.webp`, target: originalPath };
+    const originalPath = path.join(root, mediaFilename(safeId));
+    if (!variant) return { filename, target: originalPath };
     await this.inspectFile(originalPath);
 
-    const filename = `${safeId}.${variant}.webp`;
     const target = path.join(root, filename);
     try { await this.inspectFile(target); }
     catch (error) {
@@ -329,12 +394,13 @@ export class LocalMediaStore {
     const originalPath = path.join(root, `${safeId}.webp`);
     const original = await this.readFile(originalPath);
     const dimensions = variant === 'card'
-      ? { width: CARD_DIMENSION, height: CARD_DIMENSION, fit: 'inside' as const }
-      : { width: THUMBNAIL_WIDTH };
+      ? { width: MEDIA_RECIPE.cardDimension, height: MEDIA_RECIPE.cardDimension, fit: 'inside' as const }
+      : { width: MEDIA_RECIPE.thumbWidth };
     let derivative: Buffer;
     try {
       derivative = await sharp(original, { failOn: 'warning', limitInputPixels: MAX_MEDIA_PIXELS })
-        .resize({ ...dimensions, withoutEnlargement: true }).webp({ quality: variant === 'card' ? 80 : 75 }).toBuffer();
+        .resize({ ...dimensions, withoutEnlargement: true })
+        .webp({ quality: variant === 'card' ? MEDIA_RECIPE.cardQuality : MEDIA_RECIPE.thumbQuality }).toBuffer();
     } catch {
       throw new MediaStorageError('MEDIA_STORAGE_ERROR', 'The display image cannot be resized.');
     }

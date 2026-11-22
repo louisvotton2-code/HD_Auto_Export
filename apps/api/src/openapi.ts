@@ -16,13 +16,19 @@ try {
     if(get) get.responses={'200':{description:'Processed image; access is checked on every request.',content:{'image/webp':{schema:{type:'string',format:'binary'}}}}};
   }
   const publicMedia=document.paths?.['/api/v1/media/{id}']?.get;
-  if(publicMedia) publicMedia.responses['304']={
-    description:'Image unchanged after current publication access and file validation.',
-    headers:{
-      ETag:{schema:{type:'string'},description:'Validator for the selected display image or derivative.'},
-      'Cache-Control':{schema:{type:'string',example:'private, no-cache'}},
-    },
-  };
+  if(publicMedia) {
+    const headers={
+      ETag:{schema:{type:'string' as const},description:'Validator for the selected display image or derivative.'},
+      'Cache-Control':{schema:{type:'string' as const},description:'A verified content version is public, max-age=31536000, immutable. Legacy published images revalidate with private, no-cache. Fallbacks and failures use no-store.'},
+    };
+    publicMedia.responses['200']={description:'Processed image. The id is a UUID or the versioned UUID from the public vehicle image URL.',
+      content:{'image/webp':{schema:{type:'string',format:'binary'}}},headers};
+    publicMedia.responses['304']={description:'Image unchanged after current publication access and file validation.',headers};
+    publicMedia.responses['307']={description:'The versioned delivery budget has filled. Retry the legacy image address returned in Location.',
+      headers:{Location:{schema:{type:'string'}},'Cache-Control':{schema:{type:'string',example:'no-store'}}}};
+    publicMedia.responses['404']={description:'Current public image, version, or verified representation is unavailable.',
+      headers:{'Cache-Control':{schema:{type:'string',example:'no-store'}}}};
+  }
   const directory=fileURLToPath(new URL('../openapi/',import.meta.url));await mkdir(directory,{recursive:true});
   for(const audience of ['public','admin'] as const) {
     const copy=structuredClone(document);
