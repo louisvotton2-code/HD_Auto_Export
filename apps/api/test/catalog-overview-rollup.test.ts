@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { makeExternalCandidateFixture } from '@hd/contracts/fixtures';
-import { PublicFilterQuerySchema, PublicVehicleFiltersSchema } from '@hd/contracts/public';
+import { PublicFilterQuerySchema, PublicVehicleFiltersSchema, PublicVehicleQuerySchema } from '@hd/contracts/public';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import type { PoolClient } from 'pg';
 import { buildApp } from '../src/app.js';
@@ -137,6 +137,22 @@ test('supplier overview rollups backfill and stay exact with the public filter c
     assert.deepEqual(result, await fromFull(extra));
     return result;
   };
+  const list = async (extra = {}) => {
+    const query = PublicVehicleQuerySchema.parse({ ...options, ...extra, projection: 'card', pageSize: 1 });
+    return service.listPublic(query, randomUUID());
+  };
+  const compareListCount = async (extra = {}, usesRollup = true) => {
+    statements.length = 0;
+    const result = await list(extra);
+    assert.equal(statements.some(sql => sql.includes('sum(f.row_count)')), usesRollup, JSON.stringify(extra));
+    const { total } = await fromFull(extra);
+    assert.ok(total !== undefined);
+    assert.equal(result.meta.total, total);
+    assert.equal(result.meta.totalKind, 'exact');
+    assert.equal(result.data.items.length, Math.min(1, total));
+    assert.equal(result.data.hasMore, total > 1);
+    return result.meta.total;
+  };
   const groups = async (reader: Pick<PoolClient, 'query'> = db.pool, version = false) => (await reader.query(
     `SELECT ${groupKeys},${groupValues}${version ? ',xmin::text AS version' : ''}
     FROM external_catalog_overview_groups ORDER BY ${groupKeys}`)).rows;
@@ -247,6 +263,23 @@ test('supplier overview rollups backfill and stay exact with the public filter c
     assert.equal(statements.some(sql => sql.includes('external_catalog_overview_groups')), false);
   });
 
+  await t.test('filtered lists use exact power and year group counts without changing pagination', async () => {
+    for (const [locale] of masks) await compareListCount({ locale, priceView: 'usd' });
+    await compareListCount({ make: brand, drivetrain: 'fwd', yearMin: undefined, yearMax: 2020 });
+    assert.equal(await compareListCount({ yearMin: 2030 }), 0);
+    const first = await list({ pagination: 'cursor' });
+    assert.ok(first.data.nextCursor);
+    const second = await list({ cursor: first.data.nextCursor });
+    assert.equal(second.meta.total, first.meta.total);
+    assert.deepEqual(second.data.items, (await list({ page: 2 })).data.items);
+    const last = await list({ page: first.meta.total });
+    assert.equal(last.data.items.length, 1);
+    assert.equal(last.data.hasMore, false);
+    for (const extra of [{ q: '汇总回归样车 8' }, { model: 'synthetic-r1' }, { mileageMin: 1000 },
+      { priceMin: '100000', priceCurrency: 'CNY' }, { exportStatus: 'unknown' }, { yearMin: undefined },
+      { powertrain: 'unknown' }]) await compareListCount(extra, false);
+  });
+
   await t.test('price and metadata preserve the group tuple; winner labels track overrides and withdrawal', async () => {
     const version = await groups(db.pool, true);
     await db.transaction(tx => apply(tx, 7, 2, { amount: '130000' }));
@@ -309,6 +342,7 @@ test('supplier overview rollups backfill and stay exact with the public filter c
     await checkGroups();
     assert.equal((await compare()).total, baseline.total! - 1);
     assert.equal((await compare()).makes[0]?.name, '合成品牌 7');
+    assert.equal(await compareListCount(), baseline.total! - 1);
   });
 
   await t.test('clearing an authority makes names pending atomically and rollback keeps the filled projection', async () => {
