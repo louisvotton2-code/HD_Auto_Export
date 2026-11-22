@@ -1,6 +1,7 @@
 """Exercise the actual domain config over private Unix TLS, never a public listener."""
-import gzip, http.client, http.server, importlib.util, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
+import base64, gzip, hashlib, http.client, http.server, importlib.util, json, os, pathlib, shutil, socket, socketserver, ssl, subprocess, tempfile, threading, time, unittest
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qs, urlsplit
 HERE=pathlib.Path(__file__).resolve().parent
 NGINX=shutil.which('nginx')
 CATALOG_QUERY='locale=zh&view=localized'
@@ -11,6 +12,13 @@ NEXT_ASSETS={
     '/_next/static/chunks/retained-12345678.js': ('application/javascript', b'console.log("retained asset");\n'*80),
     '/_next/static/css/retained-12345678.css': ('text/css', b'.vehicle-card { color: #101010; }\n'*80),
 }
+FINGERPRINTED_SITE_ASSETS={
+    '/_next/static/media/inter-latin.01234567.woff2': ('font/woff2', b'font fixture'),
+    '/_next/static/media/ru.12345678.svg': ('image/svg+xml', b'flag fixture'),
+    '/_next/static/media/icon.23456789.svg': ('image/svg+xml', b'icon fixture'),
+    '/_next/static/media/hd-auto-logo.3456789a.webp': ('image/webp', b'current logo fixture'),
+    '/_next/static/media/hd-auto-logo.456789ab.webp': ('image/webp', b'previous logo fixture'),
+}
 ANALYTICS_PATH='/api/v1/analytics/events'
 CONTACT_COUNT_PATH='/api/v1/analytics/contact-count'
 ANALYTICS_BODY=json.dumps({'events':[{'eventId':'11111111-1111-4111-8111-111111111111',
@@ -20,37 +28,75 @@ MEDIA_PATH='/api/v1/media/'+MEDIA_ID
 MEDIA_PREVIEW='/api/v1/admin/media/'+MEDIA_ID+'/preview'
 MEDIA_REPRESENTATIONS={'original': ('.webp',b'original WebP fixture'), 'thumb': ('.thumb.webp',b'thumbnail WebP fixture'),
                        'card': ('.card.webp',b'card WebP fixture')}
+IMMUTABLE_MEDIA_CACHE_CONTROL='public, max-age=31536000, immutable'
+MEDIA_VERSION=base64.urlsafe_b64encode(hashlib.sha256(b''.join(
+    hashlib.sha256(body).digest() for _,body in MEDIA_REPRESENTATIONS.values())).digest()).decode().rstrip('=')
+VERSIONED_MEDIA_PATH=MEDIA_PATH+'_'+MEDIA_VERSION
 CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-Key', 'X-HD-HTML-Nonce', 'X-HD-HTML-Proof',
                        'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket']
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
+    unavailable_media_variant=None
     precompressed_home=None
-    def media_reply(self, preview):
-        variant=self.path.rsplit('?variant=',1)[-1] if '?variant=' in self.path else 'original'
+    def versioned_media_reply(self, variant, version, image):
+        validator='"versioned-'+variant+'"'
+        if not self.media_visible or version!=MEDIA_VERSION:
+            status=404
+        elif self.unavailable_media_variant==variant:
+            status=503
+        elif self.headers.get('If-None-Match')==validator:
+            status=304
+        else:
+            status=200
+        self.send_response(status)
+        self.send_header('Cache-Control',IMMUTABLE_MEDIA_CACHE_CONTROL if status in (200,304) else 'no-store')
+        if status in (200,304):
+            self.send_header('ETag',validator)
+        if status==200:
+            self.send_header('Content-Type','image/webp')
+            self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('Content-Length',str(len(image) if status==200 else 0))
+        self.end_headers()
+        if status==200 and self.command!='HEAD':
+            self.wfile.write(image)
+
+    def media_reply(self, preview, version=None):
+        query=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+        variant=query.get('variant',['original'])[0]
         suffix,image=MEDIA_REPRESENTATIONS[variant]
+        if version is not None:
+            return self.versioned_media_reply(variant,version,image)
         validator='"test-'+variant+'"'
         visible=not preview and self.media_visible
         status=200 if visible or preview and self.headers.get('Cookie')=='test-session=yes' else 404
-        if visible and self.headers.get('If-None-Match')==validator:
+        fallback=visible and self.unavailable_media_variant==variant
+        if fallback:
+            _,image=MEDIA_REPRESENTATIONS['original']
+        elif visible and self.headers.get('If-None-Match')==validator:
             status=304
         self.send_response(status)
-        stream_preview=status==200 and preview and self.headers.get('If-None-Match')=='*'
-        if status==200 and not stream_preview:
+        direct=status==200 and (fallback or preview and self.headers.get('If-None-Match')=='*')
+        if status==200 and not direct:
             internal='/_hd_media/' if preview else '/_hd_public_media/'
             self.send_header('X-Accel-Redirect',internal+MEDIA_ID+suffix)
         else:
-            self.send_header('Cache-Control','private, no-cache' if visible else 'no-store')
-        if status in (200,304) and visible:
+            self.send_header('Cache-Control','private, no-cache' if visible and not fallback else 'no-store')
+        if status in (200,304) and visible and not fallback:
             self.send_header('ETag',validator)
-        self.send_header('Content-Length',str(len(image) if stream_preview else 0))
+        if direct:
+            self.send_header('Content-Type','image/webp')
+        self.send_header('Content-Length',str(len(image) if direct else 0))
         self.end_headers()
-        if stream_preview and self.command!='HEAD':
+        if direct and self.command!='HEAD':
             self.wfile.write(image)
     def do_GET(self):
         self.calls.append(self.path)
-        if self.path.split('?')[0] in (MEDIA_PATH,MEDIA_PREVIEW):
-            return self.media_reply(self.path==MEDIA_PREVIEW)
+        path=urlsplit(self.path).path
+        if path in (MEDIA_PATH,MEDIA_PREVIEW):
+            return self.media_reply(path==MEDIA_PREVIEW)
+        if path.startswith(MEDIA_PATH+'_'):
+            return self.media_reply(False,path.removeprefix(MEDIA_PATH+'_'))
         if self.path in NEXT_ASSETS:
             content_type,body=NEXT_ASSETS[self.path]
             partial=self.headers.get('Range')=='bytes=5-25'
@@ -139,7 +185,7 @@ class DomainCacheHeaders(unittest.TestCase):
         (r/'admin/index.html').write_text('admin');(r/'admin/assets/index-Abc12345.js').write_text('hashed');(r/'admin/assets/plain.js').write_text('plain')
         for suffix,body in MEDIA_REPRESENTATIONS.values():
             (r/'media'/(MEDIA_ID+suffix)).write_bytes(body)
-        for path,(_,body) in NEXT_ASSETS.items():
+        for path,(_,body) in (NEXT_ASSETS | FINGERPRINTED_SITE_ASSETS).items():
             asset=r/'retained'/path.lstrip('/')
             asset.parent.mkdir(parents=True,exist_ok=True)
             asset.write_bytes(body)
@@ -191,7 +237,8 @@ class DomainCacheHeaders(unittest.TestCase):
         single_config.write_text(rootuser+f'pid {r}/single.pid; events {{}} http {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy;\n'+edge+'\n'+single+'\n}')
         subprocess.run([NGINX,'-t','-e',str(r/'single.log'),'-p',str(r)+'/', '-c',str(single_config)],
                        check=True,capture_output=True,text=True)
-        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\ntypes { application/javascript js; text/css css; }\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n'+generated+'\n}\n'
+        types='types { application/javascript js; text/css css; font/woff2 woff2; image/svg+xml svg; image/webp webp; }'
+        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\n'+types+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n'+generated+'\n}\n'
         (r/'nginx.conf').write_text(full);cls.log=(r/'nginx.log').open('wb');cls.addClassCleanup(cls.log.close);cls.process=subprocess.Popen([NGINX,'-e',str(r/'bootstrap.log'),'-p',str(r)+'/', '-c',str(r/'nginx.conf'),'-g','daemon off;'],stdout=cls.log,stderr=cls.log)
         def stop():
             if cls.process.poll() is None:cls.process.terminate();cls.process.wait(timeout=8)
@@ -217,7 +264,7 @@ class DomainCacheHeaders(unittest.TestCase):
             s.sendall(message+(body or b''))
             res=http.client.HTTPResponse(s,method=method);res.begin()
             headers={k.lower():v for k,v in res.getheaders()}
-            for name in ('Cache-Control','Strict-Transport-Security','X-Content-Type-Options','Vary'):
+            for name in ('Cache-Control','ETag','Strict-Transport-Security','X-Content-Type-Options','Vary'):
                 if values:=res.headers.get_all(name):
                     headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
@@ -425,6 +472,65 @@ class DomainCacheHeaders(unittest.TestCase):
         status,headers,_=self.request('admin.hongdingauto.com',MEDIA_PREVIEW,{'If-None-Match':'*'})
         self.assertEqual(status,404)
         self.assertEqual(headers['cache-control'],'no-store')
+
+    def test_versioned_media_preserves_direct_api_headers_for_get_head_and_304(self):
+        host='cars.hongdingauto.com'
+        # A versioned response is served by the API even without a mounted copy for X-Accel-Redirect.
+        media=self.root/'media'
+        moved=media.with_name('media-unmounted')
+        media.rename(moved)
+        try:
+            for slot in (False,True):
+                for variant,(_,image) in MEDIA_REPRESENTATIONS.items():
+                    for method,condition in (('GET',False),('HEAD',False),('GET',True),('HEAD',True)):
+                        with self.subTest(slot=slot,variant=variant,method=method,condition=condition):
+                            query='?variant='+variant if variant!='original' else ''
+                            upstream=VERSIONED_MEDIA_PATH+query
+                            validator='"versioned-'+variant+'"'
+                            options={'If-None-Match':validator} if condition else {}
+                            request_path=upstream if condition else VERSIONED_MEDIA_PATH+'/'+query
+                            status,headers,body=self.request(host,request_path,options,method=method,slot=slot)
+                            self.assertEqual(Origin.calls[-1],upstream)
+                            self.assertEqual(status,304 if condition else 200)
+                            self.assertEqual(body,image if method=='GET' and not condition else b'')
+                            self.assertEqual(headers['cache-control'],IMMUTABLE_MEDIA_CACHE_CONTROL)
+                            self.assertEqual(headers['etag'],validator)
+                            self.assertEqual(headers['strict-transport-security'],'max-age=300')
+                            if not condition:
+                                self.assertEqual(headers['content-type'],'image/webp')
+                                self.assertEqual(headers['content-length'],str(len(image)))
+        finally:
+            moved.rename(media)
+
+    def test_versioned_media_errors_and_private_routes_keep_no_store(self):
+        host='cars.hongdingauto.com'
+        card_url=VERSIONED_MEDIA_PATH+'/?variant=card'
+        wrong_card_url=MEDIA_PATH+'_'+'A'*43+'/?variant=card'
+        for slot in (False,True):
+            with self.subTest(slot=slot):
+                status,headers,_=self.request(host,wrong_card_url,slot=slot)
+                self.assertEqual((status,headers['cache-control']),(404,'no-store'))
+                Origin.media_visible=False
+                try:
+                    status,headers,_=self.request(host,card_url,{'If-None-Match':'"versioned-card"'},slot=slot)
+                    self.assertEqual((status,headers['cache-control']),(404,'no-store'))
+                finally:
+                    Origin.media_visible=True
+                Origin.unavailable_media_variant='card'
+                try:
+                    status,headers,_=self.request(host,card_url,slot=slot)
+                    self.assertEqual((status,headers['cache-control']),(503,'no-store'))
+                    status,headers,body=self.request(host,MEDIA_PATH+'/?variant=card',
+                                                     {'If-None-Match':'"test-card"'},slot=slot)
+                    self.assertEqual((status,body),(200,MEDIA_REPRESENTATIONS['original'][1]))
+                    self.assertEqual(headers['cache-control'],'no-store')
+                    self.assertNotIn('etag',headers)
+                finally:
+                    Origin.unavailable_media_variant=None
+                status,headers,_=self.request('admin.hongdingauto.com',MEDIA_PREVIEW,
+                                              {'Cookie':'test-session=yes','If-None-Match':'"versioned-card"'},slot=slot)
+                self.assertEqual((status,headers['cache-control']),(200,'no-store'))
+
     def test_build_assets_only_have_long_cache_and_missing_assets_never_do(self):
         for path,status in [('/_next/static/chunks/chunk-12345678.js',200),('/_next/static/chunks/partial-12345678.js',206),('/_next/static/build-12345678/_buildManifest.js',304)]:
             actual,headers,_=self.request('cars.hongdingauto.com',path);self.assertEqual(actual,status);self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
@@ -432,6 +538,18 @@ class DomainCacheHeaders(unittest.TestCase):
         for path,status,cache in [('/admin/assets/index-Abc12345.js',200,'public, max-age=31536000, immutable'),('/admin/assets/missing-Abc12345.js',404,'no-store'),('/admin/assets/plain.js',200,'no-store'),('/admin/vehicles',200,'no-store')]:
             actual,headers,_=self.request('admin.hongdingauto.com',path);self.assertEqual(actual,status);self.assertEqual(headers['cache-control'],cache)
             self.assertEqual(headers['x-content-type-options'],'nosniff')
+
+    def test_production_slot_serves_fingerprinted_site_assets_from_retained_tree(self):
+        for path,(content_type,expected_body) in FINGERPRINTED_SITE_ASSETS.items():
+            with self.subTest(path=path):
+                Origin.calls.clear()
+                status,headers,body=self.request('cars.hongdingauto.com',path,slot=True)
+                self.assertEqual((status,body),(200,expected_body))
+                self.assertEqual(headers['content-type'],content_type)
+                self.assertEqual(headers['cache-control'],'public, max-age=31536000, immutable')
+                self.assertEqual(headers['strict-transport-security'],'max-age=300')
+                self.assertEqual(Origin.calls,[])
+
     def test_next_static_negotiates_gzip_and_preserves_identity_ranges(self):
         for slot in (False,True):
             for host in ('cars.hongdingauto.com','admin.hongdingauto.com'):
