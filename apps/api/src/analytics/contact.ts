@@ -1,6 +1,4 @@
-import type {FastifyRequest} from 'fastify';
 import type {AnalyticsContactCountRequest} from '@hd/contracts/analytics';
-import type {Config} from '../config.js';
 import type {Database} from '../db/index.js';
 
 /** Same public eligibility as analytics receipts, but no event identity or request metadata. */
@@ -29,16 +27,6 @@ const countSql = `
    SELECT 1,statement_timestamp() FROM counted ON CONFLICT DO NOTHING
  )
  SELECT EXISTS(SELECT 1 FROM counted) AS counted`;
-
-export function canCountContact(request:FastifyRequest,config:Config,trustedCountry:string|undefined) {
-  if(config.analyticsContactLocalEnabled) {
-    const peer=request.raw.socket.remoteAddress;
-    const origin=new URL(request.headers.origin!);
-    if((peer==='127.0.0.1'||peer==='::ffff:127.0.0.1'||peer==='::1') &&
-       ['127.0.0.1','localhost','[::1]'].includes(origin.hostname))return true;
-  }
-  return trustedCountry!==undefined&&config.analyticsContactCountries.includes(trustedCountry);
-}
 
 export function countContact(db:Database,input:AnalyticsContactCountRequest,allowExternal:boolean) {
   const supplier=input.vehicleId.startsWith('ext-');

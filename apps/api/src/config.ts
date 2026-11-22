@@ -18,8 +18,6 @@ const Env = z.object({
   TRUSTED_ORIGINS: z.string().default('http://127.0.0.1:3318'),
   ANALYTICS_ORIGINS: z.string().max(2048).default(''),
   ANALYTICS_V2_ENABLED: z.enum(['false','true']).default('false'),
-  ANALYTICS_CONTACT_LOCAL_ENABLED: z.enum(['false','true']).default('false'),
-  ANALYTICS_CONTACT_ALLOWED_COUNTRIES: z.string().max(1024).default(''),
   ANALYTICS_GATEWAY_SECRET_FILE: z.string().max(1024).refine(path.isAbsolute).optional(),
   ANALYTICS_IP_VISITS_ENABLED: z.enum(['false','true']).default('false'),
   ANALYTICS_IP_VISIT_PEERS: z.string().max(2048).optional(),
@@ -121,9 +119,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
   const analyticsGatewaySecret=e.ANALYTICS_GATEWAY_SECRET_FILE?readLocalSecret(e.ANALYTICS_GATEWAY_SECRET_FILE,128):undefined;
   if(analyticsGatewaySecret && (!/^[a-f0-9]{64}$/.test(analyticsGatewaySecret) || e.TRUST_PROXY.trim()==='false'))
     throw new Error('Analytics gateway requires a 32-byte hex secret and a trusted proxy');
-  const analyticsContactCountries=e.ANALYTICS_CONTACT_ALLOWED_COUNTRIES.split(',').map(code=>code.trim()).filter(Boolean);
-  if(analyticsContactCountries.some(code=>!(/^[A-Z]{2}$/).test(code)||code==='ZZ'))
-    throw new Error('ANALYTICS_CONTACT_ALLOWED_COUNTRIES requires explicit two-letter country codes');
   let ipVisitService:{peers:string[];gatewaySecret:string;hashSecret:string}|null=null;
   if(e.ANALYTICS_IP_VISITS_ENABLED==='true') {
     // A missing optional measurement credential must not take down the catalog.
@@ -203,8 +198,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
     ipVisitService,ipVisitsMisconfigured:e.ANALYTICS_IP_VISITS_ENABLED==='true'&&!ipVisitService,
     authSecret: e.AUTH_SECRET, authBaseUrl: e.AUTH_BASE_URL, trustedOrigins, analyticsOrigins, analyticsGatewaySecret,
     analyticsV2Enabled:e.ANALYTICS_V2_ENABLED==='true',publicSeoEnabled:e.PUBLIC_SEO_ENABLED==='true',
-    analyticsContactLocalEnabled:e.ANALYTICS_CONTACT_LOCAL_ENABLED==='true'&&deployment.environment!=='production'&&e.NODE_ENV!=='production',
-    analyticsContactCountries:[...new Set(analyticsContactCountries)],
     mediaRoot: path.resolve(e.MEDIA_ROOT), mediaDelivery: e.MEDIA_DELIVERY, poolMax: e.DB_POOL_MAX,
     trustProxy: parseTrustProxy(e.TRUST_PROXY), externalCatalog, externalScale,
     externalIngestion: e.EXTERNAL_CATALOG_MODE !== 'disabled', externalSync: e.EXTERNAL_SYNC_MODE,
