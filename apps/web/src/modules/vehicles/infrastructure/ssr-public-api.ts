@@ -12,7 +12,7 @@ import { publicApiOrigin, PublicApiError } from './public-http';
 import { publicRequestHeaders } from './public-request-context';
 import { SsrDtoCache } from './ssr-dto-cache';
 import { canonicalPublicPath, createSsrPublicReader, type SsrInitialVersionRead, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
-import { readAnonymousPublicResource, readSsrServiceVersion } from './ssr-service-http';
+import { readAnonymousPublicResource, readSsrServiceVersion, readSsrServiceVersions } from './ssr-service-http';
 
 // One bounded store for this Node process, including separate Next route bundles.
 const cacheSymbol = Symbol.for('hd-auto.ssr-public-dto-cache.v1');
@@ -55,8 +55,9 @@ export function getSsrPublicFilters(
   locale: Locale,
   scope: UsdFilterScope,
   projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
+  initialVersion?: SsrInitialVersionRead,
 ) {
-  return readSsrFilters(locale, scope, projection);
+  return readSsrFilters(locale, scope, projection, initialVersion);
 }
 
 function readSsrFilters(
@@ -81,11 +82,27 @@ export function getSsrPublicHomeFilters(locale: Locale) {
     readSsrFilters(locale, {}, { projection: 'home-models' }, readInitialVersion),
   ] as const;
 }
-export function getSsrPublicCatalog(query: PublicVehicleQuery) {
+export function createSsrCatalogVersionScope() {
+  let first: { startedAt: number; result: ReturnType<typeof readSsrServiceVersions> } | undefined;
+  const read = (scope: 'catalog' | 'filters'): SsrInitialVersionRead => startedAt => {
+    first ??= { startedAt, result: publicRequestHeaders().then(visitor => readSsrServiceVersions(visitor)) };
+    return {
+      startedAt: first.startedAt,
+      result: first.result.then(async versions => {
+        const result = await versions[scope];
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      }),
+    };
+  };
+  return { catalog: read('catalog'), filters: read('filters') };
+}
+
+export function getSsrPublicCatalog(query: PublicVehicleQuery, initialVersion?: SsrInitialVersionRead) {
   const effective = PublicVehicleQuerySchema.parse(publicUsdCatalogQuery(query));
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicles', effective), priceView: 'usd',
     allowOffsetSnapshot: effective.cursor || effective.pagination ? undefined : true,
-    schema: localizedCardListSchema(query.locale, 'usd'), media: value => media(value.data.items) });
+    schema: localizedCardListSchema(query.locale, 'usd'), media: value => media(value.data.items) }, undefined, initialVersion);
 }
 export async function getSsrPublicVehicle(
   id: string,

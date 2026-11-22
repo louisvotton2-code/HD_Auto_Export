@@ -55,12 +55,12 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
     await expect(page.locator('main [data-public-vehicle]')).toHaveCount(5);
     const first = await recorded(request);
     expect(anonymous(first).length).toBeGreaterThan(0);
+    expect(versions(first).map(row => row.query.scope)).toEqual(['homepage']);
     expect((await page.reload())?.status()).toBe(200);
     await expect(page.locator('main [data-public-vehicle]')).toHaveCount(5);
     const second = await recorded(request);
-    expect(versions(second).length).toBeGreaterThan(versions(first).length);
+    expect(versions(second).map(row => row.query.scope)).toEqual(['homepage', 'homepage']);
     expect(anonymous(second)).toHaveLength(anonymous(first).length);
-    expect(versions(second).some(row => row.query.scope === 'filters')).toBe(true);
     expect(versions(second).every(row => !row.filterScope)).toBe(true);
     expect(versions(second).every(row => row.serviceAuthenticated && row.hasVisitorIp)).toBe(true);
     expect(anonymous(second).every(row => row.serviceAuthenticated && !row.hasVisitorIp)).toBe(true);
@@ -68,6 +68,58 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
     expect([...versions(second), ...anonymous(second)].every(row =>
       !row.hasCookie && !row.hasAuthorization && !row.hasRequestId)).toBe(true);
     expect(JSON.stringify(second)).not.toMatch(/SYNTHETIC_BROWSER_ONLY|must_stay_at_web|synthetic-browser-trace|x-hd-ssr-key/i);
+  });
+
+  test('base and make/model documents check both scopes once and navigation can defer filters', async ({ page, request }) => {
+    const catalogPath = '/en/cars/';
+    const listPath = `${internal}/vehicles`;
+    const facetsPath = `${internal}/vehicle-filters`;
+    expect((await page.goto(catalogPath))?.status()).toBe(200);
+    await expect(page.locator('main [data-public-vehicle]').first()).toBeVisible();
+    const base = await recorded(request);
+    expect(versions(base).map(row => row.query.scope)).toEqual(['homepage']);
+    expect(anonymous(base).filter(row => row.path === listPath)).toHaveLength(1);
+
+    // Start a new fixture version so the make/model page also loads its overview DTO.
+    await resetPublicFixture(request);
+    expect((await page.goto(catalogPath + '?make=beta&model=beta_model'))?.status()).toBe(200);
+    const filtered = await recorded(request);
+    expect(versions(filtered).map(row => row.query.scope)).toEqual(['homepage']);
+    expect(anonymous(filtered).filter(row => row.path === facetsPath).map(row => [
+      row.query.make ?? '', row.query.model ?? '', row.filterScope,
+    ]).sort()).toEqual([['', '', true], ['beta', '', true], ['beta', 'beta_model', true]]);
+
+    const deferred = await request.get(catalogPath + '?pageSize=3', { headers: {
+      'X-HD-Visitor-IP': '198.51.100.79', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Site': 'same-origin', Accept: '*/*',
+    } });
+    expect(deferred.status()).toBe(200);
+    const navigation = (await recorded(request)).slice(filtered.length);
+    expect(versions(navigation).map(row => row.query.scope)).toEqual([undefined]);
+    expect(anonymous(navigation).map(row => row.path)).toEqual([listPath]);
+  });
+
+  test('catalog document only falls back to two authenticated scope reads on a legacy API', async ({ page, request }) => {
+    await setPublicFixtureState(request, { legacyHomepageVersion: true });
+    expect((await page.goto('/en/cars/?pageSize=5'))?.status()).toBe(200);
+    await expect(page.locator('main [data-public-vehicle]')).toHaveCount(5);
+    const rows = await recorded(request);
+    const checks = versions(rows);
+    expect(checks[0].query.scope).toBe('homepage');
+    expect(checks.slice(1).map(row => row.query.scope ?? 'catalog').sort()).toEqual(['catalog', 'filters']);
+    expect(checks.every(row => row.serviceAuthenticated && row.hasVisitorIp)).toBe(true);
+  });
+
+  test('catalog cards start loading before a slow legacy filters check returns 503', async ({ page, request }) => {
+    await setPublicFixtureState(request, { legacyHomepageVersion: true, legacyFiltersUnavailable: true });
+    expect((await page.goto('/en/cars/?pageSize=5'))?.status()).toBe(200);
+    await expect(page.locator('main [data-public-vehicle]')).toHaveCount(5);
+    const rows = await recorded(request);
+    const list = rows.findIndex(row => row.path === `${internal}/vehicles`);
+    const rejectedFilters = rows.findIndex(row => row.path === '/__fixtures/legacy-filters-completed');
+    expect(list).toBeGreaterThanOrEqual(0);
+    expect(rejectedFilters).toBeGreaterThan(list);
+    expect(versions(rows).map(row => row.query.scope ?? 'catalog').sort()).toEqual(['catalog', 'filters', 'homepage']);
+    expect(anonymous(rows).filter(row => row.path === `${internal}/vehicle-filters`)).toHaveLength(0);
   });
 
   test('unstamped exact filter results render the homepage and reload against the current scope', async ({ page, request }) => {

@@ -11,6 +11,7 @@ export {
   publicRetryAfter,
 } from './infrastructure/public-api';
 export {
+  createSsrCatalogVersionScope as createCatalogVersionScope,
   getSsrPublicHome as getPublicHome,
   getSsrPublicHomeFilters as getPublicHomeFilters,
   getSsrPublicFilters as getPublicFilters,
