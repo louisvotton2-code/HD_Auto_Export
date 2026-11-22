@@ -1,0 +1,32 @@
+export const tjMethodMessages = {
+  zh: {
+    duty: '按输入的税率 {rate}% 乘以 {value} TJS 的计税价值。',
+    evDuty: '制造不足 12 个月的纯电车按符合现行免税条件的情景测算，进口关税为 0。',
+    excise: '按 {value} TJS 乘消费税率 {rate}%，与 {cc} cc × {minimum} EUR/cc × {eur} TJS/EUR 的排量下限相比，取较高额。',
+    evExcise: '符合新纯电车免税条件的情景下，消费税为 0。',
+    fee: '按计税价值折合美元查清关费档位，再将 {feeUsd} USD 按 {usd} TJS/USD 换算。',
+    recycling: '进口 HS 8703 汽车按附表 21 的 144 个计算单位计回收费，2026 年每单位为 78 TJS。',
+    vat: '海关计税价值加关税、消费税、清关费及进口回收费合计 {value} TJS，按 2026 年的 14% 测算。',
+    evVat: '符合新纯电车免税条件的情景下，进口增值税为 0。',
+  },
+  en: {
+    duty: 'Apply the entered duty rate of {rate}% to the customs value of {value} TJS.',
+    evDuty: 'Estimate zero duty for a battery-electric vehicle manufactured less than 12 months ago that qualifies for relief.',
+    excise: 'Take the higher of {rate}% of {value} TJS and the displacement floor of {cc} cc × {minimum} EUR/cc × {eur} TJS/EUR.',
+    evExcise: 'This qualifying new battery-electric vehicle scenario is exempt from excise.',
+    fee: 'Look up the band using the customs value in USD, then convert {feeUsd} USD at {usd} TJS/USD.',
+    recycling: 'Schedule 21 sets 144 calculation units for an imported HS 8703 vehicle. Each unit is 78 TJS in 2026.',
+    vat: 'Apply the 2026 rate of 14% to {value} TJS, including customs value, duty, excise, the clearance fee, and the import recycling charge.',
+    evVat: 'This qualifying new battery-electric vehicle scenario is exempt from import VAT.',
+  },
+  ru: {
+    duty: 'Таможенная стоимость {value} TJS умножается на указанную ставку {rate}%.',
+    evDuty: 'Для электромобиля младше 12 месяцев при выполнении условий льготы пошлина равна нулю.',
+    excise: 'Берётся большее из двух значений: {rate}% от {value} TJS или минимум {cc} см³ × {minimum} EUR/см³ × {eur} TJS/EUR.',
+    evExcise: 'Новый электромобиль в этом льготном сценарии освобождён от акциза.',
+    fee: 'По таможенной стоимости в долларах выбирается тариф {feeUsd} USD и пересчитывается по курсу {usd} TJS/USD.',
+    recycling: 'Для ввозимого автомобиля позиции 8703 приложение 21 устанавливает 144 расчётных показателя. В 2026 году один показатель равен 78 TJS.',
+    vat: 'Ставка 14% за 2026 год применяется к {value} TJS с учётом таможенной стоимости, пошлины, акциза, сборов за оформление и утилизацию.',
+    evVat: 'Новый электромобиль в этом льготном сценарии освобождён от НДС при ввозе.',
+  },
+} as const;

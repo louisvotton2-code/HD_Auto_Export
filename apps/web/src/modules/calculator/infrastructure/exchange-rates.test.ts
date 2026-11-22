@@ -28,6 +28,8 @@ const providerPayload = {
     AMD: 400,
     KGS: 90,
     ALL: 90,
+    TJS: 9.2,
+    TMT: 3.5,
   },
 };
 
@@ -96,7 +98,7 @@ describe('server-only market snapshot loading', () => {
       status: 'live',
       source: 'open.er-api.com',
       asOf: '2026-10-23',
-      rates: { CNY: '7', RUB: '84', EUR: '0.8' },
+      rates: { CNY: '7', RUB: '84', EUR: '0.8', TJS: '9.2', TMT: '3.5' },
     });
     expect(fetcher).toHaveBeenCalledWith(
       MARKET_RATES_URL,

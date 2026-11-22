@@ -24,7 +24,7 @@ export function convertImportAmountToUsd(
   if (!localAmount || !country) return null;
 
   let localPerUsd: InstanceType<typeof Amount> | null;
-  if (input.country === 'UZ' && input.currency !== 'USD') {
+  if (country.needsUsdRate && input.currency !== 'USD') {
     localPerUsd = decimal(input.usdRate);
   } else if (country.needsPrice) {
     const transactionRate = decimal(input.transactionRate);
@@ -32,7 +32,6 @@ export function convertImportAmountToUsd(
     if (!transactionRate?.gt(0) || !transactionPerUsd?.gt(0)) return null;
     localPerUsd = transactionRate.mul(transactionPerUsd);
   } else {
-    // The country configuration supplies the mapping for all seven destinations.
     localPerUsd = decimal(snapshot.rates[country.currency]);
   }
 

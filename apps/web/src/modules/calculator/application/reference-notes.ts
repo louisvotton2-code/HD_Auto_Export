@@ -1,5 +1,8 @@
 import type { CalculationInput, CountryCode } from '../core/types';
 import { ageInMonths, parseCustomsDate, parseManufactureMonth } from '../core/dates';
+import { getCountryByCode } from '../config/countries';
+import { TJ_REFERENCE_SOURCE } from '../policies/tj/reference';
+import { TM_REFERENCE_SOURCE } from '../policies/tm/reference';
 
 const baseNotes: Record<CountryCode, readonly string[]> = {
   RU: ['RU.personalScope', 'RU.excluded'],
@@ -9,19 +12,35 @@ const baseNotes: Record<CountryCode, readonly string[]> = {
   AM: ['AM.personalScope', 'AM.environment', 'AM.excise', 'AM.age', 'AM.excluded'],
   KG: ['KG.exchange', 'KG.excluded'],
   AL: ['AL.personalScope', 'AL.luxury', 'AL.exchange', 'AL.excluded'],
+  TJ: ['TJ.scope', 'TJ.value', 'TJ.vat', 'TJ.ev'],
+  TM: ['TM.scope', 'TM.value', 'TM.hybrids', 'TM.admission'],
 };
 
+const officialSources = {
+  TJ: [
+    { name: '№ 470', url: 'https://new.edavlat.tj/api/files_storage/3467' },
+    { name: '№ 335', url: 'https://new.edavlat.tj/api/files_storage/3483' },
+    { name: '№ 1844', url: 'https://andoz.tj/docs/kodex/Tax-Code__17_12_2025-RT_ru.pdf' },
+    { name: '№ 472', url: 'https://tajtrade.tj/media/%E2%84%96472%20%D0%BE%D1%82%2002.12.2005%D0%B3..pdf' },
+    { name: '№ 476', url: 'https://www.andoz.tj/docs/postanovleniya-pravitelstvo/Qaror_476_2025_tj.pdf' },
+  ],
+  TM: [
+    { name: '61', url: TM_REFERENCE_SOURCE },
+    { name: '119', url: 'https://mejlis.gov.tm/single-code/10?lang=ru' },
+    { name: '230', url: 'https://mejlis.gov.tm/single-code/11?lang=ru' },
+    { name: '0.2%', url: 'https://www.customs.gov.tm/ru/customs-info/customs-fees/fees' },
+    { name: '638/197/275', url: 'https://www.customs.gov.tm/index.php/tk/customs-info/customs-control/68' },
+  ],
+} satisfies Partial<Record<CountryCode, { name: string; url: string }[]>>;
+
+export function getCountryOfficialSources(country: CountryCode) {
+  return country === 'TJ' || country === 'TM' ? officialSources[country] : [];
+}
+
 export function getCountryReferenceUrl(country: CountryCode): string {
-  const slugs: Record<CountryCode, string> = {
-    RU: '',
-    KZ: '/kazakhstan',
-    UZ: '/uzbekistan',
-    GE: '/georgia',
-    AM: '/armenia',
-    KG: '/kyrgyzstan',
-    AL: '/albania',
-  };
-  return `https://www.kmotors.shop/en/calculator${slugs[country]}`;
+  if (country === 'TJ') return TJ_REFERENCE_SOURCE;
+  if (country === 'TM') return TM_REFERENCE_SOURCE;
+  return `https://www.kmotors.shop/en/calculator${country === 'RU' ? '' : `/${getCountryByCode(country)!.slug}`}`;
 }
 
 /** Presentation notes from the observed reference tool, never eligibility decisions. */

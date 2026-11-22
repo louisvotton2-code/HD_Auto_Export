@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { calculateImportEstimate, type CountryCode } from '../index';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
-import { createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput } from './vehicle-estimate';
+import { createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput, type VehicleEstimateSource } from './vehicle-estimate';
 
 const date = '2026-11-08';
 const rates = createReferenceSnapshot();
@@ -47,9 +47,29 @@ describe('vehicle facts to import estimate', () => {
   });
 
   it('does not substitute a kW or another scope when direct hp is missing', () => {
-    const vehicle = knownVehicle();
+    const vehicle: VehicleEstimateSource = knownVehicle();
     vehicle.facts.powerHp = null;
     vehicle.facts.powerKw = 400;
+    vehicle.technicalDetails = { power: { systemKw: 395, motorKw: 130 }, configurationMatches: [] };
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
+  });
+
+  it('prefills verified engine power for a plug-in hybrid and prefers supplied horsepower', () => {
+    const vehicle: VehicleEstimateSource = knownVehicle();
+    Object.assign(vehicle.facts, { powertrain: 'phev', powerHp: null });
+    const power: NonNullable<VehicleEstimateSource['technicalDetails']>['power'] = { engineKw: 265, systemKw: 395, motorKw: 130 };
+    vehicle.technicalDetails = { power, configurationMatches: [] };
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('360.2993');
+    const identity = vehicleEstimateIdentity(vehicle);
+    power.engineKw = 117.68;
+    expect(vehicleEstimateIdentity(vehicle)).not.toBe(identity);
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('160.0000816');
+    power.engineHp = 355;
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('355');
+    vehicle.facts.powerHp = 354;
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('354');
+    vehicle.facts.powerHp = null;
+    vehicle.facts.powertrain = 'bev';
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
   });
 

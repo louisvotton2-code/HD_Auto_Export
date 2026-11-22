@@ -443,7 +443,7 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
       await calculatorEntry.click();
       await expect(page).toHaveURL(/\/ru\/calculator\/$/);
       const choices = page.locator('main').getByRole('navigation');
-      await expect(choices.getByRole('link')).toHaveCount(7);
+      await expect(choices.getByRole('link')).toHaveCount(9);
       const russia = choices.getByRole('link', { name: 'Россия', exact: true });
       const kazakhstan = choices.getByRole('link', { name: 'Казахстан', exact: true });
       await expect(russia).toHaveAttribute('href', '/ru/calculator/russia/');

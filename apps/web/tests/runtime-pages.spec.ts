@@ -9,6 +9,8 @@ const destinations = [
   'armenia',
   'kyrgyzstan',
   'albania',
+  'tajikistan',
+  'turkmenistan',
 ] as const;
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
@@ -40,7 +42,8 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
         locale === 'zh' ? 'zh-Hans' : locale,
       );
       await expect(page.locator('.reset-button')).toBeEnabled();
-      const defaultResult = page.getByTestId(destination === 'albania' ? 'total' : 'manufacture-range-total');
+      const singleQuote: readonly string[] = ['albania', 'tajikistan', 'turkmenistan'];
+      const defaultResult = page.getByTestId(singleQuote.includes(destination) ? 'total' : 'manufacture-range-total');
       await expect(defaultResult).toBeVisible();
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
         'href',
@@ -93,7 +96,7 @@ test('home and calculator entries remain usable with JavaScript disabled', async
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await page.goto('/zh/calculator/');
   const countryChoices = page.locator('main').getByRole('navigation');
-  await expect(countryChoices.getByRole('link')).toHaveCount(7);
+  await expect(countryChoices.getByRole('link')).toHaveCount(9);
   const calculatorLink = countryChoices.getByRole('link', { name: '俄罗斯', exact: true });
   await expect(calculatorLink).toHaveAttribute('href', '/zh/calculator/russia/');
   await expect(countryChoices.getByRole('link', { name: '哈萨克斯坦', exact: true })).toHaveAttribute('href', '/zh/calculator/kazakhstan/');

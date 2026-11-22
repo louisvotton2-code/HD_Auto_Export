@@ -1,7 +1,8 @@
 import { Amount } from '../core/decimal';
 import type { CountryCode, TransactionCurrency } from '../core/types';
+import { COUNTRY_CURRENCIES } from '../core/country-currencies';
 
-export const EXCHANGE_CURRENCIES = [
+export const LEGACY_EXCHANGE_CURRENCIES = [
   'USD',
   'CNY',
   'EUR',
@@ -13,6 +14,7 @@ export const EXCHANGE_CURRENCIES = [
   'KGS',
   'ALL',
 ] as const;
+export const EXCHANGE_CURRENCIES = [...LEGACY_EXCHANGE_CURRENCIES, 'TJS', 'TMT'] as const;
 export type ExchangeCurrency = (typeof EXCHANGE_CURRENCIES)[number];
 export type ExchangeRates = Record<ExchangeCurrency, string>;
 
@@ -40,16 +42,6 @@ export const EXCHANGE_RATE_ATTRIBUTION = {
 /** Research capture date, NOT a claim that the following are market rates for that date. */
 export const REFERENCE_FX_DATE = '2026-10-22';
 
-const destinationCurrencies: Record<CountryCode, ExchangeCurrency> = {
-  RU: 'RUB',
-  KZ: 'KZT',
-  UZ: 'UZS',
-  GE: 'GEL',
-  AM: 'AMD',
-  KG: 'KGS',
-  AL: 'ALL',
-};
-
 /**
  * Illustration-only fallback copied as facts from docs/research/reference-default-results.json:
  * russia.rubPerUnit/rubPerEur, kazakhstan.kztPerUnit, uzbekistan.uzsPerUsd,
@@ -73,6 +65,9 @@ export const REFERENCE_FX_SNAPSHOT: ExchangeRateSnapshot = Object.freeze({
     AMD: '366.081469',
     KGS: new Amount('0.865939').mul('100.77').toString(),
     ALL: '80.7859',
+    // NBT 2026-11-20 and Turkmenistan Finance Ministry. Both are editable reference inputs.
+    TJS: '9.2128',
+    TMT: '3.5',
   }),
 });
 
@@ -93,7 +88,7 @@ export function deriveRates(
   country: CountryCode,
   currency: TransactionCurrency,
 ): DerivedRates {
-  const destination = positiveRate(snapshot.rates[destinationCurrencies[country]]);
+  const destination = positiveRate(snapshot.rates[COUNTRY_CURRENCIES[country]]);
   return {
     transactionRate: plainRate(destination.div(positiveRate(snapshot.rates[currency]))),
     euroRate: plainRate(destination.div(positiveRate(snapshot.rates.EUR))),

@@ -1,8 +1,9 @@
 import { getCountryByCode } from '../config/countries';
-import { CALCULATOR_POWERTRAINS } from './draft';
+import { CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from './draft';
 import type { VehicleEstimateDraft } from './vehicle-estimate';
-import { EXCHANGE_CURRENCIES, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
+import { EXCHANGE_CURRENCIES, LEGACY_EXCHANGE_CURRENCIES, REFERENCE_FX_SNAPSHOT, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { parseCustomsDate, parseManufactureMonth } from '../core/dates';
+import { TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import { readManufactureEstimate } from './manufacture-estimate';
 import { isManufactureMonthRange } from './manufacture-range';
 
@@ -20,6 +21,7 @@ export type VehicleEstimateSeed = {
   sourceId: string;
   input: VehicleEstimateDraft;
   rates: ExchangeRateSnapshot;
+  enginePowerPrefill?: true;
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -38,15 +40,20 @@ export function parseEstimateRates(value: unknown): ExchangeRateSnapshot | null 
     || !(value.status === 'reference' && value.source === 'reference_snapshot'
       || value.status === 'live' && value.source === 'open.er-api.com')
     || typeof value.asOf !== 'string' || !parseCustomsDate(value.asOf)
-    || !record(value.rates) || !exactKeys(value.rates, EXCHANGE_CURRENCIES)
+    || !record(value.rates)
     || value.rates.USD !== '1') return null;
-  for (const currency of EXCHANGE_CURRENCIES) {
+  const legacy = exactKeys(value.rates, LEGACY_EXCHANGE_CURRENCIES);
+  if (!legacy && !exactKeys(value.rates, EXCHANGE_CURRENCIES)) return null;
+  for (const currency of legacy ? LEGACY_EXCHANGE_CURRENCIES : EXCHANGE_CURRENCIES) {
     const rate = value.rates[currency];
     // The existing reference cross-rate keeps Decimal's 40 significant digits.
     if (typeof rate !== 'string' || !/^\d{1,18}(?:\.\d{1,40})?$/.test(rate)
       || Number(rate) <= 0) return null;
   }
-  return value as ExchangeRateSnapshot;
+  const snapshot = value as ExchangeRateSnapshot;
+  if (!legacy) return snapshot;
+  const { TJS, TMT } = REFERENCE_FX_SNAPSHOT.rates;
+  return { ...snapshot, rates: { ...snapshot.rates, TJS, TMT } };
 }
 
 /** A same-country saved draft retains its display/conversion snapshot, including GE/USD. */
@@ -64,12 +71,20 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
   if (!record(value)) return null;
   const hasEstimate = Object.hasOwn(value, 'manufactureEstimate');
   const hasRange = Object.hasOwn(value, 'manufactureRange');
-  if (!exactKeys(value, [...seedKeys, ...(hasEstimate ? ['manufactureEstimate'] : []), ...(hasRange ? ['manufactureRange'] : [])])
+  const hasEnginePowerPrefill = Object.hasOwn(value, 'enginePowerPrefill');
+  if (!exactKeys(value, [
+    ...seedKeys, ...(hasEstimate ? ['manufactureEstimate'] : []), ...(hasRange ? ['manufactureRange'] : []),
+    ...(hasEnginePowerPrefill ? ['enginePowerPrefill'] : []),
+  ])
     || value.version !== 1 || typeof value.sourceId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value.sourceId)
-    || !record(value.input) || !exactKeys(value.input, inputKeys)
+    || !record(value.input)
     || !record(value.rates)) return null;
   const input = value.input;
+  if (hasEnginePowerPrefill && !isEnginePowerPrefill(value.enginePowerPrefill, input.powertrain, input.powerHp)) return null;
+  const tariffFields = input.country === 'TJ' ? TAJIK_TARIFF_FIELDS.filter(key => Object.hasOwn(input, key)) : [];
+  if (!exactKeys(input, [...inputKeys, ...tariffFields])) return null;
+  for (const field of tariffFields) if (input[field] !== '' && !decimal(input[field])) return null;
   for (const field of inputKeys) if (typeof input[field] !== 'string' || input[field].length > 64) return null;
   if (!getCountryByCode(String(input.country))
     || !['individual', 'company'].includes(String(input.importerType))
@@ -93,11 +108,15 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     sourceId: value.sourceId,
     input: (hasEstimate ? { ...input, manufactureDate: '' } : input) as VehicleEstimateDraft,
     rates,
+    ...(hasEnginePowerPrefill ? { enginePowerPrefill: true } : {}),
   };
 }
 
 export function createVehicleEstimateFragment(seed: VehicleEstimateSeed): string | null {
-  const parsed = parseVehicleEstimateSeed(seed);
+  const input = { ...seed.input };
+  // Local state can retain edits for a return to TJ. Do not export them to another route.
+  if (input.country !== 'TJ') for (const field of TAJIK_TARIFF_FIELDS) delete input[field];
+  const parsed = parseVehicleEstimateSeed({ ...seed, input });
   if (!parsed) return null;
   const fragment = `#${key}=${encodeURIComponent(JSON.stringify(parsed))}`;
   return fragment.length <= maxLength ? fragment : null;

@@ -1,10 +1,13 @@
-export type CountryCode = 'RU' | 'KZ' | 'UZ' | 'GE' | 'AM' | 'KG' | 'AL';
+import type { DestinationCountryCode } from '@/shared/lib/destination-country';
+import type { TajikTariffField } from './tajik-input';
+
+export type CountryCode = DestinationCountryCode;
 export type ImporterType = 'individual' | 'company';
 export type Powertrain = 'petrol' | 'diesel' | 'hev' | 'phev' | 'erev' | 'bev';
 export type TransactionCurrency = 'CNY' | 'USD';
 
 /** Empty strings represent facts the user has not supplied, never a zero value. */
-export interface CalculationInput {
+export interface CalculationInput extends Partial<Record<TajikTariffField, string>> {
   country: CountryCode;
   importerType: ImporterType;
   powertrain: Powertrain;
@@ -21,7 +24,7 @@ export interface CalculationInput {
   transactionRate: string;
   /** Destination currency per one EUR. */
   euroRate: string;
-  /** Destination currency per USD; needed for UZ's USD tariff base. */
+  /** Destination currency per USD for policies with USD-denominated charges. */
   usdRate?: string;
   /** UZ distinguishes never-registered new cars from used cars. */
   condition?: 'new' | 'used';
@@ -52,6 +55,7 @@ export interface ReferencePolicyFacts {
 export interface ReferencePolicyResult {
   lines: CalculationLine[];
   additionalCosts: CalculationExtraLine[];
+  reason?: string;
 }
 
 /** Status and diagnostic codes are presentation independent; the UI translates them. */

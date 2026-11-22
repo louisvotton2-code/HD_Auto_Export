@@ -836,17 +836,7 @@ test('HD Auto Export uses its logo and real contact links; account numbers are c
     'href',
     'https://wa.me/8618215932610',
   );
-  await expect(footer.getByRole('link', { name: /^电话 \+86 182/ })).toHaveAttribute(
-    'href',
-    'tel:+8618215932610',
-  );
-  await expect(footer.getByRole('link', { name: /^电话 \+86 182/ })).toContainText(
-    '+86 182 1593 2610',
-  );
-  await expect(footer.getByRole('link', { name: /^电话 \+86 199/ })).toHaveAttribute(
-    'href',
-    'tel:+8619938999916',
-  );
+  await expect(footer.locator('a[href^="tel:"]')).toHaveCount(0);
   await expect(footer.getByRole('link', { name: /^Telegram/ })).toHaveAttribute(
     'href',
     'https://t.me/HD_Auto_CN',

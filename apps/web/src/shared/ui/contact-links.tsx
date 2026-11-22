@@ -6,8 +6,8 @@ import { siteConfig } from '@/shared/config/site';
 import { Icon } from './icon';
 import { SocialIcon } from './social-icon';
 
-const phones = ['phone', 'phone2'] as const;
-const socialContacts = ['telegram', 'whatsapp', 'facebook', 'instagram', 'tiktok'] as const;
+const directContacts = ['telegram', 'whatsapp'] as const;
+const socialContacts = ['facebook', 'instagram', 'tiktok'] as const;
 
 export function ContactLinks() {
   const t = useTranslations('Contacts');
@@ -34,24 +34,31 @@ export function ContactLinks() {
     }
   }
 
+  function contactLink(key: (typeof directContacts | typeof socialContacts)[number]) {
+    return (
+      <a
+        key={key}
+        className="hd-contact-item"
+        href={siteConfig.contacts[key].href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-analytics-contact={key === 'whatsapp' || key === 'telegram' ? key : undefined}
+      >
+        <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
+          <SocialIcon platform={key} size={18} />
+        </span>
+        <span className="hd-contact-label">
+          <strong>{t(key)}</strong>
+          <span dir="ltr">{siteConfig.contacts[key].display}</span>
+        </span>
+      </a>
+    );
+  }
+
   return (
     <>
       <div className="hd-contact-grid">
-        {phones.map((key) => (
-          <a
-            key={key}
-            className="hd-contact-item"
-            href={siteConfig.contacts[key].href}
-          >
-            <span className="hd-contact-icon" aria-hidden="true">
-              <Icon name="phone" size={17} />
-            </span>
-            <span className="hd-contact-label">
-              <strong>{t('phone')}</strong>
-              <span dir="ltr">{siteConfig.contacts[key].display}</span>
-            </span>
-          </a>
-        ))}
+        {directContacts.map(contactLink)}
         {siteConfig.contacts.wechat.map(({ display, copyValue }) => (
           <button
             type="button"
@@ -76,24 +83,7 @@ export function ContactLinks() {
       </div>
       <h3>{t('follow')}</h3>
       <div className="hd-contact-grid">
-        {socialContacts.map((key) => (
-          <a
-            key={key}
-            className="hd-contact-item"
-            href={siteConfig.contacts[key].href}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-analytics-contact={key === 'whatsapp' || key === 'telegram' ? key : undefined}
-          >
-            <span className="hd-contact-icon" data-channel={key} aria-hidden="true">
-              <SocialIcon platform={key} size={18} />
-            </span>
-            <span className="hd-contact-label">
-              <strong>{t(key)}</strong>
-              <span dir="ltr">{siteConfig.contacts[key].display}</span>
-            </span>
-          </a>
-        ))}
+        {socialContacts.map(contactLink)}
       </div>
       <span className="hd-contact-status" role="status" aria-live="polite">
         {copyFailed ? t('copyFailed') : copied ? t('copied') : ''}

@@ -16,7 +16,7 @@ import { NumericDateInput } from './numeric-date-input';
 import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type CalculationResult, type Powertrain } from '../index';
-import { convertTransactionPrice } from '../application/defaults';
+import { convertTransactionPrice, getTajikTariffDefaults } from '../application/defaults';
 import { getClearanceDate } from '../application/current-date';
 import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
 import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
@@ -32,6 +32,8 @@ import {
 } from '../application/draft';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
+import { calculatorErrorKey, calculatorReasonKey } from '../application/calculator-status';
+import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from '../core/tajik-input';
 import { getCopyQuoteFacts, type CopyQuoteText } from '../application/copy-quote';
 import { CountryPolicyNotes } from './country-policy-notes';
 import { FeeLine } from './fee-line';
@@ -55,24 +57,8 @@ type InputField =
   | 'insurance'
   | 'transactionRate'
   | 'euroRate'
-  | 'usdRate';
-
-
-const errorMap: Record<string, string> = {
-  invalid_option: 'invalid_number',
-  invalid_decimal: 'invalid_number',
-  must_be_positive: 'positive_required',
-  invalid_month: 'invalid_date',
-  invalid_date: 'invalid_date',
-  manufacture_after_customs: 'future_manufacture',
-};
-const reasonMap: Record<string, string> = {
-  country_rules_pending: 'country_pending',
-  company_rules_pending: 'company_pending',
-  powertrain_rules_pending: 'powertrain_pending',
-  recycling_rules_pending: 'power_pending',
-  rule_date_outside_reference: 'year_pending',
-};
+  | 'usdRate'
+  | TajikTariffField;
 
 export function CalculatorPage({
   country,
@@ -98,6 +84,7 @@ export function CalculatorPage({
   const [input, setInput] = useState(() => createCalculatorFormInput(country, initialDate, initialRates));
   const [referenceYear, setReferenceYear] = useState(Number(initialDate.slice(0, 4)));
   const [manualRates, setManualRates] = useState(false);
+  const [enginePowerPrefill, setEnginePowerPrefill] = useState(false);
   const [ready, setReady] = useState(false);
   const [advanced, setAdvanced] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -126,8 +113,13 @@ export function CalculatorPage({
     setReferenceYear(Number(visitDate.slice(0, 4)));
     const restored = restoreCalculatorDraft(raw, country, visitDate, rates);
     setActiveRates(rates);
-    setInput(fragment ? { ...vehicleEstimateInput(fragment.seed.input), customsDate: visitDate } : restored.input);
+    setInput(fragment ? {
+      ...getTajikTariffDefaults(country.code),
+      ...vehicleEstimateInput(fragment.seed.input),
+      customsDate: visitDate,
+    } : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
+    setEnginePowerPrefill((fragment ? fragment.seed.enginePowerPrefill : restored.enginePowerPrefill) === true);
     if (fragment) {
       // Remove only a valid consumed seed, preserving the pathname, query and other hash entries.
       try {
@@ -147,11 +139,13 @@ export function CalculatorPage({
     if (!ready || input.country !== country.code) return;
     pendingSeedRef.current = null;
     try {
-      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({ input, manualRates, rates: activeRates }));
+      sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({
+        input, manualRates, rates: activeRates, ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
+      }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, ready, country.code, activeRates]);
+  }, [input, manualRates, enginePowerPrefill, ready, country.code, activeRates]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -205,6 +199,7 @@ export function CalculatorPage({
     return converted === null ? '— USD' : `≈ ${format(converted)} USD`;
   }
   const isElectric = input.powertrain === 'bev';
+  const needsTajikTariff = needsTajikTariffInputs(country.code, input.powertrain);
   const needsDisplacement = !isElectric && !(country.code === 'KG' && input.powertrain === 'erev');
   const fuelGroup = !input.powertrain ? null : isElectric
     ? 'electric'
@@ -240,14 +235,17 @@ export function CalculatorPage({
 
   function update<K extends keyof CalculationInput>(key: K, value: CalculationInput[K]) {
     recordCalculationEdit();
+    const clearsEnginePower = enginePowerPrefill && key === 'powertrain' && (value === 'bev' || value === '');
     setInput((previous) => ({
       ...previous,
       [key]: value,
-      ...(country.code === 'UZ' && previous.currency === 'USD' && key === 'transactionRate'
+      ...(clearsEnginePower ? { powerHp: '' } : {}),
+      ...(country.needsUsdRate && previous.currency === 'USD' && key === 'transactionRate'
         ? { usdRate: value }
         : {}),
     }));
     setCopyState('idle');
+    if (key === 'powerHp' || clearsEnginePower) setEnginePowerPrefill(false);
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
   }
   function changeCurrency(currency: 'CNY' | 'USD') {
@@ -275,6 +273,7 @@ export function CalculatorPage({
     setInput(createCalculatorFormInput(country, visitDate, initialRates));
     setManualRates(false);
     setTouched(new Set());
+    setEnginePowerPrefill(false);
     setCopyState('idle');
     setAdvanced(true);
     setExpandedFees(new Set());
@@ -361,7 +360,7 @@ export function CalculatorPage({
     setTouched(new Set(result.missingFields));
     if (
       result.missingFields.some((key) =>
-        ['transactionRate', 'euroRate', 'usdRate'].includes(key),
+        ['transactionRate', 'euroRate', 'usdRate', ...TAJIK_TARIFF_FIELDS].includes(key),
       )
     )
       setAdvanced(true);
@@ -379,7 +378,7 @@ export function CalculatorPage({
   ) {
     const code = result.fieldErrors[key];
     const error = code
-      ? te(errorMap[code] || 'invalid_number')
+      ? te(calculatorErrorKey(code))
       : touched.has(key) && result.missingFields.includes(key)
         ? te('required')
         : '';
@@ -478,7 +477,8 @@ export function CalculatorPage({
             <fieldset className="form-content" disabled={!ready || input.country !== country.code}>
               {country.needsPrice && (
                 <div className="price-row">
-                  {field('price', t('price'), {
+                  {field('price', t(country.code === 'TJ' ? 'tjCustomsValue' : 'price'), {
+                    note: country.code === 'TJ' ? t('tjCustomsValueHelp') : undefined,
                     children: (
                       <select
                         aria-label={t('currency')}
@@ -625,17 +625,21 @@ export function CalculatorPage({
                       field('transactionRate', t('transactionRate'), {
                         unit: `${country.currency}/${input.currency}`,
                       })}
-                    {country.needsEuroRate &&
+                    {country.needsEuroRate && (country.code !== 'TJ' || needsTajikTariff) &&
                       field('euroRate', t('euroRate'), { unit: `${country.currency}/EUR` })}
-                    {country.code === 'UZ' &&
+                    {country.needsUsdRate &&
                       input.currency !== 'USD' &&
                       field('usdRate', t('usdRate'), { unit: `${country.currency}/USD` })}
+                    {needsTajikTariff && TAJIK_TARIFF_FIELDS.map((key) => (
+                      <div key={key}>{field(key, t(key), { unit: key === 'tjExciseMinimum' ? 'EUR/cc' : '%' })}</div>
+                    ))}
                     {country.needsFreight &&
                       field('freight', t('freight'), { unit: input.currency })}
                     {country.needsFreight &&
                       field('insurance', t('insurance'), { unit: input.currency })}
                   </div>
                   <p className="currency-auto-hint">{t('currencyAutoHint')}</p>
+                  {needsTajikTariff && <p className="currency-auto-hint">{t('tjTariffHelp')}</p>}
                   {country.needsFreight && (
                     <p className="currency-auto-hint">{t('transportEstimateHelp')}</p>
                   )}
@@ -788,7 +792,7 @@ export function CalculatorPage({
                   </h3>
                   <p>
                     {result.status === 'needs_review' && result.reason
-                      ? tr(reasonMap[result.reason] || 'country_pending')
+                      ? tr(calculatorReasonKey(result.reason))
                       : t(
                           result.status === 'invalid' ? 'invalidDescription' : 'missingDescription',
                         )}

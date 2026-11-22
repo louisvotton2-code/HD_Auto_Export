@@ -157,5 +157,14 @@ export function getResultStamp(
         subtitle: text(electric ? 'electricValue' : 'minimumValue'),
         condition: text(charged('luxuryOnce') ? 'annualTaxExtra' : 'registrationIncluded'),
       };
+    case 'TJ':
+    case 'TM':
+      return {
+        ...base,
+        tone: electric ? 'blue' : 'gold',
+        title: text('personalSchedule'),
+        subtitle: text(electric ? 'electricSchedule' : 'fuelSchedule'),
+        condition: propulsion,
+      };
   }
 }
