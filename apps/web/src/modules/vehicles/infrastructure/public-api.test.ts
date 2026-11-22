@@ -109,6 +109,20 @@ describe('public HTTP adapter and same-origin proxy', () => {
     }
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it('forwards a versioned public identifier and its original, thumb and card separately', async () => {
+    const id = '01020304-0000-4000-8000-000000000001_xWkMVURnBu_xeQ6SmNYHDzv7OfI0fHeMgW_Gkwwl4lg';
+    const fetcher = vi.fn(async (_url: string) => new Response(new Uint8Array([1]), {
+      headers: { 'Content-Type': 'image/webp' },
+    }));
+    vi.stubGlobal('fetch', fetcher);
+    for (const query of ['', '?variant=thumb', '?variant=card']) {
+      const response = await proxyPublicRequest(new Request(`http://website.test/api/v1/media/${id}/${query}`), ['media', id]);
+      expect(response.status).toBe(200);
+      expect(fetcher.mock.lastCall?.[0]).toMatch(new RegExp(`/api/v1/media/${id}${query.replace('?', '\\?')}$`));
+    }
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it('rejects redirects and non-image media rather than exposing HTML through the image path', async () => {
     const fetcher = vi
       .fn()

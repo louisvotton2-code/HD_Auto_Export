@@ -30,4 +30,17 @@ describe('same-origin public media paths', () => {
       '/api/v1/media/photo/other',
     ]) expect(publicMediaVariantUrl(url, 'card')).toBeNull();
   });
+
+  it('keeps the backend content version in originals and both derivative paths', () => {
+    const id = '01020304-0000-4000-8000-000000000001';
+    const first = `/api/v1/media/${id}_xWkMVURnBu_xeQ6SmNYHDzv7OfI0fHeMgW_Gkwwl4lg`;
+    const next = `/api/v1/media/${id}_dnOAAPMYdBkSHmuFYdtg93IhS48olBlWypfqZxzyWGg`;
+    for (const original of [first, next]) {
+      expect(publicMediaUrl(original)).toBe(`${original}/`);
+      expect(publicMediaUrl(original, { thumbnail: true })).toBe(`${original}/?variant=thumb`);
+      expect(publicMediaVariantUrl(original, 'thumb')).toBe(`${original}/?variant=thumb`);
+      expect(publicMediaVariantUrl(original, 'card')).toBe(`${original}/?variant=card`);
+      expect(publicMediaVariantUrl(`${original}/?variant=card`, 'thumb')).toBeNull();
+    }
+  });
 });

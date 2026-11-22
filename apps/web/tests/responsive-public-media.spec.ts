@@ -101,6 +101,49 @@ test('a failed derivative retries the original once', async ({ page, request }) 
   expect(reads).toEqual(['card', 'original']);
 });
 
+test('catalog, gallery and original preserve the owned photo version across renditions and a revision change', async ({ page, request }) => {
+  const uuid = '01020304-0000-4000-8000-000000000001';
+  const versioned = new RegExp(`^/api/v1/media/${uuid}_[A-Za-z0-9_-]{43}/$`);
+  await setPublicFixtureState(request, { wideCardPhoto: true, ownedPhotoRevision: 1 });
+  await page.goto('/en/cars/?make=beta');
+  const cover = page.locator('[data-public-vehicle="fixture_car_1"] img[src*="/api/v1/media/"]').first();
+  const coverSrc = (await cover.getAttribute('src'))!;
+  const originalPath = coverSrc.replace(/\?variant=card$/, '');
+  expect(originalPath).toMatch(versioned);
+  expect(coverSrc).toBe(`${originalPath}?variant=card`);
+  await expect(cover).toHaveAttribute('srcset', `${originalPath}?variant=thumb 240w, ${originalPath}?variant=card 800w`);
+
+  await page.goto('/en/cars/fixture_car_1/');
+  const opener = page.locator('[data-vehicle-photo-opener]');
+  const inline = opener.locator('img[data-gallery-active-image]');
+  await expect(opener).toHaveAttribute('href', originalPath);
+  await expect(inline).toHaveAttribute('src', coverSrc);
+  await expect.poll(() => inline.evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(800);
+  const thumb = page.locator('[data-vehicle-thumbnails] img').first();
+  await expect(thumb).toHaveAttribute('src', `${originalPath}?variant=thumb`);
+  await expect.poll(() => thumb.evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(120);
+
+  await opener.click();
+  const viewer = page.locator('dialog[open] img[data-gallery-active-image]');
+  await expect(viewer).toHaveAttribute('src', originalPath);
+  await expect.poll(() => viewer.evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(640);
+  await page.keyboard.press('Escape');
+
+  const previous = await request.get(originalPath);
+  expect(previous.ok()).toBe(true);
+  await setPublicFixtureState(request, { ownedPhotoRevision: 2 });
+  await page.reload();
+  await expect(opener).not.toHaveAttribute('href', originalPath);
+  const changed = (await opener.getAttribute('href'))!;
+  expect(changed).toMatch(versioned);
+  await expect(inline).toHaveAttribute('src', `${changed}?variant=card`);
+  await expect(thumb).toHaveAttribute('src', `${changed}?variant=thumb`);
+  expect((await request.get(originalPath)).status()).toBe(404);
+  const updated = await request.get(changed);
+  expect(updated.ok()).toBe(true);
+  expect(await updated.body()).not.toEqual(await previous.body());
+});
+
 test('a failed inline detail derivative falls back once and a viewer failure keeps a good preview', async ({ page, request }) => {
   await setPublicFixtureState(request, { wideCardPhoto: true });
   const reads: string[] = [];

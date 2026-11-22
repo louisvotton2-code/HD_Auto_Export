@@ -81,6 +81,15 @@ function imageBytes(id, thumbnail, card = false) {
   imageCache.set(key, png);
   return png;
 }
+function versionedFixturePhoto(photo, index, revision) {
+  const id = `01020304-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+  const seed = `${id}:v${revision}`;
+  const binding = createHash('sha256');
+  for (const [thumb, card] of [[false, false], [true, false], [false, true]]) {
+    binding.update(createHash('sha256').update(imageBytes(seed, thumb, card)).digest());
+  }
+  return { ...photo, id, url: `/api/v1/media/${id}_${binding.digest('base64url')}` };
+}
 const localized = {
   zh: {
     demo: '展示车型 Alpha',
@@ -206,6 +215,7 @@ const resetState = () => ({
   externalPublished: false,
   externalRemotePhoto: false,
   wideCardPhoto: false,
+  ownedPhotoRevision: null,
   importedPublished: false,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
@@ -484,6 +494,10 @@ function visibleVehicles(state, locale) {
       photo.height = 840;
     }
   }
+  if (state.ownedPhotoRevision !== null) {
+    const selected = rows.find(({ id }) => id === 'fixture_car_1');
+    if (selected) selected.images = selected.images.map((photo, index) => versionedFixturePhoto(photo, index, state.ownedPhotoRevision));
+  }
   if (state.richCatalog) {
     for (const [index, row] of rows.entries()) {
       if (row.source.kind !== 'manual' || row.id === 'fixture_reserved') continue;
@@ -737,6 +751,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           externalPublished: (v) => typeof v === 'boolean',
           externalRemotePhoto: (v) => typeof v === 'boolean',
           wideCardPhoto: (v) => typeof v === 'boolean',
+          ownedPhotoRevision: (v) => v === null || v === 1 || v === 2,
           importedPublished: (v) => typeof v === 'boolean',
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
@@ -1285,9 +1300,17 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
             ? [vehicle('fixture_future', locale)]
             : []),
         ];
-        const referenced = readable.some((v) => segmentGallery(state, v, locale).some((image) => image.id === mediaId));
+        let referenced;
+        for (const vehicle of readable) {
+          referenced = segmentGallery(state, vehicle, locale)
+            .find((image) => image.id === mediaId || image.url === url.pathname);
+          if (referenced) break;
+        }
         if (!referenced) return send(res, 404, error('NOT_FOUND'));
-        const png = imageBytes(mediaId, mediaQuery?.variant === 'thumb', mediaQuery?.variant === 'card');
+        const seed = referenced.id.startsWith('01020304-0000-4000-8000-')
+          ? `${referenced.id}:v${state.ownedPhotoRevision}`
+          : referenced.id;
+        const png = imageBytes(seed, mediaQuery?.variant === 'thumb', mediaQuery?.variant === 'card');
         res.writeHead(200, {
           'content-type': 'image/png',
           'content-length': png.length,

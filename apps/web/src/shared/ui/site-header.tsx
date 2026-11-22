@@ -2,7 +2,6 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { hasLocale, useLocale, useTranslations } from 'next-intl';
-import Image from 'next/image';
 import { usePathname } from '@/i18n/navigation';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { routing, type Locale } from '@/i18n/routing';
@@ -142,12 +141,11 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
             }
           }}
         >
-          <Image
+          <img
             src={siteConfig.brand.logo.src}
             width={siteConfig.brand.logo.width}
             height={siteConfig.brand.logo.height}
             alt={t('Brand.logoAlt')}
-            sizes="54px"
             className={styles.logo}
             loading="eager"
           />

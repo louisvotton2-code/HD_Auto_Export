@@ -1,3 +1,6 @@
+import logoUrl from '../../../public/brand/hd-auto-logo.webp?site-asset';
+import iconUrl from '../../../public/icon.svg?site-asset';
+import { siteAssetUrl } from './site-asset';
 import { resolveSiteOrigin } from './site-origin';
 
 const indexable = process.env.SITE_INDEXABLE === 'true';
@@ -13,7 +16,8 @@ export const siteConfig = {
   isPlaceholderBrand: false,
   brand: {
     name: 'HD Auto Export',
-    logo: { src: '/brand/hd-auto-logo.webp', width: 960, height: 648 },
+    iconUrl: siteAssetUrl(iconUrl),
+    logo: { src: siteAssetUrl(logoUrl), width: 960, height: 648 },
   },
   contacts: {
     phone: { display: '+86 182 1593 2610', href: 'tel:+8618215932610' },

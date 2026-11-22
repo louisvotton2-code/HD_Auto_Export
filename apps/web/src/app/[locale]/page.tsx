@@ -7,6 +7,7 @@ import { connection } from 'next/server';
 import { routing, type Locale } from '@/i18n/routing';
 import { pageMetadata, publicPageSchema } from '@/shared/lib/page-seo';
 import { JsonLd } from '@/shared/ui/json-ld';
+import { InterFontFaces, interFontUrls } from '@/shared/ui/inter-fonts';
 import { markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 import { PublicHome } from '@/modules/home';
 import { getPublicCatalog, getPublicHome, getPublicFilters, publicRetryAfter } from '@/modules/vehicles/server';
@@ -64,6 +65,9 @@ export default async function Home({ params }: Props) {
   }
   const { title, description } = metadataByLocale[locale];
   return <>
+    <link rel="preload" as="font" href={interFontUrls.latin} type="font/woff2" crossOrigin="anonymous" />
+    {locale === 'ru' && <link rel="preload" as="font" href={interFontUrls.cyrillic} type="font/woff2" crossOrigin="anonymous" />}
+    <InterFontFaces home />
     <JsonLd data={publicPageSchema(locale, '/', title, 'WebSite', description)} />
     <PublicHome
       key={locale}

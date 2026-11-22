@@ -1,6 +1,6 @@
 const localOriginal = /^(\/api\/v1\/media\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})\/?$/;
 
-/** Derivatives are public representations of local originals, never of signed or remote URLs. */
+/** Keep the entire API-issued identifier, including an optional content version, for each rendition. */
 export function publicMediaVariantUrl(raw: string, variant: 'thumb' | 'card'): string | null {
   const match = localOriginal.exec(raw);
   return match ? `${match[1]}/?variant=${variant}` : null;
