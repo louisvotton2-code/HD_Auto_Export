@@ -38,11 +38,14 @@ class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
     unavailable_media_variant=None
+    immutable_media_busy=False
     precompressed_home=None
     def versioned_media_reply(self, variant, version, image):
         validator='"versioned-'+variant+'"'
         if not self.media_visible or version!=MEDIA_VERSION:
             status=404
+        elif self.immutable_media_busy:
+            status=307
         elif self.unavailable_media_variant==variant:
             status=503
         elif self.headers.get('If-None-Match')==validator:
@@ -51,6 +54,8 @@ class Origin(http.server.BaseHTTPRequestHandler):
             status=200
         self.send_response(status)
         self.send_header('Cache-Control',IMMUTABLE_MEDIA_CACHE_CONTROL if status in (200,304) else 'no-store')
+        if status==307:
+            self.send_header('Location',MEDIA_PATH+('?variant='+variant if variant!='original' else ''))
         if status in (200,304):
             self.send_header('ETag',validator)
         if status==200:
@@ -530,6 +535,27 @@ class DomainCacheHeaders(unittest.TestCase):
                 status,headers,_=self.request('admin.hongdingauto.com',MEDIA_PREVIEW,
                                               {'Cookie':'test-session=yes','If-None-Match':'"versioned-card"'},slot=slot)
                 self.assertEqual((status,headers['cache-control']),(200,'no-store'))
+
+    def test_versioned_media_busy_redirect_leaves_legacy_cache_policy_in_control(self):
+        host='cars.hongdingauto.com'
+        Origin.immutable_media_busy=True
+        try:
+            for slot in (False,True):
+                for variant,(_,image) in MEDIA_REPRESENTATIONS.items():
+                    for method in ('GET','HEAD'):
+                        with self.subTest(slot=slot,variant=variant,method=method):
+                            query='?variant='+variant if variant!='original' else ''
+                            status,headers,body=self.request(host,VERSIONED_MEDIA_PATH+'/'+query,method=method,slot=slot)
+                            self.assertEqual((status,body),(307,b''))
+                            self.assertEqual(headers['cache-control'],'no-store')
+                            self.assertEqual(headers['location'],MEDIA_PATH+query)
+                            self.assertNotIn('etag',headers)
+                            status,legacy,body=self.request(host,headers['location'],method=method,slot=slot)
+                            self.assertEqual((status,body),(200,image if method=='GET' else b''))
+                            self.assertEqual(legacy['cache-control'],'private, no-cache')
+                            self.assertEqual(legacy['etag'],'"test-'+variant+'"')
+        finally:
+            Origin.immutable_media_busy=False
 
     def test_build_assets_only_have_long_cache_and_missing_assets_never_do(self):
         for path,status in [('/_next/static/chunks/chunk-12345678.js',200),('/_next/static/chunks/partial-12345678.js',206),('/_next/static/build-12345678/_buildManifest.js',304)]:
