@@ -477,27 +477,25 @@ const facetLabelJoins = `JOIN external_catalog labels ON labels.listing_id=label
   LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=label.listing_id
   LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`;
 
-type OverviewFacetRow = CatalogFacetRow & {make_winner?:string|null;alternate_make?:string|null};
-type SupplierFacetPhase = 'supplier_overview_rollup'|'supplier_label_priority'|'supplier_label_fallback';
+type OverviewFacetRow = CatalogFacetRow & {pending_make_winner?:string|null};
+export type SupplierFacetPhase = 'supplier_overview_rollup'|'supplier_pending_labels'|'supplier_label_fallback';
 
-async function resolveOverviewMakeLabels(tx:Queryable,rows:OverviewFacetRow[],locale:Locale,observe?: (phase:SupplierFacetPhase)=>void,
+async function resolvePendingOverviewLabels(tx:Queryable,rows:OverviewFacetRow[],locale:Locale,observe?: (phase:SupplierFacetPhase)=>void,
   beforeSupplement?:()=>Promise<void>) {
-  const conflicts=rows.filter(row=>row.make_winner&&row.alternate_make!=null&&row.name!==row.alternate_make);
-  if(conflicts.length) {
-    observe?.('supplier_label_priority');
+  const pending=rows.flatMap(row=>row.pending_make_winner?[row.pending_make_winner]:[]);
+  if(pending.length) {
+    observe?.('supplier_pending_labels');
     await beforeSupplement?.();
-    // The search row references its catalog row. Fetch the wide localization
-    // only when an alternate name could actually change the public result.
-    const decision=await tx.query<{listing_id:string}>(`SELECT labels.listing_id FROM external_catalog labels
-      LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=labels.listing_id
-      WHERE labels.listing_id=ANY($2::uuid[]) AND NOT coalesce(
-        coalesce(overrides.data->'facts' ? 'make',false)
-        OR labels.localized->$1::text->'display'->'make'->>'provenance'='human',false)`,
-    [locale,[...new Set(conflicts.map(row=>row.make_winner!))]]);
-    const useAlternate=new Set(decision.rows.map(row=>row.listing_id));
-    for(const row of conflicts)if(useAlternate.has(row.make_winner!))row.name=row.alternate_make!;
+    // Older groups can still be pending during a staged backfill. Read exactly
+    // those winners from the authoritative rows in the same snapshot.
+    const result=await tx.query<{listing_id:string;name:string|null}>(`SELECT pending.listing_id,(
+      SELECT ${externalFacetLabel('make')} FROM external_catalog_search label ${facetLabelJoins}
+      WHERE label.listing_id=pending.listing_id AND label.locale=$1::text
+    ) AS name FROM unnest($2::uuid[]) AS pending(listing_id)`,[locale,[...new Set(pending)]]);
+    const names=new Map(result.rows.map(row=>[row.listing_id,row.name]));
+    for(const row of rows)if(row.pending_make_winner)row.name=names.get(row.pending_make_winner)??null;
   }
-  return rows.map(({make_winner:_winner,alternate_make:_alternate,...row})=>row);
+  return rows.map(({pending_make_winner:_pending,...row})=>row);
 }
 
 function externalFacetGroup(kind: keyof typeof externalFacetGroups, currency:'CNY'|'USD') {
@@ -586,7 +584,9 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   const useRollup=!pairs&&canUseExternalOverviewRollup(query);
   const atoms=useRollup?`atoms AS MATERIALIZED (
     SELECT f.make_id,f.powertrain,f.drivetrain,f.model_year,f.trim_count>0 AS has_trims,
-      f.generation_count>0 AS has_generations,f.label_order,f.row_count
+      f.generation_count>0 AS has_generations,f.label_order,f.row_count,
+      f.make_winner_labels[array_position(ARRAY['zh','en','ru']::text[],$1::text)] AS make_name,
+      f.make_winner_labels IS NULL AS label_pending
     FROM external_catalog_overview_groups f WHERE f.locale_mask=ANY(${visibleLocaleMasks})${where}
   )`:`matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
@@ -597,23 +597,29 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     FROM matched GROUP BY ${groupBy}
   )`;
   if(useRollup)observe?.('supplier_overview_rollup');
-  const labels=useRollup?`label.make_label AS make,extra.data->'names'->'make'->>'text' AS alternate_make`
-    :needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ');
-  const joins=useRollup?`LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`:facetLabelJoins;
-  const makeSource=useRollup?',winner.listing_id AS make_winner,winner.alternate_make':'';
-  const result=await tx.query<OverviewFacetRow>(`WITH ${atoms}${groups}, winner_ids AS (
+  // Select the name from the same atom that supplies the ordered winning ID.
+  // Tied keys identify the same vehicle, so a filled copy of that name is safe.
+  const statement=useRollup?`WITH ${atoms}${groups}, winner_labels AS (
+    SELECT DISTINCT ON (make_id) make_id,make_name,
+      CASE WHEN label_pending THEN substring(label_order FROM 19 FOR 36)::uuid END AS pending_make_winner
+    FROM atoms WHERE make_id IS NOT NULL
+    ORDER BY make_id,label_order COLLATE "C",label_pending
+  ) SELECT g.kind,g.id,g.make_id,g.model_id,g.count,winner.make_name AS name,winner.pending_make_winner
+  FROM facets g LEFT JOIN winner_labels winner ON g.kind='make' AND winner.make_id=g.id`
+    :`WITH ${atoms}${groups}, winner_ids AS (
     SELECT DISTINCT substring(label_order FROM 19 FOR 36)::uuid AS listing_id FROM facets WHERE label_order IS NOT NULL
   ), winner_labels AS MATERIALIZED (
-    SELECT label.listing_id,${labels}
+    SELECT label.listing_id,${needed.map(kind=>`${externalFacetLabel(kind)} AS ${kind}`).join(',\n      ')}
     FROM winner_ids JOIN external_catalog_search label ON label.listing_id=winner_ids.listing_id AND label.locale=$1::text
-    ${joins}
+    ${facetLabelJoins}
   ) SELECT g.kind,g.id,g.make_id,g.model_id,g.count,
-    CASE g.kind ${needed.map(kind=>`WHEN '${kind}' THEN winner.${kind}`).join(' ')} END AS name${makeSource}
-  FROM facets g LEFT JOIN winner_labels winner ON winner.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid`,values);
+    CASE g.kind ${needed.map(kind=>`WHEN '${kind}' THEN winner.${kind}`).join(' ')} END AS name
+  FROM facets g LEFT JOIN winner_labels winner ON winner.listing_id=substring(g.label_order FROM 19 FOR 36)::uuid`;
+  const result=await tx.query<OverviewFacetRow>(statement,values);
   // Historical projections may contain a null label despite a present ID. The
   // previous min(order || name) ignored those rows; preserve that rare fallback
   // without probing labels for every normal matched vehicle.
-  const rows=useRollup?await resolveOverviewMakeLabels(tx,result.rows,query.locale,observe,beforeSupplement):result.rows;
+  const rows=useRollup?await resolvePendingOverviewLabels(tx,result.rows,query.locale,observe,beforeSupplement):result.rows;
   const missing=rows.filter(row=>namedFacetKinds.has(row.kind)&&row.name===null);
   if(missing.length) {
     observe?.('supplier_label_fallback');
