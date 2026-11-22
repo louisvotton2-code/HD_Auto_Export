@@ -95,6 +95,29 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
   });
 }
 
+test('verified 265 kW engine power prefills the inline and full calculators', async ({ page, request }) => {
+  await setPublicFixtureState(request, { estimateEnginePower: true });
+  await page.goto('/zh/cars/fixture_car_1/');
+  const budget = page.getByTestId('vehicle-import-estimate');
+  const power = budget.locator('[name="powerHp"]');
+  await expect(page.locator('[data-vehicle-fact="engineKw"] dd')).toHaveText('265 kW');
+  await expect(page.locator('[data-vehicle-fact="systemKw"] dd')).toHaveText('395 kW');
+  await expect(power).toHaveValue('360.2993');
+  await budget.getByTestId('vehicle-full-calculator').click();
+  await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
+  await page.reload();
+  await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
+  await page.locator('#powertrainDetail').selectOption('bev');
+  await expect(page.locator('[name="powerHp"]')).toHaveValue('');
+  await page.locator('[name="powerHp"]').fill('160');
+  await page.locator('#powertrainDetail').selectOption('phev');
+  await page.locator('#powertrainDetail').selectOption('bev');
+  await expect(page.locator('[name="powerHp"]')).toHaveValue('160');
+  await page.goto('/zh/cars/fixture_car_1/');
+  await budget.locator('[name="powertrain"]').selectOption('bev');
+  await expect(power).toHaveValue('');
+});
+
 test('the estimate prefers an authoritative displacement and does not prefill machine-only evidence', async ({ page, request }) => {
   const field = page.getByTestId('vehicle-import-estimate').locator('[name="displacementCc"]');
   await setPublicFixtureState(request, { estimateDisplacementMl: 'structured' });
@@ -109,6 +132,7 @@ test('the estimate prefers an authoritative displacement and does not prefill ma
 for (const [code, slug] of Object.entries({
   RU: 'russia',
   KZ: 'kazakhstan',
+  TJ: 'tajikistan',
   UZ: 'uzbekistan',
   GE: 'georgia',
   AM: 'armenia',
@@ -121,6 +145,12 @@ for (const [code, slug] of Object.entries({
     await page.goto('/en/cars/fixture_car_1/');
     const budget = page.getByTestId('vehicle-import-estimate');
     await complete(budget, code);
+    if (code === 'TJ') {
+      await expect(budget.getByLabel('Customs value', { exact: true })).toHaveValue('25000');
+      await expect(budget.locator('[name="tjExciseMinimum"]')).toHaveValue('0.20');
+      await expect(budget.locator('[name="freight"], [name="insurance"]')).toHaveCount(0);
+      await budget.locator('[name="tjDutyPercent"]').fill('12');
+    }
     const total = compact(await budget.getByTestId('inline-estimate-total').innerText());
     const usd = compact(await budget.getByTestId('inline-estimate-usd').innerText());
     const link = budget.getByTestId('vehicle-full-calculator');

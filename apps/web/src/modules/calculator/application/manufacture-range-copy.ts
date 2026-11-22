@@ -10,6 +10,7 @@ export const manufactureRangeCopy = {
     sameTotal: '六个生产月份的测算费用相同。',
     month: '生产月份', sameInputs: '两套明细使用相同车价和汇率，分别保留对应生产月份的完整计算结果。',
     suppliedPower: '已使用车辆资料中的 hp；不同类型的功率不作混用。',
+    convertedEnginePower: '已将车辆资料中的发动机功率从 kW 换算为马力，可手动调整。',
   },
   en: {
     january: 'No manufacture month selected. The estimate uses January of each of the last six years',
@@ -19,6 +20,7 @@ export const manufactureRangeCopy = {
     sameTotal: 'The estimated cost is the same for all six manufacture months.',
     month: 'Manufacture month', sameInputs: 'Both breakdowns use the same vehicle price and exchange rates and show the manufacture month for each scenario.',
     suppliedPower: 'Uses the hp supplied in the vehicle details; different power measurements are not mixed.',
+    convertedEnginePower: 'Engine power from the vehicle details has been converted from kW to metric horsepower. You can edit this value.',
   },
   ru: {
     january: 'Месяц выпуска не указан. Расчёт выполнен для января каждого из последних шести лет',
@@ -28,6 +30,7 @@ export const manufactureRangeCopy = {
     sameTotal: 'Для всех шести месяцев выпуска расчётная стоимость одинакова.',
     month: 'Месяц производства', sameInputs: 'В обоих расчётах используются одинаковые цена автомобиля и курсы валют. Месяц производства указан для каждого варианта.',
     suppliedPower: 'Используются л. с. из данных автомобиля; разные виды мощности не смешиваются.',
+    convertedEnginePower: 'Мощность двигателя из данных автомобиля переведена из кВт в л. с. Значение можно изменить.',
   },
 } as const;
 

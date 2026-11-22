@@ -5,6 +5,8 @@ import { geMethodMessages } from '../policies/ge/method-messages';
 import { amMethodMessages } from '../policies/am/method-messages';
 import { kgMethodMessages } from '../policies/kg/method-messages';
 import { alMethodMessages } from '../policies/al/method-messages';
+import { tjMethodMessages } from '../policies/tj/method-messages';
+import { tmMethodMessages } from '../policies/tm/method-messages';
 import { feeDisplayMessages } from './fee-display-messages';
 import { stampMessages } from './stamp-messages';
 import { copyQuoteMessages } from './copy-messages';
@@ -19,6 +21,8 @@ export function getCalculatorMessages(locale: 'zh' | 'en' | 'ru') {
       AM: amMethodMessages[locale],
       KG: kgMethodMessages[locale],
       AL: alMethodMessages[locale],
+      TJ: tjMethodMessages[locale],
+      TM: tmMethodMessages[locale],
     },
     FeeDisplay: feeDisplayMessages[locale],
     ResultStamp: stampMessages[locale],

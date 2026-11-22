@@ -1,4 +1,5 @@
 import { calculateImportEstimate, type CalculationInput } from '../index';
+import { TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import { readCalculationBody } from './request-body';
 
 function respond(body: unknown, status = 200) {
@@ -49,7 +50,7 @@ export async function handleCalculationRequest(request: Request) {
   const input = Object.fromEntries(
     stringFields.map((field) => [field, source[field]]),
   ) as unknown as CalculationInput;
-  for (const field of ['condition', 'usdRate'] as const) {
+  for (const field of ['condition', 'usdRate', ...TAJIK_TARIFF_FIELDS] as const) {
     if (source[field] === undefined) continue;
     if (typeof source[field] !== 'string' || source[field].length > 64)
       return respond({ error: 'invalid_request' }, 400);

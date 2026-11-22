@@ -21,7 +21,7 @@ const BASE: CalculationInput = {
 };
 
 /** Frozen independent examples recorded in docs/research, not live FX or today's age. */
-const FIXTURES: Record<CountryCode, CalculationInput> = {
+const FIXTURES: Record<Exclude<CountryCode, 'TJ' | 'TM'>, CalculationInput> = {
   RU: BASE,
   KZ: { ...BASE, country: 'KZ', transactionRate: '468.321957', euroRate: '541.1' },
   UZ: {
@@ -60,7 +60,7 @@ const FIXTURES: Record<CountryCode, CalculationInput> = {
   },
 };
 
-const COUNTRIES = Object.keys(FIXTURES) as CountryCode[];
+const COUNTRIES = Object.keys(FIXTURES) as (keyof typeof FIXTURES)[];
 const POWERTRAINS: Powertrain[] = ['petrol', 'diesel', 'hev', 'phev', 'erev', 'bev'];
 
 describe('seven-country public core reference integration', () => {

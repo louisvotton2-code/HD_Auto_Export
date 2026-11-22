@@ -1,11 +1,21 @@
 import type { CalculationInput, CountryCode } from '../core/types';
 import { Amount } from '../core/decimal';
 import type { TransactionCurrency } from '../core/types';
+import type { TajikTariffField } from '../core/tajik-input';
 import {
   deriveRates,
   REFERENCE_FX_SNAPSHOT,
   type ExchangeRateSnapshot,
 } from '../infrastructure/exchange-rates';
+
+// Ordinary China-origin HS 8703 petrol/diesel, 2026 reference. See TJ source notes.
+export function getTajikTariffDefaults(country: CountryCode): Partial<Record<TajikTariffField, string>> {
+  return country === 'TJ' ? {
+    tjDutyPercent: '10',
+    tjExcisePercent: '14',
+    tjExciseMinimum: '0.20',
+  } : {};
+}
 
 /**
  * Editable demonstration facts for a useful first render, never a vehicle quotation.
@@ -25,12 +35,13 @@ export function createDefaultInput(
     currency: 'USD',
     displacementCc: '1998',
     powerHp: '150',
-    manufactureDate: '2021-01',
+    manufactureDate: country === 'TM' ? `${Number(date.slice(0, 4)) - 3}-01` : '2021-01',
     customsDate: date,
     // No China freight quote is known; unknown costs must not silently become zero.
     freight: '',
     insurance: '',
     steering: 'left',
+    ...getTajikTariffDefaults(country),
     ...deriveRates(snapshot, country, 'USD'),
   };
 }

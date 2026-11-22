@@ -5,6 +5,19 @@ test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Uses the isolated public catalog
 test.beforeEach(async ({ request }) => resetPublicFixture(request));
 test.afterEach(async ({ request }) => resetPublicFixture(request));
 
+test('the footer puts Telegram and WhatsApp before WeChat without phone links', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/zh/buy/');
+  const contacts = page.locator('footer .hd-contacts');
+  const primary = contacts.locator('.hd-contact-grid').first().locator('.hd-contact-item');
+  await expect(primary).toHaveCount(4);
+  await expect(primary.nth(0)).toHaveAttribute('href', 'https://t.me/HD_Auto_CN');
+  await expect(primary.nth(1)).toHaveAttribute('href', 'https://wa.me/8618215932610');
+  await expect(contacts.locator('.hd-contact-grid').first().getByRole('button')).toHaveCount(2);
+  await expect(contacts.locator('a[href^="tel:"]')).toHaveCount(0);
+  await expect(contacts.locator('a[href^="https://www.facebook.com/"]')).toHaveCount(1);
+});
+
 async function decorativeControlIcon(control: Locator, count = 1) {
   const icons = control.locator('svg');
   await expect(icons).toHaveCount(count);

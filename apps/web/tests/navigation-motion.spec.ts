@@ -104,7 +104,7 @@ test('header and footer fall back to Russia while country links stay explicit', 
 
   await openCalculator(page);
   const countries = page.locator('.country-nav a');
-  await expect(countries).toHaveCount(7);
+  await expect(countries).toHaveCount(9);
   for (const link of await countries.all()) {
     await expect(link).toHaveAttribute('href', /^\/zh\/calculator\/[a-z]+\/$/);
   }

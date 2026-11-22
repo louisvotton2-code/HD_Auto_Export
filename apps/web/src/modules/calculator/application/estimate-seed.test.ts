@@ -3,7 +3,7 @@ import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { calculateImportEstimate } from '../index';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
 import { convertImportAmountToUsd } from './display-currency';
-import { createVehicleEstimateDraft, vehicleEstimateInput } from './vehicle-estimate';
+import { createVehicleEstimateDraft, retargetVehicleEstimateDraft, vehicleEstimateInput } from './vehicle-estimate';
 import {
   createVehicleEstimateFragment, parseVehicleEstimateSeed, readVehicleEstimateFragment,
   readStoredEstimateRates, type VehicleEstimateSeed,
@@ -25,6 +25,46 @@ describe('explicit vehicle calculator fragment handoff', () => {
     expect(fragment).toMatch(/^#hd-estimate=/);
     expect(readVehicleEstimateFragment(fragment, 'RU')).toEqual({ seed: value, remainingHash: '' });
     expect(readVehicleEstimateFragment(fragment, 'KZ')).toBeNull();
+  });
+
+  it('preserves the origin of positive inferred engine power for combustion vehicles only', () => {
+    const value = seed();
+    value.input.powertrain = 'phev';
+    value.input.powerHp = '360.2993';
+    value.enginePowerPrefill = true;
+    const fragment = createVehicleEstimateFragment(value)!;
+    expect(readVehicleEstimateFragment(fragment, 'RU')?.seed).toEqual(value);
+    expect(parseVehicleEstimateSeed({ ...value, input: { ...value.input, powertrain: 'bev' } })).toBeNull();
+    expect(parseVehicleEstimateSeed({ ...value, input: { ...value.input, powerHp: '0' } })).toBeNull();
+  });
+
+  it('accepts a seven-destination FX snapshot while preserving all originally supplied rates', () => {
+    const value = seed();
+    const { TJS, TMT, ...legacyRates } = value.rates.rates;
+    const parsed = parseVehicleEstimateSeed({ ...value, rates: { ...value.rates, rates: legacyRates } });
+    expect(parsed?.rates.rates).toEqual({ ...legacyRates, TJS, TMT });
+    expect(parsed?.input).toEqual(value.input);
+  });
+
+  it('carries entered Tajik tariff fields to the standalone calculator without accepting them on another route', () => {
+    const value = seed();
+    const vehicle = makePublicVehicleFixture();
+    const vehiclePrice = value.input.price;
+    const defaults = retargetVehicleEstimateDraft(value.input, 'TJ', value.rates, vehicle);
+    expect(defaults).toMatchObject({ tjDutyPercent: '10', tjExcisePercent: '14', tjExciseMinimum: '0.20' });
+    value.input = {
+      ...defaults, tjExciseMinimum: '0.25', price: '12345',
+    };
+    const fragment = createVehicleEstimateFragment(value)!;
+    expect(readVehicleEstimateFragment(fragment, 'TJ')?.seed).toEqual(value);
+    const anotherCountry = retargetVehicleEstimateDraft(value.input, 'TM', value.rates, vehicle);
+    expect(parseVehicleEstimateSeed({ ...value, input: anotherCountry })).toBeNull();
+    const anotherFragment = createVehicleEstimateFragment({ ...value, input: anotherCountry })!;
+    const anotherSeed = readVehicleEstimateFragment(anotherFragment, 'TM')?.seed;
+    expect(anotherSeed?.input).toMatchObject({ country: 'TM', price: vehiclePrice });
+    expect(anotherSeed?.input).not.toHaveProperty('tjExciseMinimum');
+    expect(retargetVehicleEstimateDraft(anotherCountry, 'TJ', value.rates, vehicle))
+      .toEqual({ ...value.input, price: vehiclePrice });
   });
 
   it('removes only its valid entry while preserving other fragment content byte-for-byte', () => {

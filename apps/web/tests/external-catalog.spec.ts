@@ -154,7 +154,7 @@ test('inline report contacts retain vehicle identity and named destinations with
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country-ready', 'true');
     await expect(budget).toHaveAttribute('data-country', initialCountry);
     await expect(destination).toHaveText(countryNames[locale][initialCountry]);
-    await expect(budget.locator('[data-country-option] img')).toHaveCount(7);
+    await expect(budget.locator('[data-country-option] img')).toHaveCount(9);
     await chooseVehicleDestination(budget, 'KZ');
     await expect(destination).toHaveText(countryNames[locale].KZ);
     await expect(page.getByTestId('vehicle-import-estimate')).toHaveAttribute('data-country', 'KZ');
