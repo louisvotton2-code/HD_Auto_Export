@@ -183,6 +183,111 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
         }
       } finally {hook.mock.restore();}
     });
+    await t.test('offset pages reopen once, keep the resulting withdrawal and negotiate an unstamped SSR response',async context=>{
+      const query='?locale=zh&view=localized&projection=card';
+      const legacy={ 'x-hd-ssr-key':secret,'x-hd-cache-protocol':'2' };
+      const negotiated={...legacy,'x-hd-catalog-offset-snapshot':'1'};
+      const cases=[
+        {url:'/api/v1/vehicles'+query,headers:{},status:200,total:0,withdraw:true},
+        {url:'/internal/public-catalog/vehicles'+query,headers:negotiated,status:200,total:1},
+        {url:'/internal/public-catalog/vehicles'+query,headers:legacy,status:503},
+        {url:'/internal/public-catalog/vehicles'+query+'&pagination=cursor',headers:negotiated,status:503},
+      ];
+      const transaction=db.transaction;
+      for(const item of cases){
+        await db.pool.query("UPDATE vehicles SET availability='available' WHERE id=$1",[id]);
+        await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+        let reads=0;
+        const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+          const wrapped=Object.create(tx) as typeof tx;
+          wrapped.query=(async (text:string,values?:unknown[])=>{
+            const result=await tx.query(text,values);
+            if(text.includes('s.revision::text AS revision')){
+              if(++reads===1&&item.withdraw) await db.pool.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);
+              else await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+            }
+            return result;
+          }) as typeof tx.query;
+          return work(wrapped);
+        }));
+        const response=await app.app.inject({url:item.url,headers:item.headers,
+          remoteAddress:item.url.startsWith('/internal')?'192.0.2.10':'198.51.100.50'}).finally(()=>hook.mock.restore());
+        assert.equal(response.statusCode,item.status,response.body);
+        assert.equal(reads,2);
+        assert.equal(response.headers['cache-control'],'no-store');
+        assert.equal(response.json().meta.catalogCache,undefined);
+        const confirmation=response.headers['x-hd-catalog-offset-snapshot'];
+        if(item.status===200&&item.headers===negotiated) {
+          assert.equal(typeof confirmation,'string');
+          assert.equal(InternalPublicCatalogCacheStampSchema.parse(JSON.parse(confirmation as string)).priceView,'original');
+        } else assert.equal(confirmation,undefined);
+        if(item.status===200) {
+          assert.equal(response.json().meta.total,item.total);
+          assert.equal(response.json().data.items.length,item.total);
+        }
+      }
+    });
+    await t.test('ordinary manual detail verifies the target once during unrelated catalog commits',async context=>{
+      const route='/api/v1/vehicles/'+id+'?locale=zh&view=localized';
+      await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+      const transaction=db.transaction;
+      let detailReads=0,checks=0;
+      const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+        const wrapped=Object.create(tx) as typeof tx;
+        wrapped.query=(async (text:string,values?:unknown[])=>{
+          const result=await tx.query(text,values);
+          if(text.startsWith('SELECT v.*,p.data AS publication_data')&&text.includes('AS detail_guard')) {
+            detailReads++;
+            await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+            await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+          } else if(text.startsWith('SELECT jsonb_build_array')&&text.includes('AS detail_guard')) {
+            checks++;
+          }
+          return result;
+        }) as typeof tx.query;
+        return work(wrapped);
+      }));
+      try {
+        const result=await call(route);
+        assert.equal(result.data.id,id);
+        assert.equal(result.meta.catalogCache.version,(await version()).data.version);
+        assert.deepEqual((await call(route)).data,result.data);
+        assert.equal(detailReads,1);
+        assert.equal(checks,1);
+      } finally {hook.mock.restore();}
+    });
+    await t.test('a new publication in the detail read is loaded with its own price',async context=>{
+      const route='/api/v1/vehicles/'+id+'?locale=zh&view=localized';
+      const before=await call(route);
+      const newPrice={kind:'asking',money:{currency:'CNY',amount:'99000.00'},includes:[]};
+      await db.pool.query('SELECT queue_public_catalog_metadata_change()');
+      const transaction=db.transaction;
+      let republished=false;
+      const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+        const wrapped=Object.create(tx) as typeof tx;
+        wrapped.query=(async (text:string,values?:unknown[])=>{
+          const result=await tx.query(text,values);
+          if(!republished&&text.includes('s.revision::text AS revision')) {
+            republished=true;
+            const nextPublication=randomUUID();
+            await transaction(async change=>{
+              await change.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',
+                [nextPublication,id,JSON.stringify({...snapshot,price:newPrice})]);
+              await change.query('UPDATE vehicles SET published_revision_id=$2,published_at=now() WHERE id=$1',[id,nextPublication]);
+            });
+          }
+          return result;
+        }) as typeof tx.query;
+        return work(wrapped);
+      }));
+      try {
+        const result=await call(route);
+        assert.equal(republished,true);
+        assert.notDeepEqual(result.data.price,before.data.price);
+        assert.deepEqual(result.data.price,newPrice);
+        assert.equal(result.meta.catalogCache.version,(await version()).data.version);
+      } finally {hook.mock.restore();}
+    });
     await t.test('a withdrawal committed after the detail snapshot cannot escape in the response',async context=>{
       const route='/api/v1/vehicles/'+id+'?locale=zh';
       await call(route);

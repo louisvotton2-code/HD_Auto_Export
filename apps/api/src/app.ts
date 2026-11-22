@@ -36,7 +36,7 @@ import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
-import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
+import { createPublicCatalogCache, PublicCatalogUnavailableError, type CatalogRevisionProof, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -277,7 +277,8 @@ export async function buildApp(config:Config=readConfig(), options:{
           ...(catalogError.sqlState?{databaseSqlState:catalogError.sqlState}:{}),
           ...(catalogError.revisionConflicts?{catalogRevisionConflicts:catalogError.revisionConflicts}:{}),
           activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
-          timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,oversizedValues:metrics.oversizedValues,
+          timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,
+          uncachedListLoads:metrics.uncachedListLoads,detailRevalidations:metrics.detailRevalidations,oversizedValues:metrics.oversizedValues,
           poolWaiting:db.pool.waitingCount}:{}),
       },'Request failed');
     }
@@ -293,16 +294,23 @@ export async function buildApp(config:Config=readConfig(), options:{
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
   const cacheProtocol=(request:object)=>longCacheRequests.has(request)?2:1;
   type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
-  type CaptureRevision=(revision:PublicCatalogRevision)=>void;
+  type CaptureRevision=(revision:PublicCatalogRevision,verifyAfterAdvance?:CatalogRevisionProof)=>void;
   type CatalogLoad<T>=(capture:CaptureRevision)=>Promise<T>;
-  const cached=<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string},observe?:(phase:PublicCacheReadPhase)=>void)=>
+  const cached=async<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string},
+    observe?:(phase:PublicCacheReadPhase)=>void,offsetSnapshot=false)=>{
     // Keep media addresses from different recipe versions out of old API slots' shared cache entries.
-    catalogCache.getCatalogSnapshot(route,{...query,mediaUrlPolicy:mediaRecipeRevision},async()=>{
+    const key={...query,mediaUrlPolicy:mediaRecipeRevision};
+    const source=async()=>{
       let revision:PublicCatalogRevision|undefined;
-      const value=await load(observed=>{ revision=observed; });
+      let verifyAfterAdvance:CatalogRevisionProof|undefined;
+      const value=await load((observed,proof)=>{ revision=observed; verifyAfterAdvance=proof; });
       if(!revision)throw new PublicCatalogUnavailableError('revision-read');
-      return {value,revision};
-    },query.priceView==='usd',requestSignals.get(request),cacheProtocol(request),observe);
+      return {value,revision,verifyAfterAdvance};
+    };
+    const args=[key,source,query.priceView==='usd',requestSignals.get(request),cacheProtocol(request),observe] as const;
+    if(route==='list'&&offsetSnapshot)return catalogCache.getOffsetListSnapshot(...args);
+    return {...await catalogCache.getCatalogSnapshot(route,...args),offsetSnapshot:undefined};
+  };
   const publicResponse=async<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string})=>{
     const {value,stamp}=await cached(route,query,load,request);
     return {data:value,meta:{requestId:request.id,catalogCache:stamp}};
@@ -404,15 +412,17 @@ export async function buildApp(config:Config=readConfig(), options:{
   const filters=internal?pub.PublicVehicleFiltersSchema.safeExtend({meta}):pub.PublicVehicleFiltersSchema;
   const home=internal?pub.PublicHomeSectionsSchema.safeExtend({meta}):pub.PublicHomeSectionsSchema;
   app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([cardList,list]),...errorResponses}})},
-    async request=>{
+    async(request,reply)=>{
       const query=request.query as pub.PublicVehicleQuery;
+      const offsetSnapshot = !query.cursor&&!query.pagination&&(!internal||request.headers['x-hd-catalog-offset-snapshot']==='1');
       const advance=isCatalogTextSearch(query)?beginCatalogTiming(request,'list')
         :query.projection==='card'?beginCatalogTiming(request,'catalog-page'):undefined;
-      const {value:loaded,stamp}=await cached('list',query,async capture=>{
+      const {value:loaded,stamp,offsetSnapshot:oneOff}=await cached('list',query,async capture=>{
         const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance,capture);
         advance?.('cache_validate');
         return {data,meta};
-      },request,advance);
+      },request,advance,offsetSnapshot);
+      if(internal&&oneOff)reply.header('X-HD-Catalog-Offset-Snapshot',JSON.stringify(oneOff));
       advance?.('response');
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });

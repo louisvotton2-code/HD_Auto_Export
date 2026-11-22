@@ -7,6 +7,7 @@ import { canonicalJson } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
 export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
+export type CatalogRevisionProof = () => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
 type CacheProtocol = 1 | 2;
 const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
@@ -57,12 +58,13 @@ export type PublicCatalogCacheOptions = {
 export type PublicCacheMetrics = {
   localHits: number; redisHits: number; misses: number; originLoads: number; rejectedLoads: number;
   redisErrors: number; invalidEntries: number; oversizedValues: number; versionRetries: number; timeouts: number;
-  uncachedFilterLoads: number; activeLoads: number; activeRevisionReads: number; queuedLoads: number; entries: number; bytes: number;
+  uncachedFilterLoads: number; uncachedListLoads: number; detailRevalidations: number;
+  activeLoads: number; activeRevisionReads: number; queuedLoads: number; entries: number; bytes: number;
 };
 type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
 type PublicSourceResult<T> = { value: T; expiresAt?: number };
-type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision };
+type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision; verifyAfterAdvance?: CatalogRevisionProof };
 type LoadedEnvelope = Envelope & { revision: PublicCatalogRevision; snapshotOnly?: true };
 type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
 type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>; store?: PublicCacheStore; now?: () => number };
@@ -106,7 +108,7 @@ export class PublicCatalogCache {
   private closed = false;
   private values: PublicCacheMetrics = { localHits: 0, redisHits: 0, misses: 0, originLoads: 0, rejectedLoads: 0,
     redisErrors: 0, invalidEntries: 0, oversizedValues: 0, versionRetries: 0, timeouts: 0,
-    uncachedFilterLoads: 0, activeLoads: 0, activeRevisionReads: 0, queuedLoads: 0, entries: 0, bytes: 0 };
+    uncachedFilterLoads: 0, uncachedListLoads: 0, detailRevalidations: 0, activeLoads: 0, activeRevisionReads: 0, queuedLoads: 0, entries: 0, bytes: 0 };
 
   constructor(private readonly options: PublicCatalogCacheOptions, private readonly dependencies: Dependencies) {
     this.now = dependencies.now ?? Date.now;
@@ -200,7 +202,7 @@ export class PublicCatalogCache {
     }
     return deadline;
   }
-  private async lookup(key: string, protocol: CacheProtocol): Promise<Envelope | null> {
+  private async lookup(key: string, protocol: CacheProtocol, flightKey: string): Promise<Envelope | null> {
     if (this.options.enabled === false) return null;
     const local = this.memory.get(key);
     if (local) {
@@ -210,7 +212,7 @@ export class PublicCatalogCache {
       }
       this.remove(key);
     }
-    if (!this.dependencies.store || this.flights.has(key)) return null;
+    if (!this.dependencies.store || this.flights.has(flightKey)) return null;
     const pending=this.redisReads.get(key);
     if(pending){const shared=await pending;return shared&&structuredClone(shared);}
     if(this.redisReads.size>=this.maxEntries)return null;
@@ -231,30 +233,64 @@ export class PublicCatalogCache {
   }
   private async load<T>(route: PublicCacheRoute, input: string, key: string, revision: PublicCatalogRevision,
     load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal): Promise<LoadedEnvelope> {
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal,
+    refreshOffsetOnAdvance: boolean): Promise<LoadedEnvelope> {
     await this.acquireLoad(deadline,signal);
     try {
-      if(signal.aborted)throw interrupted(signal);
-      if(performance.now()>=deadline)throw unavailable('deadline');
-      this.values.originLoads++;
-      const snapshot = await load(revision,deadline,signal);
-      const value = JSON.parse(json(snapshot.value)) as T;
-      const current = await this.revision(usd,scope);
+      const readSource = (observed: PublicCatalogRevision) => {
+        if(signal.aborted)throw interrupted(signal);
+        if(performance.now()>=deadline)throw unavailable('deadline');
+        this.values.originLoads++;
+        return load(observed,deadline,signal);
+      };
+      let snapshot = await readSource(revision);
+      let current = await this.revision(usd,scope);
+      let refreshedOffset = false;
+      if (refreshOffsetOnAdvance && !sameRevision(snapshot.revision,current) && !snapshotConflict(revision,snapshot.revision,current)) {
+        // A fresh offset page needs no version-bound cursor. Reopen the read after
+        // the observed advance, while retaining the same queue slot and deadline.
+        this.values.versionRetries++;
+        const beforeRefresh = current;
+        snapshot = await readSource(beforeRefresh);
+        current = await this.revision(usd,scope);
+        const conflict = snapshotConflict(beforeRefresh,snapshot.revision,current);
+        if (conflict) throw new PublicCatalogUnavailableError('revision-changed',['catalog-advanced',conflict]);
+        refreshedOffset = true;
+      }
+      if (route === 'detail' && snapshot.verifyAfterAdvance && !sameRevision(snapshot.revision,current)
+        && !snapshotConflict(revision,snapshot.revision,current)) {
+        if(signal.aborted)throw interrupted(signal);
+        if(performance.now()>=deadline)throw unavailable('deadline');
+        // The target and the new catalog version are checked in one authoritative snapshot.
+        const verified = await snapshot.verifyAfterAdvance();
+        if (verified) {
+          const conflict = snapshotConflict(snapshot.revision,current,verified);
+          if (conflict) {
+            this.values.versionRetries++;
+            throw new ChangedRevision(conflict);
+          }
+          snapshot = { ...snapshot, revision:verified };
+          current = verified;
+          this.values.detailRevalidations++;
+        }
+      }
       const matchesLookup = sameRevision(revision,snapshot.revision);
       const stillCurrent = sameRevision(snapshot.revision,current);
       if (!matchesLookup || !stillCurrent) {
         const conflict = snapshotConflict(revision,snapshot.revision,current);
-        if (conflict || (!stillCurrent && scope !== 'filters')) {
+        if (conflict || (!stillCurrent && scope !== 'filters' && !refreshedOffset)) {
           this.values.versionRetries++;
           throw new ChangedRevision(conflict ?? 'catalog-advanced');
         }
       }
+      const value = JSON.parse(json(snapshot.value)) as T;
       const expiresAt = Math.min(this.deadline(value,protocol),snapshot.expiresAt ?? Infinity,snapshot.revision.fx?.expiresAt ?? Infinity);
       // A source read which outlives a media URL is not allowed to return an already expired picture.
       if (!(expiresAt > this.now())) throw unavailable('expired');
-      if (!stillCurrent && scope === 'filters') {
+      if (!stillCurrent || refreshedOffset) {
         // The response is exact for its own read snapshot. It cannot populate either version's cache.
-        this.values.uncachedFilterLoads++;
+        if (refreshedOffset) this.values.uncachedListLoads++;
+        else this.values.uncachedFilterLoads++;
         return { format:1,key,expiresAt,value,revision:snapshot.revision,snapshotOnly:true };
       }
       // A queued miss may only now have opened its transaction. Use the version it
@@ -313,6 +349,12 @@ export class PublicCatalogCache {
     const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
+  async getOffsetListSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false,
+    signal?: AbortSignal, protocol: CacheProtocol=1, observe?: CacheReadObserver) {
+    const result = await this.read('list',normalizedInput,load,usd,'catalog',protocol,signal,observe,true);
+    const stamp=this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt);
+    return {value:result.value,stamp:result.snapshotOnly?undefined:stamp,offsetSnapshot:result.snapshotOnly?stamp:undefined};
+  }
   async getFilterSnapshot<T>(normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,
     protocol:CacheProtocol=1, observe?: CacheReadObserver) {
     const result = await this.read('filters',normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'filters',protocol,signal,observe);
@@ -320,7 +362,7 @@ export class PublicCatalogCache {
     return { value: result.value, stamp: result.snapshotOnly ? undefined : this.stamp(result.revision,usd,'filters',protocol,result.expiresAt) };
   }
   private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal, observe?: CacheReadObserver) {
+    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal, observe?: CacheReadObserver, offsetList = false) {
     const deadline=performance.now()+this.timeoutMs;
     if (this.closed) throw unavailable('closed');
     if (!['list', 'filters', 'detail', 'home'].includes(route)) throw unavailable('invalid-input');
@@ -333,19 +375,22 @@ export class PublicCatalogCache {
         const revision = await this.revision(usd,scope);
         if(requestSignal.aborted)throw interrupted(requestSignal);
         const key = this.resourceKey(route,input,revision,usd,scope,protocol);
+        const refreshOffset = offsetList && attempt === 0;
+        // Older SSR readers require a validated stamp and cannot join a fallback flight.
+        const flightKey = refreshOffset ? `${key}:offset` : key;
         observe?.('cache_lookup');
-        const cached = await this.lookup(key,protocol);
+        const cached = await this.lookup(key,protocol,flightKey);
         if(requestSignal.aborted)throw interrupted(requestSignal);
         if (cached) return { value: cached.value as T, revision, expiresAt: cached.expiresAt, snapshotOnly: false };
         this.values.misses++;
-        let flight = this.flights.get(key);
+        let flight = this.flights.get(flightKey);
         observe?.(flight ? 'origin_shared' : 'origin_queue');
         if (!flight) {
           const controller=new AbortController();
-          flight={promise:this.load(route,input,key,revision,load,usd,scope,protocol,deadline,controller.signal),controller,waiters:0};
-          this.flights.set(key, flight);
+          flight={promise:this.load(route,input,key,revision,load,usd,scope,protocol,deadline,controller.signal,refreshOffset),controller,waiters:0};
+          this.flights.set(flightKey, flight);
           const own=flight;
-          void own.promise.finally(() => { if (this.flights.get(key) === own) this.flights.delete(key); }).catch(() => {});
+          void own.promise.finally(() => { if (this.flights.get(flightKey) === own) this.flights.delete(flightKey); }).catch(() => {});
         }
         flight.waiters++;
         try {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  InternalPublicCatalogCacheStampSchema, PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleFiltersSchema, PublicVehicleResponseSchema, PublicVehicleInlineResponseSchema,
+  InternalPublicCatalogCacheStampSchema, PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleCardListSchema, PublicVehicleFiltersSchema, PublicVehicleResponseSchema, PublicVehicleInlineResponseSchema,
   type PublicCatalogCacheStamp, type PublicHomeSections,
 } from '@hd/contracts/public';
 import { makeImportedPublicVehicleFixture, makeLocalizedPublicVehicleFixture } from '@hd/contracts/fixtures';
@@ -192,6 +192,34 @@ describe('SSR-only versioned anonymous data reader', () => {
     expect(state.readVersion.mock.calls).toEqual([['usd', 'filters'], ['usd', 'filters']]);
     expect(state.readAnonymous).toHaveBeenCalledTimes(2);
     expect(state.cache.stats).toMatchObject({ entries: 0, inFlight: 0 });
+  });
+
+  it('renders an acknowledged offset snapshot without a reusable DTO or HTML proof', async () => {
+    const state = setup();
+    const offset = { path: '/api/v1/vehicles?locale=en&view=localized&projection=card', priceView: 'usd' as const,
+      allowOffsetSnapshot: true as const, schema: PublicVehicleCardListSchema };
+    const data = { items: [], page: 1, pageSize: 24, hasMore: false };
+    const envelope = { data, meta: { requestId: 'upstream', catalog: 'curated', total: 0, totalKind: 'exact',
+      accessibleTotal: 0, dataAsOf: new Date(checked).toISOString(), freshness: 'fresh' } };
+    const stateResponse = dto(offset.schema.parse(envelope), 2);
+    const snapshot = stamp('b'.repeat(64), 500);
+    state.readAnonymous.mockImplementation(async () => ({ ...stateResponse, offsetSnapshot: snapshot }));
+    expect((await state.read(offset)).data).toEqual(data);
+    expect((await state.read(offset)).meta.catalogCache).toBeUndefined();
+    expect(state.readAnonymous).toHaveBeenCalledTimes(2);
+    expect(state.cache.stats).toMatchObject({ entries: 0, inFlight: 0 });
+    expect(state.onStamp).toHaveBeenLastCalledWith(null, undefined);
+    state.readAnonymous.mockResolvedValue(stateResponse);
+    await expect(state.read(offset)).rejects.toMatchObject({ status: 503 });
+    const fx = { version: '00000000-0000-4000-8000-000000000001', expiresAt: new Date(checked + 60_000).toISOString() };
+    state.readAnonymous.mockImplementation(async () => ({ ...stateResponse, offsetSnapshot: stamp('b'.repeat(64), 500, fx) }));
+    await expect(state.read(offset)).rejects.toMatchObject({ status: 503 });
+    state.readAnonymous.mockImplementation(async () => {
+      state.setTime(state.now() + 600);
+      return { ...stateResponse, offsetSnapshot: snapshot };
+    });
+    await expect(state.read(offset)).rejects.toMatchObject({ status: 503 });
+    expect(state.cache.stats.entries).toBe(0);
   });
 
   it('reuses a matching scoped facet and never accepts an expired or wrong-currency scope response', async () => {

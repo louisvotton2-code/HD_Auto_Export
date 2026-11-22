@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER, PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleFiltersSchema } from '@hd/contracts/public';
+import { INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER, PublicCatalogCacheStampSchema, PublicHomeSectionsSchema, PublicVehicleCardListSchema, PublicVehicleFiltersSchema } from '@hd/contracts/public';
 import { internalCatalogPath, readAnonymousPublicResource, readSsrServiceVersion } from './ssr-service-http';
 import { type SsrPublicDescriptor } from './ssr-public-reader';
 
@@ -70,6 +70,23 @@ describe('authenticated server-only catalog transport', () => {
       ['http://api.example.invalid/internal/public-catalog/vehicle-filters?locale=en&view=localized&priceView=usd&projection=overview',
         serviceHeaders],
     ]);
+  });
+
+  it('negotiates a one-off response only on the authenticated offset list', async () => {
+    vi.stubEnv('VEHICLE_API_BASE_URL', 'http://api.example.invalid');
+    const data = { items: [], page: 1, pageSize: 24, hasMore: false };
+    const envelope = { data, meta: { requestId: 'upstream', catalog: 'curated', total: 0, totalKind: 'exact',
+      accessibleTotal: 0, dataAsOf: '2030-01-01T00:00:00Z', freshness: 'fresh' } };
+    const fetcher = vi.fn().mockImplementation(async () => Response.json(envelope,
+      { headers: { ...negotiated, 'X-HD-Catalog-Offset-Snapshot': JSON.stringify(longStamp) } }));
+    vi.stubGlobal('fetch', fetcher);
+    const offset = { path: '/api/v1/vehicles?locale=en&view=localized&projection=card', priceView: 'usd' as const,
+      allowOffsetSnapshot: true as const, schema: PublicVehicleCardListSchema };
+    await expect(readAnonymousPublicResource(offset)).resolves.toMatchObject({ protocol: 2, offsetSnapshot: longStamp });
+    expect(fetcher.mock.calls[0][1].headers).toMatchObject({ 'X-HD-SSR-Key': serviceKey, 'X-HD-Catalog-Offset-Snapshot': '1' });
+    await expect(readAnonymousPublicResource({ ...offset, path: offset.path + '&pagination=cursor' })).rejects.toMatchObject({ status: 503 });
+    await expect(readAnonymousPublicResource({ ...descriptor, allowOffsetSnapshot: true })).rejects.toMatchObject({ status: 503 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('uses the longer lifetime only when the trusted response explicitly confirms protocol 2', async () => {

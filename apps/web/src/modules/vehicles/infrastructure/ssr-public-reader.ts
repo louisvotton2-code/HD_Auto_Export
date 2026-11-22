@@ -21,21 +21,25 @@ export type SsrPublicDescriptor<T extends Envelope> = {
   path: string;
   priceView: PublicCatalogCacheStamp['priceView'];
   scope?: 'filters';
+  allowOffsetSnapshot?: true;
   schema: { parse: (value: unknown) => T };
   media?: (resource: Anonymous<T>) => readonly PublicMedia[];
 };
 export type SsrCacheIdentity = { deploymentEnv: string; releaseId: string; apiOrigin: string };
 export type SsrCacheProtocol = 1 | 2;
-type Negotiated<T> = { protocol: SsrCacheProtocol; value: T };
+type Negotiated<T> = { protocol: SsrCacheProtocol; value: T; offsetSnapshot?: PublicCatalogCacheStamp };
 export type SsrAnonymousReader = <T extends Envelope>(descriptor: SsrPublicDescriptor<T>) => Promise<Negotiated<Anonymous<T>>>;
 const changedVersionIdentity = Symbol.for('hd-auto.ssr-version-mismatch.v1');
 class ChangedPublicVersion extends Error { readonly [changedVersionIdentity] = true; }
 const isChangedVersion = (value: unknown) => value !== null && typeof value === 'object' && Reflect.get(value, changedVersionIdentity) === true;
 
-function sameVersion(left: PublicCatalogCacheStamp, right: PublicCatalogCacheStamp) {
-  return left.version === right.version && left.priceView === right.priceView
+function samePriceView(left: PublicCatalogCacheStamp, right: PublicCatalogCacheStamp) {
+  return left.priceView === right.priceView
     && (left.fx?.version ?? null) === (right.fx?.version ?? null)
     && (left.fx?.expiresAt ?? null) === (right.fx?.expiresAt ?? null);
+}
+function sameVersion(left: PublicCatalogCacheStamp, right: PublicCatalogCacheStamp) {
+  return left.version === right.version && samePriceView(left, right);
 }
 
 /** Translate the backend's remaining duration, including full network time, without comparing host clocks. */
@@ -54,7 +58,7 @@ function anonymousLoad<T extends Envelope>(
   return async () => {
     const startedAt = now();
     // The HTTP adapter validates the official schema and removes its trace first.
-    const { protocol: resourceProtocol, value: resource } = await readAnonymous(descriptor);
+    const { protocol: resourceProtocol, value: resource, offsetSnapshot } = await readAnonymous(descriptor);
     const rawStamp = resource.meta.catalogCache;
     const schema = resourceProtocol === 2 ? InternalPublicCatalogCacheStampSchema : PublicCatalogCacheStampSchema;
     const parsed = schema.safeParse(rawStamp);
@@ -62,17 +66,20 @@ function anonymousLoad<T extends Envelope>(
     if ((rawStamp !== undefined && !stamp) || (stamp && stamp.priceView !== expected.priceView))
       throw new ChangedPublicVersion();
     const reusable = stamp !== undefined && sameVersion(stamp, expected);
-    if (!reusable && descriptor.scope !== 'filters') throw new ChangedPublicVersion();
+    const oneOffOffset = rawStamp === undefined && descriptor.allowOffsetSnapshot && offsetSnapshot
+      && samePriceView(offsetSnapshot, expected) ? offsetSnapshot : undefined;
+    if (!reusable && descriptor.scope !== 'filters' && !oneOffOffset) throw new ChangedPublicVersion();
     const maxLifetime = Math.min(protocolLifetime(protocol), protocolLifetime(resourceProtocol));
     const mediaExpiry = (descriptor.media?.(resource) ?? []).reduce((expiry, image) =>
       image.remote?.expiresAt ? Math.min(expiry, Date.parse(image.remote.expiresAt)) : expiry, Infinity);
-    const resourceDeadline = stamp ? Math.min(deadlineAt(startedAt, stamp, maxLifetime),
-      startedAt + mediaExpiry - Date.parse(stamp.checkedAt)) : startedAt + maxLifetime;
+    const freshness = stamp ?? oneOffOffset;
+    const resourceDeadline = freshness ? Math.min(deadlineAt(startedAt, freshness, maxLifetime),
+      startedAt + mediaExpiry - Date.parse(freshness.checkedAt)) : startedAt + maxLifetime;
     const deadline = Math.min(versionDeadline, resourceDeadline);
     if (now() >= deadline) throw new SsrDtoCacheExpiredError();
     const proofExpiry = protocol === 2 && resourceProtocol === 2 && reusable
       ? Math.min(Date.parse(stamp.validUntil), mediaExpiry) : null;
-    // A consistent filter result may finish during a version change. Share it with
+    // A consistent one-off snapshot may finish during a version change. Share it with
     // the waiting readers, without assigning it to the checked cache key.
     return { value: { resource, deadline, proofExpiry } satisfies Stored<T>, expiresAt: deadline, reusable };
   };
@@ -105,7 +112,8 @@ export function createSsrPublicReader({ identity, readVersion, readAnonymous, ca
         if (now() >= versionDeadline) throw new PublicApiError(503);
         const key = JSON.stringify([
           identity.deploymentEnv, identity.releaseId, identity.apiOrigin,
-          descriptor.path, descriptor.scope ?? null, protocol, stamp.version, stamp.priceView, stamp.fx?.version ?? null, stamp.fx?.expiresAt ?? null,
+          descriptor.path, descriptor.scope ?? null, descriptor.allowOffsetSnapshot ?? null,
+          protocol, stamp.version, stamp.priceView, stamp.fx?.version ?? null, stamp.fx?.expiresAt ?? null,
         ]);
         try {
           const stored = await store.read<Stored<T>>(key, anonymousLoad(descriptor, stamp, protocol, versionDeadline, readAnonymous, now));
