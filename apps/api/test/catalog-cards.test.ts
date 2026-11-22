@@ -10,7 +10,7 @@ import { migrateDatabase } from '../src/db/migrate.js';
 import { InventoryService } from '../src/vehicles/service.js';
 import { emptyLocalization, projectDisplay, syncLocalization } from '../src/vehicles/localization.js';
 import { buildProjection, emptyOverrides } from '../src/external/normalize.js';
-import { PublicCatalogCache, readPublicCatalogRevision } from '../src/external/public-cache.js';
+import { PublicCatalogCache, readPublicCatalogRevision, type CatalogRevisionProof } from '../src/external/public-cache.js';
 
 // Isolated read-model fixtures, not a shortcut through the publication API. Never use a business database.
 const maintenanceUrl=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
@@ -88,6 +88,28 @@ test('card database rows contain one live cover and no description, configuratio
   const snapshots=returned.filter((row:any)=>row.publication_data) as Array<{publication_data:{images:unknown[];content:object}}>;
   assert.equal(snapshots.length,4);for(const row of snapshots){assert.equal(row.publication_data.images.length,1);assert.deepEqual(Object.keys(row.publication_data.content),['title']);}
   assert.equal(statements.some(sql=>sql.includes('external_source_segment_sets')),false);
+});
+
+test('a late offset proof checks supplier card media and current visibility by selected ID',async()=>{
+  const id=external[0]!;
+  let proof:CatalogRevisionProof|undefined;
+  const initial=await service.listPublic(query(),'offset-proof',undefined,(_revision,verify)=>{proof=verify;});
+  assert.ok(initial.data.items.some(item=>item.id===`ext-${id}`));
+  assert.ok(proof);
+  const check=()=>proof!(performance.now()+3000,new AbortController().signal);
+  assert.ok(await check());
+  try {
+    await db.pool.query("UPDATE external_media SET active=false WHERE listing_id=$1 AND position=1",[id]);
+    assert.equal(await check(),null);
+    await db.pool.query("UPDATE external_media SET active=true WHERE listing_id=$1 AND position=1",[id]);
+    assert.ok(await check());
+    await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[id]);
+    assert.equal(await check(),null);
+    assert.equal((await service.listPublic(query(),'latest')).data.items.some(item=>item.id===`ext-${id}`),false);
+  } finally {
+    await db.pool.query("UPDATE external_media SET active=true WHERE listing_id=$1 AND position=1",[id]);
+    await db.pool.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1",[id]);
+  }
 });
 
 test('every sort preserves the global staff group, deterministic ties and null tail across offset and cursor pages',async()=>{

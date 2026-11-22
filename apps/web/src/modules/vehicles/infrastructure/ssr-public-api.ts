@@ -76,7 +76,7 @@ export async function getSsrPublicVehicle(
     const localized = localizedInlineVehicleSchema(locale, 'usd');
     const read = (view?: PublicInlineDetailOptions) => readSsr({
       path: canonicalPublicPath(`/api/v1/vehicles/${id}`, { locale, ...publicInlineVehicleView(id, locale, view) }),
-      priceView: 'usd', schema: { parse(value) {
+      priceView: 'usd', allowInlineSnapshot: true, schema: { parse(value) {
         const parsed = localized.parse(value);
         if (parsed.data.id !== id || parsed.data.detailPath !== `/${locale}/cars/${id}/`) throw new PublicApiError(503);
         return parsed;

@@ -427,10 +427,12 @@ export async function buildApp(config:Config=readConfig(), options:{
       return {...loaded,meta:{...loaded.meta,requestId:request.id,catalogCache:stamp}};
     });
   app.get(`${prefix}/vehicles/:id`,{config:routeConfig,schema:publicSchema('getVehicle',{params:z.strictObject({id:z.union([z.uuid(),pub.ExternalListingIdSchema])}),querystring:pub.PublicVehicleDetailQuerySchema,response:{200:z.union([detail,inline]),...errorResponses}})},
-    async request=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;
+    async(request,reply)=>{const p=request.params as {id:string};const q=request.query as pub.PublicVehicleDetailQuery;
       // Candidate slots can share Redis while using different SEO settings.
       const detailKey={id:p.id,...q,...(q.seoView?{seoPolicy:config.publicSeoEnabled?1:0}:{})};
       const vehicle=await publicResponse('detail',detailKey,capture=>inventory.getPublic(p.id,q.locale,q.view,q.priceView,q.projection,q.technicalView,q.titleView,q.pixelView,q.seoView,capture),request);
+      if(internal&&q.projection==='detail-inline-v1'&&vehicle.meta.catalogCache&&request.headers['x-hd-catalog-inline-snapshot']==='1')
+        reply.header('X-HD-Catalog-Inline-Snapshot','1');
       if(p.id.startsWith('ext-')) {
         fullSyncHints.hint(listingUuid(p.id));
       }

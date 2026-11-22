@@ -7,14 +7,14 @@ import { canonicalJson } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
 export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
-export type CatalogRevisionProof = () => Promise<PublicCatalogRevision | null>;
+export type CatalogRevisionProof = (deadline: number, signal: AbortSignal) => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
 type CacheProtocol = 1 | 2;
 const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
   'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
-type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed';
+type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed' | 'offset-page-changed';
 export class PublicCatalogUnavailableError extends ApiError {
   constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[], readonly sqlState?:'57014') {
     super(503, 'SERVICE_UNAVAILABLE', 'Public catalog is temporarily unavailable.', undefined, true);
@@ -246,6 +246,18 @@ export class PublicCatalogCache {
       let snapshot = await readSource(revision);
       let current = await this.revision(usd,scope);
       let refreshedOffset = false;
+      const verify = async (proof:CatalogRevisionProof) => {
+        if(signal.aborted)throw interrupted(signal);
+        if(performance.now()>=deadline)throw unavailable('deadline');
+        try {return await proof(deadline,signal);}
+        catch(error) {
+          if(error&&typeof error==='object'&&(('code' in error&&error.code==='57014')||
+            (error instanceof PublicCatalogUnavailableError&&error.sqlState==='57014'))) {
+            throw new PublicCatalogUnavailableError('deadline',undefined,'57014');
+          }
+          throw error;
+        }
+      };
       if (refreshOffsetOnAdvance && !sameRevision(snapshot.revision,current) && !snapshotConflict(revision,snapshot.revision,current)) {
         // A fresh offset page needs no version-bound cursor. Reopen the read after
         // the observed advance, while retaining the same queue slot and deadline.
@@ -255,14 +267,19 @@ export class PublicCatalogCache {
         current = await this.revision(usd,scope);
         const conflict = snapshotConflict(beforeRefresh,snapshot.revision,current);
         if (conflict) throw new PublicCatalogUnavailableError('revision-changed',['catalog-advanced',conflict]);
+        if (!sameRevision(snapshot.revision,current)) {
+          // A vehicle on this page may have changed during the second read.
+          // Inspect only those selected rows instead of running another list.
+          const verified=snapshot.verifyAfterAdvance?await verify(snapshot.verifyAfterAdvance):null;
+          const lateConflict=verified?snapshotConflict(snapshot.revision,current,verified):'offset-page-changed';
+          if (lateConflict) throw new PublicCatalogUnavailableError('revision-changed',['catalog-advanced',lateConflict]);
+        }
         refreshedOffset = true;
       }
       if (route === 'detail' && snapshot.verifyAfterAdvance && !sameRevision(snapshot.revision,current)
         && !snapshotConflict(revision,snapshot.revision,current)) {
-        if(signal.aborted)throw interrupted(signal);
-        if(performance.now()>=deadline)throw unavailable('deadline');
         // The target and the new catalog version are checked in one authoritative snapshot.
-        const verified = await snapshot.verifyAfterAdvance();
+        const verified = await verify(snapshot.verifyAfterAdvance);
         if (verified) {
           const conflict = snapshotConflict(snapshot.revision,current,verified);
           if (conflict) {

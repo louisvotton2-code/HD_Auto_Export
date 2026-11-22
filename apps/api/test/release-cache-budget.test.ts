@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes,randomUUID } from 'node:crypto';
 import { mkdtemp,readFile,rm,stat } from 'node:fs/promises';
@@ -43,6 +43,38 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       return r.json();
     };
     const version=(filters=false)=>call('/internal/public-catalog/version'+(filters?'?scope=filters':''),true);
+    const advanceCatalog=async()=>{await db.pool.query('SELECT queue_public_catalog_metadata_change()');};
+    const injectCatalog=(route:string,internal:boolean,offsetSnapshot=false,inlineSnapshot=false)=>app.app.inject({
+      url:(internal?'/internal/public-catalog':'/api/v1')+route,
+      remoteAddress:internal?'192.0.2.10':`198.51.100.${++n%240+1}`,
+      headers:internal?{'x-hd-ssr-key':secret,'x-hd-cache-protocol':'2',
+        'x-forwarded-for':`198.51.100.${++n%240+1}`,...(offsetSnapshot?{'x-hd-catalog-offset-snapshot':'1'}:{}),
+        ...(inlineSnapshot?{'x-hd-catalog-inline-snapshot':'1'}:{})}:{},
+    });
+    const afterCatalogReads=async(context:TestContext,request:()=>ReturnType<typeof injectCatalog>,commits:(()=>Promise<void>)[])=>{
+      await advanceCatalog(); // Force a miss even when this request was just served.
+      const transaction=db.transaction;
+      let reads=0;
+      const hook=context.mock.method(db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+        const wrapped=Object.create(tx) as typeof tx;
+        let repeatableRead=false;
+        wrapped.query=(async (text:string,values?:unknown[])=>{
+          const result=await tx.query(text,values);
+          if(text.includes('ISOLATION LEVEL REPEATABLE READ')) repeatableRead=true;
+          if(repeatableRead&&text.includes('s.revision::text AS revision')&&reads<commits.length){
+            // PostgreSQL has already fixed this transaction's snapshot. Commit on a separate connection.
+            await commits[reads++]!();
+          }
+          return result;
+        }) as typeof tx.query;
+        return work(wrapped);
+      }));
+      try {
+        const reply=await request();
+        assert.equal(reads,commits.length,reply.body);
+        return reply;
+      } finally {hook.mock.restore();}
+    };
     const id=randomUUID(),publication=randomUUID(),draft=makeVehicleDraftFixture();
     const snapshot={source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,images:makePublicVehicleFixture().images};
     await db.transaction(async tx=>{
@@ -202,7 +234,7 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
           const wrapped=Object.create(tx) as typeof tx;
           wrapped.query=(async (text:string,values?:unknown[])=>{
             const result=await tx.query(text,values);
-            if(text.includes('s.revision::text AS revision')){
+            if(reads<2&&text.includes('s.revision::text AS revision')){
               if(++reads===1&&item.withdraw) await db.pool.query("UPDATE vehicles SET availability='sold' WHERE id=$1",[id]);
               else await db.pool.query('SELECT queue_public_catalog_metadata_change()');
             }
@@ -225,6 +257,95 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
           assert.equal(response.json().meta.total,item.total);
           assert.equal(response.json().data.items.length,item.total);
         }
+      }
+    });
+    await t.test('public and negotiated offset lists reject a vehicle archived after the second snapshot',async context=>{
+      const route='/vehicles?locale=zh&view=localized&projection=card';
+      const archive=async()=>{await db.pool.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[id]);};
+      await db.pool.query("UPDATE vehicles SET availability='available' WHERE id=$1",[id]);
+      for(const internal of [false,true]){
+        const request=()=>injectCatalog(route,internal,true);
+        const unrelated=await afterCatalogReads(context,request,[advanceCatalog,advanceCatalog]);
+        assert.equal(unrelated.statusCode,200,unrelated.body);
+        assert.equal(unrelated.headers['cache-control'],'no-store');
+        assert.equal(unrelated.json().meta.catalogCache,undefined);
+        assert.deepEqual(unrelated.json().data.items.map((vehicle:{id:string})=>vehicle.id),[id]);
+        assert.equal(typeof unrelated.headers['x-hd-catalog-offset-snapshot'],internal?'string':'undefined');
+
+        try {
+          const changed=await afterCatalogReads(context,request,[advanceCatalog,archive]);
+          assert.ok([200,503].includes(changed.statusCode),changed.body);
+          assert.equal(changed.headers['cache-control'],'no-store');
+          assert.ok(!changed.body.includes(id),changed.body);
+          const fresh=await request();
+          assert.equal(fresh.statusCode,200,fresh.body);
+          assert.deepEqual(fresh.json().data.items,[]);
+        } finally {await db.pool.query("UPDATE vehicles SET publication_state='published' WHERE id=$1",[id]);}
+      }
+    });
+    await t.test('website inline detail follows the live version without serving an old Pixel setting or withdrawn vehicle',async context=>{
+      const route=`/vehicles/${id}?locale=zh&view=localized&priceView=usd&projection=detail-inline-v1&titleView=english&pixelView=eligible`;
+      const pixel=async(enabled:boolean)=>db.transaction(async tx=>{
+        await tx.query(`INSERT INTO vehicle_pixel_settings(vehicle_id,pixel_enabled,version) VALUES($1,$2,2)
+          ON CONFLICT(vehicle_id) DO UPDATE SET pixel_enabled=excluded.pixel_enabled,version=vehicle_pixel_settings.version+1`,[id,enabled]);
+        await tx.query('SELECT queue_public_catalog_metadata_change()');
+      });
+      const archive=async()=>{await db.pool.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[id]);};
+      await db.pool.query("INSERT INTO public_fx_quote(id,source,as_of,expires_at,rates) VALUES(1,'synthetic',now()-interval '1 hour',now()+interval '24 hours',$1)",
+        [JSON.stringify({USD:'1',CNY:'7'})]);
+      try {
+        for(const internal of [false,true]){
+          await pixel(true);
+          const request=()=>injectCatalog(route,internal,false,true);
+          const liveStamp=async()=>InternalPublicCatalogCacheStampSchema.parse((await call('/internal/public-catalog/version?priceView=usd',true,false,true)).data);
+          const assertDetail=async(reply:Awaited<ReturnType<typeof request>>,enabled:boolean,expectedVersion?:string)=>{
+            assert.equal(reply.statusCode,200,reply.body);
+            assert.equal(reply.headers['cache-control'],'no-store');
+            assert.equal(reply.headers['x-hd-catalog-inline-snapshot'],internal?'1':undefined);
+            const {data,meta}=reply.json();
+            assert.equal(data.id,id);
+            assert.equal(data.projection,'detail-inline-v1');
+            assert.equal(data.pixelEnabled,enabled);
+            const stampSchema=internal?InternalPublicCatalogCacheStampSchema:PublicCatalogCacheStampSchema;
+            const stamp=stampSchema.parse(meta.catalogCache),live=await liveStamp();
+            assert.equal(stamp.priceView,'usd');
+            assert.ok(stamp.fx);
+            assert.equal(stamp.version,expectedVersion??live.version);
+            assert.deepEqual(stamp.fx,live.fx);
+          };
+          let verifiedVersion:string|undefined;
+          const unrelated=await afterCatalogReads(context,request,[async()=>{
+            await advanceCatalog();
+            verifiedVersion=(await liveStamp()).version;
+          },advanceCatalog]);
+          // The second commit is unrelated and occurs after the proof snapshot has opened.
+          assert.ok(verifiedVersion);
+          assert.notEqual(verifiedVersion,(await liveStamp()).version);
+          await assertDetail(unrelated,true,verifiedVersion);
+          await assertDetail(await request(),true);
+
+          const disabled=await afterCatalogReads(context,request,[()=>pixel(false)]);
+          if(disabled.statusCode===200) await assertDetail(disabled,false);
+          else {
+            assert.equal(disabled.statusCode,503,disabled.body);
+            assert.equal(disabled.json().data,undefined);
+          }
+          await assertDetail(await request(),false);
+
+          try {
+            const withdrawn=await afterCatalogReads(context,request,[archive]);
+            assert.ok([404,503].includes(withdrawn.statusCode),withdrawn.body);
+            assert.equal(withdrawn.json().data,undefined);
+            const fresh=await request();
+            assert.equal(fresh.statusCode,404,fresh.body);
+          } finally {await db.pool.query("UPDATE vehicles SET publication_state='published' WHERE id=$1",[id]);}
+        }
+      } finally {
+        await db.transaction(async tx=>{
+          await tx.query('DELETE FROM vehicle_pixel_settings WHERE vehicle_id=$1',[id]);
+          await tx.query('DELETE FROM public_fx_quote WHERE id=1');
+          await tx.query('SELECT queue_public_catalog_metadata_change()');
+        });
       }
     });
     await t.test('ordinary manual detail verifies the target once during unrelated catalog commits',async context=>{

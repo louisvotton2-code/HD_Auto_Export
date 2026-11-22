@@ -13,6 +13,7 @@ import { anonymousPublicEnvelope, type SsrCacheProtocol, type SsrPublicDescripto
 
 const prefix = '/internal/public-catalog';
 const offsetSnapshotHeader = 'X-HD-Catalog-Offset-Snapshot';
+const inlineSnapshotHeader = 'X-HD-Catalog-Inline-Snapshot';
 const publicRoute = /^\/api\/v1\/(?:vehicles(?:\/[A-Za-z0-9][A-Za-z0-9_-]{0,99})?|vehicle-filters|home\/vehicles)$/;
 
 /** A fixed allowlist, never a general reverse proxy or a private media/admin reader. */
@@ -23,14 +24,17 @@ export function internalCatalogPath(publicPath: string) {
   return `${prefix}${parsed.pathname.slice('/api/v1'.length)}${parsed.search}`;
 }
 
-async function requestInternal(path: string, visitorHeaders?: Record<string, string>, scope?: 'filters', allowOffsetSnapshot?: true) {
+type SnapshotOptions = Pick<SsrPublicDescriptor<SsrPublicEnvelope>, 'allowOffsetSnapshot' | 'allowInlineSnapshot'>;
+async function requestInternal(path: string, visitorHeaders?: Record<string, string>, scope?: 'filters', snapshot?: SnapshotOptions) {
   try {
     const origin = publicApiOrigin();
     const target = new URL(path, origin);
     if (target.origin !== origin || !target.pathname.startsWith(`${prefix}/`)
       || (scope && target.pathname !== `${prefix}/vehicle-filters`)
-      || (allowOffsetSnapshot && (target.pathname !== `${prefix}/vehicles` || target.searchParams.has('cursor')
-        || target.searchParams.has('pagination')))) throw new PublicApiError(503);
+      || (snapshot?.allowOffsetSnapshot && (target.pathname !== `${prefix}/vehicles` || target.searchParams.has('cursor')
+        || target.searchParams.has('pagination')))
+      || (snapshot?.allowInlineSnapshot && (!target.pathname.startsWith(`${prefix}/vehicles/`)
+        || target.searchParams.get('projection') !== 'detail-inline-v1'))) throw new PublicApiError(503);
     const response = await fetch(target.href, {
       method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(5000),
       headers: {
@@ -38,7 +42,8 @@ async function requestInternal(path: string, visitorHeaders?: Record<string, str
         [INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]: '2',
         ...(visitorHeaders?.['X-Forwarded-For'] ? { 'X-Forwarded-For': visitorHeaders['X-Forwarded-For'] } : {}),
         ...(scope ? { 'X-HD-Catalog-Scope': scope } : {}),
-        ...(allowOffsetSnapshot ? { [offsetSnapshotHeader]: '1' } : {}),
+        ...(snapshot?.allowOffsetSnapshot ? { [offsetSnapshotHeader]: '1' } : {}),
+        ...(snapshot?.allowInlineSnapshot ? { [inlineSnapshotHeader]: '1' } : {}),
       },
     });
     if (!response.ok) {
@@ -99,14 +104,15 @@ export async function readSsrServiceVersion(
 /** Static service identity only. No Next headers, visitor IP, cookie or caller trace enters this loader. */
 export async function readAnonymousPublicResource<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>) {
   try {
-    const response = await requestInternal(internalCatalogPath(descriptor.path), undefined, descriptor.scope, descriptor.allowOffsetSnapshot);
+    const response = await requestInternal(internalCatalogPath(descriptor.path), undefined, descriptor.scope, descriptor);
     const protocol = confirmedProtocol(response);
     const schema = protocol === 2 ? internalResourceSchema(descriptor.schema) : descriptor.schema;
     const parsed = await readPublicJsonBody(response, schema);
     const snapshot = descriptor.allowOffsetSnapshot ? response.headers.get(offsetSnapshotHeader) : null;
     const stampSchema = protocol === 2 ? InternalPublicCatalogCacheStampSchema : PublicCatalogCacheStampSchema;
     return { protocol, value: anonymousPublicEnvelope(parsed),
-      ...(snapshot ? { offsetSnapshot: stampSchema.parse(JSON.parse(snapshot)) } : {}) };
+      ...(snapshot ? { offsetSnapshot: stampSchema.parse(JSON.parse(snapshot)) } : {}),
+      ...(descriptor.allowInlineSnapshot && response.headers.get(inlineSnapshotHeader) === '1' ? { inlineSnapshot: true as const } : {}) };
   } catch (error) {
     if (error instanceof PublicApiError) throw error;
     throw new PublicApiError(503);
