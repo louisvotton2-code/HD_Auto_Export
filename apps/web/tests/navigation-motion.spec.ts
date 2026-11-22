@@ -50,13 +50,16 @@ for (const width of [1440, 320, 414]) {
   test(`language flags display and update in the ${width}px header`, async ({ page }) => {
     await page.setViewportSize({ width, height: 850 });
     await page.goto('/ru/buy/');
+    const logo = page.locator('header img[alt]:not([alt=""])').first();
+    const logoUrl = await logo.getAttribute('src');
+    expect(logoUrl).toMatch(/^\/_next\/static\/media\/hd-auto-logo\.[\w-]+\.webp$/);
     const languageSwitch = page.locator('.language-switch');
     const summary = languageSwitch.locator('summary');
-    await expect(summary.locator('img')).toHaveAttribute('src', '/flags/ru.svg');
+    await expect(summary.locator('img')).toHaveAttribute('src', /\/_next\/static\/media\/ru\.[\w-]+\.svg$/);
     await summary.click();
     for (const [language, flag] of [['zh', 'cn'], ['en', 'gb'], ['ru', 'ru']]) {
       const icon = languageSwitch.locator(`a[lang="${language}"] img`);
-      await expect(icon).toHaveAttribute('src', `/flags/${flag}.svg`);
+      await expect(icon).toHaveAttribute('src', new RegExp(`/static/media/${flag}\\.[\\w-]+\\.svg$`));
       await expect(icon).toBeVisible();
       await expect.poll(() => icon.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     }
@@ -64,7 +67,8 @@ for (const width of [1440, 320, 414]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await languageSwitch.locator('a[lang=en]').click();
     await expect(page).toHaveURL(/\/en\/buy\/$/);
-    await expect(summary.locator('img')).toHaveAttribute('src', '/flags/gb.svg');
+    await expect(logo).toHaveAttribute('src', logoUrl!);
+    await expect(summary.locator('img')).toHaveAttribute('src', /\/_next\/static\/media\/gb\.[\w-]+\.svg$/);
     await expect(languageSwitch.locator('details')).not.toHaveAttribute('open');
   });
 }

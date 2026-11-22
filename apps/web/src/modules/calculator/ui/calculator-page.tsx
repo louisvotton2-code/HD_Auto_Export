@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import Image from 'next/image';
 import { useLocale, useTranslations } from 'next-intl';
 import type { Locale } from '@/i18n/routing';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
@@ -667,12 +666,12 @@ export function CalculatorPage({
               data-motion-reveal
             >
               <div className="result-card-top">
-                <Image
+                <img
                   className="result-brand-watermark"
                   src={siteConfig.brand.logo.src}
                   width={siteConfig.brand.logo.width}
                   height={siteConfig.brand.logo.height}
-                  sizes="(max-width: 600px) 140px, 180px"
+                  loading="lazy"
                   alt=""
                   aria-hidden="true"
                   draggable={false}

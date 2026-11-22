@@ -6,7 +6,8 @@ import { MediaAssetSchema, type MediaUploadRequest, type MediaRights } from '@hd
 import type { PublicMediaQuery } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
-import { LocalMediaStore, type PublicMediaDeliveryOptions } from './storage.js';
+import { LocalMediaStore, MediaStorageError, type PublicMediaDeliveryOptions } from './storage.js';
+import {findPublicMediaContentDigests, mediaVersionToken, saveMediaContentDigests} from './versions.js';
 import { audit, type Actor } from '../vehicles/service.js';
 
 type MediaRow = {id:string;vehicle_id:string;version:number;state:'pending'|'uploaded'|'ready'|'failed'|'deleted';content_type:'image/jpeg'|'image/png'|'image/webp';
@@ -86,6 +87,15 @@ export class MediaService {
       if(row.state!=='uploaded') throw new ApiError(422,'MEDIA_NOT_READY','Upload and image validation must finish first.');
       await this.store.read(id);
       const updated=await tx.query<MediaRow>("UPDATE media_assets SET state='ready',expires_at=now()+interval '24 hours',version=version+1 WHERE id=$1 RETURNING *",[id]);
+      const manual=await tx.query("SELECT 1 FROM vehicle_drafts WHERE vehicle_id=$1 AND data #>> '{source,kind}'='manual'",[row.vehicle_id]);
+      if(manual.rowCount) {
+        const digests=await this.store.hashPublicRepresentations(id).catch((error:unknown)=>{
+          // A derivative failure leaves the normal upload usable. Maintenance can retry the bundle.
+          if(error instanceof MediaStorageError) return undefined;
+          throw error;
+        });
+        if(digests) await saveMediaContentDigests(tx,id,digests);
+      }
       await audit(tx,actor,'media.complete',row.vehicle_id,version,version+1,activityChanges(row.state,'ready',`media.${id}.state`));
       return dto(updated.rows[0]!);
     });
@@ -126,6 +136,12 @@ export class MediaService {
   async publicDelivery(id:string,variant:PublicMediaQuery['variant'],options:PublicMediaDeliveryOptions) {
     await this.authorizePublic(id);
     return this.store.preparePublicDelivery(id,variant,options);
+  }
+  async publicVersionedDelivery(id:string,version:string,variant:PublicMediaQuery['variant'],options:PublicMediaDeliveryOptions,reserve:()=>boolean) {
+    const digests=await findPublicMediaContentDigests(this.db.pool,id);
+    if(!digests||mediaVersionToken(digests)!==version) throw notFound();
+    if(!reserve()) throw new MediaStorageError('MEDIA_VERSION_BUSY','Verified media delivery is temporarily busy.');
+    return this.store.prepareVersionedPublicDelivery(id,variant,digests[variant??'original'],options);
   }
   private async hasReferences(tx:PoolClient,id:string) {
     const result=await tx.query(`SELECT 1 FROM media_assets m WHERE m.id=$1

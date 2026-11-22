@@ -15,6 +15,11 @@ const config: NextConfig = {
   htmlLimitedBots: /.*/,
   trailingSlash: true,
   images: { unoptimized: true },
+  turbopack: {
+    rules: {
+      '*': { condition: { query: '?site-asset' }, type: 'asset' },
+    },
+  },
   // Multiple root layouts need a routing-level 404, including the exported 404.html.
   experimental: { globalNotFound: true },
   poweredByHeader: false,

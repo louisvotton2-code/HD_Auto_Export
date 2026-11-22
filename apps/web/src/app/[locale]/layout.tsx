@@ -8,6 +8,7 @@ import { sessionAnalyticsEnabledForSite } from '@/shared/config/session-analytic
 import { SiteHeader } from '@/shared/ui/site-header';
 import { SiteFooter } from '@/shared/ui/site-footer';
 import { InteractionMotion } from '@/shared/ui/interaction-motion';
+import { InterFontFaces } from '@/shared/ui/inter-fonts';
 import { PublicNavigationFreshness } from '@/shared/ui/public-navigation-freshness';
 import { VehicleFavorites } from '@/modules/vehicles';
 import { SiteAnalytics, TrackingConsentControls } from '@/modules/analytics';
@@ -40,6 +41,7 @@ export async function generateMetadata({
     description: t('description'),
     robots: { index: false, follow: false },
     applicationName: siteConfig.name,
+    icons: siteConfig.brand.iconUrl,
     other: siteConfig.domainVerification,
   };
 }
@@ -59,6 +61,7 @@ export default async function LocaleLayout({
   const pixelId = getConfiguredPixelId();
   return (
     <html lang={locale === 'zh' ? 'zh-Hans' : locale} data-scroll-behavior="smooth">
+      <head><InterFontFaces /></head>
       <body>
         <NextIntlClientProvider messages={messages}>
           <EnquiryProvider locale={locale}>

@@ -281,7 +281,7 @@ test('all hero counters grow from their server-rendered zero to the exact values
 
 const homeCountScript = /\/media\/home\/hero-counts\.js(?:\?|$)/;
 const nextScripts = /\/_next\/static\/.*\.js(?:\?|$)/;
-const homeFonts = /\/fonts\/inter-(?:latin|cyrillic)\.woff2$/;
+const homeFonts = /\/_next\/static\/media\/inter-(?:latin|cyrillic)\.[\w-]+\.woff2$/;
 
 async function measureFirstPaint(page: Page) {
   return page.evaluate(() => {

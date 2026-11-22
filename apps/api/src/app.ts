@@ -31,6 +31,7 @@ import { analyticsIpVisitPath } from '@hd/contracts/analytics';
 import { registerIpVisitRoutes } from './analytics/ip-visits.js';
 import { MAX_VEHICLE_MEDIA, MediaService } from './media/service.js';
 import { LocalMediaStore, MediaStorageError } from './media/storage.js';
+import { mediaRecipeRevision } from './media/versions.js';
 import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
@@ -39,6 +40,8 @@ import { createPublicCatalogCache, PublicCatalogUnavailableError, type PublicCac
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
+const VersionedMediaId=z.templateLiteral([z.uuid(), '_', z.string().regex(/^[A-Za-z0-9_-]{43}$/)]);
+const PublicMediaParams=z.strictObject({id:z.union([z.uuid(),VersionedMediaId])});
 const staffPath='/api/v1/admin/staff';
 const staffVehiclePixelPath='/api/v1/admin/vehicles/:id/pixel';
 const externalVehiclePixelPath='/api/v1/admin/external/listings/:id/pixel';
@@ -82,6 +85,8 @@ function rateLimitKey(request:FastifyRequest) {
 }
 
 const publicMediaCacheControl = 'private, no-cache';
+const immutableMediaCacheControl = 'public, max-age=31536000, immutable';
+const maxImmutableMediaResponses = 12;
 
 function sendInternalMedia(reply:FastifyReply,file:{filename:string},etag?:string) {
   // Only a store-prepared UUID and fixed derivative can become an internal URI.
@@ -291,7 +296,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   type CaptureRevision=(revision:PublicCatalogRevision)=>void;
   type CatalogLoad<T>=(capture:CaptureRevision)=>Promise<T>;
   const cached=<T,Q extends {priceView?:'usd'}>(route:CatalogResourceRoute,query:Q,load:CatalogLoad<T>,request:{id:string},observe?:(phase:PublicCacheReadPhase)=>void)=>
-    catalogCache.getCatalogSnapshot(route,query,async()=>{
+    // Keep media addresses from different recipe versions out of old API slots' shared cache entries.
+    catalogCache.getCatalogSnapshot(route,{...query,mediaUrlPolicy:mediaRecipeRevision},async()=>{
       let revision:PublicCatalogRevision|undefined;
       const value=await load(observed=>{ revision=observed; });
       if(!revision)throw new PublicCatalogUnavailableError('revision-read');
@@ -319,7 +325,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get('/health/serving',{schema:{hide:true}},async()=>serving.status());
   app.get('/health/ready',{schema:schema('health','readiness',{response:{200:z.object({status:z.literal('ready')}),503:z.object({status:z.literal('unavailable')})}})},async(_request,reply)=>{
     try {
-      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,cs.filter_revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint,el.inquiry_number FROM home_config h
+      const ready=await db.pool.query(`SELECT bg.reference,ae.actor_name,ae.changes,h.id,cs.revision,cs.filter_revision,bs.last_reserved_at,v.deleted_at,v.public_content_revision,l.revision,pl.projections,im.receipt_hash,fx.version,pc.fingerprint,el.inquiry_number,mcv.original_sha256 FROM home_config h
         JOIN public_catalog_state cs ON cs.id=1 JOIN translation_budget_state bs ON bs.id=1
         LEFT JOIN vehicles v ON false LEFT JOIN vehicle_localizations l ON false LEFT JOIN publication_localizations pl ON false
         LEFT JOIN idempotency_vehicle_metadata im ON false LEFT JOIN public_fx_quote fx ON false
@@ -328,6 +334,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN backup_gc_leases bg ON false LEFT JOIN translation_budget_reservations br ON false LEFT JOIN audit_events ae ON false
         LEFT JOIN analytics_collection_state ac ON false
         LEFT JOIN vehicle_pixel_settings vp ON false
+        LEFT JOIN media_content_versions mcv ON false
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false
         LEFT JOIN external_listings el ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
@@ -448,20 +455,58 @@ export async function buildApp(config:Config=readConfig(), options:{
     const query=request.query as pub.PublicLocaleQuery;return publicResponse('home',query,capture=>inventory.publicHome(query.locale,query.view,query.priceView,capture),request);
   });
   }
-  const publicMediaSchema=schema('public','publicMedia',{params:IdParams,querystring:pub.PublicMediaQuerySchema});
+  const publicMediaSchema=schema('public','publicMedia',{params:PublicMediaParams,querystring:pub.PublicMediaQuerySchema});
+  let immutableMediaResponses=0;
+  const reserveImmutableMedia=(reply:FastifyReply)=>{
+    const response=reply.raw;
+    if(response.destroyed||response.writableEnded||immutableMediaResponses>=maxImmutableMediaResponses) return;
+    immutableMediaResponses++;
+    // A client can disconnect while hashing. Hold the slot through both file I/O and socket delivery.
+    let validated=false,ended=false;
+    const end=()=>{
+      response.off('finish',end);
+      response.off('close',end);
+      ended=true;
+      if(validated) immutableMediaResponses--;
+    };
+    response.once('finish',end);
+    response.once('close',end);
+    return ()=>{
+      validated=true;
+      if(ended) immutableMediaResponses--;
+    };
+  };
   const deliverPublicMedia=async(request:FastifyRequest,reply:FastifyReply)=>{
-    const id=(request.params as {id:string}).id;
+    const mediaId=(request.params as {id:string}).id;
+    // The UUID cannot contain underscores; the base64url version can.
+    const id=mediaId.slice(0,36),version=mediaId.length>36?mediaId.slice(37):undefined;
     const {variant}=request.query as pub.PublicMediaQuery;
     const ifMatch=request.headers['if-match'];
     const ifNoneMatch=request.headers['if-none-match'];
     const failedIfMatch=ifMatch!==undefined&&trimHttpWhitespace(ifMatch)!=='*';
     // A stock static handler would independently evaluate these conditions
     // against its own metadata. Use the same API delivery rules in both modes.
-    const internal=config.mediaDelivery==='nginx'&&ifMatch===undefined&&request.headers['if-unmodified-since']===undefined;
+    const internal=version===undefined&&config.mediaDelivery==='nginx'&&ifMatch===undefined&&request.headers['if-unmodified-since']===undefined;
     const readBody=request.method==='GET'&&!failedIfMatch;
     const options={ifNoneMatch,readBody:readBody&&!internal};
     let delivery:Awaited<ReturnType<MediaService['publicDelivery']>>|undefined;
-    if(variant) {
+    if(version!==undefined) {
+      let finishValidation:(()=>void)|undefined;
+      try {
+        delivery=await media.publicVersionedDelivery(id,version,variant,options,()=>{
+          finishValidation=reserveImmutableMedia(reply);
+          return finishValidation!==undefined;
+        });
+      }
+      catch(error) {
+        if(!(error instanceof MediaStorageError)||error.code!=='MEDIA_VERSION_BUSY') throw error;
+        if(config.mediaDelivery!=='nginx'||ifMatch!==undefined||request.headers['if-unmodified-since']!==undefined) {
+          throw new ApiError(503,'SERVICE_UNAVAILABLE','Verified media delivery is temporarily busy.',undefined,true);
+        }
+        return reply.redirect(`/api/v1/media/${id}${variant?`?variant=${variant}`:''}`,307);
+      }
+      finally { finishValidation?.(); }
+    } else if(variant) {
       await serving.optionalEffect(async()=>{
         try { delivery=await media.publicDelivery(id,variant,options); }
         catch(error) {
@@ -475,11 +520,12 @@ export async function buildApp(config:Config=readConfig(), options:{
     delivery??=await media.publicDelivery(id,undefined,fallback?{readBody}:options);
     if(failedIfMatch) throw new ApiError(412,'VERSION_CONFLICT','The media precondition did not match.');
     if(!fallback) {
+      const cacheControl=version===undefined?publicMediaCacheControl:immutableMediaCacheControl;
       if(delivery.notModified) {
-        return reply.header('Cache-Control',publicMediaCacheControl).header('ETag',delivery.etag).code(304).send();
+        return reply.header('Cache-Control',cacheControl).header('ETag',delivery.etag).code(304).send();
       }
       if(internal) return sendInternalMedia(reply,delivery,delivery.etag);
-      reply.header('Cache-Control',publicMediaCacheControl).header('ETag',delivery.etag);
+      reply.header('Cache-Control',cacheControl).header('ETag',delivery.etag);
     }
     reply.type('image/webp').header('Content-Length',delivery.byteSize);
     return reply.send(delivery.body);

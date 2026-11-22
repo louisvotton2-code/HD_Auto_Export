@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
-import Image from 'next/image';
 import { siteConfig } from '@/shared/config/site';
+import { InterFontFaces } from '@/shared/ui/inter-fonts';
 import './globals.css';
 
 export const metadata: Metadata = {
   title: `404 | ${siteConfig.name}`,
   description: 'Page not found. Return to the HD Auto Export calculator.',
   robots: { index: false, follow: true },
+  icons: siteConfig.brand.iconUrl,
   other: siteConfig.domainVerification,
 };
 
@@ -14,9 +15,10 @@ export const metadata: Metadata = {
 export default function GlobalNotFound() {
   return (
     <html lang="en">
+      <head><InterFontFaces /></head>
       <body>
         <main id="main" className="not-found" style={{ minHeight: '100vh', padding: 24 }}>
-          <Image src={siteConfig.brand.logo.src} width={144} height={97} alt="" />
+          <img src={siteConfig.brand.logo.src} width={144} height={97} alt="" />
           <span className="eyebrow">{siteConfig.name} / 404</span>
           <h1>404</h1>
           <p>Page not found</p>

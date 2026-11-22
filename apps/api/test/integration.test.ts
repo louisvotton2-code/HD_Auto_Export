@@ -1,14 +1,14 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {mkdtemp,rm,stat} from 'node:fs/promises';
+import {mkdtemp,rm,stat,writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import sharp from 'sharp';
 import type {InjectOptions} from 'fastify';
 import {makeVehicleDraftFixture,makeDemoVehicleDraftFixture,makeExternalVehicleDraftFixture} from '@hd/contracts/fixtures';
-import {PublicVehicleResponseSchema,PublicVehicleListSchema,PublicVehicleInlineResponseSchema,ApiErrorSchema} from '@hd/contracts/public';
+import {PublicVehicleResponseSchema,PublicVehicleListSchema,PublicVehicleCardListSchema,PublicVehicleInlineResponseSchema,PublicVehicleGalleryResponseSchema,ApiErrorSchema} from '@hd/contracts/public';
 import {BulkVehicleMutationResponseSchema,AdminVehicleFiltersResponseSchema,VehicleTranslationSuggestionsResponseSchema,SaveVehicleRequestSchema,VehicleLocalizationSchema,PublicationPreviewResponseSchema,PublishReadinessResponseSchema,TranslationPlanResponseSchema,TranslationPlanResultResponseSchema,VehicleTranslationBundleResponseSchema,MediaAssetResponseSchema,MediaUploadResponseSchema,type TranslationPlan,type TranslationPlanResult,type VehicleTranslationBundle,type VehicleLocalization,type AdminVehicle,type VehicleDraftInput} from '@hd/contracts/admin';
 import {
   CONFIGURATION_IMPORT_JSON_BYTES, ConfigurationImportPreviewResponseSchema, MediaAssetSchema, configurationImportExample,
@@ -21,6 +21,9 @@ import {migrateDatabase} from '../src/db/migrate.js';
 import {changeStaffLogin,createStaff,setStaffEnabled} from '../src/staff-cli.js';
 import {VehicleTranslator} from '../src/vehicles/translation.js';
 import {canonicalJson} from '../src/external/normalize.js';
+import {findPublicMediaContentDigests,mediaVersionToken} from '../src/media/versions.js';
+import {LocalMediaStore} from '../src/media/storage.js';
+import {backfillMediaContentVersions} from '../src/media-version-cli.js';
 
 const baseUrl=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
 if(!['postgres:','postgresql:'].includes(baseUrl.protocol)||!['127.0.0.1','localhost'].includes(baseUrl.hostname)||baseUrl.pathname!=='/postgres'||baseUrl.search||baseUrl.hash) throw new Error('Integration tests require a local PostgreSQL maintenance database without connection options; never point at production.');
@@ -755,6 +758,96 @@ test('one vehicle lifecycle, public whitelist, draft snapshot, availability, hom
   assert.equal((await call({method:'GET',url:`/api/v1/media/${mediaId}`})).statusCode,404);
   const media=await runtime.media.get(mediaId);assert.equal((await call({method:'DELETE',url:`/api/v1/admin/media/${mediaId}`,headers:headers(),payload:{version:media.version}})).statusCode,409);
 });
+test('public manual media versions bind actual bytes, include old inventory and fail closed',async()=>{
+  let vehicle=await ready();
+  const id=vehicle.draft.media[0]!.id,legacy=`/api/v1/media/${id}`;
+  const store=new LocalMediaStore(path.join(root,'media'));
+  const recipe=await store.hashPublicRepresentations(id);
+  const versioned=`${legacy}_${mediaVersionToken(recipe)}`;
+  const cache='public, max-age=31536000, immutable';
+  const assertUnavailable=async(url:string,etag='*')=>{
+    const result=await call({url,headers:{'if-none-match':etag}});
+    assert.equal(result.statusCode,404,result.body);
+    assert.equal(result.headers['cache-control'],'no-store');
+    assert.equal(result.headers.etag,undefined);
+  };
+  assert.equal((await runtime.db.pool.query('SELECT 1 FROM media_content_versions WHERE media_id=$1',[id])).rowCount,1);
+  await assertUnavailable(versioned);
+  await runtime.db.pool.query('DELETE FROM media_content_versions WHERE media_id=$1',[id]); // Predates migration 0049.
+  vehicle=await publish(vehicle);
+  const detailUrl=`/api/v1/vehicles/${vehicle.id}?locale=zh&view=localized`;
+  const detail=async()=>PublicVehicleResponseSchema.parse((await call({url:detailUrl})).json()).data;
+  assert.equal((await detail()).images[0]?.url,legacy);
+  const home=await runtime.inventory.getHome();home.sections[0]!.vehicleIds=[vehicle.id];
+  await runtime.inventory.saveHome(home,{id:editorId,requestId:randomUUID()});
+  const revisions=async()=>(await runtime.db.pool.query('SELECT revision::text,filter_revision::text FROM public_catalog_state WHERE id=1')).rows[0];
+  const before=await revisions();
+  await backfillMediaContentVersions(runtime.db,store,{limit:25});
+  assert.equal(await findPublicMediaContentDigests(runtime.db.pool,id),null);
+  assert.deepEqual(await revisions(),before);
+  await backfillMediaContentVersions(runtime.db,store,{limit:25,apply:true});
+  assert.deepEqual(await findPublicMediaContentDigests(runtime.db.pool,id),recipe);
+  const after=await revisions();
+  assert.notEqual(after.revision,before.revision);
+  assert.equal(after.filter_revision,before.filter_revision);
+  assert.equal((await detail()).images[0]?.url,versioned);
+  const inline=PublicVehicleInlineResponseSchema.parse((await call({url:`${detailUrl}&projection=detail-inline-v1`})).json()).data;
+  assert.equal(inline.images[0]?.url,versioned);
+  const results=await call({url:'/api/v1/vehicles?locale=zh&view=localized&pageSize=48'});
+  assert.equal(PublicVehicleListSchema.parse(results.json()).data.items.find(v=>v.id===vehicle.id)?.images[0]?.url,versioned);
+  const cards=await call({url:'/api/v1/vehicles?locale=zh&view=localized&projection=card&pageSize=48'});
+  assert.equal(PublicVehicleCardListSchema.parse(cards.json()).data.items.find(v=>v.id===vehicle.id)?.images[0]?.url,versioned);
+  const gallery=await call({url:`/api/v1/vehicles/${vehicle.id}/gallery?locale=zh`});
+  assert.equal(PublicVehicleGalleryResponseSchema.parse(gallery.json()).data.items[0]?.url,versioned);
+  assert.equal((await call({url:'/api/v1/home/vehicles?locale=zh'})).json().data.sections[0].vehicles[0].images[0].url,versioned);
+
+  const legacyGet=await call({url:legacy});
+  assert.equal(legacyGet.headers['cache-control'],'private, no-cache');
+  const staff=await call({url:`/api/v1/admin/media/${id}/preview`,headers:headers()});
+  assert.equal(staff.headers['cache-control'],'no-store');
+  for(const variant of ['original','thumb','card'] as const) {
+    const suffix=variant==='original'?'':`?variant=${variant}`;
+    const get=await call({url:`${versioned}${suffix}`});
+    assert.equal(get.statusCode,200,get.body);
+    assert.equal(get.headers['cache-control'],cache);
+    assert.equal(createHash('sha256').update(get.rawPayload).digest('hex'),recipe[variant]);
+    assert.ok(get.headers.etag);
+    for(const method of ['GET','HEAD'] as const) {
+      const matched=await call({method,url:`${versioned}${suffix}`,headers:{'if-none-match':get.headers.etag}});
+      assert.equal(matched.statusCode,304);
+      assert.equal(matched.headers['cache-control'],cache);
+      assert.equal(matched.headers.etag,get.headers.etag);
+      assert.equal(matched.rawPayload.length,0);
+    }
+    const head=await call({method:'HEAD',url:`${versioned}${suffix}`});
+    assert.equal(head.statusCode,200);
+    assert.equal(head.headers['cache-control'],cache);
+    assert.equal(Number(head.headers['content-length']),get.rawPayload.length);
+  }
+  await assertUnavailable(`${legacy}_${'A'.repeat(43)}?variant=thumb`);
+  const fakeHash=await call({url:`${legacy}?v=${recipe.original}`});
+  assert.equal(fakeHash.statusCode,400);
+  assert.equal(fakeHash.headers['cache-control'],'no-store');
+
+  const thumb=path.join(root,'media',`${id}.thumb.webp`);
+  await rm(thumb);
+  await assertUnavailable(`${versioned}?variant=thumb`);
+  const coldDetail=PublicVehicleResponseSchema.parse((await call({url:detailUrl.replace('locale=zh','locale=en')})).json()).data;
+  assert.equal(coldDetail.images[0]?.url,versioned,'An uncached catalogue projection must not inspect the media disk');
+  const changedThumb=await sharp({create:{width:32,height:24,channels:3,background:'#42a110'}}).webp().toBuffer();
+  await writeFile(thumb,changedThumb,{mode:0o600});
+  const beforeChanged=await call({url:`${versioned}?variant=thumb`,headers:{'if-none-match':`W/"sha256-${recipe.thumb}"`}});
+  assert.equal(beforeChanged.statusCode,404,beforeChanged.body);
+  assert.equal(beforeChanged.headers['cache-control'],'no-store');
+  await backfillMediaContentVersions(runtime.db,store,{limit:25,apply:true,reconcile:true});
+  const newUrl=(await detail()).images[0]?.url;
+  assert.ok(newUrl&&newUrl!==versioned);
+  await assertUnavailable(`${versioned}?variant=thumb`);
+  assert.equal((await call({url:`${newUrl}?variant=thumb`})).headers['cache-control'],cache);
+  await runtime.inventory.archive(vehicle.id,vehicle.version,{id:editorId,requestId:randomUUID()});
+  await assertUnavailable(newUrl);
+});
+
 test('concurrent edits and idempotent create/publish retries preserve one business fact',async()=>{
   const key=randomUUID();const options:InjectOptions={method:'POST',url:'/api/v1/admin/vehicles',headers:{...headers(),'idempotency-key':key},payload:{draft:draft()}};
   const [a,b]=await Promise.all([call(options),call(options)]);assert.equal(a.statusCode,201,a.body);assert.equal(b.statusCode,201,b.body);assert.equal(a.json().data.id,b.json().data.id);

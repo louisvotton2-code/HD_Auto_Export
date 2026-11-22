@@ -16,6 +16,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/db/migrate.ts",
     "staff": "node --env-file-if-exists=.env --import tsx src/staff-cli.ts",
     "media:cleanup": "node --env-file-if-exists=.env --import tsx src/cleanup.ts",
+    "media:backfill-versions": "node --env-file-if-exists=.env --import tsx src/media-version-cli.ts",
     "external:local-preview": "node --env-file-if-exists=.env --import tsx src/external/local-preview-cli.ts",
     "external:sample": "node --import tsx src/external/sample-cli.ts",
     "external:scale-seed": "node --import tsx src/external/scale-seed.ts",

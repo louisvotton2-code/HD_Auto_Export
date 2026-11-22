@@ -22,6 +22,7 @@ import { TRANSLATION_PLAN_TARGETS, type CreateTranslationPlanRequest } from '@hd
 import type { TranslationPlanInput, TranslationPlanInputField } from './translation-plans.js';
 import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay,type StoredLocalization,type DisplayProjection} from './localization.js';
 import type { LocalMediaStore } from '../media/storage.js';
+import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
 import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
@@ -817,6 +818,7 @@ export class InventoryService {
       const row=result.rows[0];
       if(!row)throw notFound();
       const vehicle=toPublic(row,locale,view,priceView,quote,true);
+      if(vehicle.source.kind==='manual') await attachVersionedMediaUrls(tx,vehicle.images);
       const report=await getStaffReport(tx,row.publication_data!.source);
       vehicle.report={hasReport:report.hasReport};
       if(includeSeo)vehicle.seo=await vehicleSeo(tx,vehicle.id,locale,true);
@@ -894,6 +896,7 @@ export class InventoryService {
       const total=staffTotal+(externalTotal??0);
       const page=cursor?.page??query.page,hasMore=cursorMode?items.length>query.pageSize:offset+items.length<total;
       items.splice(query.pageSize);anchors.splice(query.pageSize);
+      await attachVersionedMediaUrls(tx,items.flatMap(vehicle=>vehicle.source.kind==='manual'?vehicle.images:[]));
       const last=anchors.at(-1);
       const nextCursor=hasMore&&last&&version?Buffer.from(JSON.stringify({v:2,...version,query:binding,...last,page:page+1,
         ...(fx!==undefined?{fx}: {}),...(usdPriceOrder?{usdSort:1}:{})} satisfies Cursor)).toString('base64url'):null;
@@ -1002,6 +1005,7 @@ export class InventoryService {
   private async readPublicHome(tx:PoolClient,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {
     const {sections,staff,supplier}=await this.readHomeSelection(tx);
     const vehicles=await this.readStaffHomeVehicles(tx,staff,locale,view,priceView,quote);
+    await attachVersionedMediaUrls(tx,vehicles.flatMap(vehicle=>vehicle.source.kind==='manual'?vehicle.images:[]));
     const map=new Map(vehicles.map(vehicle=>[vehicle.id,vehicle]));
     if(view==='localized'&&this.externalCatalog) {
       const external=await readExternalHomeVehicles(tx,supplier,locale,Date.now(),priceView,quote);
