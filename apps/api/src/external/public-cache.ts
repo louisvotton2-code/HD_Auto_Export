@@ -15,7 +15,7 @@ type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revisio
   'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
 type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed';
 export class PublicCatalogUnavailableError extends ApiError {
-  constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[]) {
+  constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[], readonly sqlState?:'57014') {
     super(503, 'SERVICE_UNAVAILABLE', 'Public catalog is temporarily unavailable.', undefined, true);
   }
 }
@@ -36,7 +36,12 @@ export async function readPublicCatalogRevision(db: DatabaseReader, usd = false,
       else throw unavailable('revision-read');
     }
     return revision;
-  } catch { throw unavailable('revision-read'); }
+  } catch(error) {
+    if(error && typeof error==='object' && 'code' in error && error.code==='57014') {
+      throw new PublicCatalogUnavailableError('revision-read',undefined,'57014');
+    }
+    throw unavailable('revision-read');
+  }
 }
 
 export type PublicCacheRoute = 'list' | 'filters' | 'detail' | 'home';
@@ -225,14 +230,14 @@ export class PublicCatalogCache {
     } catch { this.values.redisErrors++; return null; }
   }
   private async load<T>(route: PublicCacheRoute, input: string, key: string, revision: PublicCatalogRevision,
-    load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
+    load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
     usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal): Promise<LoadedEnvelope> {
     await this.acquireLoad(deadline,signal);
     try {
       if(signal.aborted)throw interrupted(signal);
       if(performance.now()>=deadline)throw unavailable('deadline');
       this.values.originLoads++;
-      const snapshot = await load(revision);
+      const snapshot = await load(revision,deadline,signal);
       const value = JSON.parse(json(snapshot.value)) as T;
       const current = await this.revision(usd,scope);
       const matchesLookup = sameRevision(revision,snapshot.revision);
@@ -298,9 +303,9 @@ export class PublicCatalogCache {
   async getVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<T>, usd = false, signal?:AbortSignal,protocol:CacheProtocol=1): Promise<{value:T;stamp:PublicCatalogCacheStamp}> {
     return this.getBoundedVersioned(route,normalizedInput,async()=>({value:await load()}),usd,signal,protocol);
   }
-  async getBoundedVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: () => Promise<PublicSourceResult<T>>,
+  async getBoundedVersioned<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSourceResult<T>>,
     usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?: CacheReadObserver) {
-    const result = await this.read(route,normalizedInput,async revision=>({...await load(),revision}),usd,'catalog',protocol,signal,observe);
+    const result = await this.read(route,normalizedInput,async (revision,deadline,flightSignal)=>({...await load(deadline,flightSignal),revision}),usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
@@ -308,13 +313,13 @@ export class PublicCatalogCache {
     const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
-  async getFilterSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,
+  async getFilterSnapshot<T>(normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal,
     protocol:CacheProtocol=1, observe?: CacheReadObserver) {
-    const result = await this.read('filters',normalizedInput,load,usd,'filters',protocol,signal,observe);
+    const result = await this.read('filters',normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'filters',protocol,signal,observe);
     if (result.snapshotOnly && result.expiresAt <= this.now()) throw unavailable('expired');
     return { value: result.value, stamp: result.snapshotOnly ? undefined : this.stamp(result.revision,usd,'filters',protocol,result.expiresAt) };
   }
-  private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision) => Promise<PublicSnapshot<T>>,
+  private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
     usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal, observe?: CacheReadObserver) {
     const deadline=performance.now()+this.timeoutMs;
     if (this.closed) throw unavailable('closed');

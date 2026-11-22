@@ -90,7 +90,12 @@ test('supplier overview rollups backfill and stay exact with the public filter c
   const baseline = await fromFull();
   await migrateDatabase(db);
 
+  const apiConfig = readConfig({ NODE_ENV: 'test', DATABASE_URL: url.href, AUTH_SECRET: randomBytes(32).toString('hex'),
+    MEDIA_ROOT: directory, AUTH_BASE_URL: 'http://127.0.0.1:3318', TRUSTED_ORIGINS: 'http://127.0.0.1:3318',
+    CATALOG_READ_MODE: 'combined', PUBLIC_CATALOG_CACHE: 'memory', HD_DEPLOYMENT_ENV: 'test', HD_RELEASE_ID: 'a'.repeat(40) });
+  const request = { url: `/api/v1/vehicle-filters?${new URLSearchParams({ ...options, yearMin: '2020', projection: 'overview' })}` };
   const statements: string[] = [];
+  const readWideSupplierLabel = () => statements.some(sql => /\b(?:FROM|JOIN)\s+(?:public\.)?(?:external_catalog|external_listing_overrides)\b/i.test(sql));
   const observed = { ...db, transaction: async <T>(work: (tx: PoolClient) => Promise<T>) => db.transaction(tx => work({
     query: async (sql: string, params?: unknown[]) => { statements.push(sql); return tx.query(sql, params); },
   } as PoolClient)) } as Database;
@@ -124,14 +129,55 @@ test('supplier overview rollups backfill and stay exact with the public filter c
     assert.equal((await compare({ yearMin: undefined, yearMax: 2019 })).total, 1);
     assert.equal((await compare({ yearMin: 2099 })).total, 0);
     assert.equal((await db.pool.query('SELECT price_cny FROM external_catalog_filter WHERE listing_id=$1', [fixtures[8]])).rows[0].price_cny, null);
-    const runtime = await buildApp(readConfig({ NODE_ENV: 'test', DATABASE_URL: url.href, AUTH_SECRET: randomBytes(32).toString('hex'),
-      MEDIA_ROOT: directory, AUTH_BASE_URL: 'http://127.0.0.1:3318', TRUSTED_ORIGINS: 'http://127.0.0.1:3318',
-      CATALOG_READ_MODE: 'combined', PUBLIC_CATALOG_CACHE: 'memory', HD_DEPLOYMENT_ENV: 'test', HD_RELEASE_ID: 'a'.repeat(40) }));
+    const runtime = await buildApp(apiConfig);
     try {
-      const result = await runtime.app.inject({ url: `/api/v1/vehicle-filters?${new URLSearchParams({ ...options, yearMin: '2020', projection: 'overview' })}` });
+      const result = await runtime.app.inject(request);
       assert.equal(result.statusCode, 200, result.body);
       assert.deepEqual(PublicVehicleFiltersSchema.parse(result.json()).data, baseline);
     } finally { await runtime.app.close(); }
+  });
+
+  await t.test('a blocked public overview cancels its SQL and returns the connection while the lock is still held', async ctx => {
+    const publicCache = { ...apiConfig.publicCache, requestTimeoutMs: 600, maxConcurrentLoads: 1 };
+    const runtime = await buildApp({ ...apiConfig, poolMax: 1, publicCache });
+    const locker = await db.pool.connect();
+    try {
+      await runtime.app.ready();
+      const backend = async () => (await runtime.db.pool.query("SELECT pg_backend_pid() AS pid,current_setting('statement_timeout') AS timeout")).rows[0];
+      const before = await backend();
+      const cancelled: string[] = [];
+      const transaction = runtime.db.transaction.bind(runtime.db);
+      ctx.mock.method(runtime.db, 'transaction', async <T>(work: (tx: PoolClient) => Promise<T>) => transaction(async tx => {
+        const run = tx.query.bind(tx);
+        const observedQuery = ctx.mock.method(tx, 'query', async (sql: string, params?: unknown[]) => {
+          try { return await run(sql, params); }
+          catch (error) {
+            if (sql.includes('FROM external_catalog_overview_groups f') && (error as { code?: string }).code === '57014') cancelled.push('57014');
+            throw error;
+          }
+        });
+        try { return await work(tx); }
+        finally { observedQuery.mock.restore(); }
+      }));
+
+      await locker.query('BEGIN');
+      await locker.query('LOCK TABLE external_catalog_overview_groups IN ACCESS EXCLUSIVE MODE');
+      const failed = await runtime.app.inject(request);
+      assert.equal(failed.statusCode, 503, failed.body);
+      assert.equal(failed.headers['retry-after'], '5');
+      assert.equal(failed.json().error.code, 'SERVICE_UNAVAILABLE');
+      // The single API pool connection must be usable before the other client drops its lock.
+      assert.deepEqual(await backend(), before);
+      assert.deepEqual(cancelled, ['57014']);
+      await locker.query('ROLLBACK');
+      const recovered = await runtime.app.inject(request);
+      assert.equal(recovered.statusCode, 200, recovered.body);
+      assert.deepEqual(PublicVehicleFiltersSchema.parse(recovered.json()).data, baseline);
+      assert.deepEqual(await backend(), before);
+    } finally {
+      try { await locker.query('ROLLBACK'); }
+      finally { locker.release(); await runtime.app.close(); }
+    }
   });
 
   await t.test('precise filters and different projections retain the raw path', async () => {
@@ -159,13 +205,32 @@ test('supplier overview rollups backfill and stay exact with the public filter c
     });
     const id = fixtures[8]!;
     await db.transaction(tx => apply(tx, 8, 2, { name: '供应商更新品牌' }));
-    assert.equal((await compare()).makes[0]?.name, '供应商更新品牌');
+    const noExtra = await compare();
+    assert.equal(noExtra.makes[0]?.name, '供应商更新品牌');
+    assert.equal(noExtra.total, baseline.total);
+    assert.equal(readWideSupplierLabel(), false);
+    const extra = async (text: string) => db.pool.query(`INSERT INTO external_vehicle_extras(listing_id,locale,data,export_status)
+      VALUES($1,'zh',$2,'unknown') ON CONFLICT(listing_id,locale) DO UPDATE SET data=excluded.data`, [id,
+      JSON.stringify({ exportStatus: 'unknown', names: { make: {
+        status: 'ready', text, requestedLocale: 'zh', contentLocale: 'zh', provenance: 'original', reviewed: false,
+      } } })]);
+    await extra('供应商更新品牌');
+    assert.deepEqual(await compare(), noExtra);
+    assert.equal(readWideSupplierLabel(), false);
+    await extra('供应商补充品牌');
+    assert.equal((await compare()).makes[0]?.name, '供应商补充品牌');
+    assert.equal(readWideSupplierLabel(), true);
+    await db.pool.query(`UPDATE external_catalog SET localized=jsonb_set(jsonb_set(localized,
+      '{zh,display,make,provenance}','"human"'),'{zh,display,make,text}','"人工审核品牌"') WHERE listing_id=$1`, [id]);
+    assert.equal((await compare()).makes[0]?.name, '人工审核品牌');
+    assert.equal(readWideSupplierLabel(), true);
     const store = new ExternalStore(db);
     const listing = await store.getListing(`ext-${id}`, 'zh');
     await store.saveOverrides(`ext-${id}`, { version: listing.version, overrides: {
       ...listing.overrides, facts: { ...listing.overrides.facts, make: { id: brand, name: '员工更正品牌' } },
     } }, randomUUID(), actor);
     assert.equal((await compare()).makes[0]?.name, '员工更正品牌');
+    assert.equal(readWideSupplierLabel(), true);
     assert.deepEqual(await groups(db.pool, true), version);
     await db.pool.query("UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1 AND locale='zh'", [id]);
     assert.notEqual((await compare()).makes[0]?.name, '员工更正品牌');

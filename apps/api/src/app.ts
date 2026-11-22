@@ -140,7 +140,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|PublicCacheReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
   type CatalogReadTiming={
     kind:'home-models'|'overview'|'overview-models'|'list'|'filters'|'catalog-page'; phase:CatalogReadPhase; started:number;
-    stageMs:Partial<Record<CatalogReadPhase,number>>;
+    stageMs:Partial<Record<CatalogReadPhase,number>>; backendPid?:number;
   };
   const catalogReadTimings=new WeakMap<FastifyRequest,CatalogReadTiming>();
   const beginCatalogTiming=(request:FastifyRequest,kind:CatalogReadTiming['kind'])=>{
@@ -156,12 +156,13 @@ export async function buildApp(config:Config=readConfig(), options:{
   const catalogReadDiagnostics=(request:FastifyRequest)=>{
     const timing=catalogReadTimings.get(request);
     if(!timing)return {};
-    const {kind,phase,stageMs,started}=timing;
+    const {kind,phase,stageMs,started,backendPid}=timing;
     const elapsed={...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)};
-    if(kind==='home-models')return {projection:kind,homeModelsPhase:phase,homeModelsStageMs:elapsed};
-    if(kind==='overview'||kind==='overview-models')return {projection:kind,facetsPhase:phase,facetsStageMs:elapsed};
+    const database=backendPid===undefined?{}:{databaseBackendPid:backendPid};
+    if(kind==='home-models')return {projection:kind,homeModelsPhase:phase,homeModelsStageMs:elapsed,...database};
+    if(kind==='overview'||kind==='overview-models')return {projection:kind,facetsPhase:phase,facetsStageMs:elapsed,...database};
     if(kind==='catalog-page')return {catalogPhase:phase,catalogStageMs:elapsed};
-    return {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed};
+    return {searchRoute:kind,searchPhase:phase,searchStageMs:elapsed,...database};
   };
   app.addHook('onRequest',async(request,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('X-Request-Id',request.id);
@@ -257,16 +258,18 @@ export async function buildApp(config:Config=readConfig(), options:{
     else if(['ECONNREFUSED','ETIMEDOUT','57P01','53300','08006'].includes(detail.code??'')) problem=new ApiError(503,'SERVICE_UNAVAILABLE','A required service is unavailable.',undefined,true);
     else problem=new ApiError(500,'INTERNAL_ERROR','Request could not be completed.');
     const route=request.routeOptions.url;
+    const catalogError=error instanceof PublicCatalogUnavailableError?error:undefined;
     if(options.onPublicFailure && route && capacityRoutes.has(route)) {
       // Report only fixed categories. Diagnostics must not alter the public response.
-      try {options.onPublicFailure({route:route as PublicFailureDiagnostic['route'],status:problem.status,...classifyCapacityFailure(error)});}
+      const cause=catalogError?.sqlState?{code:catalogError.sqlState}:error;
+      try {options.onPublicFailure({route:route as PublicFailureDiagnostic['route'],status:problem.status,...classifyCapacityFailure(cause)});}
       catch {/* capacity observer only */}
     }
     if(problem.status>=500&&route!==analyticsContactPath&&route!==analyticsIpVisitPath) {
-      const catalogError=error instanceof PublicCatalogUnavailableError?error:undefined;
       const metrics=catalogError&&catalogCache.metrics();
       app.log.error({requestId:request.id,route,errorCode:detail.code??detail.name,...catalogReadDiagnostics(request),
         ...(metrics&&catalogError?{catalogReason:catalogError.reason,
+          ...(catalogError.sqlState?{databaseSqlState:catalogError.sqlState}:{}),
           ...(catalogError.revisionConflicts?{catalogRevisionConflicts:catalogError.revisionConflicts}:{}),
           activeLoads:metrics.activeLoads,queuedLoads:metrics.queuedLoads,activeRevisionReads:metrics.activeRevisionReads,
           timeouts:metrics.timeouts,versionRetries:metrics.versionRetries,uncachedFilterLoads:metrics.uncachedFilterLoads,oversizedValues:metrics.oversizedValues,
@@ -425,14 +428,16 @@ export async function buildApp(config:Config=readConfig(), options:{
     const trackProjection=projection==='home-models'||projection==='overview'||projection==='overview-models';
     const advance=trackProjection?beginCatalogTiming(request,projection)
       :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
+    const timing=catalogReadTimings.get(request);
+    const onBackend=timing?(pid:number)=>{timing.backendPid=pid;}:undefined;
     const {value,stamp}=legacy
-      ? await catalogCache.getBoundedVersioned('filters',query,async()=>{
-        const result=await inventory.filterResult(query,advance);
+      ? await catalogCache.getBoundedVersioned('filters',query,async(deadline,flightSignal)=>{
+        const result=await inventory.filterResult(query,advance,{deadline,signal:flightSignal,onBackend});
         advance?.('cache_validate');
         return result;
       },usd,signal,protocol,advance)
-      : await catalogCache.getFilterSnapshot(query,async()=>{
-        const result=await inventory.filterSnapshot(query,advance);
+      : await catalogCache.getFilterSnapshot(query,async(deadline,flightSignal)=>{
+        const result=await inventory.filterSnapshot(query,advance,{deadline,signal:flightSignal,onBackend});
         advance?.('cache_validate');
         return result;
       },usd,signal,protocol,advance);
