@@ -102,6 +102,65 @@ test('Nginx public GET and HEAD delegate authorized originals and derivatives to
   assert.equal(publicDelivery.mock.callCount(),6);
 });
 
+test('Nginx mode sends verified versioned bytes without redirecting to the storage path',async t=>{
+  const {app,media}=await setup(t);
+  const token=`_${'Ab'.repeat(21)}`,url=`${publicPath}_${token}?variant=thumb`;
+  const deliver:typeof media.publicVersionedDelivery=async(_id,_token,_variant,options,reserve)=>{
+    assert.equal(reserve(),true);
+    return {filename:`${id}.thumb.webp`,byteSize:thumbnail.body.length,etag:thumbnail.etag,
+      notModified:options.ifNoneMatch===thumbnail.etag,body:options.readBody&&!options.ifNoneMatch?thumbnail.body:undefined};
+  };
+  const versioned=t.mock.method(media,'publicVersionedDelivery',deliver);
+  const cache='public, max-age=31536000, immutable';
+  const get=await app.inject({method:'GET',url});
+  assert.equal(get.statusCode,200,get.body);
+  assert.deepEqual(get.rawPayload,variants.thumb.body);
+  assert.equal(get.headers['cache-control'],cache);
+  assert.equal(get.headers['x-accel-redirect'],undefined);
+  assert.deepEqual(versioned.mock.calls[0]?.arguments.slice(0,4),[id,token,'thumb',{ifNoneMatch:undefined,readBody:true}]);
+  const head=await app.inject({method:'HEAD',url});
+  assert.equal(head.statusCode,200);
+  assert.equal(head.headers['cache-control'],cache);
+  assert.equal(Number(head.headers['content-length']),variants.thumb.body.length);
+  assert.equal(head.rawPayload.length,0);
+  const matched=await app.inject({method:'GET',url,headers:{'if-none-match':variants.thumb.etag}});
+  assert.equal(matched.statusCode,304);
+  assert.equal(matched.headers['cache-control'],cache);
+  assert.equal(matched.headers['x-accel-redirect'],undefined);
+});
+
+test('verified delivery has a fixed response budget and uncached overload handling',async t=>{
+  for(const mode of modes) {
+    const {app,media}=await setup(t,mode);
+    const url=`${publicPath}_${'Q'.repeat(43)}?variant=thumb`;
+    let release!:()=>void,entered!:()=>void;
+    const releaseWait=new Promise<void>(resolve=>{release=resolve;});
+    const enteredWait=new Promise<void>(resolve=>{entered=resolve;});
+    let holding=0;
+    const deliver:typeof media.publicVersionedDelivery=async(_id,_token,_variant,_options,reserve)=>{
+      if(!reserve()) throw new MediaStorageError('MEDIA_VERSION_BUSY','All verified response slots are held.');
+      if(++holding===12) entered();
+      await releaseWait;
+      return {filename:`${id}.thumb.webp`,byteSize:thumbnail.body.length,etag:thumbnail.etag,notModified:false,body:thumbnail.body};
+    };
+    t.mock.method(media,'publicVersionedDelivery',deliver);
+    const concurrent=Promise.all(Array.from({length:12},()=>app.inject({url})));
+    try {
+      await enteredWait;
+      const crowded=await app.inject({url});
+      assert.equal(crowded.statusCode,mode==='nginx'?307:503);
+      assert.equal(crowded.headers.location,mode==='nginx'?`${publicPath}?variant=thumb`:undefined);
+      noStore(crowded);
+    } finally {
+      release();
+      assert.ok((await concurrent).every(response=>response.statusCode===200));
+    }
+    const resumed=await app.inject({url});
+    assert.equal(resumed.statusCode,200);
+    assert.equal(resumed.headers['cache-control'],'public, max-age=31536000, immutable');
+  }
+});
+
 test('matching public validators return a bodyless 304 after the service checks delivery',async t=>{
   for(const mode of modes) {
     const {app,publicDelivery}=await setup(t,mode);
