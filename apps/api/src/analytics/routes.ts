@@ -15,7 +15,7 @@ import { createDatabase } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { createAnalyticsStorage } from './storage.js';
 import { getAnalyticsReport } from './report.js';
-import { canCountContact, countContact } from './contact.js';
+import { countContact } from './contact.js';
 import { getAnalyticsTraffic } from './traffic.js';
 
 export const analyticsEventsPath='/api/v1/analytics/events';
@@ -80,8 +80,7 @@ export function registerAnalyticsRoutes(app:FastifyInstance,config:Config,isAdmi
   const analytics=createAnalyticsStorage(db);
   const writer=lane(), reader=lane(), contactWriter=lane(), trafficReader=lane();
   const runtimeQuality={acceptedBatches:0,rejectedBatches:0,rateLimitedBatches:0,unavailableBatches:0,since:new Date().toISOString()};
-  const contactQuality={configured:config.analyticsOrigins.length>0&&
-    (config.analyticsContactLocalEnabled||Boolean(config.analyticsGatewaySecret&&config.analyticsContactCountries.length)),
+  const contactQuality={configured:config.analyticsOrigins.length>0,
     accepted:0,rejected:0,rateLimited:0,unavailable:0,since:runtimeQuality.since};
   let windowStart=performance.now(), acceptedBatches=0;
   let contactWindowStart=windowStart,contactWrites=0;
@@ -139,11 +138,7 @@ export function registerAnalyticsRoutes(app:FastifyInstance,config:Config,isAdmi
     config:{rateLimit:{max:20,timeWindow:60_000}},
     schema:{tags:['public','analytics'],operationId:'countAnonymousVehicleContact',body:AnalyticsContactCountRequestSchema,
       querystring:z.strictObject({}),response:{204:z.undefined(),...errorResponses}},
-    onRequest:async request=>{
-      validateAnalyticsOrigin(request,config);
-      if(!canCountContact(request,config,trustedGateway(request,config)?gatewayCountry(request):undefined))
-        throw new ApiError(403,'FORBIDDEN','Anonymous contact measurement is unavailable.');
-    },
+    onRequest:async request=>validateAnalyticsOrigin(request,config),
     onResponse:async (_request,reply)=>{
       if(reply.statusCode===204)contactQuality.accepted++;
       else if(reply.statusCode===429)contactQuality.rateLimited++;

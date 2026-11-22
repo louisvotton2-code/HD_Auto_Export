@@ -1,4 +1,4 @@
-"""Test the opt-in country table and gateway boundary with a synthetic fixture."""
+"""Test legacy country-table tooling and the current gateway's header boundary."""
 
 from contextlib import contextmanager
 import gzip
@@ -202,71 +202,31 @@ def request(root, address, method='POST', path=PATH, host=HOST, origin=f'https:/
         return response.status, response.getheader('X-HD-Analytics-Country'), body
 
 
-def result(country=b'', authenticated=False):
-    return (200, None, b'country='+country+b';trusted='+str(int(authenticated)).encode())
+def result():
+    return (200, None, b'country=;trusted=0')
 
 
 @unittest.skipUnless(NGINX, 'native nginx is required')
 class GeoGatewayTests(unittest.TestCase):
-    def test_scope_and_no_forwarded_spoofing(self):
+    def test_country_and_key_headers_are_stripped_even_with_the_legacy_mount(self):
         with gateway(True) as root:
-            for address, method, path, host, country, trusted in (
-                ('8.8.8.7', 'POST', CONTACT, HOST, b'US', True),
-                ('2001:4860::1234', 'POST', CONTACT, HOST, b'RU', True),
-                ('9.9.9.9', 'POST', CONTACT, HOST, b'', True),
-                ('10.0.0.1', 'POST', CONTACT, HOST, b'', True),
-                ('::ffff:10.0.0.1', 'POST', CONTACT, HOST, b'', True),
-                ('bad', 'POST', CONTACT, HOST, b'', True),
-                ('8.8.8.7', 'POST', PATH, HOST, b'', False),
-                ('2001:4860::1234', 'POST', PATH, HOST, b'', False),
-                ('8.8.8.7', 'POST', CONTACT+'/', HOST, b'', False),
-                ('8.8.8.7', 'POST', CONTACT.upper(), HOST, b'', False),
-                ('8.8.8.7', 'POST', CONTACT+'?test=1', HOST, b'', False),
-                ('8.8.8.7', 'POST', CONTACT, 'admin.hongdingauto.com', b'', False),
-                ('8.8.8.7', 'GET', CONTACT, HOST, b'', False),
-                ('8.8.8.7', 'POST', '/zh/', HOST, b'', False),
-            ):
-                # Stay below the existing global SSR limiter on the Unix peer.
-                with self.subTest(address=address, method=method, path=path, host=host):
-                    self.assertEqual(request(root, address, method, path, host), result(country, trusted))
-            self.assertEqual(request(root, '8.8.8.7', path=CONTACT, origin='https://fixture.invalid'), result())
-            self.assertEqual(request(root, '8.8.8.7', path=CONTACT+':https', origin=f'//{HOST}'), result())
+            # IPv4 and IPv6 table matches, unknown addresses and spoofed headers all reach the same upstream shape.
+            for address in ('8.8.8.7', '2001:4860::1234', '9.9.9.9', '10.0.0.1', '::ffff:10.0.0.1', 'bad'):
+                with self.subTest(address=address):
+                    self.assertEqual(request(root, address, path=CONTACT), result())
+            self.assertEqual(request(root, '8.8.8.7', path=PATH), result())
+            self.assertEqual(request(root, '8.8.8.7', path=CONTACT, host='admin.hongdingauto.com'), result())
+            self.assertEqual(request(root, '8.8.8.7', path='/zh/'), result())
             log = (root/'access.log').read_text()
             for address in ('8.8.8.7', '8.8.8.5', '2001:4860::1234', '10.0.0.1'):
                 self.assertNotIn(address, log)
             self.assertIn('"family":"analytics"', log)
 
-    def test_missing_mount_disables_lookup_without_skipping_ingest(self):
+    def test_contact_reaches_the_upstream_without_active_legacy_geo(self):
         with gateway(False) as root:
-            self.assertEqual(request(root, '8.8.8.7'), result())
+            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result())
         with gateway(True, authenticated=False) as root:
             self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result())
-
-    def test_empty_table_disables_live_lookup_without_restarting_gateway(self):
-        with gateway(True) as root:
-            pid = (root/'nginx.pid').read_text()
-            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result(b'US', True))
-            self.assertEqual(request(root, '8.8.8.7'), result())
-            empty = root/'dataset/country.next'
-            shutil.copyfile(HERE/'production/analytics-geo-disabled.conf', empty)
-            empty.replace(root/'dataset/country.conf')
-            command = nginx_command(root)
-            subprocess.run([*command, '-t'], check=True, capture_output=True, timeout=5)
-            subprocess.run([*command, '-s', 'reload'], check=True, capture_output=True, timeout=5)
-            deadline = time.monotonic()+3
-            while request(root, '8.8.8.7', path=CONTACT) == result(b'US', True) and time.monotonic() < deadline:
-                time.sleep(.025)
-            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result(authenticated=True))
-
-            (root/'dataset/gateway-key.conf').unlink()
-            subprocess.run([*command, '-t'], check=True, capture_output=True, timeout=5)
-            subprocess.run([*command, '-s', 'reload'], check=True, capture_output=True, timeout=5)
-            deadline = time.monotonic()+3
-            while request(root, '8.8.8.7', path=CONTACT) == result(authenticated=True) and time.monotonic() < deadline:
-                time.sleep(.025)
-            self.assertEqual(request(root, '8.8.8.7', path=CONTACT), result())
-            self.assertEqual(request(root, '8.8.8.7'), result())
-            self.assertEqual((root/'nginx.pid').read_text(), pid)
 
 
 if __name__ == '__main__':
