@@ -219,10 +219,17 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await worker!.state()).capacity_estimate.estimatedBytes,null);
    await assert.rejects(worker!.heavy(),/SYNC_CAPACITY_PENDING/);
    await database.pool.query("UPDATE external_full_members SET report_state='no_report' WHERE sampled");
-   await assert.rejects(worker!.estimateCapacity(snapshotId,20000000),/SYNC_CAPACITY_AWAITING_DECISION/);
-   const stableHash=(await worker!.state()).capacity_estimate.evidenceHash;await approveCurrent();
-   await worker!.estimateCapacity(snapshotId,20000000);
+   await assert.rejects(worker!.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+   const offered=(await worker!.state()).capacity_estimate;
+   const stableHash=offered.evidenceHash;
+   await approveCurrent();
+   // Maintenance can allocate pages between measurement and the host's receipt.
+   // The scheduler checks the receipt against the observation it offered.
+   await database.pool.query('VACUUM external_full_members');
+   assert.equal(await worker!.capacityGate(),true);
    const estimate=(await worker!.state()).capacity_estimate;
+   assert.equal(estimate.at,offered.at,'Accepting the receipt must preserve the physical observation time');
+   assert.equal(Number((await worker!.state()).last_capacity_sample),10000);
    const stageBytes=Number((await database.pool.query("SELECT pg_total_relation_size('external_full_stage')::text AS bytes")).rows[0].bytes);
    assert.equal(estimate.sqlStagingBytes,stageBytes);assert.ok(stageBytes>estimate.businessBytes);
    assert.equal(estimate.archiveDirectoryBytes,archive.length);
