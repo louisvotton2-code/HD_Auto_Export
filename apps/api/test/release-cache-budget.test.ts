@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { makeVehicleDraftFixture,makePublicVehicleFixture } from '@hd/contracts/fixtures';
-import { InternalPublicCatalogCacheStampSchema, PublicCatalogCacheStampSchema } from '@hd/contracts/public';
+import { InternalPublicCatalogCacheStampSchema, InternalPublicCatalogHomepageVersionResponseSchema, PublicCatalogCacheStampSchema } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/index.js';
@@ -136,6 +136,28 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
       const denied=await app.app.inject({url:control,headers:{'x-hd-cache-protocol':'2'}});
       assert.equal(denied.statusCode,404);
       assert.equal(denied.headers['x-hd-cache-protocol'],undefined);
+    });
+    await t.test('bundled homepage versions see current catalog, independent filters and one FX quote',async()=>{
+      const root='/internal/public-catalog/version?priceView=usd';
+      const bundle=async()=>InternalPublicCatalogHomepageVersionResponseSchema.parse(await call(root+'&scope=homepage',true,false,true)).data;
+      const before=await bundle();
+      assert.equal(before.catalog.version,(await call(root,true,false,true)).data.version);
+      assert.equal(before.filters.version,(await call(root+'&scope=filters',true,false,true)).data.version);
+      await advanceCatalog();
+      const revised=await bundle();
+      assert.notEqual(revised.catalog.version,before.catalog.version);
+      assert.equal(revised.filters.version,before.filters.version);
+      await db.pool.query("INSERT INTO public_fx_quote(id,source,as_of,expires_at,rates) VALUES(1,'synthetic',now()-interval '1 hour',now()+interval '24 hours',$1)",
+        [JSON.stringify({USD:'1',CNY:'7'})]);
+      try {
+        const priced=await bundle();
+        assert.notEqual(priced.catalog.version,revised.catalog.version);
+        assert.notEqual(priced.filters.version,revised.filters.version);
+        assert.ok(priced.catalog.fx);
+        assert.deepEqual(priced.catalog.fx,priced.filters.fx);
+        assert.equal(priced.catalog.checkedAt,priced.filters.checkedAt);
+        assert.equal(priced.catalog.validUntil,priced.filters.validUntil);
+      } finally {await db.pool.query('DELETE FROM public_fx_quote WHERE id=1');}
     });
     await t.test('rollback does not invalidate; committed inventory changes immediately invalidate all cached projections',async()=>{
       const before=(await version()).data.version;

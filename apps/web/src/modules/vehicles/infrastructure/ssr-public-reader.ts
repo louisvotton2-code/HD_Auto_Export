@@ -29,6 +29,10 @@ export type SsrPublicDescriptor<T extends Envelope> = {
 export type SsrCacheIdentity = { deploymentEnv: string; releaseId: string; apiOrigin: string };
 export type SsrCacheProtocol = 1 | 2;
 type Negotiated<T> = { protocol: SsrCacheProtocol; value: T; offsetSnapshot?: PublicCatalogCacheStamp; inlineSnapshot?: true };
+export type SsrInitialVersionRead = (startedAt: number) => {
+  startedAt: number;
+  result: Promise<Negotiated<PublicCatalogVersionResponse>>;
+};
 export type SsrAnonymousReader = <T extends Envelope>(descriptor: SsrPublicDescriptor<T>) => Promise<Negotiated<Anonymous<T>>>;
 const changedVersionIdentity = Symbol.for('hd-auto.ssr-version-mismatch.v1');
 class ChangedPublicVersion extends Error { readonly [changedVersionIdentity] = true; }
@@ -99,19 +103,22 @@ export function createSsrPublicReader({ identity, readVersion, readAnonymous, ca
   wallNow?: () => number;
 }) {
   const store = cache ?? new SsrDtoCache({ now });
-  return async function read<T extends Envelope>(descriptor: SsrPublicDescriptor<T>): Promise<T> {
+  return async function read<T extends Envelope>(descriptor: SsrPublicDescriptor<T>, initialVersion?: SsrInitialVersionRead): Promise<T> {
     let observed: PublicCatalogCacheStamp | null = null;
     let acceptedDeadlineEpochMs: number | undefined;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         // Intentionally outside the shared loader and executed even on a warm hit.
-        const versionStartedAt = now();
-        const { protocol, value } = await readVersion(descriptor.priceView, descriptor.scope);
+        const startedAt = now();
+        const version = attempt === 0 && initialVersion
+          ? initialVersion(startedAt)
+          : { startedAt, result: readVersion(descriptor.priceView, descriptor.scope) };
+        const { protocol, value } = await version.result;
         const schema = protocol === 2 ? InternalPublicCatalogVersionResponseSchema : PublicCatalogVersionResponseSchema;
         const current = schema.parse(value);
         const stamp = current.data;
         if (stamp.priceView !== descriptor.priceView) throw new PublicApiError(503);
-        const versionDeadline = deadlineAt(versionStartedAt, stamp, protocolLifetime(protocol));
+        const versionDeadline = deadlineAt(version.startedAt, stamp, protocolLifetime(protocol));
         if (now() >= versionDeadline) throw new PublicApiError(503);
         const key = JSON.stringify([
           identity.deploymentEnv, identity.releaseId, identity.apiOrigin,

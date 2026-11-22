@@ -12,6 +12,7 @@ export {
 } from './infrastructure/public-api';
 export {
   getSsrPublicHome as getPublicHome,
+  getSsrPublicHomeFilters as getPublicHomeFilters,
   getSsrPublicFilters as getPublicFilters,
   getSsrPublicCatalog as getPublicCatalog,
 } from './infrastructure/ssr-public-api';

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildApp } from './app.js';
 import { readConfig } from './config.js';
 import { SsrOriginLimiter } from './ssr-service.js';
+import { InternalPublicCatalogHomepageVersionResponseSchema } from '@hd/contracts/public';
 
 const secret='synthetic-only-ssr-service-secret-123456789';
 test('SSR origin is a bounded 30/s token bucket with burst 40 and no waiting queue',()=>{
@@ -39,9 +40,13 @@ test('authenticated version checks have a separate bounded quota for the resolve
   const {app,db}=runtime;
   t.after(()=>app.close());
   let available=true;
-  const query=t.mock.method(db.pool,'query',async()=>{
+  const quote={version:'00000000-0000-4000-8000-000000000002',expiresAt:new Date(Date.now()+60_000)};
+  const query=t.mock.method(db.pool,'query',async(sql:string)=>{
     if(!available)throw new Error('Isolated version read failed.');
-    return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',revision:'1',fx_version:null,fx_expires_at:null}],rowCount:1};
+    return {rows:[{epoch:'00000000-0000-4000-8000-000000000001',
+      revision:sql.includes('s.filter_revision::text AS revision')?'2':'1',
+      ...(sql.includes('s.filter_revision::text AS filter_revision')?{filter_revision:'2'}:{}),
+      fx_version:quote.version,fx_expires_at:quote.expiresAt}],rowCount:1};
   });
   const path='/internal/public-catalog/version?priceView=usd';
   const headers={'x-hd-ssr-key':secret,'x-forwarded-for':visitor,'x-hd-cache-protocol':'2'};
@@ -49,7 +54,8 @@ test('authenticated version checks have a separate bounded quota for the resolve
   const publicRequest=()=>app.inject({url:'/api/v1/vehicles?locale=invalid',remoteAddress:visitor});
 
   assert.equal((await app.inject({url:path,remoteAddress:peer,headers:{'x-forwarded-for':visitor}})).statusCode,404);
-  assert.equal((await app.inject({url:path,remoteAddress:visitor,headers})).statusCode,404);
+  assert.equal((await app.inject({url:path+'&scope=homepage',remoteAddress:visitor,headers})).statusCode,404);
+  assert.equal((await app.inject({url:path+'&scope=homepage',remoteAddress:peer,headers:{...headers,'x-hd-cache-protocol':'1','x-forwarded-for':'198.51.100.31'}})).statusCode,400);
   assert.equal(query.mock.callCount(),0);
 
   const catalog=await readVersion(), filters=await readVersion('&scope=filters');
@@ -58,16 +64,27 @@ test('authenticated version checks have a separate bounded quota for the resolve
   assert.equal(catalog.headers['x-hd-cache-protocol'],'2');
   assert.equal(catalog.headers['cache-control'],'no-store');
   assert.notEqual(catalog.json().data.version,filters.json().data.version);
+  const home=await readVersion('&scope=homepage');
+  assert.equal(home.statusCode,200);
+  assert.equal(home.headers['x-hd-cache-protocol'],'2');
+  assert.equal(home.headers['cache-control'],'no-store');
+  const versions=InternalPublicCatalogHomepageVersionResponseSchema.parse(home.json()).data;
+  assert.equal(versions.catalog.version,catalog.json().data.version);
+  assert.equal(versions.filters.version,filters.json().data.version);
+  assert.equal(versions.catalog.checkedAt,versions.filters.checkedAt);
+  assert.deepEqual(versions.catalog.fx,{version:quote.version,expiresAt:quote.expiresAt.toISOString()});
+  assert.deepEqual(versions.catalog.fx,versions.filters.fx);
+  assert.equal(query.mock.callCount(),3,'two separate reads plus one batched SQL statement');
 
   for(let i=0;i<120;i++)assert.equal((await publicRequest()).statusCode,400,`public request ${i+1}`);
   assert.equal((await publicRequest()).statusCode,429);
-  assert.equal(query.mock.callCount(),2);
+  assert.equal(query.mock.callCount(),3);
 
   available=false;
-  assert.equal((await readVersion()).statusCode,503);
+  assert.equal((await readVersion('&scope=homepage')).statusCode,503);
   available=true;
-  for(let i=3;i<120;i++)assert.equal((await readVersion()).statusCode,200,`version request ${i+1}`);
-  const limited=await readVersion('&scope=filters');
+  for(let i=4;i<120;i++)assert.equal((await readVersion()).statusCode,200,`version request ${i+1}`);
+  const limited=await readVersion('&scope=homepage');
   assert.equal(limited.statusCode,429);
   assert.equal(limited.json().error.code,'RATE_LIMITED');
   assert.ok(Number(limited.headers['retry-after'])>0);

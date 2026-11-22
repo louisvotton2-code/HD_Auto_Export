@@ -80,7 +80,9 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
       const rows = await recorded(request);
       expect(originReads(rows)).toHaveLength(read * 2);
       expect(originReads(rows).every(row => row.filterScope)).toBe(true);
-      expect(versions(rows).filter(row => row.query.scope === 'filters')).toHaveLength(read * 2);
+      const checks = versions(rows).filter(row => row.query.scope === 'filters');
+      expect(checks).toHaveLength(read);
+      expect(checks.every(row => row.serviceAuthenticated && row.hasVisitorIp)).toBe(true);
       expect(anonymous(rows).filter(row => row.path === `${internal}/home/vehicles`)).toHaveLength(1);
     }
   });
