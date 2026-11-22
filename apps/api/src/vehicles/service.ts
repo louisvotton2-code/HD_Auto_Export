@@ -11,7 +11,7 @@ import { AdminVehicleSchema, HomeVehicleIdSchema, VehicleTranslationSuggestionsS
   VehicleLocalizationSchema, DisplayTranslationSuggestionsSchema, BRAND_CATALOG, normalizeBrandAlias, type LocalizationData, type VehicleLocalization, type SaveVehicleLocalization, type GenerateDisplayTranslations } from '@hd/contracts/admin';
 import { PublicPriceSchema, PublicVehicleSchema, PublicVehicleCardSchema, type PublicVehicleCard, PublicVehicleFiltersSchema, type Locale, type PublicVehicle, type PublicVehicleQuery, type PublicFilterQuery, type PublicMedia } from '@hd/contracts/public';
 import {readFxQuote,type FxQuote} from '../external/fx.js';
-import { PublicCatalogUnavailableError, readPublicCatalogRevision, type PublicCatalogRevision } from '../external/public-cache.js';
+import { PublicCatalogUnavailableError, readPublicCatalogRevision, type CatalogRevisionProof, type PublicCatalogRevision } from '../external/public-cache.js';
 import {projectUsdPrice,staffUsdCondition,staffPriceAmountSql} from './usd-price.js';
 import type { Database } from '../db/index.js';
 import { ApiError, conflict, notFound } from '../errors.js';
@@ -65,6 +65,8 @@ const adminUploaderJoin = `LEFT JOIN staff uploader ON uploader.id=(SELECT a.act
 const publicFrom='FROM vehicles v JOIN vehicle_publications p ON p.id=v.published_revision_id LEFT JOIN publication_localizations pl ON pl.publication_id=p.id';
 const publicColumns = `v.*,p.data AS publication_data,${localizationDataSql('pl')} AS published_localization,pl.bindings AS published_bindings,pl.projections`;
 const publicSelect = `SELECT ${publicColumns} ${publicFrom}`;
+// A change to any of these visible rows invalidates the ordinary manual detail.
+const manualDetailGuard = `jsonb_build_array(v.xmin::text,p.id,p.xmin::text,pl.xmin::text)::text AS detail_guard`;
 const pixelDetailSelect = `SELECT ${publicColumns},coalesce(pixel.pixel_enabled,false) AS pixel_enabled ${publicFrom}
   LEFT JOIN vehicle_pixel_settings pixel ON pixel.vehicle_id=v.id`;
 const unverifiedVisible = "(p.data->'source'->>'kind' IN ('demo','external') AND v.availability='unknown' AND v.availability_checked_at IS NULL)";
@@ -370,7 +372,7 @@ function facetData(staff:CatalogFacetRow[],external:CatalogFacetRow[],query:Publ
       modelYears:rows('year').map(row=>({year:Number(row.id),count:row.count})).sort((a,b)=>b.year-a.year)}:{})});
 }
 type CatalogVersion={epoch:string;revision:string};
-type CatalogRevisionObserver=(revision:PublicCatalogRevision)=>void;
+type CatalogRevisionObserver=(revision:PublicCatalogRevision,verifyAfterAdvance?:CatalogRevisionProof)=>void;
 async function observeCatalogRevision(tx:PoolClient,priceView:'usd'|undefined,captureRevision:CatalogRevisionObserver) {
   // Read after acquiring the origin slot and beginning the same snapshot used by the DTO.
   const revision=await readPublicCatalogRevision({pool:tx},priceView==='usd','catalog');
@@ -802,7 +804,7 @@ export class InventoryService {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async tx=>{
       await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      if(captureRevision)await observeCatalogRevision(tx,priceView,captureRevision);
+      const revision=captureRevision?await observeCatalogRevision(tx,priceView,captureRevision):undefined;
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       const includePixel=projection==='detail-inline-v1'&&pixelView==='eligible';
       const includeSeo=projection==='detail-inline-v1'&&seoView==='eligible'&&this.publicSeoEnabled;
@@ -813,12 +815,30 @@ export class InventoryService {
         return projection?inlineDetail(tx,item,locale,technicalView):item;
       }
       const params:unknown[]=[id];const visible=localeVisible(locale,params);
-      const selection=includePixel?pixelDetailSelect:publicSelect;
-      const result=await tx.query<Row>(`${selection} WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`,params);
+      const eligibility=`WHERE v.id=$1 AND v.deleted_at IS NULL AND v.publication_state='published' AND ${visible}`;
+      const selection=revision&&!projection?`SELECT ${publicColumns},${manualDetailGuard} ${publicFrom}`
+        :includePixel?pixelDetailSelect:publicSelect;
+      const result=await tx.query<Row & {detail_guard?:string}>(`${selection} ${eligibility}`,params);
       const row=result.rows[0];
       if(!row)throw notFound();
       const vehicle=toPublic(row,locale,view,priceView,quote,true);
-      if(vehicle.source.kind==='manual') await attachVersionedMediaUrls(tx,vehicle.images);
+      if(vehicle.source.kind==='manual') {
+        const originalMedia=row.detail_guard?vehicle.images.map(image=>({...image})):undefined;
+        await attachVersionedMediaUrls(tx,vehicle.images);
+        if(revision&&originalMedia&&captureRevision) {
+          const versionedUrls=vehicle.images.map(image=>image.url);
+          captureRevision(revision,()=>this.db.transaction(async current=>{
+            await current.query(catalogReadTransaction);
+            const checked=await readPublicCatalogRevision({pool:current},priceView==='usd','catalog');
+            const {rows:[guard]}=await current.query<{detail_guard:string}>(`SELECT ${manualDetailGuard}
+              ${publicFrom} ${eligibility} AND p.data#>>'{source,kind}'='manual'`,params);
+            if(guard?.detail_guard!==row.detail_guard)return null;
+            const images=originalMedia.map(image=>({...image}));
+            await attachVersionedMediaUrls(current,images);
+            return images.every((image,index)=>image.url===versionedUrls[index])?checked:null;
+          }));
+        }
+      }
       const report=await getStaffReport(tx,row.publication_data!.source);
       vehicle.report={hasReport:report.hasReport};
       if(includeSeo)vehicle.seo=await vehicleSeo(tx,vehicle.id,locale,true);

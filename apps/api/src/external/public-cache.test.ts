@@ -65,6 +65,59 @@ test('a publication changing during source reads retries once and never tags old
   });
 });
 
+test('an offset refresh shares the original load slot and neither stores data nor tolerates an unsafe second read', async () => {
+  const now=Date.parse('2026-11-22T00:00:00Z');
+  const fx={version:'quote-a',expiresAt:now+60_000};
+  for(const changeFx of [false,true]){
+    let current={...version(),fx};
+    let loads=0;
+    const store=new Store();
+    const cache=new PublicCatalogCache({namespace:'hd:offset-proof',maxConcurrentLoads:1}, {readRevision:async()=>current,store,now:()=>now});
+    const read=cache.getOffsetListSnapshot({},async()=>{
+      assert.equal(cache.metrics().activeLoads,1);
+      const observed=current;
+      current={...current,revision:String(++loads+1)};
+      if(loads===2&&changeFx)current={...current,fx:{...fx,version:'quote-b'}};
+      return {value:{total:loads===1?1:0},revision:observed};
+    },true);
+    if(changeFx) await assert.rejects(read,{status:503,reason:'revision-changed',revisionConflicts:['catalog-advanced','fx-changed']});
+    else {
+      const result=await read;
+      assert.deepEqual(result.value,{total:0});
+      assert.equal(result.stamp,undefined);
+      assert.equal(result.offsetSnapshot?.fx?.version,fx.version);
+    }
+    assert.equal(loads,2);
+    assert.equal(cache.metrics().activeLoads,0);
+    assert.equal(cache.metrics().uncachedListLoads,changeFx?0:1);
+    assert.equal(store.values.size,0);
+  }
+});
+
+test('a detail proof cannot promote across epoch, FX or revision regression', async () => {
+  const now = Date.parse('2026-11-22T00:00:00Z');
+  const fx = { version: 'quote-a', expiresAt: now + 60_000 };
+  const cases = [
+    { conflict: 'epoch-changed', change: (current: PublicCatalogRevision) => ({ ...current, epoch: '00000000-0000-4000-8000-000000000002' }) },
+    { conflict: 'fx-changed', change: (current: PublicCatalogRevision) => ({ ...current, fx: { ...fx, version: 'quote-b' } }) },
+    { conflict: 'revision-regressed', change: (current: PublicCatalogRevision) => ({ ...current, revision: String(Number(current.revision)-1) }) },
+  ];
+  for (const {conflict,change} of cases) {
+    let current={...version(),fx};
+    const store=new Store();
+    const cache=new PublicCatalogCache({namespace:'hd:detail-proof'}, {readRevision:async()=>current,store,now:()=>now});
+    let proofs=0;
+    await assert.rejects(cache.getCatalogSnapshot('detail',{},async()=>{
+      const observed=current;
+      current={...current,revision:String(Number(current.revision)+1)};
+      return {value:{price:'old'},revision:observed,verifyAfterAdvance:async()=>{proofs++;return change(current);}};
+    },true),{status:503,reason:'revision-changed',revisionConflicts:[conflict,conflict]});
+    assert.equal(proofs,2);
+    assert.equal(cache.metrics().detailRevalidations,0);
+    assert.equal(store.values.size,0);
+  }
+});
+
 test('a queued filter read shares a new authoritative stamp and warms only the current version', async () => {
   let revision=version();
   const store=new Store();

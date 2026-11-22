@@ -758,7 +758,7 @@ test('one vehicle lifecycle, public whitelist, draft snapshot, availability, hom
   assert.equal((await call({method:'GET',url:`/api/v1/media/${mediaId}`})).statusCode,404);
   const media=await runtime.media.get(mediaId);assert.equal((await call({method:'DELETE',url:`/api/v1/admin/media/${mediaId}`,headers:headers(),payload:{version:media.version}})).statusCode,409);
 });
-test('public manual media versions bind actual bytes, include old inventory and fail closed',async()=>{
+test('public manual media versions bind actual bytes, include old inventory and fail closed',async context=>{
   let vehicle=await ready();
   const id=vehicle.draft.media[0]!.id,legacy=`/api/v1/media/${id}`;
   const store=new LocalMediaStore(path.join(root,'media'));
@@ -839,8 +839,24 @@ test('public manual media versions bind actual bytes, include old inventory and 
   const beforeChanged=await call({url:`${versioned}?variant=thumb`,headers:{'if-none-match':`W/"sha256-${recipe.thumb}"`}});
   assert.equal(beforeChanged.statusCode,404,beforeChanged.body);
   assert.equal(beforeChanged.headers['cache-control'],'no-store');
-  await backfillMediaContentVersions(runtime.db,store,{limit:25,apply:true,reconcile:true});
-  const newUrl=(await detail()).images[0]?.url;
+  await runtime.db.pool.query('SELECT queue_public_catalog_metadata_change()');
+  const transaction=runtime.db.transaction;
+  let reconciled=false;
+  const race=context.mock.method(runtime.db,'transaction',<T>(work:Parameters<typeof transaction<T>>[0])=>transaction<T>(tx=>{
+    const wrapped=Object.create(tx) as typeof tx;
+    wrapped.query=(async (text:string,values?:unknown[])=>{
+      const result=await tx.query(text,values);
+      if(!reconciled&&text.includes('s.revision::text AS revision')) {
+        reconciled=true;
+        await backfillMediaContentVersions(runtime.db,store,{limit:25,apply:true,reconcile:true});
+      }
+      return result;
+    }) as typeof tx.query;
+    return work(wrapped);
+  }));
+  const racedDetail=await detail().finally(()=>race.mock.restore());
+  assert.equal(reconciled,true);
+  const newUrl=racedDetail.images[0]?.url;
   assert.ok(newUrl&&newUrl!==versioned);
   await assertUnavailable(`${versioned}?variant=thumb`);
   assert.equal((await call({url:`${newUrl}?variant=thumb`})).headers['cache-control'],cache);

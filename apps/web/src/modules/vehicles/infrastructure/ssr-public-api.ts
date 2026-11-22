@@ -62,6 +62,7 @@ export function getSsrPublicFilters(
 export function getSsrPublicCatalog(query: PublicVehicleQuery) {
   const effective = PublicVehicleQuerySchema.parse(publicUsdCatalogQuery(query));
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicles', effective), priceView: 'usd',
+    allowOffsetSnapshot: effective.cursor || effective.pagination ? undefined : true,
     schema: localizedCardListSchema(query.locale, 'usd'), media: value => media(value.data.items) });
 }
 export async function getSsrPublicVehicle(
