@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
-import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS } from '@hd/contracts/public';
+import { PUBLIC_BROWSE_CACHE_MAX_TTL_MS } from '@hd/contracts/public';
 
 export interface PublicCacheStore {
   get(key: string): Promise<string | null>;
@@ -86,7 +86,7 @@ export async function createRedisPublicCacheStore(options: RedisPublicCacheOptio
   return {
     get: key => command(['GET', key]),
     async set(key, value, ttlMs) {
-      if (Buffer.byteLength(value) > maxValueBytes || !Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS) throw unavailable();
+      if (Buffer.byteLength(value) > maxValueBytes || !Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > PUBLIC_BROWSE_CACHE_MAX_TTL_MS) throw unavailable();
       await command(['SET', key, value, 'PX', String(ttlMs)]);
     },
     async close() { closed = true; for (const socket of sockets) socket.destroy(); },
