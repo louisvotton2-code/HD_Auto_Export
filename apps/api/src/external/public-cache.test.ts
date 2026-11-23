@@ -73,7 +73,9 @@ test('an offset refresh shares the original load slot and neither stores data no
     let loads=0,proofs=0;
     const store=new Store();
     const cache=new PublicCatalogCache({namespace:'hd:offset-proof',maxConcurrentLoads:1}, {readRevision:async()=>current,store,now:()=>now});
-    const read=cache.getOffsetListSnapshot({},async()=>{
+    const sourceBudgets:Array<{deadline:number;signal:AbortSignal}>=[];
+    const read=cache.getOffsetListSnapshot({},async (deadline,signal)=>{
+      sourceBudgets.push({deadline,signal});
       assert.equal(cache.metrics().activeLoads,1);
       const observed=current;
       current={...current,revision:String(++loads+1)};
@@ -92,6 +94,9 @@ test('an offset refresh shares the original load slot and neither stores data no
       assert.equal(result.offsetSnapshot?.fx?.version,fx.version);
     }
     assert.equal(loads,2);
+    assert.ok(Number.isFinite(sourceBudgets[0]?.deadline));
+    assert.equal(sourceBudgets[0]!.deadline,sourceBudgets[1]!.deadline);
+    assert.equal(sourceBudgets[0]!.signal,sourceBudgets[1]!.signal);
     assert.equal(proofs,conflict==='fx-changed'?0:1);
     assert.equal(cache.metrics().activeLoads,0);
     assert.equal(cache.metrics().uncachedListLoads,conflict?0:1);

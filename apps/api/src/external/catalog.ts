@@ -152,7 +152,21 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
 /** Escape LIKE metacharacters; query text always means a literal substring. */
 export const literalPattern = (text: string) => `%${text.replace(/[\\%_]/g, value => `\\${value}`)}%`;
 type CatalogMatchQuery = Omit<PublicFilterQuery,'projection'>;
-function matches(query: CatalogMatchQuery,quote:FxQuote|null=null) {
+// Keep this range the same as external_catalog_han_pairs in migration 0050.
+const isChineseHanPair = (query:CatalogMatchQuery) => query.locale==='zh' && /^[\u3400-\u4dbf\u4e00-\u9fff]{2}$/u.test(query.q??'');
+// Estimate fanout before choosing an access path. Missing/stale estimates can
+// only change the plan; both paths still apply the same exact text predicate.
+export async function preferIndexedHanPair(tx:Queryable,query:CatalogMatchQuery) {
+  if(!isChineseHanPair(query))return false;
+  const result=await tx.query<{selective:boolean}>(`SELECT NOT EXISTS (
+    SELECT 1 FROM unnest(most_common_elems::text::text[],most_common_elem_freqs) AS entry(term,frequency)
+    WHERE entry.term=$1 AND entry.frequency>=0.04
+  ) AS selective FROM pg_catalog.pg_stats
+  WHERE schemaname='public' AND tablename='external_catalog_search_zh_han_pairs_idx'
+    AND attname='external_catalog_han_pairs' AND most_common_elems IS NOT NULL`,[query.q]);
+  return result.rows[0]?.selective===true;
+}
+function matches(query: CatalogMatchQuery,quote:FxQuote|null=null,indexedHan=false) {
   const values: unknown[] = [query.locale];
   const param = (value: unknown) => { values.push(value); return `$${values.length}`; };
   const where: string[] = [];
@@ -174,18 +188,25 @@ function matches(query: CatalogMatchQuery,quote:FxQuote|null=null) {
     else {if(query.priceMin!==undefined)where.push(`f.price_cny>=${param(query.priceMin)}::numeric`);if(query.priceMax!==undefined)where.push(`f.price_cny<=${param(query.priceMax)}::numeric`);}
   }
   if (query.exportStatus && query.exportStatus !== 'all') where.push(`coalesce(x.export_status,'unknown')=${param(query.exportStatus)}`);
+  const text: string[]=[];
   const inquiryNumber = query.q && externalInquiryNumber(query.q);
   if (inquiryNumber) {
     where.push(`f.listing_id=(SELECT id FROM external_listings WHERE inquiry_number=${param(inquiryNumber)}::bigint)`);
   } else if (query.q) {
     const pattern = param(literalPattern(query.q));
-    where.push(`s.search_document LIKE lower(${pattern}) ESCAPE E'\\\\'`);
+    text.push(`s.search_document LIKE lower(${pattern}) ESCAPE E'\\\\'`);
+    if(indexedHan) {
+      // The fixed locale also lets a generic plan use the partial GIN index.
+      text.push(`s.locale='zh' AND public.external_catalog_han_pairs(s.search_document) @> ARRAY[${param(query.q)}::text]`);
+    }
     // The indexed document separates fields with newlines. Only a literal
     // containing that separator can match across two different fields.
     if(query.q.includes('\n'))
-      where.push(`(${['stock_text','make_text','model_text','title_text'].map(field => `lower(s.${field}) LIKE lower(${pattern}) ESCAPE E'\\\\'`).join(' OR ')})`);
+      text.push(`(${['stock_text','make_text','model_text','title_text'].map(field => `lower(s.${field}) LIKE lower(${pattern}) ESCAPE E'\\\\'`).join(' OR ')})`);
   }
-  return { where: where.length ? ` AND ${where.join(' AND ')}` : '', values };
+  const conditions=(clauses:string[])=>clauses.length?` AND ${clauses.join(' AND ')}`:'';
+  const structured=conditions(where), search=conditions(text);
+  return {where:structured+search,structured,search,values,indexedHan};
 }
 
 // Fixed-width inverse microseconds and UUID preserve newest-first/id-ascending order.
@@ -368,12 +389,28 @@ export async function getExternalPublic(tx: Queryable, id: string, locale: Local
 }
 // A transactionally maintained read model carries only visibility and filter scalars.
 // Text eligibility joins the search projection only when a literal search is requested.
-const filterFrom = (query: CatalogMatchQuery, table:'external_catalog_filter'|'selected_filter'='external_catalog_filter') => `FROM ${table} f` +
-  (query.q && !externalInquiryNumber(query.q) ? ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text' : '') +
+const searchJoin = ' JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale=$1::text';
+const filterFrom = (query: CatalogMatchQuery, table:'external_catalog_filter'|'selected_filter'='external_catalog_filter', includeSearch=true) => `FROM ${table} f` +
+  (includeSearch && query.q && !externalInquiryNumber(query.q) ? searchJoin : '') +
   (query.exportStatus && query.exportStatus!=='all' ? ' LEFT JOIN external_vehicle_extras x ON x.listing_id=f.listing_id AND x.locale=$1::text' : '');
 const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
   WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[]`;
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(${visibleLocaleMasks})`;
+function matchSource(query:CatalogMatchQuery,match:ReturnType<typeof matches>,scope='', selected=false) {
+  if(match.indexedHan&&query.make&&!selected) {
+    // Intersect two narrow ID sets before reading the matching filter rows.
+    return `FROM (${indexedBrandMatches(query,match,scope)}) ids
+      JOIN external_catalog_filter f ON f.listing_id=ids.listing_id WHERE true`;
+  }
+  return `${filterFrom(query,selected?'selected_filter':'external_catalog_filter')} ${filterVisible}${match.where}${scope}`;
+}
+function indexedBrandMatches(query:CatalogMatchQuery,match:ReturnType<typeof matches>,scope='') {
+  return `WITH eligible AS MATERIALIZED (
+    SELECT f.listing_id ${filterFrom(query,'external_catalog_filter',false)} ${filterVisible}${match.structured}${scope}
+  ), hits AS MATERIALIZED (
+    SELECT f.listing_id FROM eligible f${searchJoin} WHERE true${match.search}
+  ) SELECT listing_id FROM hits`;
+}
 const groupVisible = `WHERE f.locale_mask=ANY(${visibleLocaleMasks})`;
 const filterOrdered = 'ORDER BY f.published_at DESC,f.listing_id';
 const maxCombinedSearchMatches = 8_192;
@@ -388,14 +425,14 @@ function canUseExternalPowerYearGroups(query:CatalogMatchQuery) {
     && (!query.exportStatus||query.exportStatus==='all');
 }
 
-export function canCountExternalSearchPage(query:PublicVehicleQuery) {
-  // Keep the direct ordered scan for deep pages, cursors and short searches.
+export function canCountExternalSearchPage(query:PublicVehicleQuery,indexedHan=false) {
+  // Keep the direct ordered scan for deep pages, cursors and unindexed short searches.
   return query.projection==='card' && query.page===1 && !query.cursor && !query.pagination && (query.sort??'newest')==='newest'
-    && Boolean(query.q && !externalInquiryNumber(query.q) && /[\p{L}\p{N}]{3}/u.test(query.q));
+    && Boolean(query.q && !externalInquiryNumber(query.q) && (indexedHan||/[\p{L}\p{N}]{3}/u.test(query.q)));
 }
 
-export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null): Promise<number> {
-  const { where, values } = matches(query,quote);
+export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null,indexedHan=false): Promise<number> {
+  const match=matches(query,quote,indexedHan),{where,values}=match;
   if (!where) {
     // Count the same active locale masks in the caller's catalog snapshot.
     const result = await tx.query<{total:number|null}>(`SELECT sum(s.locale_counts[visible.mask])::int AS total
@@ -409,7 +446,8 @@ export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quot
       FROM external_catalog_overview_groups f ${groupVisible}${where}`,values);
     return result.rows[0]!.total;
   }
-  const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${filterFrom(query)} ${filterVisible}${where}`, values);
+  const source=indexedHan&&query.make?`FROM (${indexedBrandMatches(query,match)}) ids`:matchSource(query,match);
+  const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${source}`, values);
   return result.rows[0]!.total;
 }
 function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
@@ -423,9 +461,9 @@ function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
 }
 
 export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null, countMatches=false,
-  selectedIds?:readonly string[]):
+  selectedIds?:readonly string[],indexedHan=false):
 Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];total?:number}> {
-  const { where, values } = matches(query,quote);
+  const match=matches(query,quote,indexedHan),{values}=match;
   const sort=query.sort??'newest',numeric=numericSort(sort);
   let column=sort==='mileage_asc'?'f.mileage_km':sort==='year_desc'?'f.model_year':'f.price_cny';
   if(sort.startsWith('price_')&&query.priceView==='usd')column=externalUsdSort(quote,values);
@@ -435,8 +473,8 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const selected=selectedIds?`selected_filter AS MATERIALIZED (
     SELECT * FROM external_catalog_filter WHERE listing_id=ANY($${values.push(selectedIds)}::uuid[])
   ), `:'';
-  const matched=`SELECT f.listing_id${sortSelect} ${filterFrom(query,selectedIds?'selected_filter':'external_catalog_filter')} ${filterVisible}${where}`;
-  const includeTotal=countMatches&&!selectedIds&&!after&&canCountExternalSearchPage(query);
+  const matched=`SELECT f.listing_id${sortSelect} ${matchSource(query,match,'',Boolean(selectedIds))}`;
+  const includeTotal=countMatches&&!selectedIds&&!after&&canCountExternalSearchPage(query,indexedHan);
   // A newest search can reuse exact matches for both the total and the page.
   // Keep the wide public projection out of the match set.
   const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${maxCombinedSearchMatches}`:matched;
@@ -471,7 +509,7 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const total=result.rows[0]?.total;
   // Common terms may match most of the catalog. In that case keep the usual
   // ordered page plan and let the caller compute the exact total separately.
-  if(total!==undefined&&total>maxCombinedSearchMatches) return listExternalPage(tx,query,limit,offset,time,after,quote);
+  if(total!==undefined&&total>maxCombinedSearchMatches) return listExternalPage(tx,query,limit,offset,time,after,quote,false,undefined,indexedHan);
   // An out-of-range offset still returns the exact total, with no vehicle row.
   const rows=result.rows.filter(row=>row.listing_id!==null);
   return {items:await materialize(tx,rows,query.locale,time,query.priceView,quote,query.projection==='card'),
@@ -500,7 +538,7 @@ const facetLabelJoins = `JOIN external_catalog labels ON labels.listing_id=label
   LEFT JOIN external_vehicle_extras extra ON extra.listing_id=label.listing_id AND extra.locale=label.locale`;
 
 type OverviewFacetRow = CatalogFacetRow & {pending_make_winner?:string|null};
-export type SupplierFacetPhase = 'supplier_overview_rollup'|'supplier_pending_labels'|'supplier_label_fallback';
+export type SupplierFacetPhase = 'supplier_overview_rollup'|'supplier_global_rollup'|'supplier_pending_labels'|'supplier_label_fallback';
 
 async function resolvePendingOverviewLabels(tx:Queryable,rows:OverviewFacetRow[],locale:Locale,observe?: (phase:SupplierFacetPhase)=>void,
   beforeSupplement?:()=>Promise<void>) {
@@ -564,10 +602,56 @@ function externalOverviewGroups(withModels:boolean) {
   )`;
 }
 
+// The global counters avoid scanning every visible listing. Resolve the names
+// from live winner rows to retain staff overrides and locale label precedence.
+function globalOverviewStatement(groups:string, withModels:boolean) {
+  const modelMasks=withModels?`, model_masks AS MATERIALIZED (
+    SELECT make_id,model_id,bit_or(1 << locale_mask) AS mask_bits
+    FROM atoms WHERE make_id IS NOT NULL AND model_id IS NOT NULL GROUP BY make_id,model_id
+  )`:'';
+  const modelWinners=withModels?`UNION ALL
+    SELECT g.kind,g.id,g.make_id,winner.listing_id FROM facets g
+    JOIN model_masks masks ON masks.make_id=g.make_id AND masks.model_id=g.id
+    CROSS JOIN LATERAL (
+      SELECT candidate.listing_id FROM unnest(${visibleLocaleMasks}) AS visible(mask)
+      CROSS JOIN LATERAL (
+        SELECT f.listing_id,f.published_at FROM external_catalog_filter f
+        WHERE f.active AND f.locale_mask<>0 AND f.make_id IS NOT NULL AND f.model_id IS NOT NULL
+          AND f.make_id=g.make_id AND f.model_id=g.id AND f.locale_mask=visible.mask
+        ${filterOrdered} LIMIT 1
+      ) candidate WHERE (masks.mask_bits & (1 << visible.mask))<>0
+      ORDER BY candidate.published_at DESC,candidate.listing_id LIMIT 1
+    ) winner WHERE g.kind='model'`:'';
+  return `WITH atoms AS MATERIALIZED (
+    SELECT f.dimensions[1] AS make_id,f.dimensions[2] AS model_id,f.dimensions[3] AS powertrain,
+      f.dimensions[4] AS drivetrain,f.dimensions[5]::integer AS model_year,f.has_trim AS has_trims,
+      f.has_generation AS has_generations,f.row_count,f.locale_mask,NULL::text AS label_order
+    FROM external_catalog_global_facets f ${groupVisible}
+  )${groups}${modelMasks}, winners AS MATERIALIZED (
+    SELECT g.kind,g.id,g.make_id,winner.listing_id FROM facets g
+    CROSS JOIN LATERAL (
+      SELECT f.listing_id FROM external_catalog_filter f
+      ${filterVisible} AND f.make_id=g.id AND f.make_id IS NOT NULL
+      ${filterOrdered} LIMIT 1
+    ) winner WHERE g.kind='make'
+    ${modelWinners}
+  ), winner_labels AS MATERIALIZED (
+    SELECT winner.kind,winner.id,winner.make_id,
+      CASE winner.kind WHEN 'make' THEN ${externalFacetLabel('make')} ELSE ${externalFacetLabel('model')} END AS name
+    FROM winners winner JOIN external_catalog_search label ON label.listing_id=winner.listing_id AND label.locale=$1::text
+    ${facetLabelJoins}
+  ) SELECT g.kind,g.id,g.make_id,g.model_id,g.count,winner.name
+  FROM facets g LEFT JOIN winner_labels winner ON winner.kind=g.kind AND winner.id=g.id
+    AND winner.make_id IS NOT DISTINCT FROM g.make_id`;
+}
+
 export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quote:FxQuote|null=null, pairs?: readonly CatalogModelPair[],
   observe?: (phase:SupplierFacetPhase)=>void, beforeSupplement?:()=>Promise<void>) {
-  const { where: filters, values } = matches(query,quote);
-  const where = pairs ? `${filters} AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}` : filters;
+  const indexedHan=await preferIndexedHanPair(tx,query);
+  if(isChineseHanPair(query))await beforeSupplement?.();
+  const match=matches(query,quote,indexedHan),{values}=match;
+  const scope=pairs?` AND ${catalogModelScope(values,pairs,'f.make_id','f.model_id')}`:'';
+  const where=match.where+scope;
   const matchingValues=[...values];
   const {projection}=query;
   const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;
@@ -594,6 +678,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // exact counts. Overview keeps only overview dimensions in the grouping; variant
   // IDs contribute to availability without producing per-variant dictionaries.
   const useRollup=!pairs&&projection==='overview'&&canUseExternalPowerYearGroups(query);
+  const useGlobal=overview&&!pairs&&!where;
   const atoms=useRollup?`atoms AS MATERIALIZED (
     SELECT f.make_id,f.powertrain,f.drivetrain,f.model_year,f.trim_count>0 AS has_trims,
       f.generation_count>0 AS has_generations,f.label_order,f.row_count,
@@ -602,16 +687,18 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     FROM external_catalog_overview_groups f ${groupVisible}${where}
   )`:`matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
-    ${filterFrom(query)} ${filterVisible}${where}
+    ${matchSource(query,match,scope)}
   ), atoms AS MATERIALIZED (
     SELECT ${groupBy},${overview?`${facetAvailability},`:''}
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count
     FROM matched GROUP BY ${groupBy}
   )`;
   if(useRollup)observe?.('supplier_overview_rollup');
+  if(useGlobal)observe?.('supplier_global_rollup');
   // Select the name from the same atom that supplies the ordered winning ID.
   // Tied keys identify the same vehicle, so a filled copy of that name is safe.
-  const statement=useRollup?`WITH ${atoms}${groups}, winner_labels AS (
+  const statement=useGlobal?globalOverviewStatement(groups,projection==='overview-models'):
+    useRollup?`WITH ${atoms}${groups}, winner_labels AS (
     SELECT DISTINCT ON (make_id) make_id,make_name,
       CASE WHEN label_pending THEN substring(label_order FROM 19 FOR 36)::uuid END AS pending_make_winner
     FROM atoms WHERE make_id IS NOT NULL

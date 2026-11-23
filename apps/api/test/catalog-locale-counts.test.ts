@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { makeExternalCandidateFixture } from '@hd/contracts/fixtures';
-import { PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
+import { PublicFilterQuerySchema, PublicVehicleQuerySchema, type Locale } from '@hd/contracts/public';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import type { PoolClient } from 'pg';
 import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
-import { countExternal } from '../src/external/catalog.js';
+import { countExternal, preferIndexedHanPair } from '../src/external/catalog.js';
 import { seedSyntheticFx } from '../src/external/fx.js';
 import { applyFormalCandidate } from '../src/external/store.js';
 import { InventoryService } from '../src/vehicles/service.js';
@@ -75,8 +75,27 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
   });
   assert.deepEqual((await db.pool.query('SELECT active,locale_mask FROM external_catalog_filter ORDER BY active DESC,locale_mask')).rows,
     [...fixtures.map((_id, locale_mask) => ({ active: true, locale_mask })), { active: false, locale_mask: 7 }]);
+  const pairMigration = await readFile(new URL('0050_external_search_zh_han_pairs.sql', migrationSource), 'utf8');
+  const [definePairFunction, verifyPairIndex] = pairMigration.split('--> statement-breakpoint');
+  await db.transaction(tx => tx.query(definePairFunction!));
+  await assert.rejects(db.transaction(async tx => {
+    await tx.query("SET LOCAL hd.require_prebuilt_search_zh_han_pairs_index='on'");
+    await tx.query(verifyPairIndex!);
+  }), /must be prebuilt concurrently/);
+  await db.pool.query(`CREATE INDEX CONCURRENTLY external_catalog_search_zh_han_pairs_idx ON public.external_catalog_search
+    USING gin (public.external_catalog_han_pairs(search_document)) WHERE locale='zh'`);
+  const indexOid = async () => (await db.pool.query<{oid:string}>(`SELECT 'external_catalog_search_zh_han_pairs_idx'::regclass::oid::text AS oid`)).rows[0]!.oid;
+  const prebuiltIndex = await indexOid();
+  await db.pool.query(`CREATE INDEX CONCURRENTLY external_catalog_filter_model_winner_idx ON public.external_catalog_filter
+    (make_id,model_id,locale_mask,published_at DESC,listing_id)
+    WHERE active AND locale_mask<>0 AND make_id IS NOT NULL AND model_id IS NOT NULL`);
+  const rollupIndexOid = async () => (await db.pool.query<{oid:string}>(
+    "SELECT 'external_catalog_filter_model_winner_idx'::regclass::oid::text AS oid")).rows[0]!.oid;
+  const prebuiltWinnerIndex = await rollupIndexOid();
   await migrateDatabase(db);
   assert.equal(await hasCounter(), true);
+  assert.equal(await indexOid(), prebuiltIndex, 'the migration adopts the live concurrent index in place');
+  assert.equal(await rollupIndexOid(), prebuiltWinnerIndex, 'the global facet migration adopts the concurrent index');
 
   const buckets = async (reader: Pick<PoolClient, 'query'> = db.pool) => (await reader.query<{locale_counts: string[]}>(
     'SELECT locale_counts FROM external_catalog_state WHERE id=1')).rows[0]!.locale_counts.map(Number);
@@ -86,6 +105,9 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
         WHERE active AND locale_mask<>0 AND (locale_mask & $1::smallint)<>0`, [bit])).rows[0]!.total;
       assert.equal(exact, expected[index], locale);
       assert.equal(await countExternal(reader, listingQuery(locale)), exact, locale);
+      const grouped = (await reader.query<{total:number}>(`SELECT coalesce(sum(row_count),0)::int AS total
+        FROM external_catalog_global_facets WHERE (locale_mask & $1::smallint)<>0`,[bit])).rows[0]!.total;
+      assert.equal(grouped, exact, `global facet counts for ${locale}`);
     }
   };
 
@@ -150,6 +172,66 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
     assert.equal((await db.pool.query('SELECT listing_id FROM external_catalog WHERE listing_id=$1', [listingId])).rowCount, 0);
     await compareTotals([4, 4, 4]);
     assert.deepEqual(await buckets(), [1, 1, 1, 1, 1, 1, 1]);
+  });
+
+  await t.test('Chinese two-character lookup preserves literal matches, visibility and exact pagination', async () => {
+    const term = '海狮';
+    // Keep the source and published content untouched. These are isolated search projection rows.
+    const terms = [[1, '', '比亚迪海狮07'], [3, '海狮', ''], [5, '海', '狮'], [8, '', '已撤回海狮']] as const;
+    for (const [mask, model, title] of terms) {
+      await db.pool.query(`UPDATE external_catalog_search SET stock_text='',make_text='',model_text=$2,title_text=$3
+        WHERE listing_id=$1 AND locale='zh'`, [fixtures[mask], model, title]);
+    }
+    assert.equal(await preferIndexedHanPair(db.pool, listingQuery('zh', { q: term })), false, 'missing statistics keep the old access path');
+    await db.pool.query(`WITH samples AS (
+      INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,upstream_state,fetched_at)
+      SELECT gen_random_uuid(),'pair-stats-fixture','che168',(996000+n)::text,1,repeat('a',64),'withdrawn',now()
+      FROM generate_series(1,100) AS n RETURNING id
+    ) INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
+    SELECT samples.id,now(),base.platform_name,base.listing_url,base.facts,base.price_cny,base.issues,base.localized,base.details
+    FROM samples CROSS JOIN external_catalog base WHERE base.listing_id=$1`, [fixtures[1]]);
+    await db.pool.query(`UPDATE external_catalog_search s SET stock_text='',make_text='',model_text='',title_text='电动汽车'
+      FROM external_listings l WHERE s.listing_id=l.id AND l.provider='pair-stats-fixture' AND s.locale='zh'`);
+    await db.pool.query('ANALYZE external_catalog_search');
+    assert.equal(await preferIndexedHanPair(db.pool, listingQuery('zh', { q: term })), true);
+    assert.equal(await preferIndexedHanPair(db.pool, listingQuery('zh', { q: '电动' })), false);
+    assert.equal(await preferIndexedHanPair(db.pool, listingQuery('en', { q: term })), false);
+    const pairs = (await db.pool.query<{pairs:string[]}>(`SELECT public.external_catalog_han_pairs(E'海\\n狮，海狮狮') AS pairs`)).rows[0]!.pairs;
+    assert.deepEqual(new Set(pairs), new Set(['海狮', '狮狮']));
+    const make = (await db.pool.query<{make_id:string}>('SELECT make_id FROM external_catalog_filter WHERE listing_id=$1', [fixtures[1]])).rows[0]!.make_id;
+    assert.ok(make);
+    const input = listingQuery('zh', { q: term, make, pageSize: 1, priceView: 'usd', sort: 'newest' });
+    const original = (await db.pool.query<{listing_id:string}>(`SELECT f.listing_id FROM external_catalog_filter f
+      JOIN external_catalog_search s ON s.listing_id=f.listing_id AND s.locale='zh'
+      WHERE f.active AND (f.locale_mask & 1)<>0 AND f.make_id=$1 AND s.search_document LIKE $2
+      ORDER BY f.published_at DESC,f.listing_id`, [make, '%海狮%'])).rows.map(row => `ext-${row.listing_id}`);
+    assert.deepEqual(new Set(original), new Set([1, 3].map(mask => `ext-${fixtures[mask]}`)));
+    const service = new InventoryService(db, true);
+    const first = await service.listPublic(input, 'han-pair');
+    const second = await service.listPublic({ ...input, page: 2 }, 'han-pair');
+    assert.equal(first.meta.total, 2);
+    assert.equal(first.data.hasMore, true);
+    assert.equal(second.meta.total, 2);
+    assert.equal(second.data.hasMore, false);
+    assert.deepEqual([...first.data.items, ...second.data.items].map(item => item.id), original);
+    const facets = await service.filters(PublicFilterQuerySchema.parse({ locale: 'zh', view: 'localized', make, q: term, projection: 'overview' }));
+    assert.equal(facets.total, 2);
+    await db.pool.query('UPDATE external_listings SET upstream_state=\'withdrawn\' WHERE id=$1', [fixtures[1]]);
+    try {
+      const after = await service.listPublic(input, 'han-pair-after-withdrawal');
+      assert.equal(after.meta.total, 1);
+      assert.deepEqual(after.data.items.map(item => item.id), [`ext-${fixtures[3]}`]);
+    } finally {
+      await db.pool.query('UPDATE external_listings SET upstream_state=\'active\' WHERE id=$1', [fixtures[1]]);
+    }
+
+    const delayed = { ...db, transaction: async <T>(work: (tx: PoolClient) => Promise<T>) => db.transaction(tx => work({
+      query: async (sql: string, params?: unknown[]) => sql.startsWith('WITH matching AS MATERIALIZED')
+        ? tx.query('SELECT pg_sleep(1)') : tx.query(sql, params),
+    } as PoolClient)) } as Database;
+    const deadline = performance.now() + 250;
+    await assert.rejects(new InventoryService(delayed, true).listPublic(input, 'han-pair-timeout', undefined, undefined, { deadline }),
+      { status: 503, reason: 'deadline', sqlState: '57014' });
   });
 
   await t.test('bulk changes are atomic and restoring only the first-party singleton ID starts at zero', async () => {

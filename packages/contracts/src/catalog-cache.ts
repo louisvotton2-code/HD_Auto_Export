@@ -8,6 +8,7 @@ export function isPublicCatalogOffsetAllowed(page: number, pageSize: number): bo
 }
 export const PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 15_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 300_000;
+export const INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS = 600_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER = 'x-hd-cache-protocol';
 export const PublicCatalogVersionQuerySchema = z.strictObject({
   priceView: z.literal('usd').optional(),
@@ -46,6 +47,12 @@ export const InternalPublicCatalogVersionResponseSchema = responseSchema(Interna
 export const InternalPublicCatalogHomepageVersionResponseSchema = responseSchema(z.strictObject({
   catalog: InternalPublicCatalogCacheStampSchema,
   filters: InternalPublicCatalogCacheStampSchema,
+}));
+/** Protocol 3 applies only to the authenticated homepage resources and their live version pair. */
+export const InternalPublicHomepageCacheStampSchema = catalogCacheStampSchema(INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS);
+export const InternalPublicHomepageVersionResponseSchema = responseSchema(z.strictObject({
+  catalog: InternalPublicHomepageCacheStampSchema,
+  filters: InternalPublicHomepageCacheStampSchema,
 }));
 export const PublicCatalogResponseMetaSchema = RequestMetaSchema.extend({
   // Optional for older servers/fixtures. An absent stamp prohibits SSR reuse.

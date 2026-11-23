@@ -341,6 +341,19 @@ test('powertrain and year overview count unpriced listings and preserve visibili
     assert.deepEqual(await service.filters(filters({...options,...extra,projection:'overview-models'})),{...overview,models});
     return result;
   };
+  const compareGlobal=async(locale:'zh'|'en'|'ru')=>{
+    const query={locale,catalog:'curated',view:'localized',priceView:'usd'};
+    const full=await service.filters(filters(query));
+    const {trims,generations,priceCurrencies,models,...shared}=full;
+    const overview={...shared,hasTrims:Boolean(trims?.length),hasGenerations:Boolean(generations?.length)};
+    for (const projection of ['overview','overview-models'] as const) {
+      const phases:string[]=[];
+      const {value}=await service.filterResult(filters({...query,projection}),phase=>phases.push(phase));
+      assert.ok(phases.includes('supplier_global_rollup'));
+      assert.deepEqual(value,{...overview,models:projection==='overview-models'?models:[]});
+    }
+  };
+  for (const locale of ['zh','en','ru'] as const) await compareGlobal(locale);
   const supplierFacets=['supplier_facets','supplier_overview_rollup'];
   const zh=await compareToFull({},supplierFacets);
   assert.equal(zh.total,2);
@@ -356,8 +369,10 @@ test('powertrain and year overview count unpriced listings and preserve visibili
 
   await db.pool.query("UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1 AND locale='zh'",[external[3]]);
   assert.deepEqual((await compareToFull({},[...supplierFacets,'supplier_label_fallback'])).makes,[{id:make.id,name:'合成旧品牌',count:2}]);
+  await compareGlobal('zh');
   await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[external[3]]);
   assert.equal((await compareToFull()).total,1);
+  await compareGlobal('zh');
   await db.pool.query("UPDATE external_catalog_search SET make_label=NULL WHERE listing_id=$1 AND locale='zh'",[external[1]]);
   const safe=await compareToFull();
   assert.equal(safe.total,1);

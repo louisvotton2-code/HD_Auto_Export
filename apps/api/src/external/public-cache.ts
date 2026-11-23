@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
+import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS, PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { ACTIVE_FX_SQL } from './fx.js';
@@ -10,8 +10,10 @@ export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { ve
 export type CatalogRevisionProof = (deadline: number, signal: AbortSignal) => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
 type HomepageRevisions = Record<RevisionScope, PublicCatalogRevision>;
-type CacheProtocol = 1 | 2;
-const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
+export type CacheProtocol = 1 | 2 | 3;
+const cacheLifetimes = { 1: PUBLIC_CATALOG_CACHE_MAX_TTL_MS, 2: INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  3: INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS };
+const maxLifetime = (protocol: CacheProtocol) => cacheLifetimes[protocol];
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
   'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
@@ -154,14 +156,14 @@ export class PublicCatalogCache {
   async currentVersion(usd = false,signal?:AbortSignal,scope:RevisionScope='catalog',protocol:CacheProtocol=1) {
     return this.withDeadline(async () => this.stamp(await this.revision(usd,scope), usd, scope, protocol),signal);
   }
-  async currentHomepageVersions(signal?:AbortSignal) {
+  async currentHomepageVersions(signal?:AbortSignal,protocol:2|3=2) {
     return this.withDeadline(async()=>{
       const read=this.dependencies.readHomepageRevisions;
       if(!read)throw unavailable('revision-read');
       const {catalog,filters}=await this.checkedRevisionRead(read);
       const checkedAt=this.now();
-      return {catalog:this.stamp(catalog,true,'catalog',2,Infinity,checkedAt),
-        filters:this.stamp(filters,true,'filters',2,Infinity,checkedAt)};
+      return {catalog:this.stamp(catalog,true,'catalog',protocol,Infinity,checkedAt),
+        filters:this.stamp(filters,true,'filters',protocol,Infinity,checkedAt)};
     },signal);
   }
   private revision(usd: boolean, scope: RevisionScope) {
@@ -201,10 +203,10 @@ export class PublicCatalogCache {
   private resourceKey(route: PublicCacheRoute, input: string, revision: PublicCatalogRevision,
     usd: boolean, scope: RevisionScope, protocol: CacheProtocol) {
     const version = this.stamp(revision,usd,scope,protocol).version;
-    return createHash('sha256').update(canonicalJson(protocol === 2 ? [version,route,input,protocol] : [version,route,input])).digest('hex');
+    return createHash('sha256').update(canonicalJson(protocol === 1 ? [version,route,input] : [version,route,input,protocol])).digest('hex');
   }
   private deadline(value: unknown, protocol: CacheProtocol): number {
-    let deadline = this.now() + (protocol === 2 ? maxLifetime(protocol) : Math.min(this.ttlMs,maxLifetime(protocol)));
+    let deadline = this.now() + (protocol === 1 ? Math.min(this.ttlMs,maxLifetime(protocol)) : maxLifetime(protocol));
     const stack: unknown[] = [value];
     while (stack.length) {
       const item = stack.pop();
@@ -387,13 +389,13 @@ export class PublicCatalogCache {
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
-    load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
-    const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal,observe);
+    load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
+    const result = await this.read(route,normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
-  async getOffsetListSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false,
+  async getOffsetListSnapshot<T>(normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false,
     signal?: AbortSignal, protocol: CacheProtocol=1, observe?: CacheReadObserver) {
-    const result = await this.read('list',normalizedInput,load,usd,'catalog',protocol,signal,observe,true);
+    const result = await this.read('list',normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'catalog',protocol,signal,observe,true);
     const stamp=this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt);
     return {value:result.value,stamp:result.snapshotOnly?undefined:stamp,offsetSnapshot:result.snapshotOnly?stamp:undefined};
   }
