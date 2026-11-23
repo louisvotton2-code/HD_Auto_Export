@@ -11,7 +11,7 @@ test.afterEach(async ({ request }) => {
   if (process.env.PUBLIC_FIXTURE_API_URL) await resetPublicFixture(request);
 });
 
-test('manufacture dropdowns retain month choices while the calculation date stays hidden', async ({ page }) => {
+test('manufacture month and clearance day remain separate editable fields', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-10-22T04:00:00Z'));
   await page.goto('/en/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
@@ -23,7 +23,7 @@ test('manufacture dropdowns retain month choices while the calculation date stay
   await expect(assumption).toContainText('January of each of the last six years');
   await expect(assumption).toHaveCSS('color', 'rgb(255, 141, 141)');
   await expect(assumption).toHaveCSS('font-weight', '700');
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
   await expect(page.getByText('Expected clearance date', { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-numeric-date] input:not([type="hidden"])')).toHaveCount(0);
   const months = await manufacture.locator('select[name="manufactureDateMonth"] option:not([value=""])')

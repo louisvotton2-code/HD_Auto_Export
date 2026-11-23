@@ -1,4 +1,5 @@
 import { Amount } from '../../core/decimal';
+import { compareManufactureAnniversary } from '../../core/dates';
 import { tariffLine } from '../../core/tariff-line';
 import type { ReferencePolicyFacts, ReferencePolicyResult } from '../../core/types';
 
@@ -15,12 +16,13 @@ export function calculateTjReference({ input, ageMonths }: ReferencePolicyFacts)
   const unavailable = (reason: string) => ({ reason, lines: [], additionalCosts: [] });
   if (Number(input.manufactureDate.trim().slice(0, 4)) < 2013) return unavailable('tj_age_limit');
   const electric = input.powertrain === 'bev';
-  if (electric && ageMonths >= 12) return unavailable('tj_electric_age_review');
+  if (electric) {
+    const anniversary = compareManufactureAnniversary(input, ageMonths, 1);
+    if (anniversary === null || anniversary > 0) return unavailable('tj_electric_age_review');
+  }
   if (!electric && input.powertrain !== 'petrol' && input.powertrain !== 'diesel') {
     return unavailable('powertrain_rules_pending');
   }
-  if (!electric && (!new Amount(input.tjDutyPercent!).eq(10) || !new Amount(input.tjExcisePercent!).eq(14) ||
-    !new Amount(input.tjExciseMinimum!).eq('0.20'))) return unavailable('manual_pricing');
 
   const usd = new Amount(input.usdRate!);
   // The declared customs value is entered directly, with no automatic CIF adjustment.

@@ -2,7 +2,7 @@ import { Amount } from '../../core/decimal';
 import { tariffLine } from '../../core/tariff-line';
 import type { ReferencePolicyFacts, ReferencePolicyResult } from '../../core/types';
 
-export const TM_REFERENCE_VERSION = 'tm-personal-2026.11.22-v1';
+export const TM_REFERENCE_VERSION = 'tm-personal-2026.11.23-v2';
 export const TM_REFERENCE_SOURCE = 'https://www.customs.gov.tm/index.php/tk/customs-info/customs-fees/duties';
 
 // Customs tariff row 61, indexed by completed calendar years excluding production year.
@@ -17,7 +17,7 @@ const dutyBands = [
 export function calculateTmReference({ input, ageYears }: ReferencePolicyFacts): ReferencePolicyResult {
   const unavailable = (reason: string) => ({ reason, lines: [], additionalCosts: [] });
   if (ageYears >= dutyBands.length) return unavailable('tm_age_limit');
-  if (input.steering === 'right') return unavailable('tm_steering_limit');
+  if (input.steering === 'right' || input.steeringConverted === 'yes') return unavailable('tm_steering_limit');
   if (input.powertrain === 'erev') return unavailable('powertrain_rules_pending');
 
   const electric = input.powertrain === 'bev';

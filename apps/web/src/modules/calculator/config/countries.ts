@@ -47,7 +47,7 @@ const countryCapabilities = {
   TM: { personalReference: true, needsUsdRate: true, needsSteering: true },
   RU: { personalReference: true, needsPower: true, needsEuroRate: true },
   GE: { needsPrice: false, needsSteering: true },
-  AM: { personalReference: true, needsEuroRate: true },
+  AM: { personalReference: true, needsEuroRate: true, needsFreight: true },
   AL: { personalReference: true, needsManufactureDate: false, needsFreight: true },
 } satisfies Record<CountryCode, Partial<CountryCapabilities>>;
 

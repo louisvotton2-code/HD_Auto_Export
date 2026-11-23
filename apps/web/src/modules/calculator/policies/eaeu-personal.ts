@@ -1,6 +1,6 @@
+import { daysInMonth } from '../core/dates';
 import { Amount } from '../core/decimal';
-import { tariffLine } from '../core/tariff-line';
-import type { ReferencePolicyFacts } from '../core/types';
+import type { CalculationLine, ReferencePolicyFacts } from '../core/types';
 
 const valueBands = [
   [8500, '0.54', '2.5'], [16700, '0.48', '3.5'], [42300, '0.48', '5.5'],
@@ -11,32 +11,50 @@ const displacementBands = [
   [2300, '2.7', '4.8'], [3000, '3', '5'], [Infinity, '3.6', '5.7'],
 ] as const;
 
-export function ordinaryCombustion({ input }: ReferencePolicyFacts) {
-  return input.powertrain === 'petrol' || input.powertrain === 'diesel';
+/** Decision 74: an evidenced manufacture month without an exact day uses its 15th. */
+export function compareEaeuAnniversary({ input, ageMonths }: ReferencePolicyFacts, years: number) {
+  const monthDifference = ageMonths - years * 12;
+  if (monthDifference !== 0) return monthDifference;
+  const month = input.manufactureDate.slice(0, 7);
+  const knownDay = input.manufactureDay?.startsWith(month + '-') ? input.manufactureDay : undefined;
+  const productionDay = Number(knownDay?.slice(-2) ?? '15');
+  const [year, clearanceMonth, clearanceDay] = input.customsDate.split('-').map(Number);
+  const lastDay = daysInMonth(year, clearanceMonth);
+  return clearanceDay - Math.min(productionDay, lastDay);
 }
 
-export function throughEaeuAnniversary({ input, ageMonths }: ReferencePolicyFacts, years: number) {
-  const manufactureDay = input.manufactureDate.length === 10 ? Number(input.manufactureDate.slice(-2)) : 15;
-  return ageMonths < years * 12 || ageMonths === years * 12 && Number(input.customsDate.slice(-2)) <= manufactureDay;
+export function throughEaeuAnniversary(facts: ReferencePolicyFacts, years: number) {
+  return compareEaeuAnniversary(facts, years) <= 0;
 }
 
-/** Annex 2 to EEC Council Decision 107, table 2, ordinary personal-use combustion car. */
-export function personalCombustionDuty(country: 'RU' | 'KG' | 'AM', { input, ageMonths }: ReferencePolicyFacts) {
-  // Decision 74 uses day 15 when the supporting evidence gives a month alone.
+/** Decision 107, Annex 2 table 2; article 267 excludes separately stated freight/insurance. */
+export function personalCombustionDuty(
+  country: 'RU' | 'KG' | 'AM' | 'KZ',
+  facts: ReferencePolicyFacts,
+): CalculationLine {
+  const { input } = facts;
   const cc = new Amount(input.displacementCc);
   const euroRate = new Amount(input.euroRate);
   const value = new Amount(input.price).mul(input.transactionRate);
-  const euroValue = value.div(euroRate);
-  const facts = { input, ageMonths, ageYears: Math.floor(ageMonths / 12) };
+  const decimals = country === 'KG' ? 2 : 0;
   if (throughEaeuAnniversary(facts, 3)) {
+    const euroValue = value.div(euroRate);
     const [, rate, minimum] = valueBands.find(([limit]) => euroValue.lte(limit))!;
-    const charge = Amount.max(euroValue.mul(rate), cc.mul(minimum)).mul(euroRate);
-    return tariffLine('duty', charge, `max((${value} / ${euroRate}) × ${rate}, ${cc} × ${minimum}) × ${euroRate}`,
-      `${country}.unifiedYoung`, { cc: cc.toFixed(), euroRate: euroRate.toFixed(),
-        rate: new Amount(rate).mul(100).toFixed(), minimum });
+    const charge = Amount.max(value.mul(rate), cc.mul(minimum).mul(euroRate));
+    return {
+      id: 'duty', amount: charge.toFixed(decimals),
+      formula: `max(${value} × ${rate}, ${cc} × ${minimum} × ${euroRate})`,
+      method: { key: `${country}.unifiedYoung`, params: {
+        cc: cc.toFixed(), euroRate: euroRate.toFixed(), rate: new Amount(rate).mul(100).toFixed(), minimum,
+        euroValue: euroValue.toFixed(), percentageDuty: euroValue.mul(rate).toFixed(), minimumDuty: cc.mul(minimum).toFixed(),
+      } },
+    };
   }
   const [, middle, old] = displacementBands.find(([limit]) => cc.lte(limit))!;
   const rate = throughEaeuAnniversary(facts, 5) ? middle : old;
-  return tariffLine('duty', cc.mul(rate).mul(euroRate), `${cc} × ${rate} × ${euroRate}`,
-    `${country}.unifiedUsed`, { cc: cc.toFixed(), rate, euroRate: euroRate.toFixed() });
+  return {
+    id: 'duty', amount: cc.mul(rate).mul(euroRate).toFixed(decimals),
+    formula: `${cc} × ${rate} × ${euroRate}`,
+    method: { key: `${country}.unifiedUsed`, params: { cc: cc.toFixed(), rate, euroRate: euroRate.toFixed() } },
+  };
 }

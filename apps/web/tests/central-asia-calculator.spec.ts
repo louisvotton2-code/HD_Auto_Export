@@ -27,7 +27,7 @@ test('the homepage, standalone calculator and vehicle estimate share the destina
     .toEqual(['KG', 'UZ', 'KZ', 'TJ', 'TM', 'RU', 'GE', 'AM', 'AL']);
 });
 
-test('Tajikistan retains an override on refresh and withholds an amount until official rates are restored', async ({ page }) => {
+test('Tajikistan prefills editable fuel tariff references and retains an override on refresh', async ({ page }) => {
   await page.goto('/zh/calculator/tajikistan/');
   await expect(page.getByTestId('total')).toContainText('TJS');
   await expect(page.getByTestId('total-usd')).toContainText('USD');
@@ -37,15 +37,12 @@ test('Tajikistan retains an override on refresh and withholds an amount until of
   await expect(page.getByLabel('海关计税价值', { exact: true })).toHaveValue('25000');
   await expect(page.locator('#freight, #insurance')).toHaveCount(0);
   await expect(page.getByRole('link', { name: '官方来源 · № 470' })).toHaveAttribute('href', 'https://new.edavlat.tj/api/files_storage/3467');
-  await expect(page.getByRole('link', { name: '官方来源 · № 335' })).toHaveAttribute('href', 'https://new.edavlat.tj/api/files_storage/3483');
+  await expect(page.getByRole('link', { name: '官方来源 · № 335' })).toHaveAttribute('href', 'https://mmih.adlia.tj/Search/DocumentView?DocumentId=169398');
   await page.locator('#tjExciseMinimum').fill('');
   await expect(page.getByTestId('total')).toHaveCount(0);
   await page.locator('#tjExciseMinimum').fill('0.25');
   await page.reload();
   await expect(page.locator('#tjExciseMinimum')).toHaveValue('0.25');
-  await expect(page.getByTestId('total')).toHaveCount(0);
-  await expect(page.getByTestId('result-status')).toBeVisible();
-  await page.locator('#tjExciseMinimum').fill('0.20');
   await expect(page.getByTestId('total')).toContainText('TJS');
 });
 

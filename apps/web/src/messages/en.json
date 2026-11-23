@@ -57,6 +57,7 @@
     "currency": "Transaction currency",
     "displacement": "Engine displacement · cc",
     "power": "Engine power · hp",
+    "customsDate": "Clearance date",
     "manufactureDate": "Manufacture date",
     "modelYearEstimate": "This estimate uses January of model year {year}. Confirm the actual production month, as it may affect the fees.",
     "manufactureYearEstimate": "Only the production year {year} is known. This estimate uses January until the actual month is confirmed.",
@@ -65,12 +66,6 @@
     "steering": "Steering position",
     "left": "Left-hand drive",
     "right": "Right-hand drive",
-    "factoryLeft": "Factory left-hand drive",
-    "rightOrConverted": "Right-hand drive or converted steering",
-    "alNewVehicle": "Factory-new, zero mileage and never registered",
-    "knownManufactureDate": "Using the recorded manufacture date {date}.",
-    "amValueNote": "The entered price is a provisional tax base. Customs determines the assessed value for environmental tax.",
-    "geNoPreferenceNote": "Uses the standard tariff. Request a quote if you have proof of preferential Chinese origin.",
     "advanced": "Exchange rates & more",
     "transactionRate": "Transaction to destination currency",
     "euroRate": "Euro to destination currency",
@@ -94,9 +89,7 @@
     "referenceNotice": "Amounts are estimates. Confirm the charges that apply at clearance. Totals exclude the vehicle price, freight and insurance.",
     "emptyTitle": "Choose where your journey begins",
     "emptyDescription": "Add your vehicle details to see the available cost breakdown here.",
-    "reviewTitle": "Request a manual quote",
-    "verifiedFeeItems": "Charges we can estimate individually",
-    "alEvConditionHelp": "Select New only for factory-new, zero-kilometre electric passenger cars that have never been registered. Check the vehicle documents.",
+    "reviewTitle": "This route is taking shape",
     "reviewDescription": "Rules for this destination or import scenario still need confirmation. No amount is available yet. Adjust the details or explore a reference example.",
     "invalidTitle": "Check your vehicle details",
     "invalidDescription": "Correct the highlighted fields to continue.",
@@ -164,7 +157,8 @@
     "relatedEstimateHelp": "Market allowance for certification, emergency-call equipment, brokerage and storage; confirm quotes",
     "registrationEstimateHelp": "Estimated from reference customs value; the registration authority may use its own valuation. Outside the total.",
     "annualCostHelp": "Annual cost, excluded from one-time import payments",
-    "electricPower": "Declared motor power · hp",
+    "electricPower": "Certified 30-minute motor power · hp",
+    "hybridPower": "Engine + certified motor power · hp",
     "uzDutyHelp": "Value-based duty and per-cc supplement depend on registration status, powertrain, age and capacity"
   },
   "Fees": {
@@ -194,18 +188,19 @@
   },
   "Reasons": {
     "country_pending": "Import fee rules for this destination are being confirmed.",
-    "manual_pricing": "Send the vehicle and clearance details so we can check the applicable tariff and charges.",
-    "age_boundary_manual": "The vehicle is near an age threshold. Send the exact manufacture date for a quote.",
     "company_pending": "Business import rules need confirmation before an amount can be shown.",
     "powertrain_pending": "Rules for this powertrain are being confirmed.",
     "power_pending": "Recycling fee rules for this power range are being confirmed.",
     "displacement_pending": "Rules for this engine size are being confirmed.",
     "year_pending": "This reference snapshot covers clearance in 2026 only. Other years require the corresponding rules to be reviewed.",
     "tj_age_limit": "Tajikistan prohibits imports of this class of vehicle when manufactured before 2013.",
-    "tj_electric_age_review": "This estimate covers battery-electric passenger cars under 12 months old. At or near 12 months, confirm the exact manufacture and clearance dates and any exemption eligibility.",
+    "tj_electric_age_review": "Check the production day. This electric-vehicle relief estimate covers cars no more than one year old on clearance.",
     "tm_age_limit": "Turkmenistan prohibits imports of this class of vehicle once it reaches 5 calendar years of age, excluding the year of manufacture.",
     "tm_steering_limit": "Turkmenistan prohibits right-hand-drive vehicles and vehicles converted from right-hand to left-hand drive. This estimate applies to factory left-hand-drive vehicles.",
-    "tm_displacement_review": "Engine displacement above 3,500 cc is outside this personal-use estimate. Confirm admission and charges separately."
+    "tm_displacement_review": "Engine displacement above 3,500 cc is outside this personal-use estimate. Confirm admission and charges separately.",
+    "kz_declaration_review": "Confirm the declaration procedure and tariff classification.",
+    "uz_age_boundary": "The rate changes within this month. Confirm the exact manufacture date.",
+    "uz_classification_review": "Confirm the tariff classification of this powertrain."
   },
   "Meta": {
     "title": "Vehicle import cost calculator | HD Auto Export",
@@ -246,41 +241,79 @@
     "source": "Reference page · reviewed {date}",
     "officialSource": "Official source · {name}",
     "officialSources": "Official sources",
-    "AM": {
-      "scope": "Ordinary combustion cars for personal use show the unified charge and age-based environmental tax.",
-      "manual": "Confirm the environmental tax base assessed by customs, gross weight and processing fees. Check BEV tariff quotas and VAT relief separately."
-    },
-    "RU": {
-      "scope": "Ordinary combustion cars for personal use show the unified charge and clearance fee. If the records specify only a production month, day 15 is used.",
-      "manual": "Recycling requires checking documented power, personal-use eligibility, previous imports and resale restrictions. Hybrids and BEVs require customs classification."
-    },
-    "KZ": {
-      "scope": "The listed recycling amount is for an ordinary direct import from China.",
-      "manual": "Confirm the personal, common-tariff or restricted WTO route from the documents. VAT, registration and luxury tax require a separate check."
-    },
-    "KG": {
-      "scope": "Ordinary personal combustion cars use the EAEU unified charge. The business estimate covers the verified ordinary petrol tariff line.",
-      "manual": "Personal clearance fees, registration, other business tariff lines, electric classification and quota eligibility require review."
-    },
-    "UZ": {
-      "scope": "This covers standard M1 passenger-car clearance. The BRV is UZS 440,000 from September 2026.",
-      "manual": "Freight and insurance to the border enter customs value. Core registration is separate. Plates, other services, EREV classification and uncertain age cutoffs require review."
-    },
-    "GE": {
-      "scope": "The ordinary HS 8703 estimate uses rates effective 2 April 2026 and the basic clearance service. Select right-hand drive for converted steering.",
-      "manual": "The estimate uses duty without origin preference. Confirm any Chinese preferential certificate, grandfathered shipment or emissions approval separately."
-    },
-    "AL": {
-      "scope": "Ordinary HS 8703 VAT uses customs-accepted value. An eligible factory-new, zero-kilometre BEV can be exempt.",
-      "manual": "Alternative valuation, technical inspection, seating and first-registration luxury tax need the vehicle documents."
-    },
     "TJ": {
-      "scope": "Ordinary China-origin combustion cars use the assessed customs value and 2026 rates. For personal imports, costs of delivery to the border are excluded from customs value.",
-      "manual": "Eligible BEVs less than a year old use the relief scenario. Hybrids, unresolved age, assessed value and other preferences require review."
+      "scope": "This estimate covers permanent personal-use imports of China-origin HS 8703 passenger cars. Qualifying battery-electric cars can be estimated under the relief rules. Vehicles manufactured before 2013 are prohibited.",
+      "value": "The standard import duty for petrol and diesel passenger cars is 10% of customs value. Excise is the higher of 14% of customs value and EUR 0.20 per cc of engine displacement. Customs may reassess the declared value.",
+      "vat": "This estimate uses 2026 rates: 14% import VAT, a clearance fee based on customs value, and a recycling charge of 144 × 78 TJS. The Tax Code sets import VAT at 13% from 1 January 2027.",
+      "ev": "Qualifying battery EVs no more than one year old may receive tax relief. Clearance and recycling fees remain payable. Verify the date of manufacture near the first anniversary."
     },
     "TM": {
-      "scope": "Ordinary private passenger-car estimates include the tariff, excise and clearance charge. Age counts full calendar years after manufacture.",
-      "manual": "Check eligibility for sports cars, converted steering, engines over 3.5 L, fewer than two front airbags or unroadworthy vehicles."
+      "scope": "This estimate covers permanent personal-use imports of China-origin, factory left-hand-drive passenger cars. It covers vehicles under 5 calendar years old excluding the year of manufacture and engines up to 3,500 cc, subject to admission.",
+      "value": "The personal-use estimate takes purchase price as customs value and excludes freight and insurance. Age-based duty is the higher of the percentage charge and the USD minimum per cc. Excise is USD 0.30 per cc and the clearance fee is 0.2% of customs value.",
+      "hybrids": "Battery-electric cars are estimated as duty-exempt, with no displacement-based excise. HEVs and PHEVs are estimated at half the standard duty and still incur displacement-based excise.",
+      "admission": "Right-hand-drive vehicles and vehicles converted from right-hand to left-hand drive are prohibited. Confirm import permits, certification and registration separately. Their costs are outside this total."
+    },
+    "RU": {
+      "personalScope": "This tool follows personal-use imports. Companies and sole traders require a separate assessment; this result does not cover them.",
+      "excluded": "Budget separately for vehicle transport, bonded storage, customs brokerage and registration.",
+      "electric": "For battery EVs, the estimate itemises duty, excise based on certified power, and 22% VAT on customs value plus duty and excise. The recycling fee depends on age, statutory power and eligibility for personal relief.",
+      "hybrid": "Hybrid classification and statutory power must be verified against vehicle documents, particularly for series hybrids.",
+      "middleAge": "For personal combustion cars over three years old, up to and including their fifth anniversary, the unified charge depends on displacement."
+    },
+    "KZ": {
+      "serviceEstimate": "The 400,000 KZT service allowance is a market estimate shown outside the import total. Certification, brokerage and storage depend on the actual quote.",
+      "excluded": "Vehicle transport is separate. Service costs vary with the broker and storage duration.",
+      "luxury": "Under a declaration subject to luxury excise, the 2026 threshold is a purchase value of 77,850,000 KZT (18,000 MCI), inclusive; the rate is 10%.",
+      "electric": "A standard battery EV under the EAEU goods declaration may incur 15% duty. Recycling and import VAT are assessed separately.",
+      "erev": "An extended-range car with a combustion engine follows its customs classification. If classed as a hybrid, recycling follows its displacement band.",
+      "registration": "Initial registration uses a higher age band when clearance year minus manufacture year exceeds two.",
+      "declaration": "Personal-use and goods declarations use different schedules. Eligibility for special routes, including domestic WTO rates, needs separate confirmation."
+    },
+    "UZ": {
+      "excise": "The reference material reports that passenger-car import excise was removed in August 2020, with a recycling fee charged separately. Do not add both charges.",
+      "freightBasis": "Transport to the border contributes to customs value and affects duty and VAT. Including freight in a tax base does not include the freight payment in the import-fee total.",
+      "excluded": "Customs brokerage, bonded storage and unlisted services require separate budgets.",
+      "condition": "New-car rates require an unregistered vehicle in the corresponding tariff heading. Mileage alone cannot establish eligibility.",
+      "electric": "Standard battery EVs have zero duty. Recycling is 120 base units through the third anniversary and 210 thereafter.",
+      "hybrid": "Qualifying new hybrids within one year incur 15% duty. Used hybrids under the general 8703 heading incur 30%. Series hybrids require classification from vehicle documents.",
+      "usedFuel": "For previously registered petrol/diesel cars, the reference duty is 40% of customs value plus 3 USD per cc. Confirm vehicle classification.",
+      "registration": "The base calculation unit is 440,000 UZS from 1 September 2026. Base registration is shown separately; plates and the certificate depend on the registration channel.",
+      "newFuel": "For unregistered combustion cars, the duty band depends on displacement and age from manufacture to border crossing. At the one- or three-year boundary the exact day may be required."
+    },
+    "GE": {
+      "taxBasis": "Ordinary passenger cars are assessed using actual displacement, manufacture year and steering. The estimate includes the 150 GEL basic clearance service. Registration, inspections and other services are separate. Classic and competition cars require separate assessment.",
+      "electric": "An original left-hand-drive battery EV is exempt from excise. The ordinary excise on right-hand-drive or steering-converted EVs is 3,000 GEL from 2 April 2026; qualifying transitional cases follow the prior schedule.",
+      "older": "For non-electric cars older than 6 years, the reference excise base rate is 4.5 GEL per cc.",
+      "hybridRelief": "Original left-hand-drive hybrids with a calendar-year age of up to six receive a 60% excise reduction.",
+      "hybridNoRelief": "Hybrids over six calendar years old, with right-hand drive or with converted steering do not qualify for the 60% excise reduction.",
+      "rightHand": "For ordinary non-electric passenger cars with right-hand or converted steering, excise is three times the basic amount.",
+      "emissions": "For production before 2013, check Euro 5 admission and permanent-registration requirements. Production year does not establish actual emissions certification.",
+      "origin": "China–Georgia preference requires an eligible tariff code, proof of origin and qualifying transport. Approval can waive import duty; excise is assessed separately.",
+      "prior": "The earlier excise bands apply before 2 April 2026 and to documented shipments qualifying for the transition."
+    },
+    "AM": {
+      "personalScope": "Ordinary personal-use combustion cars follow the EAEU unified charge. No further 20% VAT is added to that charge.",
+      "environment": "For ordinary passenger cars the environmental tax depends on the assessed value and age, at rates of 2%, 4%, 6%, 12% or 24%.",
+      "age": "The personal-use tariff uses anniversary dates. A verified manufacture month without a day is assessed using the 15th.",
+      "excluded": "Processing fees depend on the declaration, gross weight and location. These fees, transport, storage, brokerage and registration are separate.",
+      "electric": "The EV duty quota and import VAT relief are separate. From February to December 2026, VAT relief is limited to qualifying tariff codes and vehicles made after 31 December 2023."
+    },
+    "KG": {
+      "exchange": "Reference tariffs are denominated in euros. Confirm KGS conversion using the applicable National Bank of the Kyrgyz Republic rate on the clearance date.",
+      "excluded": "Transport, bonded storage, brokerage and registration are separate. The reference material applies no recycling charge to personal-use imports.",
+      "personalFee": "For a personal-use declaration, a provisional 0.4% processing fee is shown. Customs must confirm its applicability and amount.",
+      "registration": "The separate 5% first-registration allowance is an estimate, excluded from import payments. The authority may use its own average market valuation.",
+      "companyBroker": "For a commercial declaration the processing fee is 0.4%, subject to a 500 KGS minimum and 250,000 KGS maximum. Broker fees are separate.",
+      "electricQuota": "For battery EVs and series hybrids, verify the tariff code, duty quota and VAT relief separately. Individual ownership alone does not establish an exemption.",
+      "personalFuel": "For other personal-use cars, the reference unified payment depends on capacity, age and younger-car value rather than a separate petrol/diesel tariff."
+    },
+    "AL": {
+      "personalScope": "Import VAT on ordinary 8703 passenger cars is based on the value accepted by Customs.",
+      "exchange": "Displayed rates are market references. Tax assessment should use the exchange rate accepted by Albanian Customs.",
+      "excluded": "Transport to Albania, Durrës port handling and customs brokerage are separate costs.",
+      "luxury": "For cars with up to 6+1 seats, luxury tax applies when displacement is at least 3,000 cc or the registration value is at least 5,000,000 ALL. Initial registration tax is 70,000 ALL and annual tax is 21,000 ALL.",
+      "electric": "A qualifying new, never-registered, zero-kilometre battery EV can be exempt from import VAT. Ordinary used EVs incur 20% VAT on the accepted value.",
+      "minimumValue": "When Customs accepts the transaction value, 20% VAT applies to that value with any required adjustments. Reference minimums need checking only under the relevant alternative valuation method."
     }
   },
   "Assumptions": {
@@ -288,6 +321,13 @@
     "am_electric_relief_assumed": "Electric-car figures assume the reference 2026 relief scenario. Quota, production year and eligibility require confirmation; zero tax does not guarantee exemption.",
     "kg_electric_standard_duty": "Electric/series-hybrid figures assume the standard 15% duty without quota relief. Confirm quota availability and eligibility for the clearance date.",
     "ru_personal_relief_assumed": "The recycling charge assumes the lower personal-use coefficients. Actual concession eligibility requires confirmation.",
-    "ru_erev_hybrid_assumed": "Range-extenders provisionally follow the hybrid combustion-engine route. Confirm the vehicle classification and applicable power measurement."
+    "ru_erev_hybrid_assumed": "Range-extenders provisionally follow the hybrid combustion-engine route. Confirm the vehicle classification and applicable power measurement.",
+    "kz_personal_declaration": "The combined charge assumes a passenger declaration for personal use.",
+    "kz_standard_goods": "Standard goods declaration. Include chargeable freight and insurance up to entry in the customs value above.",
+    "eaeu_documented_year": "Only the production year is documented. For the personal unified charge, age is calculated from 1 July of that year.",
+    "ru_certified_electric_power": "Use the certified maximum 30-minute motor power for the EV recycling fee.",
+    "ru_hybrid_certified_power": "For a parallel hybrid, check the combined engine and certified 30-minute motor power for recycling.",
+    "am_electric_standard_duty": "EV duty assumes no awarded quota. VAT relief is assessed separately.",
+    "am_environmental_value_assumed": "Environmental tax uses the entered price as an estimate of assessed value. Service fees depend on the procedure, weight and location."
   }
 }

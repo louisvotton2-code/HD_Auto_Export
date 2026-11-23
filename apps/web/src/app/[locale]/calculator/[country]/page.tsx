@@ -1,3 +1,4 @@
+import { getClearanceDate } from '@/modules/calculator/application/current-date';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getMessages, getTranslations, setRequestLocale } from 'next-intl/server';
@@ -37,13 +38,7 @@ export default async function CountryCalculator({ params }: Props) {
   const country = getCountryBySlug(slug);
   if (!country || !hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
-  // Initial HTML uses the build date. The browser replaces it with the visit date on mount.
-  const today = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
+  const clearanceDate = getClearanceDate(new Date());
   const rates = await fetchExchangeRates();
   const [allMessages, t] = await Promise.all([getMessages(), getTranslations({ locale })]);
   const messages = getCalculatorCountryMessages(allMessages, country.code);
@@ -53,7 +48,7 @@ export default async function CountryCalculator({ params }: Props) {
       <JsonLd data={publicPageSchema(locale, `/calculator/${country.slug}/`,
         t('Meta.countryTitle', { country: name }), 'WebApplication',
         t('Meta.countryDescription', { country: name }))} />
-      <CalculatorPage country={country} initialDate={today} initialRates={rates} />
+      <CalculatorPage country={country} initialDate={clearanceDate} initialRates={rates} />
     </ScopedMessagesProvider>
   );
 }

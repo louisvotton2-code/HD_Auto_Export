@@ -26,9 +26,9 @@ const request = (input: unknown) =>
   });
 
 describe('optional backend adapter, outside the static site', () => {
-  it('preserves partial RU and complete GE results for future service callers', async () => {
+  it('preserves independent RU and GE fixed amounts for future service callers', async () => {
     for (const [input, total, currency] of [
-      [sample, null, 'RUB'],
+      [sample, '926952', 'RUB'],
       [
         { ...sample, country: 'GE', price: '', powerHp: '', transactionRate: '', euroRate: '' },
         '3271.88',
@@ -38,7 +38,7 @@ describe('optional backend adapter, outside the static site', () => {
       const response = await handleCalculationRequest(request(input));
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        status: total === null ? 'needs_review' : 'reference',
+        status: 'reference',
         total,
         currency,
         quality: 'reference_only',

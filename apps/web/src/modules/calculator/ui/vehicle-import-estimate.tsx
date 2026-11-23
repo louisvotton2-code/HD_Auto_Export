@@ -10,13 +10,13 @@ import { useDestinationCountry } from '@/shared/ui/use-destination-country';
 import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
 import { calculateImportEstimate, type CalculationLine, type CountryCode } from '../index';
 import { countries, getCountryByCode } from '../config/countries';
-import { AL_NEW_VEHICLE_BASIS, CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from '../application/draft';
+import { CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from '../application/draft';
 import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
-import { normalizePageInput } from '../application/page-input';
+import { normalizePageInput, usesAssessedPrice } from '../application/page-input';
 import { calculatorErrorKey, calculatorReasonKey } from '../application/calculator-status';
 import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from '../core/tajik-input';
-import { getClearanceDate } from '../application/current-date';
+import { getClearanceDate, visitYearForDefault } from '../application/current-date';
 import { createVehicleEstimateFragment } from '../application/estimate-seed';
 import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
 import { manufactureRangeCopy } from '../application/manufacture-range-copy';
@@ -30,11 +30,12 @@ import { FeeLine } from './fee-line';
 import { ManufactureRangeResult } from './manufacture-range-result';
 import { fieldDisplayPrecision } from './field-display-precision';
 import { DecimalDisplayInput } from './decimal-display-input';
+import { powerBasis } from '../application/power-basis';
 import { NumericDateInput } from './numeric-date-input';
 import { useCalculatorCompletion } from './use-calculator-completion';
 import styles from './vehicle-import-estimate.module.css';
 
-type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate'
+type Field = 'price' | 'displacementCc' | 'powerHp' | 'manufactureDate' | 'customsDate'
   | 'freight' | 'insurance' | 'transactionRate' | 'euroRate' | 'usdRate' | TajikTariffField;
 export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRates, disabled = false }: {
   vehicle: VehicleEstimateSource;
@@ -68,7 +69,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const calculationDate = visitDate ?? initialDate;
   const identity = JSON.stringify([vehicleEstimateIdentity(vehicle), calculationDate, initialRates]);
   const [state, setState] = useState(() => ({
-    identity,
+    identity, customsDateEdited: false,
     input: createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates),
   }));
   const [ready, setReady] = useState(false);
@@ -87,7 +88,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const needsTajikTariff = needsTajikTariffInputs(country.code, input.powertrain);
   const active = visitDate !== null && ready && preference.ready && !disabled && current && input.country === preference.country;
   const normalized = useMemo(() => normalizePageInput(vehicleEstimateInput(input), country), [input, country]);
-  const referenceYear = Number(calculationDate.slice(0, 4));
+  const referenceYear = visitYearForDefault(calculationDate);
   const dateIsBlank = country.needsManufactureDate && current && normalized.manufactureDate === '';
   const rangeResult = useMemo(() => dateIsBlank ? calculateRecentJanuaryEstimates(normalized, referenceYear) : null,
     [dateIsBlank, normalized, referenceYear]);
@@ -105,7 +106,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ? previous.input.country === preference.country ? previous : {
         ...previous, input: retargetVehicleEstimateDraft(previous.input, preference.country, initialRates, vehicle),
       }
-      : { identity, input: createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates) });
+      : { identity, customsDateEdited: false, input: createVehicleEstimateDraft(vehicle, preference.country, calculationDate, initialRates) });
     setExpanded(new Set());
     setManualRates(false);
     setReady(true);
@@ -117,11 +118,13 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
     if (key === 'transactionRate' || key === 'euroRate' || key === 'usdRate') setManualRates(true);
     setState((previous) => ({
       ...previous,
+      customsDateEdited: previous.customsDateEdited || key === 'customsDate',
       input: {
         ...previous.input, [key]: value,
-        ...(key === 'powertrain' && (value === 'bev' || value === '') && publishedPower &&
-          publishedPower.source !== 'reported' && previous.input.powerHp === publishedPower.hp
-          ? { powerHp: '' } : {}),
+        ...(key === 'manufactureDate' ? { manufactureDay: undefined, manufactureYear: undefined } : {}),
+        ...(key === 'powertrain' && powerBasis(value) !== powerBasis(previous.input.powertrain)
+          ? { powerHp: '', ruPowerBasis: undefined } : {}),
+        ...(key === 'powerHp' ? { ruPowerBasis: 'declared' as const } : {}),
         ...(key === 'transactionRate' && country.needsUsdRate && previous.input.currency === 'USD'
           ? { usdRate: String(value) } : {}),
       },
@@ -147,13 +150,13 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       ...deriveRates(initialRates, previous.input.country, currency),
     } }));
   }
-  function field(key: Field, label: string, options: { type?: 'month'; unit?: string; note?: string } = {}) {
+  function field(key: Field, label: string, options: { type?: 'month' | 'date'; unit?: string; note?: string } = {}) {
     const { type, unit, note } = options;
     const error = result.fieldErrors[key];
     const id = `${prefix}-${key}`;
     const describedBy = [error && `${id}-error`, note && `${id}-note`].filter(Boolean).join(' ');
     return <div className={styles.field}>
-      {type ? <NumericDateInput id={id} name={key} value={input[key] ?? ''} precision={type} referenceYear={referenceYear} limitToCurrentYear label={label} locale={locale}
+      {type ? <NumericDateInput id={id} name={key} value={(key === 'manufactureDate' ? normalized.manufactureDate : input[key]) ?? ''} precision={type} referenceYear={referenceYear} limitToCurrentYear={key === 'manufactureDate'} label={label} locale={locale}
         onChange={value => update(key, value)} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
         <label htmlFor={id}>{label}{unit && <span>{unit}</span>}</label>
         <DecimalDisplayInput precision={fieldDisplayPrecision[key]} id={id} name={key} value={input[key] ?? ''} type="text"
@@ -176,21 +179,22 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   }
   const emptyOption = <option value="">{vehicleEstimateMissingLabel(locale)}</option>;
   const seed = active ? createVehicleEstimateFragment({
+    ...(state.customsDateEdited ? { customsDateEdited: true } : {}),
     version: 1, sourceId: vehicle.id, input, rates: initialRates,
     ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
-    ...(input.country === 'AL' && input.condition === 'new' ? { conditionBasis: AL_NEW_VEHICLE_BASIS } : {}),
   }) : null;
   const toolHref = `/${locale}/calculator/${country.slug}/${seed ?? ''}`;
   const feeId = (line: CalculationLine, extra = false) => `${prefix}-${country.code}-${extra ? 'extra-' : ''}${line.id}`;
   const allIds = [...result.lines.map((line) => feeId(line)), ...result.additionalCosts.map((line) => feeId(line, true))];
   const allExpanded = allIds.length > 0 && allIds.every((id) => expanded.has(id));
-  const priceLabel = t(country.code === 'TJ' ? 'tjCustomsValue' : 'price');
+  const priceLabel = t(usesAssessedPrice(country.code, input.powertrain) ? 'tjCustomsValue' : 'price');
   const labels: Partial<Record<keyof VehicleEstimateDraft, string>> = {
     powertrain: t('powertrain'),
     price: priceLabel,
     displacementCc: t('displacement'),
-    powerHp: t(input.powertrain === 'bev' ? 'electricPower' : 'power'),
+    powerHp: t(powerBasis(input.powertrain)),
     manufactureDate: t('manufactureDate'),
+    customsDate: t('customsDate'),
     condition: t('condition'),
     steering: t('steering'),
     transactionRate: t('transactionRate'),
@@ -247,8 +251,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         </details>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>
-        {field('price', priceLabel, country.code === 'TJ' ? { note: t('tjCustomsValueHelp') }
-          : country.code === 'AM' ? { note: t('amValueNote') } : undefined)}
+        {field('price', priceLabel, country.code === 'TJ' ? { note: t('tjCustomsValueHelp') } : undefined)}
         <div className={styles.field}>
           <label htmlFor={`${prefix}-currency`}>{t('currency')}</label>
           <select id={`${prefix}-currency`} name="currency" value={input.currency}
@@ -265,24 +268,21 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
       {input.powertrain !== 'bev' && !(country.code === 'KG' && input.powertrain === 'erev')
         && field('displacementCc', t('displacement'))}
       {country.needsPower && <>
-        {field('powerHp', t(input.powertrain === 'bev' ? 'electricPower' : 'power'))}
+        {field('powerHp', t(powerBasis(input.powertrain)))}
         {publishedPower && input.powerHp === publishedPower.hp
           && (publishedPower.source === 'reported' || enginePowerPrefill) && <p className={styles.note}>{
           publishedPower.source === 'engineKw' ? manufactureRangeCopy[locale].convertedEnginePower : manufactureRangeCopy[locale].suppliedPower
         }</p>}
       </>}
-      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month',
-        note: input.manufactureDate.length === 10 ? t('knownManufactureDate', { date: input.manufactureDate }) : undefined })}
-      {(country.code === 'UZ' || country.code === 'AL' && input.powertrain === 'bev') && select('condition', t('condition'), <>{emptyOption}
-        <option value="used">{t('usedVehicle')}</option>
-        <option value="new">{t(country.code === 'AL' ? 'alNewVehicle' : 'newVehicle')}</option></>)}
+      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month' })}
+      {field('customsDate', t('customsDate'), { type: 'date' })}
+      {country.code === 'UZ' && select('condition', t('condition'), <>{emptyOption}
+        <option value="used">{t('usedVehicle')}</option><option value="new">{t('newVehicle')}</option></>)}
       {country.code === 'UZ' && <p className={styles.note}>{t('conditionHelp')}</p>}
-      {country.code === 'AL' && input.powertrain === 'bev' && <p className={styles.note}>{t('alEvConditionHelp')}</p>}
       {country.hasImporterChoice && select('importerType', t('importer'), <>
         <option value="individual">{t('personal')}</option><option value="company">{t('company')}</option></>)}
       {country.needsSteering && select('steering', t('steering'), <>{emptyOption}
-        <option value="left">{t('factoryLeft')}</option><option value="right">{t('rightOrConverted')}</option></>)}
-      {country.code === 'GE' && <p className={styles.note}>{t('geNoPreferenceNote')}</p>}
+        <option value="left">{t('left')}</option><option value="right">{t('right')}</option></>)}
       <details className={styles.settings} open>
         <summary>{t('advanced')}<Icon name="chevron" size={14} /></summary>
         <div className={styles.settingsFields}>
@@ -347,15 +347,6 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         )}
       </div>
     </div>}
-    {active && !rangeResult && result.status === 'needs_review' && result.lines.length > 0 && (
-      <section className={styles.result} data-testid="inline-verified-fee-items">
-        <h3>{t('verifiedFeeItems')}</h3>
-        {result.lines.map((line) => renderLine(line))}
-        {result.assumptions.length > 0 && <ul className={styles.assumptions}>
-          {result.assumptions.map((key) => <li key={key}>{ta(key)}</li>)}
-        </ul>}
-      </section>
-    )}
     <a className={styles.fullTool} href={preference.ready ? toolHref : `/${locale}/calculator/`} data-testid="vehicle-full-calculator">{copy.completeTool}<Icon name="diagonal" size={15} /></a>
     {active && !seed && <p className={styles.note}>{copy.seedHint}</p>}
   </div>;

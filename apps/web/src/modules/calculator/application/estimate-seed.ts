@@ -1,8 +1,10 @@
+import { documentedFields, invalidDocumentedFields } from '../core/documented-facts';
+import { powerBasis } from './power-basis';
 import { getCountryByCode } from '../config/countries';
-import { AL_NEW_VEHICLE_BASIS, CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from './draft';
+import { CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from './draft';
 import type { VehicleEstimateDraft } from './vehicle-estimate';
 import { EXCHANGE_CURRENCIES, LEGACY_EXCHANGE_CURRENCIES, REFERENCE_FX_SNAPSHOT, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
-import { parseCustomsDate, parseManufactureDate } from '../core/dates';
+import { parseCustomsDate, parseManufactureMonth } from '../core/dates';
 import { TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import { readManufactureEstimate } from './manufacture-estimate';
 import { isManufactureMonthRange } from './manufacture-range';
@@ -22,7 +24,7 @@ export type VehicleEstimateSeed = {
   input: VehicleEstimateDraft;
   rates: ExchangeRateSnapshot;
   enginePowerPrefill?: true;
-  conditionBasis?: typeof AL_NEW_VEHICLE_BASIS;
+  customsDateEdited?: true;
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -73,10 +75,10 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
   const hasEstimate = Object.hasOwn(value, 'manufactureEstimate');
   const hasRange = Object.hasOwn(value, 'manufactureRange');
   const hasEnginePowerPrefill = Object.hasOwn(value, 'enginePowerPrefill');
-  const hasConditionBasis = Object.hasOwn(value, 'conditionBasis');
+  const editedDate = Object.hasOwn(value, 'customsDateEdited');
+  if (editedDate && value.customsDateEdited !== true) return null;
   if (!exactKeys(value, [
-    ...seedKeys, ...(hasEstimate ? ['manufactureEstimate'] : []), ...(hasRange ? ['manufactureRange'] : []),
-    ...(hasConditionBasis ? ['conditionBasis'] : []),
+    ...seedKeys, ...(editedDate ? ['customsDateEdited'] : []), ...(hasEstimate ? ['manufactureEstimate'] : []), ...(hasRange ? ['manufactureRange'] : []),
     ...(hasEnginePowerPrefill ? ['enginePowerPrefill'] : []),
   ])
     || value.version !== 1 || typeof value.sourceId !== 'string'
@@ -84,11 +86,10 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     || !record(value.input)
     || !record(value.rates)) return null;
   const input = value.input;
-  const validAlNew = input.country === 'AL' && input.condition === 'new';
-  if (hasConditionBasis && (!validAlNew || value.conditionBasis !== AL_NEW_VEHICLE_BASIS)) return null;
   if (hasEnginePowerPrefill && !isEnginePowerPrefill(value.enginePowerPrefill, input.powertrain, input.powerHp)) return null;
   const tariffFields = input.country === 'TJ' ? TAJIK_TARIFF_FIELDS.filter(key => Object.hasOwn(input, key)) : [];
-  if (!exactKeys(input, [...inputKeys, ...tariffFields])) return null;
+  const evidence = documentedFields.filter(key => Object.hasOwn(input, key));
+  if (invalidDocumentedFields(input).length || !exactKeys(input, [...inputKeys, ...tariffFields, ...evidence])) return null;
   for (const field of tariffFields) if (input[field] !== '' && !decimal(input[field])) return null;
   for (const field of inputKeys) if (typeof input[field] !== 'string' || input[field].length > 64) return null;
   if (!getCountryByCode(String(input.country))
@@ -101,8 +102,8 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     if (input[field] !== '' && !decimal(input[field])) return null;
   for (const field of ['transactionRate', 'euroRate', 'usdRate'] as const)
     if (!decimal(input[field], true)) return null;
-  if ((input.manufactureDate !== '' && !parseManufactureDate(input.manufactureDate as string))
-    || !parseCustomsDate(input.customsDate as string)) return null;
+  if ((input.manufactureDate !== '' && !parseManufactureMonth(input.manufactureDate as string))
+    || (!(editedDate && input.customsDate === '') && !parseCustomsDate(input.customsDate as string))) return null;
   if (hasEstimate && !readManufactureEstimate(value.manufactureEstimate, input.manufactureDate)) return null;
   if (hasRange && (hasEstimate || input.manufactureDate !== '' || !isManufactureMonthRange(value.manufactureRange))) return null;
   const rates = parseEstimateRates(value.rates);
@@ -112,10 +113,11 @@ export function parseVehicleEstimateSeed(value: unknown): VehicleEstimateSeed | 
     version: 1,
     sourceId: value.sourceId,
     input: { ...input, ...(hasEstimate ? { manufactureDate: '' } : {}),
-      ...(validAlNew && !hasConditionBasis ? { condition: '' } : {}) } as VehicleEstimateDraft,
+      ...(input.country === 'RU' && powerBasis(input.powertrain) !== 'power' && input.ruPowerBasis !== 'declared'
+        ? { powerHp: '' } : {}) } as VehicleEstimateDraft,
     rates,
-    ...(hasEnginePowerPrefill ? { enginePowerPrefill: true } : {}),
-    ...(hasConditionBasis ? { conditionBasis: AL_NEW_VEHICLE_BASIS } : {}),
+    ...(editedDate ? { customsDateEdited: true } : {}),
+    ...(hasEnginePowerPrefill && powerBasis(input.powertrain) === 'power' ? { enginePowerPrefill: true } : {}),
   };
 }
 

@@ -139,7 +139,7 @@ test('only a successful empty search and an intentional completed calculation ar
   await expect(page.getByTestId('public-catalog-empty')).toBeVisible();
   await expect.poll(() => events.map(event => event.type)).toEqual(['page_view', 'filter_submit', 'search_zero_results']);
   expect(JSON.stringify(events)).not.toContain('private-no-result-fixture');
-  await page.goto('/zh/calculator/uzbekistan/');
+  await page.goto('/zh/calculator/russia/');
   await expect(page.locator('[data-testid="total"], [data-testid="manufacture-range-total"]')).toBeVisible();
   await expect.poll(() => events.length).toBe(4);
   await page.waitForTimeout(550);

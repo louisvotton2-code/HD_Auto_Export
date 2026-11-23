@@ -39,6 +39,7 @@ async function complete(scope: Locator, code: string) {
     const field = scope.locator(`[name="${name}"]`);
     if (await field.isVisible()) await field.selectOption(value);
   }
+  await expect(scope.getByTestId('inline-estimate-result')).toBeVisible();
 }
 
 for (const locale of ['zh', 'en', 'ru'] as const) {
@@ -54,27 +55,34 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     await expect(page.locator('[name="displacementCc"]')).toHaveValue('1197');
   });
 
-  test(`${locale}: detail budget preserves direct hp and withholds an unverified Russian total`, async ({
+  test(`${locale}: detail budget uses direct hp and estimates a range without filling in an unknown manufacture month`, async ({
     page,
   }) => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`/${locale}/cars/fixture_car_1/`);
     const budget = page.getByTestId('vehicle-import-estimate');
-    await expect(budget.locator('[name^="customsDate"]')).toHaveCount(0);
+    await expect(budget.locator('[name="customsDateDay"]')).toBeVisible();
     const manufacture = budget.locator('[name="manufactureDate"]');
     await expect(manufacture).toHaveValue('');
     await expect(manufacture).not.toHaveAttribute('aria-describedby');
     await expect(budget.locator('[name="displacementCc"]')).toHaveValue('1998');
     await expect(budget.locator('[name="powerHp"]')).toHaveValue('150');
-    await expect(budget.getByTestId('manufacture-range-total')).toHaveCount(0);
+    await expect(budget.getByTestId('manufacture-range-total')).toBeVisible();
+    const scenarios = budget.locator('[data-range-scenario]');
+    await expect(scenarios).toHaveCount(2);
+    for (const scenario of await scenarios.all()) {
+      await expect(scenario).not.toHaveAttribute('open');
+      await expect(scenario.locator('summary time')).toHaveText(/202[1-6]-01/);
+      await expect(scenario.locator('summary strong')).toContainText('RUB');
+      await expect(scenario.locator('summary')).toContainText('USD');
+    }
     await budget.locator('[name="powertrain"]').selectOption('');
     const status = budget.getByTestId('inline-estimate-status');
     await expect(status.getByRole('listitem')).toHaveCount(1);
     await expect(status).toHaveCSS('background-color', 'rgb(45, 32, 21)');
     await expect(budget.getByTestId('inline-estimate-result')).toHaveCount(0);
     await complete(budget, 'RU');
-    await expect(budget.getByTestId('inline-estimate-total')).toHaveCount(0);
     await expect(manufacture).not.toHaveAttribute('aria-describedby');
     await expect(budget.locator('details[open]')).toHaveCount(1);
     const toggle = budget.locator('.fee-detail-toggle').first();
@@ -87,27 +95,35 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
   });
 }
 
-test('verified 265 kW engine power prefills the inline and full calculators', async ({ page, request }) => {
+test('a PHEV engine rating stays visible while the Russian calculator requires documented hybrid power', async ({ page, request }) => {
   await setPublicFixtureState(request, { estimateEnginePower: true });
   await page.goto('/zh/cars/fixture_car_1/');
-  const budget = page.getByTestId('vehicle-import-estimate');
-  const power = budget.locator('[name="powerHp"]');
+  const inline = page.getByTestId('vehicle-import-estimate');
+  await chooseVehicleDestination(inline, 'RU');
   await expect(page.locator('[data-vehicle-fact="engineKw"] dd')).toHaveText('265 kW');
   await expect(page.locator('[data-vehicle-fact="systemKw"] dd')).toHaveText('395 kW');
-  await expect(power).toHaveValue('360.2993');
-  await budget.getByTestId('vehicle-full-calculator').click();
+  const power = inline.locator('[name="powerHp"]');
+  await expect(power).toHaveValue('');
+  await power.fill('160');
+  await inline.getByTestId('vehicle-full-calculator').click();
+  const fullPower = page.locator('[name="powerHp"]');
+  await expect(fullPower).toHaveValue('160');
+  await page.reload();
+  await expect(fullPower).toHaveValue('160');
+  await page.locator('#powertrainDetail').selectOption('bev');
+  await expect(fullPower).toHaveValue('');
+});
+
+test('a combustion 265 kW engine prefills 360.2993 hp through detail, standalone and refresh', async ({ page, request }) => {
+  await setPublicFixtureState(request, { estimateEnginePower: 'petrol' });
+  await page.goto('/zh/cars/fixture_car_1/');
+  const inline = page.getByTestId('vehicle-import-estimate');
+  await chooseVehicleDestination(inline, 'RU');
+  await expect(inline.locator('[name="powerHp"]')).toHaveValue('360.2993');
+  await inline.getByTestId('vehicle-full-calculator').click();
   await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
   await page.reload();
   await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
-  await page.locator('#powertrainDetail').selectOption('bev');
-  await expect(page.locator('[name="powerHp"]')).toHaveValue('');
-  await page.locator('[name="powerHp"]').fill('160');
-  await page.locator('#powertrainDetail').selectOption('phev');
-  await page.locator('#powertrainDetail').selectOption('bev');
-  await expect(page.locator('[name="powerHp"]')).toHaveValue('160');
-  await page.goto('/zh/cars/fixture_car_1/');
-  await budget.locator('[name="powertrain"]').selectOption('bev');
-  await expect(power).toHaveValue('');
 });
 
 test('the estimate prefers an authoritative displacement and does not prefill machine-only evidence', async ({ page, request }) => {
@@ -141,26 +157,20 @@ for (const [code, slug] of Object.entries({
       await expect(budget.getByLabel('Customs value', { exact: true })).toHaveValue('25000');
       await expect(budget.locator('[name="tjExciseMinimum"]')).toHaveValue('0.20');
       await expect(budget.locator('[name="freight"], [name="insurance"]')).toHaveCount(0);
+      await budget.locator('[name="tjDutyPercent"]').fill('12');
     }
-    const withTotal = ['TJ', 'UZ', 'GE'].includes(code);
-    const total = withTotal ? compact(await budget.getByTestId('inline-estimate-total').innerText()) : null;
-    const usd = withTotal ? compact(await budget.getByTestId('inline-estimate-usd').innerText()) : null;
-    if (!withTotal) await expect(budget.getByTestId('inline-estimate-total')).toHaveCount(0);
+    const total = compact(await budget.getByTestId('inline-estimate-total').innerText());
+    const usd = compact(await budget.getByTestId('inline-estimate-usd').innerText());
     const link = budget.getByTestId('vehicle-full-calculator');
     await expect(link).toHaveAttribute('href', /#hd-estimate=/);
     await link.click();
     await expect(page).toHaveURL(new RegExp(`/en/calculator/${slug}/$`));
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) await page.reload();
-      if (withTotal) {
-        await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
-        expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
-      } else {
-        await expect(page.getByTestId('result-status')).toBeVisible();
-        await expect(page.getByTestId('total')).toHaveCount(0);
-      }
-      await expect(page.locator('#customsDate')).toHaveCount(0);
-    }
+    await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
+    expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
+    await expect(page.locator('#customsDate-day')).toBeVisible();
+    await page.reload();
+    await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
+    expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
   });
 }
 
@@ -184,16 +194,19 @@ test('unknown choices stay empty through the explicit seed, storage and reload',
 });
 
 test('a quote link opened after Shanghai midnight keeps vehicle facts and uses the new visit date', async ({ page }) => {
-  await page.clock.setFixedTime(new Date('2026-12-31T15:59:59Z'));
+  // December 17/18 Shanghai maps to December 31/January 1 for the unedited default.
+  await page.clock.setFixedTime(new Date('2026-12-17T15:59:59Z'));
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
   await complete(budget, 'RU');
+  await expect(budget.locator('[name="customsDate"]')).toHaveValue('2026-12-31');
   const href = await budget.getByTestId('vehicle-full-calculator').getAttribute('href');
   expect(href).toContain('#hd-estimate=');
-  await page.clock.setFixedTime(new Date('2026-12-31T16:00:00Z'));
+  await page.clock.setFixedTime(new Date('2026-12-17T16:00:00Z'));
   await page.goto(href!);
   await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
+  await expect(page.locator('[name="customsDate"]')).toHaveValue('2027-01-01');
   await expect(page.getByTestId('result-status')).toContainText('2026');
   await expect(page.getByTestId('total')).toHaveCount(0);
 });
@@ -202,9 +215,6 @@ test('a supplier range uses six January dates in both calculators, on reload and
   await setPublicFixtureState(request, { estimateDateRange: true });
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
-  await chooseVehicleDestination(budget, 'GE');
-  await budget.locator('[name="powertrain"]').selectOption('petrol');
-  await budget.locator('[name="steering"]').selectOption('left');
   const bounds = budget.getByTestId('manufacture-range-total');
   await expect(bounds).toBeVisible();
   const before = compact(await bounds.innerText());
@@ -223,7 +233,7 @@ test('a supplier range uses six January dates in both calculators, on reload and
   await expect(upper.getByTestId('fee-detail-toggle').first()).toBeVisible();
   await expect(budget.locator('[name="manufactureDate"]')).toHaveValue('');
   await budget.getByTestId('vehicle-full-calculator').click();
-  await expect(page).toHaveURL(/\/en\/calculator\/georgia\/$/);
+  await expect(page).toHaveURL(/\/en\/calculator\/russia\/$/);
   const month = page.locator('#manufactureDate');
   for (let visit = 0; visit < 2; visit++) {
     if (visit) await page.reload();
@@ -265,7 +275,7 @@ test('Russian detail budget fits a 320px screen and works without inventing miss
     true,
   );
   await budget.getByTestId('vehicle-full-calculator').click();
-  await expect(page.getByTestId('verified-fee-items')).toBeVisible();
+  await expect(page.getByTestId('total')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
     true,
   );
@@ -294,7 +304,7 @@ test.describe('touch destination picker', () => {
     await expect(budget).toHaveAttribute('data-country', 'KZ');
     await expect(details).not.toHaveAttribute('open');
     await fillNumericDate(budget, 'manufactureDate', '2024-02');
-    await expect(budget.getByTestId('inline-verified-fee-items')).toContainText('KZT');
+    await expect(budget.getByTestId('inline-estimate-total')).toContainText('KZT');
 
     await picker.tap();
     await expect(details).toHaveAttribute('open', '');
@@ -327,7 +337,7 @@ test('the import calculator stays usable on both sides of the two-column breakpo
   await page.setViewportSize({ width: 1180, height: 1000 });
   await chooseVehicleDestination(calculator, 'KZ');
   await fillNumericDate(calculator, 'manufactureDate', '2024-02');
-  await expect(calculator.getByTestId('inline-verified-fee-items')).toContainText('KZT');
+  await expect(calculator.getByTestId('inline-estimate-total')).toContainText('KZT');
 
   const summary = page.locator('main summary').filter({ hasText: 'Detailed vehicle information' });
   await expect(summary.locator('..')).toHaveAttribute('open', '');
@@ -339,7 +349,7 @@ test('the import calculator stays usable on both sides of the two-column breakpo
 test('manual inline exchange rates are labelled and explicitly transferred', async ({ page }) => {
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
-  await complete(budget, 'UZ');
+  await complete(budget, 'RU');
   await budget.locator('[name="transactionRate"]').fill('91.1234');
   await expect(budget.getByTestId('inline-fx-status')).toContainText(
     'Using your manually entered reference rates',

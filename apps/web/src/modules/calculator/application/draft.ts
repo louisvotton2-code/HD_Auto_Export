@@ -3,11 +3,13 @@ import type { CalculationInput, Powertrain } from '../core/types';
 import { TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, createDefaultInput } from './defaults';
+import { documentedFields, invalidDocumentedFields } from '../core/documented-facts';
+import { parseCustomsDate } from '../core/dates';
+import { powerBasis } from './power-basis';
 import { readManufactureEstimate } from './manufacture-estimate';
 
 export const CALCULATOR_DRAFT_STORAGE_KEY = 'hd-auto.calculator.draft.v2';
 export const LEGACY_CALCULATOR_DRAFT_STORAGE_KEY = 'aurex.calculator.draft.v1';
-export const AL_NEW_VEHICLE_BASIS = 'al-zero-km-v1';
 export const CALCULATOR_POWERTRAINS: readonly Powertrain[] = [
   'petrol',
   'diesel',
@@ -40,6 +42,7 @@ export interface RestoredCalculatorDraft {
   input: CalculationInput;
   manualRates: boolean;
   enginePowerPrefill?: true;
+  customsDateEdited?: true;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -100,8 +103,7 @@ export function restoreCalculatorDraft(
     // The core's required-field validation accepts empty text; do not invent a fact on refresh.
     if (draft.steering === 'left' || draft.steering === 'right' || current && draft.steering === '')
       next.steering = draft.steering as CalculationInput['steering'];
-    const alConditionIsSpecific = country.code !== 'AL' || current && draft.country === 'AL' && record.conditionBasis === AL_NEW_VEHICLE_BASIS;
-    if (alConditionIsSpecific && (draft.condition === 'new' || draft.condition === 'used' || current && draft.condition === ''))
+    if (draft.condition === 'new' || draft.condition === 'used' || current && draft.condition === '')
       next.condition = draft.condition as CalculationInput['condition'];
     if (CALCULATOR_POWERTRAINS.includes(draft.powertrain as Powertrain) || current && draft.powertrain === '')
       next.powertrain = draft.powertrain as Powertrain;
@@ -118,9 +120,23 @@ export function restoreCalculatorDraft(
         if (typeof draft[key] === 'string' && draft[key].length <= 64) next[key] = draft[key];
     }
     if (current && readManufactureEstimate(record.manufactureEstimate, draft.manufactureDate)) next.manufactureDate = '';
+    const invalid = invalidDocumentedFields(draft);
+    for (const field of documentedFields) {
+      const transfer = ['manufactureDay', 'manufactureYear', 'vehicleRegistration', 'mileageKm', 'seatCount', 'steeringConverted'].includes(field);
+      if (draft[field] !== undefined && !invalid.includes(field) && (transfer || draft.country === country.code)
+        && (field !== 'manufactureDay' || next.manufactureDate === draft.manufactureDate))
+        Object.assign(next, { [field]: draft[field] });
+    }
+    if (country.code === 'AL' && draft.country !== 'AL')
+      next.condition = next.vehicleRegistration === 'never_registered' ? 'new' : 'used';
+    if (country.code === 'RU' && powerBasis(next.powertrain) !== 'power' && next.ruPowerBasis !== 'declared')
+      next.powerHp = '';
+    const customsDateEdited = current && record.customsDateEdited === true
+      && typeof draft.customsDate === 'string' && (draft.customsDate === '' || !!parseCustomsDate(draft.customsDate));
+    if (customsDateEdited) next.customsDate = draft.customsDate as string;
     const enginePowerPrefill = current && draft.powerHp === next.powerHp
       && isEnginePowerPrefill(record.enginePowerPrefill, next.powertrain, next.powerHp);
-    return { input: next, manualRates, ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}) };
+    return { input: next, manualRates, ...(customsDateEdited ? { customsDateEdited: true } : {}), ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}) };
   } catch {
     return { input: fallback, manualRates: false };
   }

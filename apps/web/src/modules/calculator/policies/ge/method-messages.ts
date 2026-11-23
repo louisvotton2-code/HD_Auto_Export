@@ -1,5 +1,7 @@
 export const geMethodMessages = {
   zh: {
+    exciseElectricPrior: '适用 2026 年 4 月 2 日之前的税表，右舵或改舵纯电车按年份差 {age} 年对应的税率 {baseRate} 乘以 2,000 计税。',
+    importTaxPreferential: '按已确认的中格协定税号、原产资格和运输凭证，本车享受零进口关税。',
     exciseElectric: '原厂左舵纯电乘用车免消费税。',
     exciseElectricRight: '右舵或改舵的纯电乘用车按每辆 3,000 GEL 缴纳消费税。',
     exciseRight: '车龄按年份差为 {age} 年。按实报排量 {cc} cc、基础税率 {baseRate} GEL/cc 和右舵或改舵的 3 倍系数计算。',
@@ -11,6 +13,8 @@ export const geMethodMessages = {
     vatZero: '本项适用于税法所定义的 HS 8703 普通乘用车进口，可免进口增值税。',
   },
   en: {
+    exciseElectricPrior: 'Under the pre-April 2, 2026 schedule, excise for a right-hand-drive or steering-converted EV is 2,000 times the rate of {baseRate} for calendar-year age {age}.',
+    importTaxPreferential: 'The confirmed tariff code, preferential origin and transport documentation qualify the vehicle for zero import duty under the Georgia–China agreement.',
     exciseElectric: 'An original left-hand-drive electric passenger car is exempt from excise.',
     exciseElectricRight: 'A right-hand-drive or steering-converted electric passenger car pays GEL 3,000 excise.',
     exciseRight: 'Calendar-year age is {age}. Use actual capacity {cc} cc at {baseRate} GEL/cc with a factor of 3 for right-hand or converted steering.',
@@ -22,6 +26,8 @@ export const geMethodMessages = {
     vatZero: 'For an eligible ordinary HS 8703 passenger car, import VAT is exempt.',
   },
   ru: {
+    exciseElectricPrior: 'По шкале, действовавшей до 2 апреля 2026 года, акциз на электромобиль с правым или переоборудованным рулём равен 2 000 × {baseRate}. Разница лет — {age}.',
+    importTaxPreferential: 'Подтверждённые код товара, происхождение и документы о перевозке дают право на нулевую пошлину по соглашению Грузии и Китая.',
     exciseElectric: 'Легковой электромобиль с заводским левым рулём освобождён от акциза.',
     exciseElectricRight: 'Для легкового электромобиля с правым или переоборудованным рулём акциз составляет 3 000 GEL.',
     exciseRight: 'Разница лет — {age}. Фактический объём {cc} см³ умножается на {baseRate} GEL/см³ и коэффициент 3 для правого или переоборудованного руля.',

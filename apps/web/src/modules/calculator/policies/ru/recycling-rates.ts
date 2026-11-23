@@ -3,8 +3,10 @@
  * https://www.kmotors.shop/en/calculator
  * Public resource: /_next/static/chunks/294c5dc095472cc4.js
  *
- * These are reference coefficients, not officially verified recycling rates or
- * proof that a personal-use concession applies. The applicable base is 20,000 RUB.
+ * The standard low-power (<=160 hp ICE, <=80 hp BEV) rows for ineligible
+ * importers use Resolution 1713, section I, points 1–2, 2026 columns:
+ * https://publication.pravo.gov.ru/document/0001202511010019
+ * Remaining coefficients retain the earlier reference snapshot. Base: 20,000 RUB.
  * Each upper power boundary is inclusive; null denotes the unbounded final row.
  */
 export interface RecyclingBand {
@@ -14,12 +16,14 @@ export interface RecyclingBand {
 }
 
 export const RECYCLING_UP_TO_1000: readonly RecyclingBand[] = [
+  { maxHp: 160, fresh: '14.88', aged: '27.6' },
   { maxHp: 190, fresh: '15.36', aged: '28.44' },
   { maxHp: 220, fresh: '15.84', aged: '29.28' },
   { maxHp: null, fresh: '17.28', aged: '30.12' },
 ];
 
 export const RECYCLING_UP_TO_2000: readonly RecyclingBand[] = [
+  { maxHp: 160, fresh: '40.04', aged: '70.44' },
   { maxHp: 190, fresh: '45', aged: '74.64' },
   { maxHp: 220, fresh: '47.64', aged: '79.2' },
   { maxHp: 250, fresh: '50.52', aged: '83.88' },
@@ -35,6 +39,7 @@ export const RECYCLING_UP_TO_2000: readonly RecyclingBand[] = [
 ];
 
 export const RECYCLING_UP_TO_3000: readonly RecyclingBand[] = [
+  { maxHp: 160, fresh: '112.52', aged: '170.36' },
   { maxHp: 190, fresh: '115.33', aged: '172.8' },
   { maxHp: 220, fresh: '118.2', aged: '175.08' },
   { maxHp: 250, fresh: '120.12', aged: '177.6' },
@@ -75,6 +80,7 @@ export const RECYCLING_OVER_3500: readonly RecyclingBand[] = [
 ];
 
 export const RECYCLING_ELECTRIC: readonly RecyclingBand[] = [
+  { maxHp: 80, fresh: '40.04', aged: '70.44' },
   { maxHp: 100, fresh: '49.56', aged: '82.08' },
   { maxHp: 130, fresh: '65.88', aged: '95.64' },
   { maxHp: 160, fresh: '78', aged: '111.36' },

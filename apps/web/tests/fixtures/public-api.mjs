@@ -251,6 +251,7 @@ const resetState = () => ({
   previewSlowLocale: '',
   previewImageCount: 1,
   estimateDateRange: false,
+  estimateDocumentary: false,
   estimateDisplacementMl: null,
   estimateEnginePower: false,
   segmentGalleryCount: null,
@@ -356,7 +357,7 @@ function inlineDetail(row, locale, state) {
   const semanticKeys = { displacementCc: 'displacementCc', engineKw: 'engineKw', motorKw: 'motorKw', batteryKwh: 'batteryKwh', driveType: 'driveType', lengthMm: 'lengthMm', doors: 'doors', wheelbaseMm: 'wheelbaseMm' };
   return { ...row, projection: 'detail-inline-v1',
     ...(engineExample ? {
-      facts: { ...row.facts, powertrain: 'phev', powerKw: null, powerHp: null, engineCc: 2993 },
+      facts: { ...row.facts, powertrain: state.estimateEnginePower === 'petrol' ? 'petrol' : 'phev', powerKw: null, powerHp: null, engineCc: 2993 },
       technicalDetails: { power: { engineKw: 265, systemKw: 395, motorKw: 130 }, configurationMatches: [] },
     } : {}),
     inspectionSummary: row.inspectionSummary ?? { status: 'unknown', contentLocale: null, checked: null, faults: null, categories: [] },
@@ -370,7 +371,23 @@ function inlineDetail(row, locale, state) {
     }, configurationInline: rawItems.slice(0,200).map(item => ({ ...item, semanticKey: semanticKeys[item.id] ?? null })),
   };
 }
+// Opt-in documentary facts for report-boundary checks through real public detail DTOs.
+const documentaryVehicles = {
+  fixture_car_16: ['2025-11-23', 'bev', 'never_registered', 0],
+  fixture_car_17: ['2025-11-23', 'bev', 'registered', 0],
+  fixture_car_18: ['2025-11-23', 'petrol', 'never_registered', 0],
+  fixture_car_19: ['2023-11-23', 'petrol', 'never_registered', 0],
+  fixture_car_20: ['2025-11', 'petrol', 'never_registered', 0],
+  fixture_car_21: ['2023-11', 'bev', 'registered', 10000],
+};
 function segmentSeed(state, row, locale) {
+  if (state.estimateDocumentary && documentaryVehicles[row.id]) {
+    const [value, powertrain, registrationStatus, mileageKm] = documentaryVehicles[row.id];
+    const date = { value, precision: value.length === 10 ? 'day' : 'month' };
+    row.facts = { ...row.facts, manufacturedAt: date, powertrain, registrationStatus,
+      engineCc: powertrain === 'bev' ? null : 1000, mileageKm };
+    row.manufacture = { date, range: null, source: 'supplier', basis: null };
+  }
   row.inspectionSummary = inspectionOverview(state, row, locale);
   if (row.external?.detail) row.external.detail.inspection = null;
   // A contradictory legacy supplier flag remains visible to tests; the overview is authoritative.
@@ -702,7 +719,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
-    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDocumentary', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
       'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
@@ -795,8 +812,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
           estimateDateRange: (v) => typeof v === 'boolean',
+          estimateDocumentary: (v) => typeof v === 'boolean',
           estimateDisplacementMl: (v) => [null, 'configuration', 'structured', 'machine'].includes(v),
-          estimateEnginePower: (v) => typeof v === 'boolean',
+          estimateEnginePower: (v) => typeof v === 'boolean' || v === 'petrol',
           segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
           segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
           segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),

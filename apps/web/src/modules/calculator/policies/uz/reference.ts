@@ -1,4 +1,5 @@
 import { Amount, roundedAmount } from '../../core/decimal';
+import { compareManufactureAnniversary } from '../../core/dates';
 import type {
   CalculationLine,
   ReferencePolicyFacts,
@@ -44,12 +45,16 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
   const hybrid = input.powertrain === 'hev' || input.powertrain === 'phev';
   const used = input.condition !== 'new';
   const manual = (reason: string) => ({ reason, lines: [], additionalCosts: [] });
-  if (input.customsDate < '2026-02-16' || input.powertrain === 'erev') return manual('manual_pricing');
-  if (ageMonths === 36 || !electric && !used && ageMonths === 12) return manual('age_boundary_manual');
-  if (!electric && !hybrid && !used && ageMonths > 36) return manual('manual_pricing');
+  if (input.powertrain === 'erev') return manual('uz_classification_review');
+  const firstAnniversary = compareManufactureAnniversary(input, ageMonths, 1);
+  const thirdAnniversary = compareManufactureAnniversary(input, ageMonths, 3);
+  if (thirdAnniversary === null || (!electric && !used && firstAnniversary === null))
+    return manual('uz_age_boundary');
+  // PP-3818 distinguishes new combustion vehicles <3 years from used tariff codes.
+  if (!electric && !hybrid && !used && thirdAnniversary >= 0) return manual('uz_classification_review');
   const brv = new Amount(input.customsDate >= '2026-09-01' ? 440000 : 412000);
-  const freshNew = !used && ageMonths < 12;
-  const olderThanThree = ageMonths > 36;
+  const freshNew = !used && firstAnniversary !== null && firstAnniversary <= 0;
+  const olderThanThree = thirdAnniversary > 0;
   const cc = new Amount(electric ? '0' : input.displacementCc);
   const transactionRate = new Amount(input.transactionRate);
   const usdRate = new Amount(input.usdRate ?? input.transactionRate);
@@ -136,7 +141,9 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
       amount: roundedAmount(duty),
       formula: electric
         ? '0'
-        : `round((${customsUsd.toString()} × ${dutyRate} + ${cc.toString()} × ${perCc}) × ${usdRate.toString()})`,
+        : hybrid
+          ? `round(${customsUsd} × ${dutyRate} × ${usdRate})`
+          : `round((${customsUsd} × ${dutyRate} + ${cc} × ${perCc}) × ${usdRate})`,
       method: dutyMethod,
     },
     {

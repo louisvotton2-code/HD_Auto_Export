@@ -7,6 +7,7 @@ async function openCalculator(page: Page, country: string, locale = 'zh') {
   await page.clock.setFixedTime(new Date('2026-10-22T04:00:00Z'));
   await page.goto(`/${locale}/calculator/${country}`);
   await expect(page.locator('.reset-button')).toBeEnabled();
+  await fillNumericDate(page, 'customsDate', '2026-10-22');
   if (await page.locator('#manufactureDate').count()) await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toBeVisible();
   // Explanations are intentionally collapsed in the initial quote. These checks
@@ -38,12 +39,12 @@ async function expectStamp(
 
 const countries = [
   { country: 'RU', slug: 'russia', locale: 'zh', lines: 3 },
-  { country: 'KZ', slug: 'kazakhstan', locale: 'en', lines: 9 },
-  { country: 'UZ', slug: 'uzbekistan', locale: 'ru', lines: 5 },
-  { country: 'GE', slug: 'georgia', locale: 'zh', lines: 5 },
+  { country: 'KZ', slug: 'kazakhstan', locale: 'en', lines: 5 },
+  { country: 'UZ', slug: 'uzbekistan', locale: 'ru', lines: 4 },
+  { country: 'GE', slug: 'georgia', locale: 'zh', lines: 4 },
   { country: 'AM', slug: 'armenia', locale: 'ru', lines: 4 },
   { country: 'KG', slug: 'kyrgyzstan', locale: 'en', lines: 4 },
-  { country: 'AL', slug: 'albania', locale: 'zh', lines: 5 },
+  { country: 'AL', slug: 'albania', locale: 'zh', lines: 4 },
 ] as const;
 
 for (const fixture of countries) {
@@ -82,44 +83,31 @@ test('Armenia explains both winners of the minimum comparison and copies the exp
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await openCalculator(page, 'armenia');
   await fixedValueInputs(page, '100');
-  await fillNumericDate(page, 'manufactureDate', '2020-01');
-  const duty = method(page, 'AM.dutyMiddle');
-  await expect(duty.locator('.fee-method-description')).toContainText('20 AMD');
-  await expect(duty.locator('.fee-method-description')).toContainText('取较大值 879.12 AMD');
-  await expect(duty.getByTestId('fee-formula').locator('code')).toContainText('879 AMD');
-  await page.locator('#price').fill('10000');
-  await expect(duty.locator('.fee-method-description')).toContainText('2,000 AMD');
-  await expect(duty.locator('.fee-method-description')).toContainText('取较大值 2,000 AMD');
-  await expect(duty.getByTestId('fee-formula').locator('code')).toContainText('2,000 AMD');
+  await fillNumericDate(page, 'manufactureDate', '2025-01');
+  await page.locator('#displacementCc').fill('100');
+  const duty = method(page, 'AM.unifiedYoung');
+  await expect(duty.locator('.fee-method-description')).toContainText('54%');
+  await expect(duty.getByTestId('fee-formula').locator('code')).toContainText('250 AMD');
+  await page.locator('#price').fill('8000');
+  await expect(duty.locator('.fee-method-description')).toContainText('2.5');
+  await expect(duty.getByTestId('fee-formula').locator('code')).toContainText('4,320 AMD');
   await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('取较大值 2,000 AMD');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('4,320 AMD');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain('代入公式:');
   expect(copied).not.toMatch(/\bround2?\(|clearance_band\(/);
 });
 
-test('Armenia environmental explanation and receipt switch through 0, 2, 10 and 20 percent without stale text', async ({
-  page,
-}) => {
+test('Armenia reports the current environmental bands up and back down in both the receipt and explanation', async ({ page }) => {
   await openCalculator(page, 'armenia');
-  const stamp = page.getByTestId('result-stamp');
-  for (const [manufacture, key, condition, expected] of [
-    ['2021-01', 'AM.environmentalYoung', 'environmentNone', '未超过 5 年'],
-    ['2020-01', 'AM.environmental', 'environment2', '本车命中 2% 档'],
-    ['2015-01', 'AM.environmental', 'environment10', '本车命中 10% 档'],
-    ['2010-01', 'AM.environmental', 'environment20', '本车命中 20% 档'],
-    ['2021-01', 'AM.environmentalYoung', 'environmentNone', '未超过 5 年'],
-  ]) {
+  for (const [manufacture, rate] of [
+    ['2025-01', 2], ['2021-01', 4], ['2020-01', 6], ['2015-01', 12], ['2010-01', 24], ['2025-01', 2],
+  ] as const) {
     await fillNumericDate(page, 'manufactureDate', manufacture);
-    await expectStamp(stamp, { condition });
-    const explanation = method(page, key).locator('.fee-method-description');
-    await expect(explanation).toContainText(expected);
-    if (key === 'AM.environmentalYoung') {
-      await expect(method(page, 'AM.environmental')).toHaveCount(0);
-      await expect(explanation).not.toContainText('本车命中 20% 档');
-    }
+    const stamp = page.getByTestId('result-stamp');
+    await expectStamp(stamp, { condition: 'environmentRate' });
+    await expect(stamp).toHaveAttribute('aria-label', new RegExp(`环保税 · ${rate}%`));
+    await expect(method(page, 'AM.importEnvironment').locator('.fee-method-description')).toContainText(`${rate}%`);
   }
 });
 
@@ -130,9 +118,9 @@ test('Russia receipt follows the exact 36 and 60 month boundaries and clears the
   await fixedValueInputs(page, '10000');
   const stamp = page.getByTestId('result-stamp');
   for (const [manufacture, band, dutyMethod] of [
-    ['2023-11', 'under3', 'RU.dutyYoung'],
-    ['2023-10', 'ruMiddle', 'RU.dutyMiddle'],
-    ['2021-10', 'fivePlus', 'RU.dutyOld'],
+    ['2023-11', 'upTo3', 'RU.unifiedYoung'],
+    ['2023-10', 'kgPersonalMiddle', 'RU.unifiedUsed'],
+    ['2021-10', 'over5', 'RU.unifiedUsed'],
   ]) {
     await fillNumericDate(page, 'manufactureDate', manufacture);
     await expectStamp(stamp, { title: 'personalTariff', band });
@@ -149,7 +137,7 @@ test('Russia receipt follows the exact 36 and 60 month boundaries and clears the
   await expect(stamp).not.toContainText('≥ 5 years');
   await expect(page.getByTestId('fee-method')).toHaveCount(0);
   await page.locator('#price').fill('180000');
-  await expectStamp(stamp, { title: 'personalTariff', band: 'fivePlus', tone: 'gold' });
+  await expectStamp(stamp, { title: 'personalTariff', band: 'over5', tone: 'gold' });
 });
 
 test('Uzbekistan switches never-registered 12-month bands and used-car methods with the matching receipt', async ({
@@ -157,11 +145,11 @@ test('Uzbekistan switches never-registered 12-month bands and used-car methods w
 }) => {
   await openCalculator(page, 'uzbekistan', 'en');
   await page.locator('#condition').selectOption('new');
-  await fillNumericDate(page, 'manufactureDate', '2025-10');
+  await fillNumericDate(page, 'manufactureDate', '2025-11');
   const stamp = page.getByTestId('result-stamp');
   await expectStamp(stamp, { title: 'newUnder12', band: 'recyclingUpTo36', tone: 'green' });
   await expect(method(page, 'UZ.dutyNewYoung').locator('.fee-method-description')).toContainText(
-    '12 months',
+    '11 months',
   );
   await fillNumericDate(page, 'manufactureDate', '2025-09');
   await expectStamp(stamp, { title: 'newOver12', tone: 'green' });
@@ -182,7 +170,7 @@ test('Kyrgyzstan identity changes the receipt, VAT explanation and excluded firs
 }) => {
   await openCalculator(page, 'kyrgyzstan', 'ru');
   const stamp = page.getByTestId('result-stamp');
-  await expectStamp(stamp, { title: 'personalSchedule', band: 'kgPersonalMiddle' });
+  await expectStamp(stamp, { title: 'personalSchedule', band: 'over5' });
   await expect(method(page, 'KG.vatPersonal').locator('.fee-method-description')).toContainText(
     'повторно',
   );
@@ -202,7 +190,7 @@ test('Kyrgyzstan identity changes the receipt, VAT explanation and excluded firs
   await expectStamp(stamp, { title: 'companySchedule', band: 'kgCompanyMiddle' });
   await expect(method(page, 'KG.dutyCompanyMiddle')).toBeVisible();
   await expect(method(page, 'KG.vat').locator('.fee-method-description')).toContainText(
-    'База НДС юрлица',
+    'НДС 12%',
   );
   await expect(method(page, 'KG.vatPersonal')).toHaveCount(0);
   await expect(extra).toHaveCount(0);
@@ -226,41 +214,33 @@ test('Georgia left-hand hybrid relief and right-hand tripling never leave confli
     '3 倍',
   );
   await expect(method(page, 'GE.exciseRight').locator('.fee-method-description')).toContainText(
-    '不叠加左舵混动优惠',
+    '实报排量 1,998 cc',
   );
   await page.locator('#steering').selectOption('left');
   await expectStamp(stamp, { title: 'hybridRelief', condition: 'leftHand', tone: 'green' });
   await expect(method(page, 'GE.exciseRight')).toHaveCount(0);
 });
 
-test('Albania luxury receipt follows the charged fee for displacement and value, and clears when neither triggers', async ({
-  page,
-}) => {
+test('Albania separates conditional luxury registration and annual costs until eligibility is established', async ({ page }) => {
   await openCalculator(page, 'albania', 'en');
   await fixedValueInputs(page, '100000');
-  await page.locator('#displacementCc').fill('2999');
   const stamp = page.getByTestId('result-stamp');
-  await expectStamp(stamp, { title: 'vat20', condition: 'registrationIncluded' });
-  await expect(method(page, 'AL.luxuryBelow')).toBeVisible();
-  await page.locator('#displacementCc').fill('3000');
-  await expectStamp(stamp, { title: 'luxurySchedule', condition: 'annualTaxExtra' });
-  await expect(
-    method(page, 'AL.luxuryDisplacement').locator('.fee-method-description'),
-  ).toContainText('3,000 cc threshold');
-  await expect(
-    method(page, 'AL.luxuryDisplacement').getByTestId('fee-formula').locator('code'),
-  ).toContainText('70,000 ALL');
-  await expect(method(page, 'AL.annualLuxury').locator('.fee-method-description')).toContainText(
-    'excluded from the one-time import-fee total',
-  );
   await page.locator('#displacementCc').fill('2999');
   await expectStamp(stamp, { title: 'vat20', condition: 'registrationIncluded' });
-  await expect(method(page, 'AL.annualLuxury')).toHaveCount(0);
+  await expect(page.getByTestId('additional-costs')).toHaveCount(0);
+  await page.locator('#displacementCc').fill('3000');
+  await expectStamp(stamp, { title: 'vat20', condition: 'registrationIncluded' });
+  const extra = page.getByTestId('additional-costs');
+  const luxury = extra.locator('[data-extra-cost="luxuryOnce"]');
+  const annual = extra.locator('[data-extra-cost="annualLuxury"]');
+  await expect(luxury.locator('strong').first()).toContainText('70,000');
+  await expect(annual.locator('strong').first()).toContainText('21,000');
+  await page.locator('#displacementCc').fill('2999');
+  await expect(extra).toHaveCount(0);
   await page.locator('#price').fill('5000000');
-  await expectStamp(stamp, { title: 'luxurySchedule', condition: 'annualTaxExtra' });
-  await expect(method(page, 'AL.luxuryValue').locator('.fee-method-description')).toContainText(
-    'ALL 5,000,000 threshold',
-  );
+  if (!(await method(page, 'AL.luxuryConditional').isVisible())) await luxury.locator('button').click();
+  await expect(method(page, 'AL.luxuryConditional').locator('.fee-method-description')).toContainText('at most seven seats');
+  await expect(method(page, 'AL.luxuryConditional').getByTestId('fee-formula').locator('code')).toContainText('70,000 ALL');
 });
 
 test('360px Russian Armenia keeps the long explanation, formula and changing receipt within the result panel', async ({
@@ -270,15 +250,15 @@ test('360px Russian Armenia keeps the long explanation, formula and changing rec
   await openCalculator(page, 'armenia', 'ru');
   await fixedValueInputs(page, '10000');
   await fillNumericDate(page, 'manufactureDate', '2020-01');
-  await expect(method(page, 'AM.dutyMiddle').locator('.fee-method-description')).toHaveText(
-    /.{200,}/,
+  await expect(method(page, 'AM.unifiedUsed').locator('.fee-method-description')).toHaveText(
+    /1[\s\u00a0]?998.*4[,.]8/,
   );
   await expect(
-    method(page, 'AM.dutyMiddle').getByTestId('fee-formula').locator('code'),
+    method(page, 'AM.unifiedUsed').getByTestId('fee-formula').locator('code'),
   ).toContainText('AMD');
   const stamp = page.getByTestId('result-stamp');
-  await expectStamp(stamp, { title: 'commonTariff', band: 'amMiddle', condition: 'environment2' });
-  await expect(stamp).toHaveAttribute('aria-label', /Экосбор · 2%/);
+  await expectStamp(stamp, { title: 'personalTariff', band: 'over5', condition: 'environmentRate' });
+  await expect(stamp).toHaveAttribute('aria-label', /Экосбор · 6%/);
   await stamp.scrollIntoViewIfNeeded();
   const heading = await page.locator('#result-title').boundingBox();
   const receipt = await stamp.boundingBox();

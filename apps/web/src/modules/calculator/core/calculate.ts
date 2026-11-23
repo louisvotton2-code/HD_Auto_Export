@@ -1,3 +1,4 @@
+import { applyDocumentedYear, invalidDocumentedFields } from './documented-facts';
 import { calculateGeReference, GE_REFERENCE_VERSION } from '../policies/ge/reference';
 import { calculateRuReference, RU_REFERENCE_VERSION } from '../policies/ru/reference';
 import { calculateKzReference, KZ_REFERENCE_VERSION } from '../policies/kz/reference';
@@ -7,7 +8,7 @@ import { calculateAmReference, AM_REFERENCE_VERSION } from '../policies/am/refer
 import { calculateAlReference, AL_REFERENCE_VERSION } from '../policies/al/reference';
 import { calculateTjReference, TJ_REFERENCE_VERSION } from '../policies/tj/reference';
 import { calculateTmReference, TM_REFERENCE_VERSION } from '../policies/tm/reference';
-import { ageInMonths, parseCustomsDate, parseManufactureDate } from './dates';
+import { ageInMonths, parseCustomsDate, parseManufactureMonth } from './dates';
 import { Amount } from './decimal';
 import { COUNTRY_CURRENCIES } from './country-currencies';
 import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from './tajik-input';
@@ -31,7 +32,7 @@ const POLICIES = {
   GE: { version: GE_REFERENCE_VERSION, calculate: calculateGeReference },
 } satisfies Record<CountryCode, { version: string; calculate: (facts: ReferencePolicyFacts) => ReferencePolicyResult }>;
 
-const FREIGHT_COUNTRIES = new Set<CountryCode>(['UZ', 'KG', 'AL']);
+const FREIGHT_COUNTRIES = new Set<CountryCode>(['UZ', 'AM', 'KG', 'AL']);
 type NumericField =
   | 'price'
   | 'displacementCc'
@@ -45,7 +46,12 @@ type NumericField =
 const zeroAllowed = new Set<NumericField>(['freight', 'insurance', ...TAJIK_TARIFF_FIELDS]);
 
 /** Pure, deterministic 2026 reference preview. Dates and exchange rates are explicit. */
-export function calculateImportEstimate(input: CalculationInput): CalculationResult {
+export function calculateImportEstimate(raw: CalculationInput): CalculationResult {
+  const input = applyDocumentedYear({
+    ...raw,
+    manufactureDate: typeof raw.manufactureDate === 'string' ? raw.manufactureDate.trim() : raw.manufactureDate,
+    customsDate: typeof raw.customsDate === 'string' ? raw.customsDate.trim() : raw.customsDate,
+  });
   // The two new optional fields preserve compatibility with the initial API contract.
   const facts: CalculationInput = {
     ...input,
@@ -72,7 +78,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     additionalCosts: [],
     assumptions: [],
   };
-  result.excludedCosts.push('registration');
+  if (!['KZ', 'UZ', 'AL'].includes(input.country)) result.excludedCosts.push('registration');
   const required = new Set<keyof CalculationInput>([
     'country',
     'importerType',
@@ -80,9 +86,13 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     'customsDate',
   ]);
   if (input.country !== 'AL') required.add('manufactureDate');
-  const active = input.importerType === 'individual' || input.country === 'KG';
+  const active = input.importerType === 'individual' || ['KG', 'KZ'].includes(input.country);
   const electric = input.powertrain === 'bev';
   const seriesInKg = input.country === 'KG' && input.powertrain === 'erev';
+  const usesFreight = (FREIGHT_COUNTRIES.has(input.country)
+    && !(input.country === 'KG' && input.importerType === 'individual')
+    && input.country !== 'AM')
+    || (input.country === 'KZ' && (electric || input.importerType === 'company' || input.kzDeclaration === 'goods'));
   const numericFields = new Set<NumericField>();
   if (active) {
     if (input.country === 'GE' || input.country === 'TM') required.add('steering');
@@ -93,18 +103,18 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     }
     if (!electric && !seriesInKg) numericFields.add('displacementCc');
     if (input.country === 'RU') {
-      if (typeof facts.powerHp === 'string' && facts.powerHp.trim()) numericFields.add('powerHp');
+      numericFields.add('powerHp');
       if (!electric) numericFields.add('euroRate');
     }
-    if (['KZ', 'KG', 'AM'].includes(input.country)) numericFields.add('euroRate');
+    if (input.country === 'KG' || (!electric && ['KZ', 'AM'].includes(input.country))) numericFields.add('euroRate');
     if (needsTajikTariffInputs(input.country, input.powertrain)) {
       numericFields.add('euroRate');
       TAJIK_TARIFF_FIELDS.forEach(field => numericFields.add(field));
     }
     if (['UZ', 'TJ', 'TM'].includes(input.country)) numericFields.add('usdRate');
-    if (input.country === 'UZ' || input.country === 'AL' && electric) required.add('condition');
+    if (input.country === 'UZ') required.add('condition');
     for (const field of numericFields) required.add(field);
-    if (FREIGHT_COUNTRIES.has(input.country) && !(input.country === 'KG' && input.importerType === 'individual')) {
+    if (usesFreight || FREIGHT_COUNTRIES.has(input.country)) {
       // Unknown transport is an explicit estimate assumption, never a complete cost quote.
       for (const field of ['freight', 'insurance'] as const) {
         if (typeof facts[field] === 'string') facts[field] = facts[field].trim();
@@ -147,10 +157,13 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
       result.fieldErrors[field] = 'invalid_decimal';
     else (facts[field] as string) = value.trim();
   }
+  for (const field of invalidDocumentedFields({ ...input })) result.fieldErrors[field] = 'invalid_option';
+  if (input.country !== 'AL' && typeof input.manufactureDay === 'string' && input.customsDate && input.manufactureDay > input.customsDate)
+    result.fieldErrors.manufactureDate = 'manufacture_after_customs';
   const manufactureText =
     typeof input.manufactureDate === 'string' ? input.manufactureDate.trim() : '';
   const customsText = typeof input.customsDate === 'string' ? input.customsDate.trim() : '';
-  const manufacture = input.country === 'AL' ? null : parseManufactureDate(manufactureText);
+  const manufacture = input.country === 'AL' ? null : parseManufactureMonth(manufactureText);
   const customs = parseCustomsDate(customsText);
   if (
     input.country !== 'AL' &&
@@ -163,18 +176,16 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     (input.customsDate != null && typeof input.customsDate !== 'string')
   )
     result.fieldErrors.customsDate = 'invalid_date';
-  if (manufacture && customs && manufactureText > customsText)
+  if (manufacture && customs && ageInMonths(manufacture, customs) < 0)
     result.fieldErrors.manufactureDate = 'manufacture_after_customs';
   if (Object.keys(result.fieldErrors).length) return { ...result, status: 'invalid' };
   if (result.missingFields.length) return result;
-  facts.customsDate = customsText;
-  facts.manufactureDate = manufactureText;
   const pending = (reason: string): CalculationResult => ({
     ...result,
     status: 'needs_review',
     reason,
   });
-  if (input.importerType === 'company' && input.country !== 'KG')
+  if (input.importerType === 'company' && !['KG', 'KZ'].includes(input.country))
     return pending('company_rules_pending');
   if (customs!.year !== 2026) return pending('rule_date_outside_reference');
 
@@ -188,10 +199,12 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
   result.ruleVersion = version;
   result.lines = policy.lines;
   result.additionalCosts = policy.additionalCosts;
-  if (FREIGHT_COUNTRIES.has(input.country) && !(input.country === 'KG' && input.importerType === 'individual') &&
-      (!facts.freight.trim() || !facts.insurance.trim()))
-    result.assumptions.push('transport_not_in_tax_base');
+  result.assumptions = [...(policy.assumptions ?? [])];
   if (policy.reason) return pending(policy.reason);
+  if (input.manufactureYear && input.manufactureDay === input.manufactureYear + '-07-01')
+    result.assumptions.push('eaeu_documented_year');
+  if (usesFreight && (!facts.freight.trim() || !facts.insurance.trim()))
+    result.assumptions.push('transport_not_in_tax_base');
   return {
     ...result,
     status: 'reference',

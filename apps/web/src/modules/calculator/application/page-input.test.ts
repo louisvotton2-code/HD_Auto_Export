@@ -48,9 +48,8 @@ describe('country page importer scope', () => {
     expect(
       calculateImportEstimate(normalizePageInput(company, getCountryByCode('RU')!)),
     ).toMatchObject({
-      status: 'needs_review',
-      reason: 'manual_pricing',
-      total: null,
+      status: 'reference',
+      total: '926952',
     });
     expect(calculateImportEstimate(company)).toMatchObject({
       status: 'needs_review',

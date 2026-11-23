@@ -1,23 +1,115 @@
-import { Amount } from '../../core/decimal';
-import { tariffLine } from '../../core/tariff-line';
-import type { ReferencePolicyFacts, ReferencePolicyResult } from '../../core/types';
-import { ordinaryCombustion, personalCombustionDuty } from '../eaeu-personal';
+import { personalCombustionDuty, throughEaeuAnniversary } from '../eaeu-personal';
+import { Amount, roundedAmount } from '../../core/decimal';
+import type {
+  CalculationLine,
+  ReferencePolicyFacts,
+  ReferencePolicyResult,
+} from '../../core/types';
+import {
+  RECYCLING_ELECTRIC,
+  RECYCLING_OVER_3500,
+  RECYCLING_UP_TO_1000,
+  RECYCLING_UP_TO_2000,
+  RECYCLING_UP_TO_3000,
+  RECYCLING_UP_TO_3500,
+} from './recycling-rates';
 
-export const RU_REFERENCE_VERSION = 'ru-personal-2026.11.23-v3';
+export const RU_REFERENCE_VERSION = 'ru-personal-2026.11.23';
 
-const clearanceBands = [
-  [200000, 1231], [450000, 2462], [1200000, 4924], [2700000, 13541],
-  [4200000, 18465], [5500000, 21344], [10000000, 49240], [Infinity, 73860],
+// Article 193, Tax Code of the Russian Federation, passenger-car rates for 2026 (RUB/hp).
+const EXCISE_PER_HP = [
+  [90, 0], [150, 64], [200, 613], [300, 1004], [400, 1711], [500, 1771], [Infinity, 1829],
+] as const;
+
+const CLEARANCE_BANDS = [
+  { limit: '200000', fee: '1231' },
+  { limit: '450000', fee: '2462' },
+  { limit: '1200000', fee: '4924' },
+  { limit: '2700000', fee: '13541' },
+  { limit: '4200000', fee: '18465' },
+  { limit: '5500000', fee: '21344' },
+  { limit: '10000000', fee: '49240' },
 ] as const;
 
 export function calculateRuReference(facts: ReferencePolicyFacts): ReferencePolicyResult {
-  if (!ordinaryCombustion(facts)) return { reason: 'manual_pricing', lines: [], additionalCosts: [] };
   const { input } = facts;
-  const duty = personalCombustionDuty('RU', facts);
+  if (input.powertrain === 'erev') {
+    return { reason: 'powertrain_rules_pending', lines: [], additionalCosts: [] };
+  }
   const value = new Amount(input.price).mul(input.transactionRate);
-  const [ceiling, fee] = clearanceBands.find(([limit]) => value.lte(limit))!;
-  const clearance = tariffLine('customsFee', new Amount(fee), String(fee), 'RU.officialClearance',
-    { value: value.toFixed(), fee, ceiling: Number.isFinite(ceiling) ? String(ceiling) : '10,000,000+' });
-  // Recycling requires power classification and importer qualifications missing from this form.
-  return { reason: 'manual_pricing', lines: [duty, clearance], additionalCosts: [] };
+  const electric = input.powertrain === 'bev';
+  const duty: CalculationLine = electric
+    ? { id: 'duty', amount: roundedAmount(value.mul('0.15')), formula: `round(${value} × 0.15)`,
+        method: { key: 'RU.dutyElectric', params: { value: value.toFixed(), percentage: 15 } } }
+    : personalCombustionDuty('RU', facts);
+
+  const clearanceBand = CLEARANCE_BANDS.find((item) => value.lte(item.limit));
+  const fee = clearanceBand?.fee ?? '73860';
+  const clearanceIndex = clearanceBand
+    ? CLEARANCE_BANDS.indexOf(clearanceBand)
+    : CLEARANCE_BANDS.length;
+  const hp = new Amount(input.powerHp);
+  const cc = electric ? new Amount(0) : new Amount(input.displacementCc);
+  const concession = input.ruPersonalRelief !== 'ineligible' &&
+    (electric ? hp.lte(80) : cc.lte(3000) && hp.lte(160));
+  const recyclingTable = electric
+    ? RECYCLING_ELECTRIC
+    : cc.lte('1000')
+      ? RECYCLING_UP_TO_1000
+      : cc.lte('2000')
+        ? RECYCLING_UP_TO_2000
+        : cc.lte('3000')
+          ? RECYCLING_UP_TO_3000
+          : cc.lte('3500')
+            ? RECYCLING_UP_TO_3500
+            : RECYCLING_OVER_3500;
+  const row = recyclingTable.find((item) => item.maxHp === null || hp.lte(item.maxHp))!;
+  const young = throughEaeuAnniversary(facts, 3);
+  const recyclingCoefficient = concession ? (young ? '0.17' : '0.26') : (young ? row.fresh : row.aged);
+  const assumptions: string[] = [];
+  if (concession && !input.ruPersonalRelief) assumptions.push('ru_personal_relief_assumed');
+  if (input.powertrain === 'hev' || input.powertrain === 'phev') assumptions.push('ru_hybrid_certified_power');
+  const taxes = [duty];
+  if (electric) {
+    assumptions.push('ru_certified_electric_power');
+    const [, rate] = EXCISE_PER_HP.find(([limit]) => hp.lte(limit))!;
+    const excise = roundedAmount(hp.mul(rate));
+    const vatBase = value.add(duty.amount).add(excise);
+    taxes.push(
+      { id: 'excise', amount: excise, formula: `round(${hp} × ${rate})`,
+        method: { key: 'RU.electricExcise', params: { hp: hp.toFixed(), rate } } },
+      { id: 'vat', amount: roundedAmount(vatBase.mul('0.22')), formula: `round((${value} + ${duty.amount} + ${excise}) × 0.22)`,
+        method: { key: 'RU.electricVat', params: { value: value.toFixed(), duty: duty.amount, excise } } },
+    );
+  }
+  return {
+    assumptions,
+    lines: [
+      ...taxes,
+      {
+        id: 'customsFee',
+        amount: fee,
+        formula: `clearance_band(${value.toString()}) = ${fee}`,
+        method: {
+          key: clearanceBand ? 'RU.customsFee' : 'RU.customsFeeTop',
+          params: {
+            value: value.toString(),
+            lower: clearanceIndex === 0 ? '0' : CLEARANCE_BANDS[clearanceIndex - 1].limit,
+            ...(clearanceBand ? { upper: clearanceBand.limit } : {}),
+            fee,
+          },
+        },
+      },
+      {
+        id: 'recycling',
+        amount: roundedAmount(new Amount('20000').mul(recyclingCoefficient)),
+        formula: `20000 × ${recyclingCoefficient}`,
+        method: {
+          key: concession ? 'RU.recyclingConcession' : 'RU.recyclingTable',
+          params: { hp: hp.toFixed(), coefficient: recyclingCoefficient, base: '20000' },
+        },
+      },
+    ],
+    additionalCosts: [],
+  };
 }

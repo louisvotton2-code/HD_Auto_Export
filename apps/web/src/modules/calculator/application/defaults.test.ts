@@ -25,7 +25,7 @@ describe('ready-to-edit calculator defaults', () => {
       insurance: '',
     });
     expect(input.transactionRate).toBe(getReferenceRate('RU', 'USD').transactionRate);
-    expect(calculateImportEstimate(input)).toMatchObject({ status: 'needs_review', total: null });
+    expect(calculateImportEstimate(input)).toMatchObject({ status: 'reference', total: '926952' });
   });
 
   it('does not make GE depend on the default price or exchange rate', () => {
@@ -41,8 +41,8 @@ describe('ready-to-edit calculator defaults', () => {
       const input = createDefaultInput(country, '2026-10-23');
       expect(input.freight).toBe('');
       const result = calculateImportEstimate(input);
-      expect(result.status).toBe(country === 'UZ' ? 'reference' : 'needs_review');
-      expect(result.total !== null).toBe(country === 'UZ');
+      expect(result.status).toBe('reference');
+      expect(result.total).not.toBeNull();
       if (['UZ', 'AL'].includes(country))
         expect(result.assumptions).toContain('transport_not_in_tax_base');
     },

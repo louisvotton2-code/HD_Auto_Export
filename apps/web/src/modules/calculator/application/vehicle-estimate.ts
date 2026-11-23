@@ -3,7 +3,8 @@ import type { CalculationInput, CountryCode, Powertrain } from '../index';
 import { Amount } from '../core/decimal';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, getTajikTariffDefaults } from './defaults';
-import { vehicleManufactureDate } from './manufacture-estimate';
+import { powerBasis } from './power-basis';
+import { vehicleManufactureFacts } from './manufacture-estimate';
 
 /** The UI can leave unknown enums empty; the core's required-field checks accept empty text. */
 export type VehicleEstimateDraft = Omit<CalculationInput, 'powertrain' | 'condition' | 'steering'> & {
@@ -22,6 +23,8 @@ function positivePower(value: number | null | undefined): value is number {
 
 export function vehicleEstimatePower(vehicle: VehicleEstimateSource) {
   const { powerHp, powertrain } = vehicle.facts;
+  // Public power fields do not certify the 30-minute motor output, or its sum with ICE power.
+  if (powerBasis(powertrain) !== 'power') return null;
   if (positivePower(powerHp)) return { hp: String(powerHp), source: 'reported' as const };
   if (!supportedPowertrains.has(powertrain) || powertrain === 'bev') return null;
 
@@ -42,13 +45,6 @@ function vehicleTransactionPrice(vehicle: VehicleEstimateSource) {
   return { price, currency } as const;
 }
 
-function vehicleCondition(vehicle: VehicleEstimateSource, country: CountryCode): VehicleEstimateDraft['condition'] {
-  const { registrationStatus, firstRegistration, mileageKm } = vehicle.facts;
-  if (registrationStatus === 'registered' || firstRegistration) return 'used';
-  if (registrationStatus !== 'never_registered' || country === 'AL' && mileageKm !== 0) return '';
-  return 'new';
-}
-
 export function createVehicleEstimateDraft(
   vehicle: VehicleEstimateSource,
   country: CountryCode,
@@ -65,12 +61,17 @@ export function createVehicleEstimateDraft(
     currency,
     displacementCc: facts.engineCc !== null && facts.engineCc > 0 ? String(facts.engineCc) : '',
     powerHp: vehicleEstimatePower(vehicle)?.hp ?? '',
-    manufactureDate: vehicleManufactureDate(vehicle),
+    ...vehicleManufactureFacts(vehicle),
+    ...(facts.registrationStatus === 'never_registered' || facts.registrationStatus === 'registered'
+      ? { vehicleRegistration: facts.registrationStatus } : {}),
+    ...(facts.mileageKm != null ? { mileageKm: String(facts.mileageKm) } : {}),
     customsDate: date,
     freight: '',
     insurance: '',
     steering: '',
-    condition: vehicleCondition(vehicle, country),
+    condition: facts.registrationStatus === 'never_registered'
+      ? 'new'
+      : facts.registrationStatus === 'registered' ? 'used' : '',
     ...getTajikTariffDefaults(country),
     ...deriveRates(rates, country, currency),
   };
@@ -92,9 +93,9 @@ export function retargetVehicleEstimateDraft(
   return {
     ...getTajikTariffDefaults(country),
     ...input,
+    ...(country === 'AL' ? { condition: vehicle.facts.registrationStatus === 'never_registered' ? 'new' as const : 'used' as const } : {}),
     price,
     country,
-    ...(country === 'AL' && input.country !== 'AL' ? { condition: vehicleCondition(vehicle, country) } : {}),
     importerType: 'individual',
     ...deriveRates(rates, country, input.currency),
   };

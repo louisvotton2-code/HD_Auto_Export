@@ -12,18 +12,18 @@ import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-u
 import { formatDisplayAmount } from '@/shared/lib/display-amount';
 import { DecimalDisplayInput } from './decimal-display-input';
 import { fieldDisplayPrecision } from './field-display-precision';
+import { powerBasis } from '../application/power-basis';
 import { NumericDateInput } from './numeric-date-input';
 import { useValueHighlight } from '@/shared/ui/interaction-motion';
 import { countries, type CountryRecord } from '../config/countries';
 import { calculateImportEstimate, type CalculationInput, type CalculationResult, type Powertrain } from '../index';
 import { convertTransactionPrice, getTajikTariffDefaults } from '../application/defaults';
-import { getClearanceDate } from '../application/current-date';
+import { getClearanceDate, visitYearForDefault } from '../application/current-date';
 import { readStoredEstimateRates, readVehicleEstimateFragment } from '../application/estimate-seed';
 import { calculateRecentJanuaryEstimates } from '../application/manufacture-range';
 import { januaryRangeNote, manufactureRangeCopy } from '../application/manufacture-range-copy';
 import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
-  AL_NEW_VEHICLE_BASIS,
   CALCULATOR_DRAFT_STORAGE_KEY,
   CALCULATOR_POWERTRAINS,
   LEGACY_CALCULATOR_DRAFT_STORAGE_KEY,
@@ -32,7 +32,7 @@ import {
   type StoredCalculatorDraft,
 } from '../application/draft';
 import { convertImportAmountToUsd } from '../application/display-currency';
-import { normalizePageInput } from '../application/page-input';
+import { normalizePageInput, usesAssessedPrice } from '../application/page-input';
 import { calculatorErrorKey, calculatorReasonKey } from '../application/calculator-status';
 import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from '../core/tajik-input';
 import { getCopyQuoteFacts, type CopyQuoteText } from '../application/copy-quote';
@@ -54,6 +54,7 @@ type InputField =
   | 'displacementCc'
   | 'powerHp'
   | 'manufactureDate'
+  | 'customsDate'
   | 'freight'
   | 'insurance'
   | 'transactionRate'
@@ -83,7 +84,8 @@ export function CalculatorPage({
   const preference = useDestinationCountry(country.code);
   const [activeRates, setActiveRates] = useState(initialRates);
   const [input, setInput] = useState(() => createCalculatorFormInput(country, initialDate, initialRates));
-  const [referenceYear, setReferenceYear] = useState(Number(initialDate.slice(0, 4)));
+  const [referenceYear, setReferenceYear] = useState(visitYearForDefault(initialDate));
+  const [customsDateEdited, setCustomsDateEdited] = useState(false);
   const [manualRates, setManualRates] = useState(false);
   const [enginePowerPrefill, setEnginePowerPrefill] = useState(false);
   const [ready, setReady] = useState(false);
@@ -104,20 +106,21 @@ export function CalculatorPage({
       /* Optional draft: unavailable storage keeps the current route's defaults. */
     }
     // The exported HTML contains the build date; fresh browser defaults use the visit date.
-    // The hidden calculation date always follows the current visit, including older drafts and links.
+    // An explicitly selected clearance date takes precedence over a fresh visit default.
     // Keep the consumed seed until its state is persisted; React development effects may replay.
     const fragment = readVehicleEstimateFragment(window.location.hash, country.code)
       ?? (pendingSeedRef.current?.seed.input.country === country.code ? pendingSeedRef.current : null);
     pendingSeedRef.current = fragment;
     const rates = fragment?.seed.rates ?? readStoredEstimateRates(raw.current, country.code) ?? initialRates;
     const visitDate = getClearanceDate(new Date());
-    setReferenceYear(Number(visitDate.slice(0, 4)));
+    setReferenceYear(visitYearForDefault(visitDate));
     const restored = restoreCalculatorDraft(raw, country, visitDate, rates);
     setActiveRates(rates);
+    setCustomsDateEdited(Boolean(fragment ? fragment.seed.customsDateEdited : restored.customsDateEdited));
     setInput(fragment ? {
       ...getTajikTariffDefaults(country.code),
       ...vehicleEstimateInput(fragment.seed.input),
-      customsDate: visitDate,
+      customsDate: fragment.seed.customsDateEdited ? fragment.seed.input.customsDate : visitDate,
     } : restored.input);
     setManualRates(fragment ? true : restored.manualRates);
     setEnginePowerPrefill((fragment ? fragment.seed.enginePowerPrefill : restored.enginePowerPrefill) === true);
@@ -141,13 +144,12 @@ export function CalculatorPage({
     pendingSeedRef.current = null;
     try {
       sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({
-        input, manualRates, rates: activeRates, ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
-        ...(input.country === 'AL' ? { conditionBasis: AL_NEW_VEHICLE_BASIS } : {}),
+        input, manualRates, rates: activeRates, ...(customsDateEdited ? { customsDateEdited: true } : {}), ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
       }));
     } catch {
       /* Optional draft. */
     }
-  }, [input, manualRates, enginePowerPrefill, ready, country.code, activeRates]);
+  }, [input, customsDateEdited, manualRates, enginePowerPrefill, ready, country.code, activeRates]);
 
   useEffect(() => {
     const nav = countryNavRef.current;
@@ -237,11 +239,14 @@ export function CalculatorPage({
 
   function update<K extends keyof CalculationInput>(key: K, value: CalculationInput[K]) {
     recordCalculationEdit();
-    const clearsEnginePower = enginePowerPrefill && key === 'powertrain' && (value === 'bev' || value === '');
+    if (key === 'customsDate') setCustomsDateEdited(true);
+    const clearsEnginePower = key === 'powertrain' && powerBasis(value) !== powerBasis(input.powertrain);
     setInput((previous) => ({
       ...previous,
       [key]: value,
-      ...(clearsEnginePower ? { powerHp: '' } : {}),
+      ...(key === 'manufactureDate' ? { manufactureDay: undefined, manufactureYear: undefined } : {}),
+      ...(clearsEnginePower ? { powerHp: '', ruPowerBasis: undefined } : {}),
+      ...(key === 'powerHp' ? { ruPowerBasis: 'declared' as const } : {}),
       ...(country.needsUsdRate && previous.currency === 'USD' && key === 'transactionRate'
         ? { usdRate: value }
         : {}),
@@ -269,9 +274,10 @@ export function CalculatorPage({
     setCopyState('idle');
   }
   function reset() {
+    setCustomsDateEdited(false);
     setActiveRates(initialRates);
     const visitDate = getClearanceDate(new Date());
-    setReferenceYear(Number(visitDate.slice(0, 4)));
+    setReferenceYear(visitYearForDefault(visitDate));
     setInput(createCalculatorFormInput(country, visitDate, initialRates));
     setManualRates(false);
     setTouched(new Set());
@@ -376,7 +382,7 @@ export function CalculatorPage({
   function field(
     key: InputField,
     label: string,
-    options: { type?: 'month'; unit?: string; children?: ReactNode; note?: ReactNode } = {},
+    options: { type?: 'month' | 'date'; unit?: string; children?: ReactNode; note?: ReactNode } = {},
   ) {
     const code = result.fieldErrors[key];
     const error = code
@@ -387,8 +393,8 @@ export function CalculatorPage({
     const describedBy = [error && `${key}-error`, options.note && `${key}-note`].filter(Boolean).join(' ');
     return (
       <div className={`form-field ${error ? 'has-error' : ''}`}>
-        {options.type === 'month' ? <NumericDateInput id={key} name={key} value={input[key] ?? ''}
-          limitToCurrentYear
+        {options.type ? <NumericDateInput id={key} name={key} value={(key === 'manufactureDate' ? normalized.manufactureDate : input[key]) ?? ''}
+          limitToCurrentYear={key === 'manufactureDate'}
           precision={options.type} referenceYear={referenceYear} label={label} locale={locale as Locale} onChange={value => update(key, value)}
           onBlur={() => setTouched(old => new Set(old).add(key))} describedBy={describedBy || undefined} invalid={Boolean(error)} /> : <>
           <label htmlFor={key}>{label}</label>
@@ -479,8 +485,8 @@ export function CalculatorPage({
             <fieldset className="form-content" disabled={!ready || input.country !== country.code}>
               {country.needsPrice && (
                 <div className="price-row">
-                  {field('price', t(country.code === 'TJ' ? 'tjCustomsValue' : 'price'), {
-                    note: country.code === 'TJ' ? t('tjCustomsValueHelp') : country.code === 'AM' ? t('amValueNote') : undefined,
+                  {field('price', t(usesAssessedPrice(country.code, input.powertrain) ? 'tjCustomsValue' : 'price'), {
+                    note: country.code === 'TJ' ? t('tjCustomsValueHelp') : undefined,
                     children: (
                       <select
                         aria-label={t('currency')}
@@ -498,13 +504,13 @@ export function CalculatorPage({
               <div className="field-grid">
                 {needsDisplacement && field('displacementCc', t('displacement'), { unit: 'cc' })}
                 {country.needsPower &&
-                  field('powerHp', t(isElectric ? 'electricPower' : 'power'), { unit: 'hp' })}
+                  field('powerHp', t(powerBasis(input.powertrain)), { unit: 'hp' })}
                 {country.needsManufactureDate &&
                   field('manufactureDate', t('manufactureDate'), {
                     type: 'month',
-                    note: manufactureNote ? <><strong>{manufactureNote.lead}</strong>{manufactureNote.period}</>
-                      : input.manufactureDate.length === 10 ? t('knownManufactureDate', { date: input.manufactureDate }) : undefined,
+                    note: manufactureNote && <><strong>{manufactureNote.lead}</strong>{manufactureNote.period}</>,
                   })}
+                {field('customsDate', t('customsDate'), { type: 'date' })}
               </div>
               <fieldset className="powertrain-field">
                 <legend>{t('powertrain')}</legend>
@@ -533,7 +539,7 @@ export function CalculatorPage({
                   ))}
                 </div>
               </fieldset>
-              {(country.code === 'UZ' || country.code === 'AL' && input.powertrain === 'bev') && (
+              {country.code === 'UZ' && (
                 <div className="form-field condition-field">
                   <label htmlFor="condition">{t('condition')}</label>
                   <div className="input-wrap">
@@ -546,10 +552,10 @@ export function CalculatorPage({
                     >
                       {!input.condition && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
                       <option value="used">{t('usedVehicle')}</option>
-                      <option value="new">{t(country.code === 'AL' ? 'alNewVehicle' : 'newVehicle')}</option>
+                      <option value="new">{t('newVehicle')}</option>
                     </select>
                   </div>
-                  <small className="condition-help">{t(country.code === 'AL' ? 'alEvConditionHelp' : 'conditionHelp')}</small>
+                  <small className="condition-help">{t('conditionHelp')}</small>
                 </div>
               )}
               <details
@@ -618,8 +624,8 @@ export function CalculatorPage({
                             }
                           >
                             {!input.steering && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
-                            <option value="left">{t('factoryLeft')}</option>
-                            <option value="right">{t('rightOrConverted')}</option>
+                            <option value="left">{t('left')}</option>
+                            <option value="right">{t('right')}</option>
                           </select>
                         </div>
                       </div>
@@ -801,27 +807,6 @@ export function CalculatorPage({
                         )}
                   </p>
                 </div>
-              )}
-              {!rangeResult && result.status === 'needs_review' && result.lines.length > 0 && (
-                <section className="additional-costs" data-testid="verified-fee-items">
-                  <h3>{t('verifiedFeeItems')}</h3>
-                  {result.lines.map((line) => (
-                    <FeeLine
-                      key={line.id}
-                      line={line}
-                      label={feeLabel(line.id)}
-                      amount={format(line.amount)}
-                      usd={usdText(line.amount)}
-                      currency={result.currency}
-                      detailsId={feeDetailsId(line, false)}
-                      expanded={expandedFees.has(feeDetailsId(line, false))}
-                      onToggle={() => toggleFee(feeDetailsId(line, false))}
-                    />
-                  ))}
-                  {result.assumptions.length > 0 && <ul className="calculation-assumptions">
-                    {result.assumptions.map((key) => <li key={key}>{ta(key)}</li>)}
-                  </ul>}
-                </section>
               )}
               {result.status === 'reference' && (
                 <p className="formula-precision-note">{td('precision')}</p>

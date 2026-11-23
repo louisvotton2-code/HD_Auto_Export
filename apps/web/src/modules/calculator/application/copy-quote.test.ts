@@ -34,11 +34,12 @@ describe('copied quote input facts', () => {
       displacement: '1998',
       power: '150',
       manufactureDate: '2021-01',
+      customsDate: '2026-10-23',
       transactionRate: '81.969182 RUB/USD',
       euroRate: '94.7 RUB/EUR',
       fxStatus: 'manualFx',
       fxSnapshotDate: rates.asOf,
-      ruleVersion: 'ru-personal-2026.11.23-v3',
+      ruleVersion: 'ru-personal-2026.11.23',
     });
   });
 
@@ -48,11 +49,12 @@ describe('copied quote input facts', () => {
       powertrain: 'petrol',
       displacement: '1998',
       manufactureDate: '2021-01',
+      customsDate: '2026-10-23',
       steering: 'right',
       usdRate: `${rates.rates.GEL} GEL/USD`,
       fxStatus: 'fallbackFx',
       fxSnapshotDate: rates.asOf,
-      ruleVersion: 'ge-hs8703-2026.04.02-v2',
+      ruleVersion: 'ge-hs8703-2026.11.23-v3',
     });
   });
 
