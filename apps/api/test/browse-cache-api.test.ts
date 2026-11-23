@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { makeExternalCandidateFixture, makePublicVehicleFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { InternalPublicBrowseGenerationResponseSchema } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
@@ -12,7 +12,7 @@ import { createDatabase } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { applyFormalCandidate } from '../src/external/store.js';
 
-test('anonymous browse API shares a fenced snapshot and direct detail still follows supplier updates', async t => {
+async function createBrowseFixture(t:TestContext,useFence=false) {
   const address = new URL(process.env.API_TEST_DATABASE_URL ?? 'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
   if (!['postgres:','postgresql:'].includes(address.protocol) || address.hostname!=='127.0.0.1' ||
     address.pathname!=='/postgres' || address.search || address.hash) throw new Error('Only isolated loopback PostgreSQL is supported.');
@@ -20,6 +20,7 @@ test('anonymous browse API shares a fenced snapshot and direct detail still foll
   const maintenance = createDatabase(address.href,1);
   address.pathname='/'+name;
   const media=await mkdtemp(path.join(tmpdir(),'hd-browse-cache-'));
+  const fence=path.join(media,'generation');
   const secret='synthetic-browse-cache-service-secret';
   let created=false, runtime:Awaited<ReturnType<typeof buildApp>>|undefined;
   t.after(async()=>{
@@ -33,8 +34,9 @@ test('anonymous browse API shares a fenced snapshot and direct detail still foll
   created=true;
   const config=readConfig({NODE_ENV:'test',DATABASE_URL:address.href,AUTH_SECRET:randomBytes(32).toString('hex'),MEDIA_ROOT:media,
     HD_DEPLOYMENT_ENV:'test',HD_RELEASE_ID:'b'.repeat(40),CATALOG_READ_MODE:'combined',PUBLIC_CATALOG_CACHE:'memory',
-    PUBLIC_BROWSE_CACHE_ENABLED:'true',TRUST_PROXY:'192.0.2.10/32'});
-  const {app,db}=runtime=await buildApp({...config,ssrService:{secret,peers:['192.0.2.10/32']}});
+    PUBLIC_BROWSE_CACHE_ENABLED:'true',TRUST_PROXY:'192.0.2.10/32',...(useFence?{HD_BROWSE_GENERATION_FILE:fence}:{})});
+  const start=()=>buildApp({...config,ssrService:{secret,peers:['192.0.2.10/32']}});
+  const {app,db}=runtime=await start();
   await migrateDatabase(db);
   const manual=randomUUID(), publication=randomUUID(), draft=makeVehicleDraftFixture();
   const value={source:draft.source,facts:draft.facts,price:draft.price,content:draft.content,images:makePublicVehicleFixture().images};
@@ -60,11 +62,22 @@ test('anonymous browse API shares a fenced snapshot and direct detail still foll
   const source='ext-'+supplier;
   const publicPrefix='/api/v1', internalPrefix='/internal/public-catalog';
   let n=0;
-  const call=(route:string,headers:Record<string,string>={},internal=false)=>app.inject({
+  const call=(route:string,headers:Record<string,string>={},internal=false)=>runtime!.app.inject({
     url:(internal?internalPrefix:publicPrefix)+route,remoteAddress:internal?'192.0.2.10':'198.51.100.'+(++n%240+1),
     headers:internal?{'x-hd-ssr-key':secret,'x-forwarded-for':'198.51.100.'+(++n%240+1),...headers}:headers,
   });
   const generation=async()=>InternalPublicBrowseGenerationResponseSchema.parse((await call('/browse-generation',{},true)).json()).data.generation;
+  const writeFence=async(value:string)=>{
+    const nextFence=fence+'.next';
+    await writeFile(nextFence,value,{mode:0o644,flag:'wx'});
+    await rename(nextFence,fence);
+  };
+  return {app,db,manual,supplier,source,fixture,call,generation,internalPrefix,fence,writeFence,
+    async restart(){ await runtime!.app.close(); runtime=undefined; runtime=await start(); }};
+}
+
+test('anonymous browse API shares a fenced snapshot and direct detail still follows supplier updates', async t => {
+  const {app,db,manual,supplier,source,fixture,call,generation,internalPrefix}=await createBrowseFixture(t);
   const combination='locale=zh&catalog=curated&view=localized';
   const list='/vehicles?'+combination+'&page=1&pageSize=1&projection=card';
   const next=list.replace('page=1','page=2');
@@ -129,4 +142,81 @@ test('anonymous browse API shares a fenced snapshot and direct detail still foll
   assert.equal(ensureBrowse(await call(facets),changed).data.total,0);
   assert.deepEqual(ensureBrowse(await call(featured),changed).data.sections,[]);
   assert.equal((await call('/vehicles/'+manual+'?locale=zh')).statusCode,404);
+});
+
+test('the OPS hold bypasses browse snapshots and persists through rollback and API restart', async t => {
+  const {db,manual,supplier,call,generation,fence,writeFence,restart}=await createBrowseFixture(t,true);
+  const policy={'x-hd-browse-policy':'browse-600-v1','x-hd-catalog-scope':'filters'};
+  const locales=['zh','en','ru'];
+  const browseHeaders=['x-hd-browse-policy','x-hd-browse-generation','x-hd-browse-generated-at','x-hd-browse-expires-at'];
+  async function expectBrowse(stamp:string|null,total:number,showManual:boolean,multilingual=false) {
+    for (const locale of multilingual?locales:['zh']) for (const internal of [false,true]) {
+      const query=`locale=${locale}&catalog=curated&view=localized`;
+      const [list,filters,home]=await Promise.all([
+        call(`/vehicles?${query}&page=1&pageSize=24&projection=card`,policy,internal),
+        call(`/vehicle-filters?${query}&projection=overview`,policy,internal),
+        call(`/home/vehicles?locale=${locale}&view=localized`,policy,internal),
+      ]);
+      for (const reply of [list,filters,home]) {
+        assert.equal(reply.statusCode,200,reply.body);
+        assert.equal(reply.headers['cache-control'],'no-store');
+        if (stamp) assert.equal(reply.headers['x-hd-browse-generation'],stamp);
+        else for (const header of browseHeaders) assert.equal(reply.headers[header],undefined);
+      }
+      assert.equal(list.json().meta.total,total,locale);
+      assert.equal(filters.json().data.total,total,locale);
+      assert.equal(list.json().data.items.some((vehicle:{id:string})=>vehicle.id===manual),showManual,locale);
+      assert.deepEqual(home.json().data.sections.flatMap((section:{vehicles:{id:string}[]})=>section.vehicles.map(vehicle=>vehicle.id)),
+        showManual?[manual]:[],locale);
+    }
+  }
+  const expectNoAuthority=async()=>{
+    const reply=await call('/browse-generation',{},true);
+    assert.equal(reply.statusCode,503,reply.body);
+    assert.equal(reply.headers['cache-control'],'no-store');
+    assert.equal(reply.json().data,undefined);
+  };
+
+  await writeFence('a'.repeat(32)+'\n');
+  const original=await generation();
+  await expectBrowse(original,2,true,true);
+
+  // An ordinary supplier change should keep serving the old browse snapshot
+  // while active. The exact same requests must become live on a local hold.
+  await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1",[supplier]);
+  assert.equal(await generation(),original);
+  await expectBrowse(original,2,true);
+
+  await writeFence('hold-'+'a'.repeat(32)+'\n');
+  await expectNoAuthority();
+  await expectBrowse(null,1,true,true);
+  const rollback=new Error('synthetic archive rollback');
+  await assert.rejects(db.transaction(async tx=>{
+    await tx.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[manual]);
+    throw rollback;
+  }),error=>error===rollback);
+  await expectBrowse(null,1,true);
+
+  await writeFence('b'.repeat(32)+'\n');
+  const resumed=await generation();
+  assert.notEqual(resumed,original,'a new host token must retire the preceding snapshot even after rollback');
+  await expectBrowse(resumed,1,true);
+  await writeFence('malformed-generation\n');
+  await expectNoAuthority();
+  await expectBrowse(null,1,true);
+  await rm(fence);
+  await expectNoAuthority();
+  await expectBrowse(null,1,true);
+
+  await writeFence('hold-'+'b'.repeat(32)+'\n');
+  await db.pool.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[manual]);
+  await expectBrowse(null,0,false);
+  await restart();
+  await expectNoAuthority();
+  await expectBrowse(null,0,false,true);
+
+  await writeFence('c'.repeat(32)+'\n');
+  const afterArchive=await generation();
+  assert.notEqual(afterArchive,resumed);
+  await expectBrowse(afterArchive,0,false,true);
 });

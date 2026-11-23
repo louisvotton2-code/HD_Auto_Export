@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { ApiError } from '../errors.js';
 import { PublicCatalogCache, readPublicCatalogRevision, type PublicCatalogRevision } from './public-cache.js';
@@ -428,6 +431,57 @@ test('browse rejects pre-hide fills, keeps signed-media and FX cutoffs, and fail
   assert.equal(Date.parse(result.expiresAt),now+45_000);
   broken=true;
   await assert.rejects(cache.getBrowseSnapshot('home',{},async()=>({value:{items:[]}})),{status:503,reason:'revision-read'});
+});
+
+test('browse discards an enclosed hold during a cold fill and an in-flight Redis hit',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'hd-browse-fence-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const file=join(directory,'generation');
+  const active='a'.repeat(32);
+  function write(value:string) {
+    writeFileSync(file+'.new',value+'\n',{mode:0o644});
+    renameSync(file+'.new',file);
+  }
+  write(active);
+  const store=new Store();
+  const options={namespace:'hd:browse-fence',browseGenerationFile:file};
+  const dependencies={store,readRevision:async()=>version()};
+  const writer=new PublicCatalogCache(options,dependencies);
+  const fixture={value:{items:[{id:'old'}]}};
+  const old=await writer.getBrowseSnapshot('home',{},async()=>fixture);
+  const enteredFill=deferred<void>(), finishFill=deferred<void>();
+  const pendingFill=writer.getBrowseSnapshot('list',{},async()=>{
+    enteredFill.resolve();
+    await finishFill.promise;
+    return fixture;
+  });
+  await enteredFill.promise;
+  write('hold-'+active);
+  finishFill.resolve();
+  await assert.rejects(pendingFill,{status:503,reason:'browse-fence'});
+  await assert.rejects(writer.currentBrowseGeneration(),{status:503,reason:'browse-fence'});
+  assert.equal(store.values.size,1);
+
+  const next='b'.repeat(32);
+  write(next);
+  const ready=await writer.getBrowseSnapshot('home',{},async()=>({value:{items:[]}}));
+  assert.deepEqual(ready.value.items,[]);
+  assert.notEqual(ready.generation,old.generation);
+  assert.equal(ready.generation,await writer.currentBrowseGeneration());
+  const readStarted=deferred<void>(), readDone=deferred<void>();
+  const get=store.get.bind(store);
+  store.get=async key=>{
+    const hit=await get(key);
+    readStarted.resolve();
+    await readDone.promise;
+    return hit;
+  };
+  const replica=new PublicCatalogCache(options,dependencies);
+  const pendingHit=replica.getBrowseSnapshot('home',{},async()=>assert.fail('Expected the old Redis hit'));
+  await readStarted.promise;
+  write('hold-'+next);
+  readDone.resolve();
+  await assert.rejects(pendingHit,{status:503,reason:'browse-fence'});
 });
 
 test('internal facet lifetime incorporates an omitted cover dependency and the active FX cutoff', async () => {

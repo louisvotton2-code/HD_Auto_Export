@@ -4,11 +4,12 @@ import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_CACH
   type Locale, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
+import { readBrowseFence } from './browse-fence.js';
 import { ACTIVE_FX_SQL } from './fx.js';
 import { canonicalJson, jsonHash } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
-export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
+export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null; browseFence?: string };
 export type CatalogRevisionProof = (deadline: number, signal: AbortSignal) => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
 type StorageScope = RevisionScope | 'browse';
@@ -20,7 +21,7 @@ const cacheLifetimes = { 1: PUBLIC_CATALOG_CACHE_MAX_TTL_MS, 2: INTERNAL_PUBLIC_
 const maxLifetime = (protocol: StorageProtocol) => cacheLifetimes[protocol];
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
-  'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
+  'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input' | 'browse-fence';
 type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed' | 'offset-page-changed';
 export class PublicCatalogUnavailableError extends ApiError {
   constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[], readonly sqlState?:'57014') {
@@ -72,6 +73,7 @@ export type PublicCatalogCacheOptions = {
   maxQueuedLoads?: number;
   enabled?: boolean; externalCatalog?: boolean;
   deployment?: {environment:string;releaseId:string};
+  browseGenerationFile?: string;
 };
 export type PublicCacheMetrics = {
   localHits: number; redisHits: number; misses: number; originLoads: number; rejectedLoads: number;
@@ -91,7 +93,8 @@ type Dependencies = { readRevision: (usd: boolean, scope: StorageScope) => Promi
   readHomepageRevisions?: () => Promise<HomepageRevisions>; store?: PublicCacheStore; now?: () => number };
 const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
-const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
+const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) =>
+  sameEpochAndFx(a,b) && a.revision === b.revision && a.browseFence === b.browseFence;
 function snapshotConflict(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision): RevisionConflict | undefined {
   if (start.epoch !== snapshot.epoch || snapshot.epoch !== current.epoch) return 'epoch-changed';
   if (!sameEpochAndFx(start,snapshot) || !sameEpochAndFx(snapshot,current)) return 'fx-changed';
@@ -175,13 +178,27 @@ export class PublicCatalogCache {
   }
   private browseGeneration(revision:PublicCatalogRevision) {
     return jsonHash([PUBLIC_BROWSE_CACHE_POLICY,this.options.namespace,this.options.deployment,
-      !!this.options.externalCatalog,revision.epoch,revision.revision]);
+      !!this.options.externalCatalog,revision.epoch,revision.revision,...(revision.browseFence?[revision.browseFence]:[])]);
   }
   async currentBrowseGeneration(signal?:AbortSignal) {
     return this.withDeadline(async()=>this.browseGeneration(await this.revision(false,'browse')),signal);
   }
-  private revision(usd: boolean, scope: StorageScope) {
-    return this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+  private activeBrowseFence() {
+    if (!this.options.browseGenerationFile) return undefined;
+    const fence = readBrowseFence(this.options.browseGenerationFile);
+    if (!fence) throw unavailable('browse-fence');
+    return fence;
+  }
+  private assertBrowseFence(expected: string | undefined) {
+    if (this.activeBrowseFence() !== expected) throw unavailable('browse-fence');
+  }
+  private async revision(usd: boolean, scope: StorageScope) {
+    if (scope !== 'browse' || !this.options.browseGenerationFile)
+      return this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+    const browseFence = this.activeBrowseFence();
+    const revision = await this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+    this.assertBrowseFence(browseFence);
+    return { ...revision, browseFence };
   }
   private async checkedRevisionRead<T>(read:()=>Promise<T>) {
     // A slow/unavailable database cannot grow an unbounded pool wait queue through cache lookups.
@@ -450,6 +467,7 @@ export class PublicCatalogCache {
       return {revision,value:{value:source.value,generatedAt},
         expiresAt:Math.min(generatedAt+PUBLIC_BROWSE_CACHE_MAX_TTL_MS,source.expiresAt??Infinity)};
     },false,'browse',4,signal,observe);
+    this.assertBrowseFence(result.revision.browseFence);
     return {value:result.value.value,generation:this.browseGeneration(result.revision),
       generatedAt:new Date(result.value.generatedAt).toISOString(),expiresAt:new Date(result.expiresAt).toISOString()};
   }

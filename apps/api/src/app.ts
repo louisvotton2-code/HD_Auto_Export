@@ -117,6 +117,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   let catalogCache:Awaited<ReturnType<typeof createPublicCatalogCache>>;
   try { catalogCache = await createPublicCatalogCache(db, {
     ...config.publicCache, maxConcurrentRevisionReads: config.externalScale ? 128 : 32,
+    browseGenerationFile: config.publicBrowseGenerationFile,
   }); }
   catch (error) { await db.close(); throw error; }
   const auth=createAuth(db,config);
@@ -320,13 +321,19 @@ export async function buildApp(config:Config=readConfig(), options:{
   }
   async function browse<T>(route:PublicBrowseRoute,query:object,request:FastifyRequest,reply:FastifyReply,
     load:(deadline:number,signal:AbortSignal)=>Promise<{value:T;expiresAt?:number}>,observe?:(phase:PublicCacheReadPhase)=>void) {
-    const result=await catalogCache.getBrowseSnapshot(route,{...query,mediaUrlPolicy:mediaRecipeRevision},load,requestSignals.get(request),observe);
-    reply.removeHeader(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER)
-      .header(pub.PUBLIC_BROWSE_CACHE_POLICY_HEADER,pub.PUBLIC_BROWSE_CACHE_POLICY)
-      .header(pub.PUBLIC_BROWSE_GENERATION_HEADER,result.generation)
-      .header(pub.PUBLIC_BROWSE_GENERATED_AT_HEADER,result.generatedAt)
-      .header(pub.PUBLIC_BROWSE_EXPIRES_AT_HEADER,result.expiresAt);
-    return result.value;
+    try {
+      const result=await catalogCache.getBrowseSnapshot(route,{...query,mediaUrlPolicy:mediaRecipeRevision},load,requestSignals.get(request),observe);
+      reply.removeHeader(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER)
+        .header(pub.PUBLIC_BROWSE_CACHE_POLICY_HEADER,pub.PUBLIC_BROWSE_CACHE_POLICY)
+        .header(pub.PUBLIC_BROWSE_GENERATION_HEADER,result.generation)
+        .header(pub.PUBLIC_BROWSE_GENERATED_AT_HEADER,result.generatedAt)
+        .header(pub.PUBLIC_BROWSE_EXPIRES_AT_HEADER,result.expiresAt);
+      return result.value;
+    } catch (error) {
+      // An operational hold sends data through the existing live-version path.
+      if (error instanceof PublicCatalogUnavailableError && error.reason === 'browse-fence') return undefined;
+      throw error;
+    }
   }
   type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
   type CaptureRevision=(revision:PublicCatalogRevision,verifyAfterAdvance?:CatalogRevisionProof)=>void;
@@ -482,8 +489,10 @@ export async function buildApp(config:Config=readConfig(), options:{
           advance?.('cache_validate');
           return {value:{data,meta},expiresAt};
         },advance);
-        advance?.('response');
-        return {...loaded,meta:{...loaded.meta,requestId:request.id}};
+        if (loaded) {
+          advance?.('response');
+          return {...loaded,meta:{...loaded.meta,requestId:request.id}};
+        }
       }
       const {value:loaded,stamp,offsetSnapshot:oneOff}=await cached('list',query,async (capture,deadline,signal)=>{
         const budget=keyword?{deadline,signal,onBackend:(pid:number)=>{
@@ -527,8 +536,10 @@ export async function buildApp(config:Config=readConfig(), options:{
         advance?.('cache_validate');
         return result;
       },advance);
-      advance?.('response');
-      return response(data,request);
+      if (data) {
+        advance?.('response');
+        return response(data,request);
+      }
     }
     const homepageFilters=!legacy&&usd&&view==='localized'&&(projection==='overview'||projection==='home-models')
       && Object.values(selection).every(value=>value===undefined);
@@ -561,7 +572,7 @@ export async function buildApp(config:Config=readConfig(), options:{
           expiry=>{expiresAt=expiry;});
         return {value,expiresAt};
       });
-      return response(data,request);
+      if (data) return response(data,request);
     }
     const protocol=homepageProtocol(request,reply,query.priceView==='usd'&&query.view==='localized');
     if(preciseHomepageRequested(request,protocol)) {
