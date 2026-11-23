@@ -4,6 +4,8 @@
 
 **接手只从 [docs/README.md](docs/README.md) 开始。** Agent 的 [AGENTS.md](AGENTS.md) 也指向同一入口；按用户分配的职责和任务找到自己的说明，当前能力与阶段结果看 [开发进度](docs/开发进度.md)。
 
+生产官网为 [hongdingauto.com](https://hongdingauto.com/)，www 保留路径跳转到主域名。员工使用[管理后台](https://admin.hongdingauto.com/)。
+
 ## 目录与实际状态
 
 | 位置 | 职责与状态 |
