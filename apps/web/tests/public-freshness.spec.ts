@@ -362,6 +362,34 @@ test.describe('explicit public queries, stable activation and media regression',
     }
   });
 
+  test('returning home by logo does not replay an earlier browser Back recheck', async ({ page }) => {
+    await page.goto('/en/');
+    await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+    const parts = page.locator('header a[href="/en/parts/"]').filter({ visible: true });
+    const home = page.locator('header a.brand');
+    const audit = networkAudit(page);
+    try {
+      await parts.click();
+      await expect(page).toHaveURL(/\/en\/parts\/$/);
+      await page.goBack();
+      await expect(page).toHaveURL(/\/en\/$/);
+      await expect.poll(() => audit.data().map(request => cleanPath(request.url())).sort())
+        .toEqual(['/api/v1/home/vehicles', '/api/v1/vehicle-filters']);
+      await expect(await resource(page, '/api/v1/home/vehicles')).toHaveAttribute('data-freshness', 'fresh');
+
+      await parts.click();
+      await expect(page).toHaveURL(/\/en\/parts\/$/);
+      const beforeReturn = audit.data().length;
+      await home.click();
+      await expect(page).toHaveURL(/\/en\/$/);
+      await expect(page.getByTestId('home-page')).toBeVisible();
+      await expect(await resource(page, '/api/v1/home/vehicles')).toHaveAttribute('data-freshness', 'fresh');
+      // Give passive subscriptions a chance to start any automatic recheck.
+      await page.waitForTimeout(150);
+      expect(audit.data().slice(beforeReturn).map(request => cleanPath(request.url()))).toEqual([]);
+    } finally { audit.stop(); }
+  });
+
   test('real Back and Forward check current sold and removed records with scoped local JSON', async ({ page, request }) => {
     await patchFixture(request, { futurePublished: true, futureAvailability: 'reserved' });
     await page.goto('/en/cars/fixture_future/');

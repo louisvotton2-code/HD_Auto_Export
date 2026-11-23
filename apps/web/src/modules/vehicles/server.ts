@@ -12,8 +12,7 @@ export {
 } from './infrastructure/public-api';
 export {
   createSsrCatalogVersionScope as createCatalogVersionScope,
-  getSsrPublicHome as getPublicHome,
-  getSsrPublicHomeFilters as getPublicHomeFilters,
+  getSsrPublicHomepage as getPublicHomepage,
   getSsrPublicFilters as getPublicFilters,
   getSsrPublicCatalog as getPublicCatalog,
 } from './infrastructure/ssr-public-api';

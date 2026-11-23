@@ -1,6 +1,8 @@
 'use client';
+import { usePathname } from 'next/navigation';
 import { useEffect } from 'react';
 import {
+  discardPublicNavigationAfterLeaving,
   finishPublicNavigation,
   startPublicNavigation,
 } from '@/shared/lib/public-navigation-events';
@@ -11,6 +13,12 @@ const vehicleDetailPath = /^\/(zh|en|ru)\/cars\/[^/]+\/?$/;
 
 /** Back/Forward between pages rechecks public data. Home fragments only scroll. */
 export function PublicNavigationFreshness({ verifyVehicleOnRestore = false }: { verifyVehicleOnRestore?: boolean }) {
+  const pathname = usePathname();
+  useEffect(() => {
+    // During Back/Forward the browser URL can update before the new route commits.
+    if (pathname === location.pathname) discardPublicNavigationAfterLeaving(pathname);
+  }, [pathname]);
+
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const navigate = () => {

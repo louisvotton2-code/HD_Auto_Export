@@ -47,10 +47,6 @@ async function readSsr<T extends SsrPublicEnvelope>(
 
 const media = (vehicles: readonly { images: PublicVehicle['images'] }[]) => vehicles.flatMap(vehicle => vehicle.images);
 
-export function getSsrPublicHome(locale: Locale) {
-  return readSsr({ path: canonicalPublicPath('/api/v1/home/vehicles', { locale, ...publicUsdView }),
-    priceView: 'usd', schema: localizedHomeSchema(locale, 'usd'), media: value => media(value.data.sections.flatMap(section => section.vehicles)) });
-}
 export function getSsrPublicFilters(
   locale: Locale,
   scope: UsdFilterScope,
@@ -70,16 +66,14 @@ function readSsrFilters(
     priceView: 'usd', scope: 'filters', schema: publicFiltersSchema }, undefined, initialVersion);
 }
 
-export function getSsrPublicHomeFilters(locale: Locale) {
-  // This closure belongs to one homepage render. A resource retry bypasses it.
-  let initial: ReturnType<SsrInitialVersionRead> | undefined;
-  const readInitialVersion: SsrInitialVersionRead = startedAt => initial ??= {
-    startedAt,
-    result: publicRequestHeaders().then(visitor => readSsrServiceVersion('usd', visitor, 'filters')),
-  };
+export function getSsrPublicHomepage(locale: Locale) {
+  const versions = createSsrCatalogVersionScope();
   return [
-    readSsrFilters(locale, {}, { projection: 'overview' }, readInitialVersion),
-    readSsrFilters(locale, {}, { projection: 'home-models' }, readInitialVersion),
+    readSsr({ path: canonicalPublicPath('/api/v1/home/vehicles', { locale, ...publicUsdView }),
+      priceView: 'usd', schema: localizedHomeSchema(locale, 'usd'),
+      media: value => media(value.data.sections.flatMap(section => section.vehicles)) }, undefined, versions.catalog),
+    readSsrFilters(locale, {}, { projection: 'overview' }, versions.filters),
+    readSsrFilters(locale, {}, { projection: 'home-models' }, versions.filters),
   ] as const;
 }
 export function createSsrCatalogVersionScope() {

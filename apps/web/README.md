@@ -20,7 +20,7 @@ HD_DEPLOYMENT_ENV=local HD_RELEASE_ID="$(git rev-parse HEAD)" HD_SSR_SERVICE_SEC
 - `HD_DEPLOYMENT_ENV` / `HD_RELEASE_ID`：所有实际Node启动显式配置。环境只允许production／local／test；正式版本只允许完整小写commit SHA（40–64位）或`sha256:`加64位摘要，本地／隔离测试可使用固定ASCII标签。缺失、非法或`unreleased`会在启动时退出，不自动生成默认版本。生产值由OPS绑定最终交付版本，不根据访客或公开构建变量生成；与正式API联调的本地环境也使用完整SHA。
 - `HD_DEPLOYMENT_ID`：生产镜像构建传入最终合并提交的完整 SHA。Next 同时使用该值识别客户端版本和生成 `/_next/static/<BUILD_ID>/` 下的版本清单，使新旧清单可在网关保留。隔离构建可省略此值，使用 Next 的默认构建标识。
 - `HD_SSR_SERVICE_SECRET_FILE`：与API一致、仅服务端可读的静态服务凭据文件绝对路径。普通文件、owner-only权限（例如0600）、32–256字节可打印ASCII，可含一个结尾换行；拒绝符号链接和过大文件。不要把值放入环境变量、浏览器、镜像层或Git。Node启动会核验；构建阶段不需要真实密钥。API原始socket peer白名单及公网`/internal`拒绝由OPS配置，完整协议见[车辆接口§19](../../docs/开发/车辆接口.md#19-be-rel-03-目录缓存与分页契约)。
-- `NEXT_PUBLIC_SITE_URL`：公开官网origin，在构建时写入客户端草稿及metadata。实际域名或验收端口变化须重建；内部 3317 成品经 3363 提供用户验收；在其他端口隔离测试时 canonical／草稿仍指向构建时配置的 3363。
+- `NEXT_PUBLIC_SITE_URL`：正式官网为 `https://hongdingauto.com`。生产构建和运行均使用该 origin，客户端咨询草稿和 metadata 会使用构建值；更换公开域名须重建。内部 3317 成品经 3363 提供用户验收，canonical 和咨询草稿使用该成品配置的公开地址。
 - `SITE_INDEXABLE=false` 默认禁止抓取和索引，地图为空。经批准的静态首批可在官网构建和运行均设置 `SITE_INDEXABLE=static`，只开放中英俄的关于我们与购车指南。此阶段的 sitemap 无需车辆名单，API 可保持 `PUBLIC_SEO_ENABLED=false`。完整模式使用 `SITE_INDEXABLE=true`，车辆资格与分语言名单由同版 API 提供。启用任何收录模式都须配置正式 `NEXT_PUBLIC_SITE_URL`；生产开放步骤仍由发布验收决定。
 
 `.env.example` 是无凭据示例；真实环境文件不提交。当前不连接旧服务器或执行生产部署。
@@ -61,10 +61,10 @@ EXT07 目录显式使用 `projection=card` 与独立轻量 schema；首页／逐
 ### FE-REL-03 SSR DTO缓存
 
 - `server.ts → infrastructure/ssr-public-api.ts`组合服务端读取；底层`public-api.ts`继续服务浏览器BFF、媒体和sitemap等no-store调用。缓存原语、版本／剩余TTL判断、受保护HTTP分别位于`ssr-dto-cache.ts`、`ssr-public-reader.ts`、`ssr-service-http.ts`，页面不实现缓存。
-- 每次SSR先请求`/internal/public-catalog/version`，核验成功才读内容缓存。版本请求可传受信访客IP以执行每访客120/min；共享内容loader只用静态`X-HD-SSR-Key`，不携带Cookie、Authorization、访客IP或requestId。缓存值只含schema校验的匿名公开DTO，当前请求trace在读取后恢复。
+- 每次 SSR 先请求 `/internal/public-catalog/version`，核验成功才使用 DTO 缓存。首页和需要同时读取列表、筛选的目录文档用 `scope=homepage` 合并同一次渲染的 catalog 与 filters 首读；冲突时单独重新核验。版本请求可传受信访客 IP 供 API 限流。共享内容读取使用静态服务凭据，清除 Cookie、Authorization、访客 IP 和请求 ID。缓存值只含 schema 校验的匿名公开 DTO，返回时恢复当前请求 ID。
 - 全进程共用64项／16MiB（UTF-8键及JSON载荷）LRU，加载中键数也有界、同键并发合并。键含固定环境／release／API origin、规范化有效上游路径和查询、公开版本、价格视图及FX版本／到期时间。每次返回独立JSON副本。
-- 最长15秒，按单调时钟扣除版本和内容读取耗时，不跨主机比较墙钟。不得超过API原始剩余TTL、FX或远图签名截止；命中不续期。版本不一致仅重试一次；未带正式stamp、错误、超时、版本检查失败和已过期结果不缓存、不回退旧值。
-- HTML/RSC、BFF、媒体、POST、staff/admin及错误不进入这套缓存。整站HTML `proxy_cache`不在本方案中；哈希JS/CSS可immutable。内部GET只允许正式四类资源，公网不得代理`/internal`；真实网关、peer及API服务总30r/s＋burst40、DB/Redis故障和20并发由OPS验证。
+- 协商内部缓存协议 2 时最长 300 秒，旧协议最长 15 秒。按单调时钟扣除版本和内容读取耗时，并受 API 剩余有效期、汇率和远图签名约束。命中不续期，版本不一致最多重试一次；版本检查失败、错误或过期结果不使用旧缓存。
+- HTML、RSC 和公开 JSON 各走独立路径。生产网关可复用公开整页 HTML，每次命中前仍验证当前目录、筛选及汇率版本。浏览器响应保留 `Cache-Control: no-store`，是否命中以 `X-HD-Cache-Document: hit` 或同版网关收据为准。根路径以 307 转至默认俄语 `/ru/`，站内 Logo 直达当前语言首页。带内容指纹的静态资源可跨导航复用；内部 `/internal` 路由拒绝公网访问。
 - 目录offset上限10000（含），按实际pageSize计算，真实total不裁剪。分页省略号／末页限制在可达范围；合法超限深链接保留筛选并显示三语收窄条件入口，不报404。明显非法参数仍拒绝。API无光标offset与FE共用contracts helper。
 
 ### 2026-11-15 官网体验修订
