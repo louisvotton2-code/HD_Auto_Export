@@ -53,9 +53,11 @@ test('a direct photo error is reported once and detail shows only a report summa
   const response = await report;
   expect(response.status()).toBe(202);
   expect(response.request().postDataJSON()).toEqual({ revision: 1 });
+  await page.evaluate(() => Reflect.set(window, '__hdMediaCatalogDocument', true));
   await card.getByRole('link', { name: /View details/ }).click();
   const main = page.locator('main');
   await expect(main.locator('h1')).toHaveText('Example R1 Hybrid');
+  expect(await page.evaluate(() => Reflect.get(window, '__hdMediaCatalogDocument'))).toBeUndefined();
   await expect(main.getByText('Compare original and displayed text')).toHaveCount(0);
   // Manufacturing / first-registration dates alone do not invent an accident or ownership history.
   await expect(main.locator('[data-vehicle-history]')).toHaveCount(0);
@@ -84,6 +86,28 @@ test('a direct photo error is reported once and detail shows only a report summa
   const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
   expect(events.requests.filter((event: { path: string }) => event.path === `/api/v1/external-media/${photo.id}/failure`)).toHaveLength(1);
   expect(events.requests.filter((event: { path: string }) => /\/inspection\/?$/.test(event.path))).toHaveLength(0);
+});
+
+test('the same image can report a new supplier revision after opening live detail', async ({ page, request }) => {
+  const sample = makeImportedPublicVehicleFixture('en', 'supplier', true);
+  const path = `/api/v1/external-media/${sample.images[0]!.id}/failure`;
+  await page.route('https://photos.example.invalid/**', route => route.fulfill({ status: 410 }));
+  const first = page.waitForResponse(response => new URL(response.url()).pathname === path + '/');
+  await page.goto('/en/cars/?q=EXT-000001');
+  expect((await first).request().postDataJSON()).toEqual({ revision: 1 });
+
+  await setPublicFixtureState(request, { importedPhotoRevision: 2 });
+  const second = page.waitForResponse(response => new URL(response.url()).pathname === path + '/');
+  await page.locator(`[data-public-vehicle="${sample.id}"]`).getByRole('link', { name: /View details/ }).click();
+  const response = await second;
+  expect(response.status()).toBe(202);
+  expect(response.request().postDataJSON()).toEqual({ revision: 2 });
+  await expect(page.locator('[data-vehicle-gallery] [data-loading]')).toContainText('This photo is temporarily unavailable.');
+  const events = await (await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`)).json();
+  expect(events.requests.filter((event: { path: string }) => event.path === path)).toEqual([
+    expect.objectContaining({ mediaFailure: { revision: 1, queued: true } }),
+    expect.objectContaining({ mediaFailure: { revision: 2, queued: true } }),
+  ]);
 });
 
 test('original-language fallback, missing media and disputed facts are readable and withdrawal returns 404', async ({ page, request }) => {

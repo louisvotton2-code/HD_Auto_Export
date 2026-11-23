@@ -218,6 +218,7 @@ const resetState = () => ({
   wideCardPhoto: false,
   ownedPhotoRevision: null,
   importedPublished: false,
+  importedPhotoRevision: 1,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
   importedPixelEnabled: null,
@@ -720,7 +721,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   const changed = (patch = {}) => {
     catalogRevision++;
     if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDocumentary', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
-      'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
+      'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedPhotoRevision', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
       fxVersion = randomUUID();
@@ -778,6 +779,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           wideCardPhoto: (v) => typeof v === 'boolean',
           ownedPhotoRevision: (v) => v === null || v === 1 || v === 2,
           importedPublished: (v) => typeof v === 'boolean',
+          importedPhotoRevision: (v) => v === 1 || v === 2,
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
           importedPixelEnabled: (v) => v === null || typeof v === 'boolean',
@@ -891,14 +893,16 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         }
         url.pathname = `/api/v1/${alias[1]}`;
       }
-      if (!internalRequest && url.pathname.startsWith('/api/v1/')) {
-        requests.push({
+      const publicRequest = !internalRequest && url.pathname.startsWith('/api/v1/')
+        ? {
           path: url.pathname,
           method: req.method,
           query: Object.fromEntries(url.searchParams),
           cookie: req.headers.cookie ?? null,
           authorization: req.headers.authorization ?? null,
-        });
+        } : null;
+      if (publicRequest) {
+        requests.push(publicRequest);
         if (requests.length > 1000) requests.shift();
       }
       const previewMatch = /^\/api\/v1\/admin\/vehicles\/([A-Za-z0-9_-]+)\/publication-preview\/?$/.exec(url.pathname);
@@ -936,7 +940,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (!report.success) return send(res, 400, error('INVALID_REQUEST'));
         const active = state.importedPublished && !state.importedWithdrawn &&
           mediaFailure[1] === makeImportedPublicVehicleFixture('en').images[0].id;
-        return send(res, 202, {data:{queued:active && report.data.revision===1},meta:{requestId:'fixture-media-report'}});
+        const queued = active && report.data.revision === state.importedPhotoRevision;
+        if (publicRequest) publicRequest.mediaFailure = { revision: report.data.revision, queued };
+        return send(res, 202, { data: { queued }, meta: { requestId: 'fixture-media-report' } });
       }
       if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
       const segmentMatch = /^\/api\/v1\/vehicles\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})\/(gallery|configuration|inspection|price-history)$/.exec(url.pathname);
@@ -1024,6 +1030,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         // Relative deadlines keep the otherwise unchanged synthetic remote records usable
         // on any test date, and let cache tests shorten their signed-media lifetime.
         for (const image of item.images) if (image.remote) {
+          if (kind === 'supplier') image.remote.revision = state.importedPhotoRevision;
           image.remote.refreshedAt = new Date(stateChangedAt).toISOString();
           image.remote.expiresAt = new Date(stateChangedAt + state.cacheMediaTtlMs).toISOString();
         }

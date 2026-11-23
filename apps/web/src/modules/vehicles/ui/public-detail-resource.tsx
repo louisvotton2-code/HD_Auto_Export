@@ -4,6 +4,7 @@ import { VehicleSegmentContext } from '../application/use-public-vehicle-segment
 import { type PublicVehicleInline } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicDetailTitle } from '@/shared/lib/public-vehicle-title';
+import { subscribePublicNavigation } from '@/shared/lib/public-navigation-events';
 import { PublicFreshnessBoundary, usePublicResource } from '../application/use-public-resource';
 import { liveVehicleCopy } from '../live-copy';
 import { publicVehicleMessages } from '../public-messages';
@@ -41,21 +42,35 @@ export function PublicDetailResource({
     `/api/v1/vehicles/${id}/?${publicQueryString({ locale, ...query })}`;
   const url = detailUrl(publicInlineVehicleView(id, locale, { includePixel, includeSeo }));
   const compatibilityUrl = includePixel || includeSeo ? detailUrl(publicInlineVehicleView(id, locale)) : undefined;
+  const detailPath = `/${locale}/cars/${id}/`;
+  const restoreGalleryFocus = useRef<number | null>(null);
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
   const resource = usePublicResource(url, initial, localizedInlineVehicleSchema(locale, 'usd'), {
-    navigationPath: `/${locale}/cars/${id}/`,
+    navigationPath: detailPath,
     compatibilityUrl,
     initialRetryAfter,
     cooldown,
   });
   const detailVehicle = resource.phase === 'fresh' ? resource.data?.data : undefined;
   const segmentContext = useMemo(() => ({ cooldown, onMissing: resource.markMissing }), [resource.markMissing]);
+  useEffect(() => subscribePublicNavigation((signal) => {
+    if (signal.ready) return;
+    // The refresh temporarily unmounts the gallery. Remember a viewer this navigation closes.
+    restoreGalleryFocus.current = signal.path === detailPath &&
+      document.querySelector('[data-public-vehicle-detail] [data-vehicle-gallery] dialog[open]')
+      ? signal.id : null;
+  }), [detailPath]);
   useEffect(() => {
     if (!detailVehicle) return;
     const element = document.querySelector<HTMLElement>('[data-public-vehicle-detail]');
     if (element?.dataset.publicVehicleDetail === id) {
       element.style.removeProperty('visibility');
       element.inert = false;
+      if (restoreGalleryFocus.current === resource.navigation) {
+        restoreGalleryFocus.current = null;
+        if (document.activeElement === document.body)
+          element.querySelector<HTMLElement>('[data-vehicle-gallery-empty]')?.focus({ preventScroll: true });
+      }
     }
   }, [detailVehicle, id, resource.navigation]);
   useEffect(() => {

@@ -335,7 +335,8 @@ export function VehicleGallery({
   if (!selected) {
     return (
       <div className={styles.root}>
-        <div className={styles.viewport} ref={emptyPhoto} tabIndex={-1} role="group" aria-label={t.gallery}>
+        <div className={styles.viewport} ref={emptyPhoto} tabIndex={-1} role="group" aria-label={t.gallery}
+          data-vehicle-gallery-empty="">
           <VehiclePhotoFallback locale={locale} />
           {photoOverlay}
         </div>
