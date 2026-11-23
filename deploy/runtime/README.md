@@ -150,7 +150,15 @@ API和Nginx worker使用相同 `APP_UID/APP_GID`，目录0700、文件0600无需
 当前权威写入仍是既有3317/3318/3320开发组合；原native 3320图片仍由API发送。隔离恢复克隆只供验证，不作为第二个日常写入口，不要与原库双写；克隆若必须测试写入，仅用明确合成记录且结束后不回写源库。3422合成代理是早期实验；其后3412已以最终BE镜像与真实恢复数据验证完整API授权、Nginx发图、删除／恢复及独立QA抽查。最终业务与视觉仍由用户验收。
 
 
-## 双域部署与证书（新服务器，实施前核对最终SHA）
+## 正式根域和证书续期
+
+官网使用 `https://hongdingauto.com`，`www.hongdingauto.com` 保留路径和查询参数跳转到官网。管理后台使用 `https://admin.hongdingauto.com`。构建参数 `SITE_ORIGIN`、运行参数 `WEB_SITE_ORIGIN` 与 API 的 `ANALYTICS_ORIGINS` 都使用根域，后台认证来源继续使用独立后台域。已有生产环境按[平滑发布手册](production/ext09-release.md#官网根域)核对当前版和回退版的入口。
+
+现有 Nginx 将宿主 `/srv/hd-auto/data/current/acme` 挂为 `/srv/acme`。Certbot 的 `hd-auto-apex` 证书包含根域与 www，`hd-auto-admin` 仅包含后台；两张证书均以现有 webroot 独立续期。从受检签版将 `domain-cutover-cert-deploy-hook.py` 安装到 `/srv/hd-auto/tools/domain-cutover-cert-deploy-hook.py`，由 root 持有并设为 0700。`/etc/letsencrypt/renewal-hooks/deploy/hd-auto-domain-cutover` 调用同一文件。钩子按 `RENEWED_LINEAGE` 精确处理上述两个名称，校验证书 SAN、有效期及公私钥后分别更新 `/run/tls/apex/current` 和 `/run/tls/admin/current`，再校验和重载现有代理。原 `hd-auto` 共用证书及旧钩子供历史回退。
+
+分别运行 `certbot renew --cert-name hd-auto-apex --dry-run --no-random-sleep-on-renew` 与 `certbot renew --cert-name hd-auto-admin --dry-run --no-random-sleep-on-renew` 验证真实 HTTP 挑战。已有 HTTPS 入口后，在发布锁空闲时用已签发证书运行钩子的 `--install apex` 与 `--install admin`。钩子重载后通过本机 HTTPS 逐域核对实际送出的证书，失败时恢复上一份证书。首次签发仍先通过 HTTP 挑战和单独的 HTTPS 启动流程。最后从公网检查 www 跳转、后台权限和 Certbot 计时器。
+
+## 历史 cars/admin 双域部署与证书
 
 用户指定官网 `cars.hongdingauto.com`、后台 `admin.hongdingauto.com`；域名DNS由用户配置。双域属于独立overlay：在原基础、`compose.proxy.yaml`、`compose.media.yaml` 后再叠加 `compose.domains.yaml`，单域和双域沿用同一份入口约束。无密钥env须分别设置 `WEB_SITE_ORIGIN=https://cars.hongdingauto.com` 和 `ADMIN_ORIGIN=https://admin.hongdingauto.com`；基础Compose仍需 `SITE_ORIGIN` 插值，设为官网origin。web构建参数 `SITE_ORIGIN` 在Dockerfile中映射到 `NEXT_PUBLIC_SITE_URL`，同时设置运行时该值；后台API `AUTH_BASE_URL` 和 `TRUSTED_ORIGINS` 是后台origin，员工Cookie为admin域host-only，后台同源代理认证/管理/公开目录，不新增CORS。官网域开放白名单内的公开 GET／HEAD、坏图 POST 与精确的同源统计 POST。坏图 POST 转给官网 BFF。其余 API 和后台入口返回 404。两域均要求 SNI 与 Host 匹配，未知 SNI 拒绝。官网业务使用内部API，真实客户端地址只信固定proxy/web各自/32，不信外部转发头。
 

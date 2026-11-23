@@ -7,7 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 
-const MAX_AGE = 300_000;
+const protocolMaxAge = new Map([['2', 300_000], ['3', 600_000]]);
 const MAX_HTML = 512 * 1024;
 const MAX_CONTROL = 8192;
 const MAX_LOOKUPS = 8;
@@ -102,7 +102,7 @@ function eligible(request, encoding) {
 
 // The opaque scope versions already bind recovery epoch and the scope's
 // revision. Both live scopes and both actually rendered scopes are mandatory.
-function readSnapshot(value, release, nonce, now, tick, render) {
+function readSnapshot(value, release, nonce, now, tick, maxAge, render) {
   if (!value || value.release !== release || value.nonce !== nonce ||
       (render && value.healthy !== true) || !value.data ||
       Object.keys(value.data).sort().join(',') !== 'catalog,filters') return null;
@@ -114,7 +114,7 @@ function readSnapshot(value, release, nonce, now, tick, render) {
     if (!stamp || stamp.priceView !== 'usd' || !hexVersion(stamp.version)) return null;
     const checkedAt = time(stamp.checkedAt);
     const validUntil = time(stamp.validUntil);
-    if (!(checkedAt <= now + 5000 && validUntil > Math.max(now, checkedAt) && validUntil - checkedAt <= MAX_AGE))
+    if (!(checkedAt <= now + 5000 && validUntil > Math.max(now, checkedAt) && validUntil - checkedAt <= maxAge))
       return null;
     if (stamp.fx !== null && (!uuid(stamp.fx?.version) || !(time(stamp.fx.expiresAt) >= validUntil))) return null;
     const fx = stamp.fx === null ? null : [stamp.fx.version, time(stamp.fx.expiresAt)];
@@ -134,13 +134,12 @@ function singleHeader(source, header) {
   return values.length === 1 ? values[0] : undefined;
 }
 
-function proof(response, release, nonce, now, tick) {
+function proof(response, release, nonce, now, tick, maxAge) {
   const supplied = singleHeader(response.rawHeaders, proofHeader);
-  if (!response.complete || singleHeader(response.rawHeaders, protocol) !== '2' ||
-      !ascii(supplied, /^[a-zA-Z0-9_-]{1,8192}$/) ||
+  if (!response.complete || !ascii(supplied, /^[a-zA-Z0-9_-]{1,8192}$/) ||
       response.trailers[proofHeader] || response.trailers['set-cookie']) return null;
   try {
-    return readSnapshot(JSON.parse(Buffer.from(supplied, 'base64url')), release, nonce, now, tick, true);
+    return readSnapshot(JSON.parse(Buffer.from(supplied, 'base64url')), release, nonce, now, tick, maxAge, true);
   } catch {
     return null;
   }
@@ -183,10 +182,12 @@ function throttled(response) {
   return { retryAfter: ascii(supplied, /^(?:0|[1-9]\d{0,8})$/) ? supplied : '1' };
 }
 
-export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secret, now = Date.now, tick = () => performance.now() }) {
+export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secret, cacheProtocol = '2',
+  now = Date.now, tick = () => performance.now() }) {
+  const maxAge = protocolMaxAge.get(cacheProtocol);
   if (!ascii(release, /^[a-f0-9]{40}$/) || !ascii(secret, privateKey) || !isIP(edgeIp) ||
       origin.protocol !== 'http:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash ||
-      !ascii(siteHost, /^[a-z0-9.-]+$/)) throw new Error('Invalid HTML cache configuration');
+      !ascii(siteHost, /^[a-z0-9.-]+$/) || maxAge === undefined) throw new Error('Invalid HTML cache configuration');
 
   const pages = new Map(); // Exactly three canonical, queryless homepage keys per release process.
   const agent = new Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 8 });
@@ -196,7 +197,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     return {
       host: siteHost, 'x-forwarded-host': siteHost, 'x-forwarded-proto': 'https',
       'x-hd-visitor-ip': visitor, 'x-forwarded-for': visitor,
-      'cache-control': 'no-store', [protocol]: '2', [keyHeader]: secret, [nonceHeader]: nonce,
+      'cache-control': 'no-store', [protocol]: cacheProtocol, [keyHeader]: secret, [nonceHeader]: nonce,
     };
   }
 
@@ -208,14 +209,14 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     }, signal, agent);
     const limit = throttled(response);
     if (limit) return limit;
-    if (response.statusCode !== 200 || singleHeader(response.rawHeaders, protocol) !== '2' ||
+    if (response.statusCode !== 200 || singleHeader(response.rawHeaders, protocol) !== cacheProtocol ||
         !parts(response.headers['cache-control']).includes('no-store') ||
         !/^application\/json(?:;|$)/i.test(response.headers['content-type'] ?? '')) {
       response.destroy();
       return null;
     }
     const body = await boundedBody(response, MAX_CONTROL);
-    return body && readSnapshot(JSON.parse(body), release, nonce, now(), tick(), false);
+    return body && readSnapshot(JSON.parse(body), release, nonce, now(), tick(), maxAge, false);
   }
 
   async function privateRender(path, visitor, disconnect) {
@@ -226,13 +227,13 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     }, signal, agent);
     const limit = throttled(response);
     if (limit) return limit;
-    if (!cacheable(response) || singleHeader(response.rawHeaders, protocol) !== '2') {
+    if (!cacheable(response) || singleHeader(response.rawHeaders, protocol) !== cacheProtocol) {
       response.destroy();
       return null;
     }
     const body = await boundedBody(response, MAX_HTML);
     if (!body?.length) return null;
-    const stamp = proof(response, release, nonce, now(), tick());
+    const stamp = proof(response, release, nonce, now(), tick(), maxAge);
     const headers = stamp ? Object.fromEntries(reusableResponseHeaders
       .filter(name => Object.hasOwn(response.headers, name)).map(name => [name, response.headers[name]]))
       : forwarded(response.headers);
@@ -301,7 +302,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
             const stamp = rendered.stamp;
             if (stamp?.signature === live.signature) {
               const deadline = Math.min(live.deadline, stamp.deadline);
-              const elapsedDeadline = Math.min(initialTick + MAX_AGE, live.elapsedDeadline, stamp.elapsedDeadline);
+              const elapsedDeadline = Math.min(initialTick + maxAge, live.elapsedDeadline, stamp.elapsedDeadline);
               const gzipBody = await compressHtml(rendered.body, { level: 4 }).catch(() => null);
               const latest = pages.get(path);
               // Another lookup may publish a newer revision while this request renders or compresses.

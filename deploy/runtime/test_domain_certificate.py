@@ -22,4 +22,11 @@ class CertificateTests(unittest.TestCase):
   args=['install-domain-certificate.py','--env',str(self.env),'--project','test-cert','--cert',str(self.cert),'--key',str(self.key)]
   with patch.object(sys,'argv',args),patch.object(m,'command'),patch.object(m,'output',side_effect=[b'cert',b'key']),self.assertRaises(ValueError):m.main()
   self.assertEqual(os.readlink(self.tls/'current'),'versions/old')
+ def test_apex_cannot_replace_the_legacy_certificate(self):
+  origin='https://hongdingauto.com'
+  self.env.write_text(self.env.read_text().replace('https://cars.hongdingauto.com',origin)+f'ANALYTICS_ORIGINS={origin}\n')
+  with patch.object(m,'command') as command,self.assertRaisesRegex(ValueError,'domain-cutover-cert-deploy-hook'):
+   self.run_main()
+  command.assert_not_called()
+  self.assertEqual(os.readlink(self.tls/'current'),'versions/old')
 if __name__=='__main__':unittest.main()

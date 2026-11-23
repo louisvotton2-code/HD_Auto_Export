@@ -10,4 +10,5 @@ createHtmlCacheServer({
   edgeIp: process.env.HD_HTML_CACHE_EDGE_IP,
   release: process.env.HD_RELEASE_ID,
   secret: readHtmlCacheKey(process.env.HD_HTML_CACHE_SECRET_FILE),
+  cacheProtocol: process.env.HD_HTML_CACHE_PROTOCOL,
 }).listen(3010, '0.0.0.0');

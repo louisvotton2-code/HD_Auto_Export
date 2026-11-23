@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a two-domain certificate as an atomic version; never print private key data."""
+"""Install the legacy cars/admin certificate without printing private key data."""
 import argparse, fcntl, os, pathlib, secrets, shutil, subprocess, sys
 from runtime import config, validate_proxy, validate_domains
 HERE=pathlib.Path(__file__).resolve().parent
@@ -12,6 +12,8 @@ def main():
  p.add_argument('--bootstrap',action='store_true');a=p.parse_args()
  if not __import__('re').fullmatch('[a-z0-9][a-z0-9_-]+',a.project): raise ValueError('Invalid project')
  values,root=config(a.env);validate_proxy(values);validate_domains(values);tls=root/'tls'
+ if values['WEB_SITE_ORIGIN']!='https://cars.hongdingauto.com':
+  raise ValueError('Use domain-cutover-cert-deploy-hook.py for independent apex and admin certificates')
  if not tls.is_dir() or tls.is_symlink():raise ValueError('Private TLS directory is required')
  env=os.environ.copy()
  for key in values:env.pop(key,None)

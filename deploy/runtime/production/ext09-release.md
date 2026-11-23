@@ -10,13 +10,21 @@
 
 `immutable-assets.py` 合并当前与前一版 Next 静态资源；相同URL不同内容拒绝。旧哈希文件先保留，不能切换后就随旧槽删除。Nginx只为此目录设immutable缓存，不缓存HTML。Next deploymentId识别RSC跨版本；`?dpl`本身不负责选槽。后台静态产物也保存在gateway/admin，不强刷未保存表单。
 
+### 官网根域
+
+根域发布使用 `https://hongdingauto.com`。构建前将 `SITE_ORIGIN`、`WEB_SITE_ORIGIN` 和 `ANALYTICS_ORIGINS` 均设为该来源。用实际 Compose 输出生成应用槽，并将同一官网来源作为 `website_origin` 传给 `gateway_files()`。保持 `ADMIN_ORIGIN=https://admin.hongdingauto.com`，登录与员工 Cookie 沿用现有域。根域和 www 使用 `/run/tls/apex/current`，后台使用 `/run/tls/admin/current`。两个独立的 Certbot 证书在现有 ACME 挂载下续期。
+
+切流和回退前核对根域两套网关配置都能提供首页、目录与 API，www 跳转保留路径和查询参数。现有旧版回退材料若生成于换域前，先用该版 Web 和同版受信 API 验证根域入口，再切换；保留原配置供回退复查。上线后核对三语 canonical、已准入的站点地图、首页缓存及两条同源统计入口。两条统计入口只用缺字段的合成请求验路由，使用包含根域的 API 原生配置后移除临时代理映射。
+
 ## 可选的内网首页缓存
 
 同版 Web 和 API 的 CACHE-300 联调通过后，可为该应用槽构建 `deploy/runtime/Dockerfile` 的 `html-cache` 目标，并标记为 `hd-auto-html-cache:<发布SHA>`。生成槽配置时，`release-slots.py` 同时接收 `--html-cache-ip` 和 `--html-cache-secret-file`。使用应用私网内未占用的固定 IPv4，避开动态分配区。Web 与缓存容器共用一个应用用户可读的独立 owner-only 密钥文件，两个容器均按只读秘密挂载。缓存容器仅接受固定 Nginx 私网地址的连接，依同槽 Web 的固定地址回源。
 
 生成网关时，显式传 `html_cache_host='html-cache-blue'` 或 `'html-cache-green'`，与 `web_host` 对应。默认模板继续动态渲染。配置仅涉及中文、英文和俄文的规范首页，无查询参数的匿名 GET 才可复用。切回动态网关时沿用相同配置文件集合，正常 reload 即可。
 
-命中前从 Web 私有 `/internal/public-html/version/?locale=...` 读取两个实时版本域。未命中时由 `/internal/public-html/render/` 发起当次渲染。两个内网请求显式协商协议 2，使用独立 nonce。网关在完整 HTTP EOF 后才验收私有渲染的单个 `X-HD-HTML-Proof`，核对发布标识、目录和筛选版本、汇率身份及到期时间。仅保存健康匿名 HTML 200。副本取实际渲染、实时版本和 300 秒的最早期限，命中沿用原到期时间。每个槽独立保留最多三个文档，每个文档最多 512 KiB，并限制同时验证请求。
+命中前从 Web 私有 `/internal/public-html/version/?locale=...` 读取目录和筛选的实时版本。未命中时由 `/internal/public-html/render/` 发起当次渲染。两个内网请求必须确认同一协议，并使用独立 nonce。网关在完整 HTTP EOF 后验收私有渲染的单个 `X-HD-HTML-Proof`，核对发布标识、目录和筛选版本、汇率身份及到期时间。每个槽最多保留三个健康匿名 HTML 文档，每个最多 512 KiB，并限制同时验证请求。
+
+首页缓存默认协议 2，最长 300 秒。同版的 Web、API 和缓存通过协议 3 联调后，在生成该槽时显式指定 `--html-cache-protocol 3`，最长 600 秒。实际复用期限取实时版本证明、渲染证明和协议上限中最早的时间，命中沿用原到期点。混版无法确认同一协议时走动态渲染。切流前验证 300 秒后仍可命中、600 秒上限，并分别验证撤车及目录、筛选、汇率版本变化导致旧 HTML 立即失效。公网 RSC、带查询参数和私有请求继续走现有旁路。
 
 版本检查失败、旧服务和不完整响应会走动态路径。实时版本或私有渲染返回 429 时，保留 `Retry-After` 并直接返回。对外首页保持 `no-store`，私有控制头在代理两跳剥离，公网 `/internal/` 返回 404。缓存使用现有入口限流。
 

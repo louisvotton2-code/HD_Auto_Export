@@ -11,8 +11,34 @@ from pathlib import Path
 import re
 
 
+LEGACY_WEBSITE_ORIGIN = 'https://cars.hongdingauto.com'
+APEX_WEBSITE_ORIGIN = 'https://hongdingauto.com'
+APEX_ALIASES = '''
+server {
+    include /etc/nginx/hd-domains/edge-server.conf;
+    listen 8080;
+    server_name www.hongdingauto.com;
+    location ^~ /.well-known/acme-challenge/ { root /srv/acme; try_files $uri =404; }
+    location / { return 308 https://hongdingauto.com$request_uri; }
+}
+server {
+    include /etc/nginx/hd-domains/edge-server.conf;
+    listen 8443 ssl;
+    server_name www.hongdingauto.com;
+    if ($ssl_server_name !~* "^www[.]hongdingauto[.]com$") { return 421; }
+    if ($host != www.hongdingauto.com) { return 421; }
+    ssl_certificate /run/tls/apex/current/server.crt;
+    ssl_certificate_key /run/tls/apex/current/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    http2 on;
+    server_tokens off;
+    location / { return 308 https://hongdingauto.com$request_uri; }
+}
+'''
+
+
 def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
-                html_cache_ip=None, html_cache_secret_file=None):
+                html_cache_ip=None, html_cache_secret_file=None, html_cache_protocol='2'):
     if slot not in ('blue', 'green') or not re.fullmatch(r'[a-f0-9]{40}', release):
         raise ValueError('Explicit slot and immutable release required')
     for address in (api_ip, web_ip):
@@ -22,9 +48,15 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
         raise ValueError('Distinct slot addresses required')
     if bool(html_cache_ip) != bool(html_cache_secret_file):
         raise ValueError('HTML cache requires both a fixed address and a private secret file')
+    if html_cache_protocol not in ('2', '3') or (html_cache_protocol == '3' and not html_cache_ip):
+        raise ValueError('The homepage cache protocol must match the configured sidecar')
     root = Path(mode_root)
     if not root.is_absolute() or '..' in root.parts:
         raise ValueError('Absolute persistent serving-mode directory required')
+    site_origin = config['services']['web'].get('environment', {}).get('NEXT_PUBLIC_SITE_URL')
+    if (site_origin == APEX_WEBSITE_ORIGIN
+            and config['services']['api'].get('environment', {}).get('ANALYTICS_ORIGINS') != site_origin):
+        raise ValueError('Apex API analytics must use the canonical website origin')
     result = {'services': {}, 'networks': {}, 'secrets': copy.deepcopy(config.get('secrets', {}))}
     for name in ('api', 'web'):
         svc = copy.deepcopy(config['services'][name])
@@ -59,8 +91,7 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
         secret = Path(html_cache_secret_file)
         if not secret.is_absolute() or '..' in secret.parts or 'html_cache_secret' in result['secrets']:
             raise ValueError('Use a separate private HTML cache secret')
-        site_origin = config['services']['web']['environment']['NEXT_PUBLIC_SITE_URL']
-        if site_origin != 'https://cars.hongdingauto.com':
+        if site_origin not in (LEGACY_WEBSITE_ORIGIN, APEX_WEBSITE_ORIGIN):
             raise ValueError('HTML cache is scoped to the public website')
         result['secrets']['html_cache_secret'] = {'file': str(secret)}
         web = result['services'][f'web-{slot}']
@@ -74,7 +105,8 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
             'restart': 'on-failure:5', 'cpus': 0.25, 'mem_limit': '96m',
             'environment': {
                 'HD_HTML_CACHE_ORIGIN': f'http://web-{slot}:3000',
-                'HD_HTML_CACHE_SITE_HOST': 'cars.hongdingauto.com',
+                'HD_HTML_CACHE_SITE_HOST': site_origin.removeprefix('https://'),
+                'HD_HTML_CACHE_PROTOCOL': html_cache_protocol,
                 'HD_HTML_CACHE_EDGE_IP': edge_ip,
                 'HD_HTML_CACHE_SECRET_FILE': '/run/secrets/html_cache_secret',
                 'HD_RELEASE_ID': release,
@@ -88,7 +120,10 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
 
 
 def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_admin=False,
-                  html_cache_host=None, page_documents=False, page_visits=False):
+                  html_cache_host=None, page_documents=False, page_visits=False,
+                  website_origin=LEGACY_WEBSITE_ORIGIN):
+    if website_origin not in (LEGACY_WEBSITE_ORIGIN, APEX_WEBSITE_ORIGIN):
+        raise ValueError('Only an exact supported HTTPS website origin is accepted')
     for value in (web_host, public_api_host, admin_api_host):
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,62}', value):
             raise ValueError('Only explicit Docker service aliases accepted')
@@ -109,6 +144,11 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
             public, admin=text[:boundary], text[boundary:]
             public=public.replace('http://api:3320', f'http://{public_api_host}:3320')
             admin=admin.replace('http://api:3320', f'http://{admin_api_host}:3320')
+            if website_origin == APEX_WEBSITE_ORIGIN:
+                public = (public.replace('cars.hongdingauto.com', 'hongdingauto.com')
+                          .replace('^cars[.]hongdingauto[.]com$', '^hongdingauto[.]com$')
+                          .replace('/run/tls/current/', '/run/tls/apex/current/'))
+                admin = admin.replace('/run/tls/current/', '/run/tls/admin/current/')
             if freeze_admin:
                 # Block all admin API traffic, including auth GET side effects.
                 admin=admin.replace('    location /api/ {', '    location /api/ {\n        return 503;')
@@ -149,7 +189,7 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
         add_header Strict-Transport-Security $hd_hsts always;
         add_header Cache-Control 'no-store' always;
     }}''')
-    files['default.conf']=text
+    files['default.conf'] = text + APEX_ALIASES if website_origin == APEX_WEBSITE_ORIGIN else text
     return files
 
 
@@ -162,10 +202,12 @@ def main():
     parser.add_argument('--mode-root',required=True);parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--html-cache-ip')
     parser.add_argument('--html-cache-secret-file',type=Path)
+    parser.add_argument('--html-cache-protocol',choices=('2','3'),default='2')
     args=parser.parse_args()
     result=slot_config(json.loads(args.compose_json.read_text()),slot=args.slot,release=args.release,
         api_ip=args.api_ip,web_ip=args.web_ip,mode_root=args.mode_root,
-        html_cache_ip=args.html_cache_ip,html_cache_secret_file=args.html_cache_secret_file)
+        html_cache_ip=args.html_cache_ip,html_cache_secret_file=args.html_cache_secret_file,
+        html_cache_protocol=args.html_cache_protocol)
     with args.output.open('x') as out:json.dump(result,out,indent=2)
     args.output.chmod(0o600)
 
