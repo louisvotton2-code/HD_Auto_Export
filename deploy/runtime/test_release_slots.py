@@ -143,6 +143,72 @@ class Slots(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.gateway_files(source, **args, html_cache_host='html-cache-blue')
 
+    def test_browse_documents_require_matching_slot_and_shared_generation_mount(self):
+        config = self.config()
+        config['services']['proxy'] = {'networks': {'default': {'ipv4_address': '172.20.0.2'}}}
+        web = config['services']['web']
+        web.update(platform='linux/amd64', user='1000:1000', logging={})
+        web['environment']['NEXT_PUBLIC_SITE_URL'] = m.APEX_WEBSITE_ORIGIN
+        config['services']['api']['environment']['ANALYTICS_ORIGINS'] = m.APEX_WEBSITE_ORIGIN
+        source = Path(__file__).parent
+        directory = '/srv/hd-auto/staging/browse'
+        for slot, rollback in (('blue', 'green'), ('green', 'blue')):
+            args = dict(slot=slot, release='a'*40, api_ip='172.20.0.21', web_ip='172.20.0.22',
+                        mode_root=f'/srv/hd-auto/staging/slots/{slot}', html_cache_ip='172.20.0.23',
+                        html_cache_secret_file='/srv/hd-auto/secrets/html-cache')
+            result = m.slot_config(config, **args, html_cache_protocol='4', browse_generation_dir=directory)
+            self.assertEqual(result['services'][f'html-cache-{slot}']['environment']['HD_HTML_CACHE_PROTOCOL'], '4')
+            self.assertEqual(result['services'][f'api-{slot}']['environment']['PUBLIC_BROWSE_CACHE_ENABLED'], 'true')
+            self.assertNotIn('PUBLIC_BROWSE_CACHE_ENABLED', result['services'][f'web-{slot}']['environment'])
+            for service in result['services'].values():
+                self.assertEqual(service['environment']['HD_BROWSE_GENERATION_FILE'], '/run/hd-browse/generation')
+                self.assertIn({'type': 'bind', 'source': directory, 'target': '/run/hd-browse',
+                               'read_only': True, 'bind': {'create_host_path': False}}, service['volumes'])
+                self.assertNotIn('ports', service)
+            with self.assertRaises(ValueError):
+                m.slot_config(config, **args, html_cache_protocol='4')
+            with self.assertRaises(ValueError):
+                m.slot_config(config, **args, html_cache_protocol='3', browse_generation_dir=directory)
+            gateways = dict(web_host=f'web-{slot}', public_api_host=f'api-{slot}',
+                            admin_api_host=f'api-{rollback}', html_cache_host=f'html-cache-{slot}',
+                            website_origin=m.APEX_WEBSITE_ORIGIN)
+            for freeze in (False, True):
+                gateway = m.gateway_files(source, **gateways, freeze_admin=freeze, browse_documents=True)
+                self.assertIn('location ~ "^/(zh|en|ru)/(?:cars/)?$"', gateway['default.conf'])
+                self.assertIn(f'http://html-cache-{slot}:3010', gateway['default.conf'])
+                self.assertIn(f'http://web-{slot}:3000', gateway['default.conf'])
+                self.assertNotIn(f'http://html-cache-{rollback}:3010', gateway['default.conf'])
+                for include in ('web-proxy.conf', 'api-proxy.conf'):
+                    self.assertIn("proxy_set_header X-HD-Browse-Generation '';",
+                                  gateway['hd-domains/' + include])
+                    self.assertIn('proxy_hide_header X-HD-Browse-Generation;',
+                                  gateway['hd-domains/' + include])
+            old = m.gateway_files(source, **gateways)['default.conf']
+            self.assertIn('location ~ "^/(zh|en|ru)/$"', old)
+            with self.assertRaises(ValueError):
+                m.gateway_files(source, **{**gateways, 'public_api_host': f'api-{rollback}'}, browse_documents=True)
+
+    def test_browse_generation_requires_a_matching_hold_then_creates_fresh_token(self):
+        program = Path(__file__).parent/'production/browse-generation.py'
+        spec = importlib.util.spec_from_file_location('browse_generation', program)
+        generation = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generation)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp).resolve()
+            held = generation.change(directory, 'initialize')
+            self.assertRegex(held, 'hold-[a-f0-9]{32}')
+            with self.assertRaises(ValueError):
+                generation.change(directory, 'enable', 'wrong')
+            old = generation.change(directory, 'enable', held)
+            self.assertRegex(old, '[a-f0-9]{32}')
+            next_hold = generation.change(directory, 'hold', old)
+            self.assertEqual(generation.change(directory, 'show'), next_hold)
+            with self.assertRaises(ValueError):
+                generation.change(directory, 'enable', held)
+            current = generation.change(directory, 'enable', next_hold)
+            self.assertNotEqual(current, old)
+            self.assertEqual((directory/'generation').read_bytes(), (current+'\n').encode('ascii'))
+            self.assertEqual((directory/'generation').stat().st_mode & 0o777, 0o644)
 
 class Assets(unittest.TestCase):
     def test_collision_does_not_replace_old_assets(self):

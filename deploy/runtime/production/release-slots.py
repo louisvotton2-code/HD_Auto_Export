@@ -38,7 +38,8 @@ server {
 
 
 def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
-                html_cache_ip=None, html_cache_secret_file=None, html_cache_protocol='2'):
+                html_cache_ip=None, html_cache_secret_file=None, html_cache_protocol='2',
+                browse_generation_dir=None):
     if slot not in ('blue', 'green') or not re.fullmatch(r'[a-f0-9]{40}', release):
         raise ValueError('Explicit slot and immutable release required')
     for address in (api_ip, web_ip):
@@ -48,12 +49,19 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
         raise ValueError('Distinct slot addresses required')
     if bool(html_cache_ip) != bool(html_cache_secret_file):
         raise ValueError('HTML cache requires both a fixed address and a private secret file')
-    if html_cache_protocol not in ('2', '3') or (html_cache_protocol == '3' and not html_cache_ip):
+    if html_cache_protocol not in ('2', '3', '4') or (html_cache_protocol != '2' and not html_cache_ip):
         raise ValueError('The homepage cache protocol must match the configured sidecar')
     root = Path(mode_root)
     if not root.is_absolute() or '..' in root.parts:
         raise ValueError('Absolute persistent serving-mode directory required')
     site_origin = config['services']['web'].get('environment', {}).get('NEXT_PUBLIC_SITE_URL')
+    if (html_cache_protocol == '4') != bool(browse_generation_dir):
+        raise ValueError('Browse documents require a shared generation directory')
+    if browse_generation_dir:
+        browse_root = Path(browse_generation_dir)
+        if (site_origin != APEX_WEBSITE_ORIGIN or not browse_root.is_absolute()
+                or '..' in browse_root.parts or browse_root == Path('/')):
+            raise ValueError('Browse documents require an absolute generation directory and the apex website')
     if (site_origin == APEX_WEBSITE_ORIGIN
             and config['services']['api'].get('environment', {}).get('ANALYTICS_ORIGINS') != site_origin):
         raise ValueError('Apex API analytics must use the canonical website origin')
@@ -116,12 +124,18 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
             'networks': {'default': {'ipv4_address': html_cache_ip, 'aliases': [name]}},
             'logging': web['logging'],
         }
+        if browse_generation_dir:
+            result['services'][f'api-{slot}']['environment']['PUBLIC_BROWSE_CACHE_ENABLED'] = 'true'
+            for service in result['services'].values():
+                service['environment']['HD_BROWSE_GENERATION_FILE'] = '/run/hd-browse/generation'
+                service.setdefault('volumes', []).append({'type': 'bind', 'source': str(browse_root),
+                    'target': '/run/hd-browse', 'read_only': True, 'bind': {'create_host_path': False}})
     return result
 
 
 def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_admin=False,
                   html_cache_host=None, page_documents=False, page_visits=False,
-                  website_origin=LEGACY_WEBSITE_ORIGIN):
+                  website_origin=LEGACY_WEBSITE_ORIGIN, browse_documents=False):
     if website_origin not in (LEGACY_WEBSITE_ORIGIN, APEX_WEBSITE_ORIGIN):
         raise ValueError('Only an exact supported HTTPS website origin is accepted')
     for value in (web_host, public_api_host, admin_api_host):
@@ -130,6 +144,9 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
     if html_cache_host is not None and (not re.fullmatch(r'html-cache-(?:blue|green)', html_cache_host)
                                       or web_host != html_cache_host.replace('html-cache', 'web')):
         raise ValueError('HTML cache must belong to the same explicit Web slot')
+    if browse_documents and (not html_cache_host or website_origin != APEX_WEBSITE_ORIGIN
+                             or public_api_host != web_host.replace('web-', 'api-', 1)):
+        raise ValueError('Browse documents require the same apex Web, API and cache slot')
     source = Path(source)
     files = {'default.conf': (source/'nginx-domains.conf').read_text()}
     for path in (source/'nginx-domains').glob('*.conf'):
@@ -183,7 +200,8 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
     text=re.sub(r'(    location \^~ /_next/static/ \{\n)(?:        [^\n]*\n)*?(?=        gzip_types )',
                 r'\1        root /srv/hd-assets;\n        try_files $uri =404;\n',text)
     if html_cache_host:
-        text = text.replace('    # HD_HTML_CACHE_LOCATIONS', f'''    location ~ "^/(zh|en|ru)/$" {{
+        documents = r'^/(zh|en|ru)/(?:cars/)?$' if browse_documents else r'^/(zh|en|ru)/$'
+        text = text.replace('    # HD_HTML_CACHE_LOCATIONS', f'''    location ~ "{documents}" {{
         error_page 419 502 504 = @hd_home_dynamic;
         if ($request_method != GET) {{ return 419; }}
         resolver 127.0.0.11 valid=10s ipv6=off;
@@ -217,12 +235,13 @@ def main():
     parser.add_argument('--mode-root',required=True);parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--html-cache-ip')
     parser.add_argument('--html-cache-secret-file',type=Path)
-    parser.add_argument('--html-cache-protocol',choices=('2','3'),default='2')
+    parser.add_argument('--html-cache-protocol',choices=('2','3','4'),default='2')
+    parser.add_argument('--browse-generation-dir',type=Path)
     args=parser.parse_args()
     result=slot_config(json.loads(args.compose_json.read_text()),slot=args.slot,release=args.release,
         api_ip=args.api_ip,web_ip=args.web_ip,mode_root=args.mode_root,
         html_cache_ip=args.html_cache_ip,html_cache_secret_file=args.html_cache_secret_file,
-        html_cache_protocol=args.html_cache_protocol)
+        html_cache_protocol=args.html_cache_protocol,browse_generation_dir=args.browse_generation_dir)
     with args.output.open('x') as out:json.dump(result,out,indent=2)
     args.output.chmod(0o600)
 

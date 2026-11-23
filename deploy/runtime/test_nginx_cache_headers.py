@@ -33,7 +33,7 @@ MEDIA_VERSION=base64.urlsafe_b64encode(hashlib.sha256(b''.join(
     hashlib.sha256(body).digest() for _,body in MEDIA_REPRESENTATIONS.values())).digest()).decode().rstrip('=')
 VERSIONED_MEDIA_PATH=MEDIA_PATH+'_'+MEDIA_VERSION
 CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-Key', 'X-HD-HTML-Nonce', 'X-HD-HTML-Proof',
-                       'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket']
+                       'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket', 'X-HD-Browse-Generation']
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
@@ -242,7 +242,7 @@ class DomainCacheHeaders(unittest.TestCase):
         generated=generated.replace('http://api-blue:3320','http://api:3320').replace('http://web-blue:3000','http://web:3000')
         generated=fixture_config(generated,'slot-http.sock','slot-tls.sock')
         apex=slots.gateway_files(HERE,**args,website_origin='https://hongdingauto.com',
-                                 html_cache_host='html-cache-blue')['default.conf']
+                                 html_cache_host='html-cache-blue',browse_documents=True)['default.conf']
         apex=apex[apex.index('\nserver {')+1:].replace('http://api-blue:3320','http://api:3320').replace('http://web-blue:3000','http://web:3000')
         apex=fixture_config(apex,'apex-http.sock','apex-tls.sock')
         # Keep the production edge protections; only fixture paths and transport differ.
@@ -292,6 +292,24 @@ class DomainCacheHeaders(unittest.TestCase):
                 if values:=res.headers.get_all(name):
                     headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
+
+    def test_apex_browse_sidecar_routes_directory_but_keeps_live_detail_and_public_json(self):
+        host = 'hongdingauto.com'
+        directory = '/ru/cars/?make=byd&page=2'
+        detail = '/ru/cars/vehicle-for-live-detail/'
+        data = '/api/v1/vehicles?locale=ru&page=2'
+        Origin.calls.clear()
+        CacheOrigin.calls.clear()
+        incoming = {'Accept': 'text/html', 'X-HD-Browse-Generation': 'forged'}
+        status, headers, body = self.request(host, directory, incoming, apex=True)
+        self.assertEqual((status, headers['cache-control']), (200, 'no-store'))
+        self.assertNotIn('x-hd-browse-generation', headers)
+        self.assertNotIn('X-HD-Browse-Generation', json.loads(body)['headers'])
+        self.assertEqual(self.request(host, detail, incoming, apex=True)[0], 200)
+        self.assertEqual(self.request(host, data, apex=True)[0], 200)
+        self.assertEqual(self.request(host, '/internal/public-html/browse/', incoming, apex=True)[0], 404)
+        self.assertEqual(CacheOrigin.calls, [directory])
+        self.assertEqual(Origin.calls, [detail, data])
 
     def test_apex_profile_uses_independent_tls_redirects_and_preserves_public_boundaries(self):
         apex, www, admin = 'hongdingauto.com', 'www.hongdingauto.com', 'admin.hongdingauto.com'

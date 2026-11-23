@@ -53,6 +53,7 @@ CMD ["node", "apps/web/server.js"]
 FROM ${NODE_IMAGE} AS html-cache
 WORKDIR /app
 COPY deploy/runtime/production/html-cache.mjs deploy/runtime/production/html-cache-start.mjs ./
+COPY deploy/runtime/production/browse-cache.mjs ./
 USER 1000:1000
 CMD ["node", "html-cache-start.mjs"]
 FROM build AS admin-build

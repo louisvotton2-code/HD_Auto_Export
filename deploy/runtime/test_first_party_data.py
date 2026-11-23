@@ -48,6 +48,16 @@ class FirstPartyPixelSettings(unittest.TestCase):
         self.assertIn("'external_listing_pixel_settings'", data._validate_supplier_tables_sql())
         self.assertNotIn("'external_listing_pixel_settings'", data.measurement_sql())
 
+    def test_supplier_replay_schema_is_retained_without_replay_data(self):
+        options = data.dump_options()
+        for table in ('external_full_admission_replays', 'external_full_admission_replay_items'):
+            with self.subTest(table=table):
+                self.assertIn(f'--exclude-table-data=public.{table}', options)
+                self.assertNotIn(f'--exclude-table=public.{table}', options)
+                self.assertIn(f"'{table}'", data._validate_supplier_tables_sql())
+                self.assertIn(f"'{table}'", data.measurement_sql())
+                self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
+
     def test_every_saved_supplier_setting_anchors_its_listing_and_keeps_false_values(self):
         supplement = data._supplement_sql(True)
         self.assertIn('UNION SELECT listing_id FROM public.external_listing_pixel_settings', supplement)
