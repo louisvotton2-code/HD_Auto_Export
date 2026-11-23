@@ -604,7 +604,7 @@ function externalOverviewGroups(withModels:boolean) {
 
 // The global counters avoid scanning every visible listing. Resolve the names
 // from live winner rows to retain staff overrides and locale label precedence.
-function globalOverviewStatement(groups:string, withModels:boolean) {
+function globalOverviewStatement(groups:string, withModels:boolean, scope='') {
   const modelMasks=withModels?`, model_masks AS MATERIALIZED (
     SELECT make_id,model_id,bit_or(1 << locale_mask) AS mask_bits
     FROM atoms WHERE make_id IS NOT NULL AND model_id IS NOT NULL GROUP BY make_id,model_id
@@ -626,7 +626,7 @@ function globalOverviewStatement(groups:string, withModels:boolean) {
     SELECT f.dimensions[1] AS make_id,f.dimensions[2] AS model_id,f.dimensions[3] AS powertrain,
       f.dimensions[4] AS drivetrain,f.dimensions[5]::integer AS model_year,f.has_trim AS has_trims,
       f.has_generation AS has_generations,f.row_count,f.locale_mask,NULL::text AS label_order
-    FROM external_catalog_global_facets f ${groupVisible}
+    FROM external_catalog_global_facets f ${groupVisible}${scope}
   )${groups}${modelMasks}, winners AS MATERIALIZED (
     SELECT g.kind,g.id,g.make_id,winner.listing_id FROM facets g
     CROSS JOIN LATERAL (
@@ -679,6 +679,9 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   // IDs contribute to availability without producing per-variant dictionaries.
   const useRollup=!pairs&&projection==='overview'&&canUseExternalPowerYearGroups(query);
   const useGlobal=overview&&!pairs&&!where;
+  const useGlobalHomeModels=projection==='home-models'&&pairs!==undefined&&!match.where;
+  const globalScope=useGlobalHomeModels
+    ?` AND ${catalogModelScope([query.locale],pairs,'f.dimensions[1]','f.dimensions[2]')}`:'';
   const atoms=useRollup?`atoms AS MATERIALIZED (
     SELECT f.make_id,f.powertrain,f.drivetrain,f.model_year,f.trim_count>0 AS has_trims,
       f.generation_count>0 AS has_generations,f.label_order,f.row_count,
@@ -694,10 +697,10 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     FROM matched GROUP BY ${groupBy}
   )`;
   if(useRollup)observe?.('supplier_overview_rollup');
-  if(useGlobal)observe?.('supplier_global_rollup');
+  if(useGlobal||useGlobalHomeModels)observe?.('supplier_global_rollup');
   // Select the name from the same atom that supplies the ordered winning ID.
   // Tied keys identify the same vehicle, so a filled copy of that name is safe.
-  const statement=useGlobal?globalOverviewStatement(groups,projection==='overview-models'):
+  const statement=(useGlobal||useGlobalHomeModels)?globalOverviewStatement(groups,projection!=='overview',globalScope):
     useRollup?`WITH ${atoms}${groups}, winner_labels AS (
     SELECT DISTINCT ON (make_id) make_id,make_name,
       CASE WHEN label_pending THEN substring(label_order FROM 19 FOR 36)::uuid END AS pending_make_winner

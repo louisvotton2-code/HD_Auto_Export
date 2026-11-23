@@ -12,6 +12,12 @@ BE-I18N-01 已实现员工触发的中文源→英俄译文建议，保持已保
 
 生产新官网与同源公开 API 使用 `https://hongdingauto.com`，`www` 跳到根域，`cars` 属于旧官网。正式发布按根域生成官网配置和 API 的 `ANALYTICS_ORIGINS`，并核对后台原域及可信 Origin。当前运行版本与切换证据见后端进度。
 
+### 供应商准入对账
+
+先独立核验完整供应商快照的隔离还原收据。将该隔离数据库通过 `ADMISSION_AUDIT_DATABASE_URL` 传给 `node dist/external/full-sync/admission-audit-cli.js`。参数为 `--database <还原库名>`、`--snapshot-id <CSV 快照 UUID>`、`--restore-as-of <收据 UTC 时间>`、`--restore-receipt <收据 SHA-256>` 和 `--checkpoint <私有绝对目录>`。可用 `--chunk-rows` 和 `--max-chunks` 限制单次扫描。退出码 2 表示未完成，按同一还原和检查点重复运行。检查点覆盖全部行后才产生精确 CSV 差集。结果另列还原时点前一小时的触顶拒绝，及同一时点改价、撤回待应用和此前公开挂牌待投影的数量与最老年龄。CLI 只读取回环隔离库，输出聚合证据。补准入和回放由 OPS 依据当前目标的容量裁决与正式清单执行。
+
+`apps/api/test/isolated/supplier-admission-audit.test.ts` 使用专用临时 PostgreSQL 实例单独运行。恢复对账需要数据库实例的 MVCC 视图保持静止，同一实例上的其他库并发写入也会使续扫保护生效。
+
 ## 本地启动
 
 日常由 BE 自行启动 `pnpm dev:api`，源码变化自动重启，不交 OPS 逐次构建部署。按 [统一本地开发分工](../../docs/README.md#本地开发与部署分工) 复用已准备的开发库／媒体；下面是首次配置示例，已有环境不要重复复制 `.env`、创建库或初始化。仅新迁移需要在开发库执行，不能指向生产数据。

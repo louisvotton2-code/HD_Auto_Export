@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RequestMetaSchema, TimestampSchema, responseSchema } from './common.js';
+import { LocaleSchema, RequestMetaSchema, TimestampSchema, responseSchema } from './common.js';
 
 export const PUBLIC_CATALOG_MAX_OFFSET = 10_000;
 export function isPublicCatalogOffsetAllowed(page: number, pageSize: number): boolean {
@@ -10,13 +10,15 @@ export const PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 15_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 300_000;
 export const INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS = 600_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER = 'x-hd-cache-protocol';
+export const INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER = 'x-hd-catalog-homepage';
+export const INTERNAL_PUBLIC_HOMEPAGE_SCOPE = 'exact-v1';
 export const PublicCatalogVersionQuerySchema = z.strictObject({
   priceView: z.literal('usd').optional(),
   scope: z.literal('filters').optional(),
 });
 export const InternalPublicCatalogVersionQuerySchema = z.union([
   PublicCatalogVersionQuerySchema,
-  z.strictObject({ priceView: z.literal('usd'), scope: z.literal('homepage') }),
+  z.strictObject({ priceView: z.literal('usd'), scope: z.literal('homepage'), locale: LocaleSchema.optional() }),
 ]);
 function catalogCacheStampSchema(maxLifetimeMs: number) {
   return z.strictObject({

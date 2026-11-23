@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS, PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
+import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_SCOPE,
+  PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type Locale, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
 import { ACTIVE_FX_SQL } from './fx.js';
-import { canonicalJson } from './normalize.js';
+import { canonicalJson, jsonHash } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
 export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
@@ -78,6 +79,7 @@ type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
 type PublicSourceResult<T> = { value: T; expiresAt?: number };
 type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision; verifyAfterAdvance?: CatalogRevisionProof };
+type HomepageValue = { home: unknown; overview: unknown; models: unknown };
 type LoadedEnvelope = Envelope & { revision: PublicCatalogRevision; snapshotOnly?: true };
 type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
 type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>;
@@ -392,6 +394,24 @@ export class PublicCatalogCache {
     load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
     const result = await this.read(route,normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
+  }
+  async getPreciseHomepage<T extends HomepageValue>(locale:Locale,mediaPolicy:string,
+    load:(deadline:number,signal:AbortSignal)=>Promise<PublicSnapshot<T>>,signal?:AbortSignal) {
+    const result=await this.read('home',[INTERNAL_PUBLIC_HOMEPAGE_SCOPE,locale,mediaPolicy],
+      async(_,deadline,flightSignal)=>{
+        const snapshot=await load(deadline,flightSignal);
+        const {value}=snapshot;
+        return {...snapshot,value:{data:value,catalogDigest:jsonHash(value.home),filtersDigest:jsonHash([value.overview,value.models])}};
+      },true,'catalog',3,signal);
+    const checkedAt=this.now();
+    const stamp=this.stamp(result.revision,true,'catalog',3,result.expiresAt,checkedAt);
+    const identity=[INTERNAL_PUBLIC_HOMEPAGE_SCOPE,locale,mediaPolicy,this.options.deployment,!!this.options.externalCatalog,
+      result.revision.epoch,stamp.fx];
+    const scoped=(scope:RevisionScope,digest:string)=>({
+      ...stamp,version:jsonHash([...identity,scope,digest]),
+    });
+    return {value:result.value.data,versions:{catalog:scoped('catalog',result.value.catalogDigest),
+      filters:scoped('filters',result.value.filtersDigest)}};
   }
   async getOffsetListSnapshot<T>(normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false,
     signal?: AbortSignal, protocol: CacheProtocol=1, observe?: CacheReadObserver) {

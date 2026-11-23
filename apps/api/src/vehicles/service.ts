@@ -1094,6 +1094,23 @@ export class InventoryService {
     });
   }
 
+  async preciseHomepage(locale:Locale,budget:FilterReadBudget) {
+    return this.db.transaction(async connection=>{
+      remainingFilterTime(budget);
+      await connection.query(catalogReadTransaction);
+      const tx=boundedReadClient(connection,budget);
+      const revision=await readPublicCatalogRevision({pool:tx},true,'catalog');
+      const quote=await readFxQuote(tx);
+      const home=await this.readPublicHome(tx,locale,'localized','usd',quote);
+      const query={locale,catalog:'curated',view:'localized',priceView:'usd'} as const;
+      const {value:facets}=await this.readFilters(tx,{...query,projection:'overview'});
+      const {value:models,expiresAt}=await this.readFilters(tx,{...query,projection:'home-models'});
+      // This private DTO supplies only the global facets serialized into the homepage.
+      const overview={catalog:facets.catalog,total:facets.total,makes:facets.makes,models:[],powertrains:[]};
+      return {value:{home,overview,models},revision,expiresAt};
+    }).catch(throwBoundedReadError);
+  }
+
   private async readPublicHome(tx:PoolClient,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {
     const {sections,staff,supplier}=await this.readHomeSelection(tx);
     const vehicles=await this.readStaffHomeVehicles(tx,staff,locale,view,priceView,quote);

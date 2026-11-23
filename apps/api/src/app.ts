@@ -110,7 +110,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   const serving=new ServingGate(config.servingModeFile);
   const db=createDatabase(config.databaseUrl,config.poolMax,Boolean(options.onPublicFailure));
   const fullSyncHints=new FullSyncAccessHints(id=>markFullSyncAccess(db,id),work=>serving.optionalEffect(work));
-  let catalogCache;
+  let catalogCache:Awaited<ReturnType<typeof createPublicCatalogCache>>;
   try { catalogCache = await createPublicCatalogCache(db, {
     ...config.publicCache, maxConcurrentRevisionReads: config.externalScale ? 128 : 32,
   }); }
@@ -302,6 +302,14 @@ export async function buildApp(config:Config=readConfig(), options:{
     }
     return cacheProtocol(request);
   }
+  async function preciseHomepage(locale:pub.Locale,request:FastifyRequest,reply:FastifyReply) {
+    const result=await catalogCache.getPreciseHomepage(locale,mediaRecipeRevision,
+      (deadline,signal)=>inventory.preciseHomepage(locale,{deadline,signal}),requestSignals.get(request));
+    reply.header(pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER,pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE);
+    return result;
+  }
+  const preciseHomepageRequested=(request:FastifyRequest,protocol:CacheProtocol)=>protocol===3&&
+    request.headers[pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER]===pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE;
   type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
   type CaptureRevision=(revision:PublicCatalogRevision,verifyAfterAdvance?:CatalogRevisionProof)=>void;
   type CatalogLoad<T>=(capture:CaptureRevision,deadline:number,signal:AbortSignal)=>Promise<T>;
@@ -339,6 +347,11 @@ export async function buildApp(config:Config=readConfig(), options:{
     if(query.scope==='homepage') {
       const protocol=homepageProtocol(request,reply,true);
       if(protocol===1) throw new ApiError(400,'INVALID_REQUEST','Cache protocol 2 or 3 is required.');
+      if(query.locale) {
+        if(protocol!==3) throw new ApiError(400,'INVALID_REQUEST','A localized homepage version requires cache protocol 3.');
+        const result=await preciseHomepage(query.locale,request,reply);
+        return response(result.versions,request);
+      }
       return response(await catalogCache.currentHomepageVersions(requestSignals.get(request),protocol),request);
     }
     return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
@@ -470,6 +483,11 @@ export async function buildApp(config:Config=readConfig(), options:{
     const homepageFilters=!legacy&&usd&&view==='localized'&&(projection==='overview'||projection==='home-models')
       && Object.values(selection).every(value=>value===undefined);
     const protocol=homepageProtocol(request,reply,homepageFilters);
+    if(preciseHomepageRequested(request,protocol)) {
+      const result=await preciseHomepage(query.locale,request,reply);
+      const data=projection==='home-models'?result.value.models:result.value.overview;
+      return {data,meta:{requestId:request.id,catalogCache:result.versions.filters}};
+    }
     const trackProjection=projection==='home-models'||projection==='overview'||projection==='overview-models';
     const advance=trackProjection?beginCatalogTiming(request,projection)
       :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
@@ -492,6 +510,10 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:home,...errorResponses}})},async(request,reply)=>{
     const query=request.query as pub.PublicLocaleQuery;
     const protocol=homepageProtocol(request,reply,query.priceView==='usd'&&query.view==='localized');
+    if(preciseHomepageRequested(request,protocol)) {
+      const result=await preciseHomepage(query.locale,request,reply);
+      return {data:result.value.home,meta:{requestId:request.id,catalogCache:result.versions.catalog}};
+    }
     return publicResponse('home',query,capture=>inventory.publicHome(query.locale,query.view,query.priceView,capture),request,protocol);
   });
   }

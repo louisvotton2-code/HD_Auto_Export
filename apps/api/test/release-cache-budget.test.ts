@@ -209,6 +209,78 @@ test('REL03 uses real committed versions and restart-safe quotas without externa
         assert.equal(priced.catalog.validUntil,priced.filters.validUntil);
       } finally {await db.pool.query('DELETE FROM public_fx_quote WHERE id=1');}
     });
+    await t.test('precise homepage proofs follow the rendered input rather than the global catalog revision',async context=>{
+      const prefix='/internal/public-catalog';
+      const resource='?locale=zh&view=localized&priceView=usd';
+      const bundle='/version?priceView=usd&scope=homepage&locale=zh';
+      const exact=(route=bundle,protocol='3',scope='exact-v1')=>app.app.inject({
+        url:prefix+route,remoteAddress:'192.0.2.10',headers:{'x-hd-ssr-key':secret,'x-hd-cache-protocol':protocol,
+          'x-hd-catalog-homepage':scope,'x-hd-catalog-scope':'filters','x-forwarded-for':`198.51.100.${++n%240+1}`},
+      });
+      const versions=async(route=bundle)=>{
+        const result=await exact(route);
+        assert.equal(result.statusCode,200,result.body);
+        assert.equal(result.headers['x-hd-catalog-homepage'],'exact-v1');
+        return InternalPublicHomepageVersionResponseSchema.parse(result.json()).data;
+      };
+      const ids=(data:ReturnType<typeof InternalPublicHomepageVersionResponseSchema.parse>['data'])=>[data.catalog.version,data.filters.version];
+      const initial=await versions();
+      for(const [suffix,scope] of [
+        ['/home/vehicles'+resource,'catalog'],
+        ['/vehicle-filters'+resource+'&projection=overview','filters'],
+        ['/vehicle-filters'+resource+'&projection=home-models','filters'],
+      ] as const) {
+        const result=await exact(suffix);
+        assert.equal(result.statusCode,200,result.body);
+        assert.equal(result.headers['x-hd-catalog-homepage'],'exact-v1');
+        assert.equal(result.json().meta.catalogCache.version,initial[scope].version);
+      }
+      assert.notEqual((await versions(bundle.replace('zh','en'))).catalog.version,initial.catalog.version);
+      assert.equal((await exact(bundle,'2')).statusCode,400);
+      assert.equal((await exact('/home/vehicles'+resource,'3','')).headers['x-hd-catalog-homepage'],undefined);
+      const publicResult=await app.app.inject({url:'/api/v1/home/vehicles'+resource,headers:{'x-hd-cache-protocol':'3','x-hd-catalog-homepage':'exact-v1'}});
+      assert.equal(publicResult.headers['x-hd-catalog-homepage'],undefined);
+
+      await db.pool.query('SELECT queue_public_catalog_change()');
+      assert.deepEqual(ids(await versions()),ids(initial));
+      const other=randomUUID(),otherPublication=randomUUID();
+      try {
+        await db.transaction(async tx=>{
+          await tx.query("INSERT INTO vehicles(id,availability,availability_checked_at) VALUES($1,'available',now())",[other]);
+          await tx.query('INSERT INTO vehicle_publications(id,vehicle_id,data) VALUES($1,$2,$3)',
+            [otherPublication,other,JSON.stringify(snapshot)]);
+          await tx.query("UPDATE vehicles SET publication_state='published',published_revision_id=$2,published_at=now() WHERE id=$1",[other,otherPublication]);
+        });
+        const added=await versions();
+        assert.equal(added.catalog.version,initial.catalog.version);
+        assert.notEqual(added.filters.version,initial.filters.version);
+        const models=await exact('/vehicle-filters'+resource+'&projection=home-models');
+        assert.equal(models.json().data.models[0].count,2);
+        const revisedPublication=randomUUID();
+        await db.transaction(async tx=>{
+          await tx.query(`INSERT INTO vehicle_publications(id,vehicle_id,data)
+            SELECT $1,vehicle_id,jsonb_set(jsonb_set(data,'{facts,modelYear}','2021'::jsonb),
+              '{price,money,amount}', '"31000.00"'::jsonb)
+            FROM vehicle_publications WHERE id=$2`,[revisedPublication,otherPublication]);
+          await tx.query('UPDATE vehicles SET published_revision_id=$2 WHERE id=$1',[other,revisedPublication]);
+        });
+        assert.deepEqual(ids(await versions()),ids(added));
+        const overlapping=await afterCatalogReads(context,()=>exact(),[
+          ()=>db.pool.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[id]).then(()=>{}),
+        ]);
+        assert.equal(overlapping.statusCode,200,overlapping.body);
+        const withdrawn=await versions();
+        assert.deepEqual(ids(InternalPublicHomepageVersionResponseSchema.parse(overlapping.json()).data),ids(withdrawn));
+        assert.notEqual(withdrawn.catalog.version,added.catalog.version);
+        assert.notEqual(withdrawn.filters.version,added.filters.version);
+        assert.deepEqual((await exact('/home/vehicles'+resource)).json().data.sections,[]);
+      } finally {
+        await db.transaction(async tx=>{
+          await tx.query("UPDATE vehicles SET publication_state='archived' WHERE id=$1",[other]);
+          await tx.query("UPDATE vehicles SET publication_state='published' WHERE id=$1",[id]);
+        });
+      }
+    });
     await t.test('rollback does not invalidate; committed inventory changes immediately invalidate all cached projections',async()=>{
       const before=(await version()).data.version;
       const beforeFilter=(await version(true)).data.version;
