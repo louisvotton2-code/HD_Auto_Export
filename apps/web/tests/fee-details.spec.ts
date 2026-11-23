@@ -127,27 +127,40 @@ test('expanded details recalculate branch explanations and formulas while a coll
   await page.locator('#price').fill('100');
   await page.locator('#transactionRate').fill('1');
   await page.locator('#euroRate').fill('1');
-  await fillNumericDate(page, 'manufactureDate', '2020-01');
+  await fillNumericDate(page, 'manufactureDate', '2025-01');
+  await page.locator('#displacementCc').fill('100');
   const duty = page
     .locator('.fee-line')
-    .filter({ has: page.locator('[data-method-key="AM.dutyMiddle"]') });
-  await duty.getByTestId('fee-detail-toggle').click();
-  await expect(duty.getByTestId('fee-method')).toBeVisible();
-  await expect(duty.getByTestId('fee-method')).toContainText('取较大值 879.12 AMD');
-  await page.locator('#price').fill('10000');
-  await expect(duty.getByTestId('fee-detail-toggle')).toHaveAttribute('aria-expanded', 'true');
-  await expect(duty.getByTestId('fee-method')).toContainText('取较大值 2,000 AMD');
-  await expect(duty.getByTestId('fee-formula')).toContainText('2,000 AMD');
-  await duty.getByTestId('fee-detail-toggle').click();
+    .filter({ has: page.locator('[data-method-key="AM.unifiedYoung"]') });
+  const toggle = duty.getByTestId('fee-detail-toggle');
+  const explanation = duty.locator('.fee-method-description');
+  const formula = duty.getByTestId('fee-formula').locator('code');
+  const amount = duty.locator('.fee-values strong');
+  await toggle.click();
+  await expect(explanation).toBeVisible();
+  await expect(explanation).toContainText('按 54% 得 54 EUR');
+  await expect(formula).toContainText('250 AMD');
+  await expect(amount).toHaveText(/^250(?:\.00)? AMD$/);
+  await page.locator('#price').fill('8000');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(explanation).toContainText('按 54% 得 4,320 EUR');
+  await expect(formula).toContainText('4,320 AMD');
+  await expect(amount).toHaveText(/^4,320(?:\.00)? AMD$/);
+  await toggle.click();
   await page.locator('#price').fill('100');
-  await expect(duty.getByTestId('fee-method')).toBeHidden();
-  await duty.getByTestId('fee-detail-toggle').click();
-  await expect(duty.getByTestId('fee-method')).toContainText('取较大值 879.12 AMD');
-  await expect(duty.getByTestId('fee-method')).not.toContainText('取较大值 2,000 AMD');
-  await fillNumericDate(page, 'manufactureDate', '2024-01');
-  const young = page.locator('[data-method-key="AM.dutyYoung"]');
-  await expect(young).toBeVisible();
-  await expect(page.locator('[data-method-key="AM.dutyMiddle"]')).toHaveCount(0);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(explanation).toBeHidden();
+  await expect(amount).toHaveText(/^250(?:\.00)? AMD$/);
+  await toggle.click();
+  await expect(explanation).toContainText('按 54% 得 54 EUR');
+  await expect(explanation).not.toContainText('4,320 EUR');
+  await expect(formula).toContainText('250 AMD');
+  await expect(formula).not.toContainText('4,320 AMD');
+  await fillNumericDate(page, 'manufactureDate', '2022-01');
+  const used = page.locator('[data-method-key="AM.unifiedUsed"]');
+  await expect(used).toBeVisible();
+  await expect(used.getByTestId('fee-formula').locator('code')).toContainText('100 × 1.5 × 1 = 150 AMD');
+  await expect(page.locator('[data-method-key="AM.unifiedYoung"]')).toHaveCount(0);
 });
 
 test('reset and destination changes close all details, and invalid input removes the old controls and explanations', async ({

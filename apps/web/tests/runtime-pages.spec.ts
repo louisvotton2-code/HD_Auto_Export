@@ -170,7 +170,7 @@ test('calculating and navigating use local assets without a calculation API or r
   await expect(page).toHaveURL(/\/zh\/calculator\/georgia\/$/);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
-  await expect(page.getByTestId('manufacture-range-total')).toHaveText('480.00 – 480.00 GEL');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveText('150.00 – 150.00 GEL');
   await page.waitForLoadState('networkidle');
   const origin = new URL(page.url()).origin;
   expect(requests.filter(({ url, method }) => {

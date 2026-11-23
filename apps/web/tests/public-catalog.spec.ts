@@ -367,9 +367,10 @@ test.describe('public HTTP catalog against an isolated fixture API', () => {
     await page.goForward();
     await expect(page.locator('[data-public-vehicle="fixture_future"]')).toHaveCount(0);
     await fixture(request, 'put', 'state', { futureArchived: true });
-    await page.goBack();
-    await expect(page.locator('[data-public-vehicle="fixture_future"]')).toHaveCount(0);
-    await expect(page.getByTestId('public-vehicle-missing')).toBeVisible();
+    expect((await page.goBack())?.status()).toBe(404);
+    await expect(page.locator('main h1')).toHaveText('404');
+    await expect(page.locator('[data-public-vehicle-detail="fixture_future"]')).toHaveCount(0);
+    await expect(page.locator('[data-vehicle-contacts]')).toHaveCount(0);
     expect((await request.get('/en/cars/fixture_future/')).status()).toBe(404);
   });
 

@@ -236,9 +236,17 @@ test.describe('explicit public queries, stable activation and media regression',
     await expect(form.locator('select[name="make"]')).toHaveValue('alpha');
     await expect(current).toHaveAttribute('data-freshness', 'fresh');
     await page.waitForTimeout(150);
-    const backRequests = audit.data().slice(requestsBeforeBack);
-    expect(backRequests).toHaveLength(1);
-    expect(cleanPath(backRequests[0]!.url())).toBe('/api/v1/vehicles');
+    const backRequests = audit.data().slice(requestsBeforeBack)
+      .map(request => new URL(request.url()));
+    expect(backRequests.map(url => [
+      cleanPath(url.href), url.searchParams.get('q') ?? '', url.searchParams.get('make') ?? '',
+      url.searchParams.get('model') ?? '', url.searchParams.get('page') ?? '',
+    ].join('|')).sort()).toEqual([
+      '/api/v1/vehicles|Alpha Model|alpha|alpha_model|1',
+      '/catalog-facets.json|Alpha Model|alpha|alpha_model|',
+      '/catalog-facets.json|Alpha Model|alpha||',
+      '/catalog-facets.json|Alpha Model|||',
+    ].sort());
     expect(audit.documents()).toEqual(initialDocuments);
     // Global navigation can fetch other destinations when the footer enters view.
     const catalogPath = cleanPath(page.url());
@@ -373,8 +381,14 @@ test.describe('explicit public queries, stable activation and media regression',
       await expect(page).toHaveURL(/\/en\/parts\/$/);
       await page.goBack();
       await expect(page).toHaveURL(/\/en\/$/);
-      await expect.poll(() => audit.data().map(request => cleanPath(request.url())).sort())
-        .toEqual(['/api/v1/home/vehicles', '/api/v1/vehicle-filters']);
+      await expect.poll(() => audit.data().map(request => {
+        const url = new URL(request.url());
+        return [cleanPath(url.href), url.searchParams.get('projection') ?? ''].join('|');
+      }).sort()).toEqual([
+        '/api/v1/home/vehicles|',
+        '/api/v1/vehicle-filters|home-models',
+        '/api/v1/vehicle-filters|overview',
+      ]);
       await expect(await resource(page, '/api/v1/home/vehicles')).toHaveAttribute('data-freshness', 'fresh');
 
       await parts.click();
@@ -390,7 +404,7 @@ test.describe('explicit public queries, stable activation and media regression',
     } finally { audit.stop(); }
   });
 
-  test('real Back and Forward check current sold and removed records with scoped local JSON', async ({ page, request }) => {
+  test('real Back and Forward load fresh detail documents for sold and removed vehicles', async ({ page, request }) => {
     await patchFixture(request, { futurePublished: true, futureAvailability: 'reserved' });
     await page.goto('/en/cars/fixture_future/');
     await expect(page.locator('main [data-vehicle-stamp="reserved"]')).toBeVisible();
@@ -399,49 +413,31 @@ test.describe('explicit public queries, stable activation and media regression',
     await expect(page).toHaveURL(/\/en\/cars\/$/);
     await expect(await resource(page, '/api/v1/vehicles')).toHaveAttribute('data-freshness', 'fresh');
     await patchFixture(request, { futureAvailability: 'sold' });
-    let release = () => {};
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const matcher = (url: URL) => cleanPath(url.href) === '/api/v1/vehicles/fixture_future';
-    await page.route(matcher, async (route) => { await held; await route.continue(); });
     const audit = networkAudit(page);
     try {
-      await page.goBack();
+      const sold = await page.goBack();
+      expect(sold?.status()).toBe(200);
+      expect(sold?.headers()['cache-control']).toContain('no-store');
       const current = await resource(page, '/api/v1/vehicles/fixture_future');
-      await expect(current).toHaveAttribute('data-freshness', 'checking');
-      await expect(current.locator('[data-vehicle-stamp="reserved"],[data-vehicle-stamp="sold"]')).toHaveCount(0);
-      await expect(contactLinks(current)).toHaveCount(0);
-      const consultation = vehicleConsultation(current, 'fixture_future');
-      await expect(consultation.locator('[data-vehicle-contacts] a')).toHaveCount(2);
-      await expect(consultation.locator('[data-vehicle-contacts] a[aria-disabled="true"]')).toHaveCount(2);
-      await expect(inspectionService(current).locator('a')).toHaveCount(0);
-      await expect(page.locator('main h1')).toHaveText('Newly published vehicle');
-      release();
       await expect(current).toHaveAttribute('data-freshness', 'fresh');
       await expect(current.locator('[data-availability="sold"]')).toBeVisible();
+      await expect(current.locator('[data-vehicle-stamp="reserved"]')).toHaveCount(0);
       await expectDetailContactRegions(current, 'fixture_future');
       const draft = new URL((await vehicleConsultation(current, 'fixture_future').locator('a[href^="https://t.me/"]').getAttribute('href'))!).searchParams.get('text');
       expect(draft).toMatch(/sold|similar/i);
-      await page.waitForTimeout(150);
-      expect(audit.data()).toHaveLength(1);
-      expect(cleanPath(audit.data()[0]!.url())).toBe('/api/v1/vehicles/fixture_future');
-      const beforeForward = audit.data().length;
-      await page.goForward();
+      expect((await page.goForward())?.status()).toBe(200);
       await expect(page).toHaveURL(/\/en\/cars\/$/);
       const catalog = await resource(page, '/api/v1/vehicles');
       await expect(catalog).toHaveAttribute('data-freshness', 'fresh');
       await expect(page.locator('[data-public-vehicle="fixture_future"]')).toHaveCount(0);
-      await page.waitForTimeout(150);
-      expect(audit.data().slice(beforeForward).map(request => cleanPath(request.url())).sort())
-        .toEqual(['/api/v1/vehicles', catalogFacetsPath]);
       await patchFixture(request, { futureArchived: true });
-      const beforeRemovedBack = audit.data().length;
-      await page.goBack();
-      await expect(page.getByTestId('public-vehicle-missing')).toBeVisible();
+      expect((await page.goBack())?.status()).toBe(404);
+      await expect(page.locator('main h1')).toHaveText('404');
       await expect(page.locator('[data-public-vehicle-detail="fixture_future"]')).toHaveCount(0);
       await expect(contactLinks(page.locator('main'))).toHaveCount(0);
       await expect(page.locator('main #inspection, main [id="vehicle-contact-fixture_future"]')).toHaveCount(0);
       await page.waitForTimeout(150);
-      expect(audit.data().slice(beforeRemovedBack)).toHaveLength(1);
+      expect(audit.data()).toHaveLength(0);
       expect((await request.get('/en/cars/fixture_future/')).status()).toBe(404);
       const vehicleHistoryRsc = audit.rsc().filter((request) => {
         const path = cleanPath(request.url());
@@ -449,8 +445,10 @@ test.describe('explicit public queries, stable activation and media regression',
           (path === '/en/cars' && request.headers()['next-router-prefetch'] !== '1');
       });
       expect(vehicleHistoryRsc.map(request => request.url())).toEqual([]);
-      expect(audit.documents()).toHaveLength(0);
-    } finally { release(); await page.unroute(matcher); audit.stop(); }
+      expect(audit.documents().map(request => cleanPath(request.url()))).toEqual([
+        '/en/cars/fixture_future', '/en/cars', '/en/cars/fixture_future',
+      ]);
+    } finally { audit.stop(); }
   });
 
   test('gallery requests previews instead of unvisited originals and supports thumbnail, keyboard, modal and focus return', async ({

@@ -207,6 +207,7 @@ const resetState = () => ({
   mode: 'normal',
   sectionCount: 1,
   homeStampSamples: false,
+  homeCardLayoutSample: false,
   futurePublished: false,
   futureAvailability: 'available',
   futureArchived: false,
@@ -769,6 +770,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           mode: (v) => ['normal', 'empty', 'unavailable', 'malformed'].includes(v),
           sectionCount: (v) => [0, 1, 2].includes(v),
           homeStampSamples: (v) => typeof v === 'boolean',
+          homeCardLayoutSample: (v) => typeof v === 'boolean',
           futurePublished: (v) => typeof v === 'boolean',
           futureAvailability: (v) => ['available', 'reserved', 'sold', 'unknown'].includes(v),
           futureArchived: (v) => typeof v === 'boolean',
@@ -1131,9 +1133,26 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, payload);
       }
       const homeSections = () => {
-        const featured = state.homeStampSamples
-          ? ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)))
-          : staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
+        let featured = staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
+        if (state.homeStampSamples) {
+          featured = ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)));
+        }
+        if (state.homeCardLayoutSample) {
+          featured = staff.filter(v => v.source.kind === 'manual').slice(0, 2).map((row, index) =>
+            index === 0 ? {
+              ...row,
+              content: {
+                ...row.content,
+                title: {
+                  ...row.content.title,
+                  text: 'Очень длинное название автомобиля с подробным описанием комплектации и оборудования',
+                  contentLocale: 'ru',
+                },
+              },
+              availability: 'sold',
+              price: { kind: 'reference', money: { amount: '99999999999999.99', currency: 'KGS' }, includes: [] },
+            } : { ...row, availability: 'unknown', availabilityCheckedAt: null });
+        }
         const sections =
           state.sectionCount > 0 && featured.length
             ? [
