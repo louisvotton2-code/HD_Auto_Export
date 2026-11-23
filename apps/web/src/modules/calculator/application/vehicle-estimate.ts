@@ -3,7 +3,7 @@ import type { CalculationInput, CountryCode, Powertrain } from '../index';
 import { Amount } from '../core/decimal';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, getTajikTariffDefaults } from './defaults';
-import { vehicleManufactureMonth } from './manufacture-estimate';
+import { vehicleManufactureDate } from './manufacture-estimate';
 
 /** The UI can leave unknown enums empty; the core's required-field checks accept empty text. */
 export type VehicleEstimateDraft = Omit<CalculationInput, 'powertrain' | 'condition' | 'steering'> & {
@@ -42,6 +42,13 @@ function vehicleTransactionPrice(vehicle: VehicleEstimateSource) {
   return { price, currency } as const;
 }
 
+function vehicleCondition(vehicle: VehicleEstimateSource, country: CountryCode): VehicleEstimateDraft['condition'] {
+  const { registrationStatus, firstRegistration, mileageKm } = vehicle.facts;
+  if (registrationStatus === 'registered' || firstRegistration) return 'used';
+  if (registrationStatus !== 'never_registered' || country === 'AL' && mileageKm !== 0) return '';
+  return 'new';
+}
+
 export function createVehicleEstimateDraft(
   vehicle: VehicleEstimateSource,
   country: CountryCode,
@@ -58,14 +65,12 @@ export function createVehicleEstimateDraft(
     currency,
     displacementCc: facts.engineCc !== null && facts.engineCc > 0 ? String(facts.engineCc) : '',
     powerHp: vehicleEstimatePower(vehicle)?.hp ?? '',
-    manufactureDate: vehicleManufactureMonth(vehicle),
+    manufactureDate: vehicleManufactureDate(vehicle),
     customsDate: date,
     freight: '',
     insurance: '',
     steering: '',
-    condition: facts.registrationStatus === 'never_registered'
-      ? 'new'
-      : facts.registrationStatus === 'registered' ? 'used' : '',
+    condition: vehicleCondition(vehicle, country),
     ...getTajikTariffDefaults(country),
     ...deriveRates(rates, country, currency),
   };
@@ -89,6 +94,7 @@ export function retargetVehicleEstimateDraft(
     ...input,
     price,
     country,
+    ...(country === 'AL' && input.country !== 'AL' ? { condition: vehicleCondition(vehicle, country) } : {}),
     importerType: 'individual',
     ...deriveRates(rates, country, input.currency),
   };

@@ -42,8 +42,10 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
         locale === 'zh' ? 'zh-Hans' : locale,
       );
       await expect(page.locator('.reset-button')).toBeEnabled();
-      const singleQuote: readonly string[] = ['albania', 'tajikistan', 'turkmenistan'];
-      const defaultResult = page.getByTestId(singleQuote.includes(destination) ? 'total' : 'manufacture-range-total');
+      const singleQuote: readonly string[] = ['tajikistan', 'turkmenistan'];
+      const rangeQuote: readonly string[] = ['uzbekistan', 'georgia'];
+      const defaultResult = page.getByTestId(singleQuote.includes(destination) ? 'total'
+        : rangeQuote.includes(destination) ? 'manufacture-range-total' : 'result-status');
       await expect(defaultResult).toBeVisible();
       await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
         'href',
@@ -78,7 +80,7 @@ test('root defaults to Russian home and calculator shortcuts still reach their d
     await page.goto(`/${locale}/calculator/`);
     await expect(page).toHaveURL(new RegExp(`/${locale}/calculator/russia/?$`));
     await expect(page.locator('.reset-button')).toBeEnabled();
-    await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+    await expect(page.getByTestId('result-status')).toBeVisible();
   }
 });
 
@@ -165,12 +167,12 @@ test('calculating and navigating use local assets without a calculation API or r
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.locator('#displacementCc').fill('1700');
-  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+  await expect(page.getByTestId('result-status')).toBeVisible();
   await page.locator('.country-nav a[href^="/zh/calculator/georgia"]').click();
   await expect(page).toHaveURL(/\/zh\/calculator\/georgia\/$/);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
-  await expect(page.getByTestId('manufacture-range-total')).toHaveText('480.00 – 480.00 GEL');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveText('150.00 – 150.00 GEL');
   await page.waitForLoadState('networkidle');
   const origin = new URL(page.url()).origin;
   expect(requests.filter(({ url, method }) => {
@@ -197,14 +199,14 @@ test('browser initialization and reset use the Shanghai calendar date and ignore
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
   await expect.poll(effectiveDate).toBe('2026-12-11');
-  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+  await expect(page.getByTestId('result-status')).toBeVisible();
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect.poll(effectiveDate).toBe('2026-12-11');
   await page.clock.setFixedTime(new Date('2026-12-20T20:30:00Z'));
   await page.locator('.reset-button').click();
   await expect.poll(effectiveDate).toBe('2026-12-21');
-  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+  await expect(page.getByTestId('result-status')).toBeVisible();
 });
 
 test('a future browser year remains explicit instead of silently applying expired reference rules', async ({

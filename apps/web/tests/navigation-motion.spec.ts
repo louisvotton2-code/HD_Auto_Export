@@ -9,7 +9,6 @@ test.beforeEach(async ({ page }) => {
 async function openCalculator(page: Page, country = 'russia', locale = 'zh') {
   await page.goto(`/${locale}/calculator/${country}/`);
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
 }
 
 test('the logo returns to the top of the localized home without reloading the document', async ({ page }) => {
@@ -226,7 +225,7 @@ test('an unfinished route shows inline feedback without blocking the current cal
     expect(Math.abs(pending!.width - before!.width)).toBeLessThanOrEqual(1);
     await page.locator('#price').fill('225000');
     await expect(page.locator('#price')).toHaveValue('225000');
-    await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+    await expect(page.getByTestId('result-status')).toBeVisible();
 
     release();
     await expect(page).toHaveURL(/\/zh\/buy\/$/);

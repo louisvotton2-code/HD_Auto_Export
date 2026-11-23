@@ -26,7 +26,7 @@ export interface CalculationInput extends Partial<Record<TajikTariffField, strin
   euroRate: string;
   /** Destination currency per USD for policies with USD-denominated charges. */
   usdRate?: string;
-  /** UZ distinguishes never-registered new cars from used cars. */
+  /** UZ distinguishes used from new. For AL, new requires a factory-new, zero-kilometre BEV. */
   condition?: 'new' | 'used';
 }
 

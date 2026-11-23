@@ -25,14 +25,14 @@ describe('ready-to-edit calculator defaults', () => {
       insurance: '',
     });
     expect(input.transactionRate).toBe(getReferenceRate('RU', 'USD').transactionRate);
-    expect(calculateImportEstimate(input)).toMatchObject({ status: 'reference', total: '926952' });
+    expect(calculateImportEstimate(input)).toMatchObject({ status: 'needs_review', total: null });
   });
 
   it('does not make GE depend on the default price or exchange rate', () => {
     const input = createDefaultInput('GE', '2026-10-23');
     expect(
       calculateImportEstimate({ ...input, price: '', transactionRate: '', euroRate: '' }),
-    ).toMatchObject({ status: 'reference', total: '3605' });
+    ).toMatchObject({ status: 'reference', total: '3271.88' });
   });
 
   it.each(['KZ', 'UZ', 'AM', 'KG', 'AL'] as CountryCode[])(
@@ -41,9 +41,9 @@ describe('ready-to-edit calculator defaults', () => {
       const input = createDefaultInput(country, '2026-10-23');
       expect(input.freight).toBe('');
       const result = calculateImportEstimate(input);
-      expect(result.status).toBe('reference');
-      expect(result.total).not.toBeNull();
-      if (['UZ', 'AM', 'KG', 'AL'].includes(country))
+      expect(result.status).toBe(country === 'UZ' ? 'reference' : 'needs_review');
+      expect(result.total !== null).toBe(country === 'UZ');
+      if (['UZ', 'AL'].includes(country))
         expect(result.assumptions).toContain('transport_not_in_tax_base');
     },
   );

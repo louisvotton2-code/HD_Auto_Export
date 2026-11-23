@@ -19,6 +19,10 @@ export function parseCustomsDate(value: string): CalendarDate | null {
   return { year, month, day };
 }
 
+export function parseManufactureDate(value: string): CalendarDate | null {
+  return parseManufactureMonth(value) ?? parseCustomsDate(value);
+}
+
 /** RU's reference uses calendar months; GE intentionally uses calendar years. */
 export function ageInMonths(manufacture: CalendarDate, customs: CalendarDate): number {
   return (customs.year - manufacture.year) * 12 + customs.month - manufacture.month;

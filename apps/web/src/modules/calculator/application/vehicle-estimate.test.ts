@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makePublicVehicleFixture } from '@hd/contracts/fixtures';
 import { calculateImportEstimate, type CountryCode } from '../index';
 import { createReferenceSnapshot } from '../infrastructure/exchange-rates';
-import { createVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput, type VehicleEstimateSource } from './vehicle-estimate';
+import { createVehicleEstimateDraft, retargetVehicleEstimateDraft, vehicleEstimateIdentity, vehicleEstimateInput, type VehicleEstimateSource } from './vehicle-estimate';
 
 const date = '2026-11-08';
 const rates = createReferenceSnapshot();
@@ -21,7 +21,7 @@ describe('vehicle facts to import estimate', () => {
       powerHp: '150', manufactureDate: '2024-02', customsDate: date,
       freight: '', insurance: '', steering: '', condition: '',
     });
-    expect(calculateImportEstimate(vehicleEstimateInput(input)).status).toBe('reference');
+    expect(calculateImportEstimate(vehicleEstimateInput(input)).status).toBe('needs_review');
   });
 
   it('uses real manufacture evidence and never turns a manufacture/model year into January', () => {
@@ -32,7 +32,7 @@ describe('vehicle facts to import estimate', () => {
     vehicle.facts.manufacturedAt = { precision: 'year', value: '2023' };
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.facts.manufacturedAt = { precision: 'day', value: '2024-03-28' };
-    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03');
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2024-03-28');
   });
 
   it('leaves the manufacture month empty for a source range and prefills an exact date when supplied', () => {
@@ -43,8 +43,19 @@ describe('vehicle facts to import estimate', () => {
     }, source: 'supplier', basis: null };
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('');
     vehicle.manufacture.date = { precision: 'day', value: '2023-04-15' };
-    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2023-04');
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).manufactureDate).toBe('2023-04-15');
   });
+
+  it.each([[null, ''], [12000, ''], [0, 'new']] as const)(
+    'rechecks AL zero-mile eligibility when switching a never-registered vehicle with mileage %s', (mileageKm, expected) => {
+      const vehicle = knownVehicle();
+      Object.assign(vehicle.facts, { powertrain: 'bev', registrationStatus: 'never_registered', firstRegistration: null, mileageKm });
+      const from = createVehicleEstimateDraft(vehicle, 'UZ', date, rates);
+      expect(from.condition).toBe('new');
+      expect(retargetVehicleEstimateDraft(from, 'AL', rates, vehicle).condition).toBe(expected);
+      expect(createVehicleEstimateDraft(vehicle, 'AL', date, rates).condition).toBe(expected);
+    },
+  );
 
   it('does not substitute a kW or another scope when direct hp is missing', () => {
     const vehicle: VehicleEstimateSource = knownVehicle();
@@ -129,9 +140,9 @@ describe('vehicle facts to import estimate', () => {
       vehicle.facts.registrationStatus = 'registered';
       const input = { ...createVehicleEstimateDraft(vehicle, country, date, rates), steering: 'left' as const };
       const result = calculateImportEstimate(vehicleEstimateInput(input));
-      expect(result.status).toBe('reference');
-      expect(result.total).not.toBeNull();
-      if (['UZ', 'AM', 'KG', 'AL'].includes(country)) expect(result.assumptions).toContain('transport_not_in_tax_base');
+      expect(result.status).toBe(country === 'GE' || country === 'UZ' ? 'reference' : 'needs_review');
+      expect(result.total !== null).toBe(country === 'GE' || country === 'UZ');
+      if (['UZ', 'AL'].includes(country)) expect(result.assumptions).toContain('transport_not_in_tax_base');
       expect(result.excludedCosts).toContain('vehicle_price');
     },
   );

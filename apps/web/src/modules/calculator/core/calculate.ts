@@ -7,7 +7,7 @@ import { calculateAmReference, AM_REFERENCE_VERSION } from '../policies/am/refer
 import { calculateAlReference, AL_REFERENCE_VERSION } from '../policies/al/reference';
 import { calculateTjReference, TJ_REFERENCE_VERSION } from '../policies/tj/reference';
 import { calculateTmReference, TM_REFERENCE_VERSION } from '../policies/tm/reference';
-import { ageInMonths, parseCustomsDate, parseManufactureMonth } from './dates';
+import { ageInMonths, parseCustomsDate, parseManufactureDate } from './dates';
 import { Amount } from './decimal';
 import { COUNTRY_CURRENCIES } from './country-currencies';
 import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS, type TajikTariffField } from './tajik-input';
@@ -28,15 +28,10 @@ const POLICIES = {
   AL: { version: AL_REFERENCE_VERSION, calculate: calculateAlReference },
   TJ: { version: TJ_REFERENCE_VERSION, calculate: calculateTjReference },
   TM: { version: TM_REFERENCE_VERSION, calculate: calculateTmReference },
-  GE: {
-    version: GE_REFERENCE_VERSION,
-    calculate: ({ input, ageYears }: ReferencePolicyFacts) => ({
-      lines: calculateGeReference({ ...input, ageYears }), additionalCosts: [],
-    }),
-  },
+  GE: { version: GE_REFERENCE_VERSION, calculate: calculateGeReference },
 } satisfies Record<CountryCode, { version: string; calculate: (facts: ReferencePolicyFacts) => ReferencePolicyResult }>;
 
-const FREIGHT_COUNTRIES = new Set<CountryCode>(['UZ', 'AM', 'KG', 'AL']);
+const FREIGHT_COUNTRIES = new Set<CountryCode>(['UZ', 'KG', 'AL']);
 type NumericField =
   | 'price'
   | 'displacementCc'
@@ -77,7 +72,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     additionalCosts: [],
     assumptions: [],
   };
-  if (!['KZ', 'UZ', 'AL'].includes(input.country)) result.excludedCosts.push('registration');
+  result.excludedCosts.push('registration');
   const required = new Set<keyof CalculationInput>([
     'country',
     'importerType',
@@ -98,7 +93,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     }
     if (!electric && !seriesInKg) numericFields.add('displacementCc');
     if (input.country === 'RU') {
-      numericFields.add('powerHp');
+      if (typeof facts.powerHp === 'string' && facts.powerHp.trim()) numericFields.add('powerHp');
       if (!electric) numericFields.add('euroRate');
     }
     if (['KZ', 'KG', 'AM'].includes(input.country)) numericFields.add('euroRate');
@@ -107,9 +102,9 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
       TAJIK_TARIFF_FIELDS.forEach(field => numericFields.add(field));
     }
     if (['UZ', 'TJ', 'TM'].includes(input.country)) numericFields.add('usdRate');
-    if (input.country === 'UZ') required.add('condition');
+    if (input.country === 'UZ' || input.country === 'AL' && electric) required.add('condition');
     for (const field of numericFields) required.add(field);
-    if (FREIGHT_COUNTRIES.has(input.country)) {
+    if (FREIGHT_COUNTRIES.has(input.country) && !(input.country === 'KG' && input.importerType === 'individual')) {
       // Unknown transport is an explicit estimate assumption, never a complete cost quote.
       for (const field of ['freight', 'insurance'] as const) {
         if (typeof facts[field] === 'string') facts[field] = facts[field].trim();
@@ -155,7 +150,7 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
   const manufactureText =
     typeof input.manufactureDate === 'string' ? input.manufactureDate.trim() : '';
   const customsText = typeof input.customsDate === 'string' ? input.customsDate.trim() : '';
-  const manufacture = input.country === 'AL' ? null : parseManufactureMonth(manufactureText);
+  const manufacture = input.country === 'AL' ? null : parseManufactureDate(manufactureText);
   const customs = parseCustomsDate(customsText);
   if (
     input.country !== 'AL' &&
@@ -168,10 +163,12 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
     (input.customsDate != null && typeof input.customsDate !== 'string')
   )
     result.fieldErrors.customsDate = 'invalid_date';
-  if (manufacture && customs && ageInMonths(manufacture, customs) < 0)
+  if (manufacture && customs && manufactureText > customsText)
     result.fieldErrors.manufactureDate = 'manufacture_after_customs';
   if (Object.keys(result.fieldErrors).length) return { ...result, status: 'invalid' };
   if (result.missingFields.length) return result;
+  facts.customsDate = customsText;
+  facts.manufactureDate = manufactureText;
   const pending = (reason: string): CalculationResult => ({
     ...result,
     status: 'needs_review',
@@ -189,29 +186,18 @@ export function calculateImportEstimate(input: CalculationInput): CalculationRes
   const { calculate, version } = POLICIES[input.country];
   const policy: ReferencePolicyResult = calculate(policyFacts);
   result.ruleVersion = version;
-  if (policy.reason) return pending(policy.reason);
   result.lines = policy.lines;
   result.additionalCosts = policy.additionalCosts;
-  if (FREIGHT_COUNTRIES.has(input.country) && (!facts.freight.trim() || !facts.insurance.trim()))
+  if (FREIGHT_COUNTRIES.has(input.country) && !(input.country === 'KG' && input.importerType === 'individual') &&
+      (!facts.freight.trim() || !facts.insurance.trim()))
     result.assumptions.push('transport_not_in_tax_base');
-  if (input.country === 'AM' && electric) result.assumptions.push('am_electric_relief_assumed');
-  if (input.country === 'KG' && (electric || seriesInKg))
-    result.assumptions.push('kg_electric_standard_duty');
-  if (
-    input.country === 'RU' &&
-    !electric &&
-    new Amount(facts.displacementCc).lte(3000) &&
-    new Amount(facts.powerHp).lte(160)
-  )
-    result.assumptions.push('ru_personal_relief_assumed');
-  if (input.country === 'RU' && input.powertrain === 'erev')
-    result.assumptions.push('ru_erev_hybrid_assumed');
+  if (policy.reason) return pending(policy.reason);
   return {
     ...result,
     status: 'reference',
     reason: 'reference_preview_only',
     total: result.lines
       .reduce((sum, line) => sum.add(line.amount), new Amount(0))
-      .toFixed(['KG', 'TJ', 'TM'].includes(input.country) ? 2 : 0),
+      .toFixed(['GE', 'KG', 'TJ', 'TM'].includes(input.country) ? 2 : 0),
   };
 }

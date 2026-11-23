@@ -7,6 +7,7 @@ import { readManufactureEstimate } from './manufacture-estimate';
 
 export const CALCULATOR_DRAFT_STORAGE_KEY = 'hd-auto.calculator.draft.v2';
 export const LEGACY_CALCULATOR_DRAFT_STORAGE_KEY = 'aurex.calculator.draft.v1';
+export const AL_NEW_VEHICLE_BASIS = 'al-zero-km-v1';
 export const CALCULATOR_POWERTRAINS: readonly Powertrain[] = [
   'petrol',
   'diesel',
@@ -99,7 +100,8 @@ export function restoreCalculatorDraft(
     // The core's required-field validation accepts empty text; do not invent a fact on refresh.
     if (draft.steering === 'left' || draft.steering === 'right' || current && draft.steering === '')
       next.steering = draft.steering as CalculationInput['steering'];
-    if (draft.condition === 'new' || draft.condition === 'used' || current && draft.condition === '')
+    const alConditionIsSpecific = country.code !== 'AL' || current && draft.country === 'AL' && record.conditionBasis === AL_NEW_VEHICLE_BASIS;
+    if (alConditionIsSpecific && (draft.condition === 'new' || draft.condition === 'used' || current && draft.condition === ''))
       next.condition = draft.condition as CalculationInput['condition'];
     if (CALCULATOR_POWERTRAINS.includes(draft.powertrain as Powertrain) || current && draft.powertrain === '')
       next.powertrain = draft.powertrain as Powertrain;

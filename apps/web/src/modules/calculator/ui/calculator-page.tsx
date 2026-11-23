@@ -23,6 +23,7 @@ import { calculateRecentJanuaryEstimates } from '../application/manufacture-rang
 import { januaryRangeNote, manufactureRangeCopy } from '../application/manufacture-range-copy';
 import { vehicleEstimateInput, vehicleEstimateMissingLabel } from '../application/vehicle-estimate';
 import {
+  AL_NEW_VEHICLE_BASIS,
   CALCULATOR_DRAFT_STORAGE_KEY,
   CALCULATOR_POWERTRAINS,
   LEGACY_CALCULATOR_DRAFT_STORAGE_KEY,
@@ -141,6 +142,7 @@ export function CalculatorPage({
     try {
       sessionStorage.setItem(CALCULATOR_DRAFT_STORAGE_KEY, JSON.stringify({
         input, manualRates, rates: activeRates, ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
+        ...(input.country === 'AL' ? { conditionBasis: AL_NEW_VEHICLE_BASIS } : {}),
       }));
     } catch {
       /* Optional draft. */
@@ -478,7 +480,7 @@ export function CalculatorPage({
               {country.needsPrice && (
                 <div className="price-row">
                   {field('price', t(country.code === 'TJ' ? 'tjCustomsValue' : 'price'), {
-                    note: country.code === 'TJ' ? t('tjCustomsValueHelp') : undefined,
+                    note: country.code === 'TJ' ? t('tjCustomsValueHelp') : country.code === 'AM' ? t('amValueNote') : undefined,
                     children: (
                       <select
                         aria-label={t('currency')}
@@ -500,7 +502,8 @@ export function CalculatorPage({
                 {country.needsManufactureDate &&
                   field('manufactureDate', t('manufactureDate'), {
                     type: 'month',
-                    note: manufactureNote && <><strong>{manufactureNote.lead}</strong>{manufactureNote.period}</>,
+                    note: manufactureNote ? <><strong>{manufactureNote.lead}</strong>{manufactureNote.period}</>
+                      : input.manufactureDate.length === 10 ? t('knownManufactureDate', { date: input.manufactureDate }) : undefined,
                   })}
               </div>
               <fieldset className="powertrain-field">
@@ -530,7 +533,7 @@ export function CalculatorPage({
                   ))}
                 </div>
               </fieldset>
-              {country.code === 'UZ' && (
+              {(country.code === 'UZ' || country.code === 'AL' && input.powertrain === 'bev') && (
                 <div className="form-field condition-field">
                   <label htmlFor="condition">{t('condition')}</label>
                   <div className="input-wrap">
@@ -543,10 +546,10 @@ export function CalculatorPage({
                     >
                       {!input.condition && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
                       <option value="used">{t('usedVehicle')}</option>
-                      <option value="new">{t('newVehicle')}</option>
+                      <option value="new">{t(country.code === 'AL' ? 'alNewVehicle' : 'newVehicle')}</option>
                     </select>
                   </div>
-                  <small className="condition-help">{t('conditionHelp')}</small>
+                  <small className="condition-help">{t(country.code === 'AL' ? 'alEvConditionHelp' : 'conditionHelp')}</small>
                 </div>
               )}
               <details
@@ -615,8 +618,8 @@ export function CalculatorPage({
                             }
                           >
                             {!input.steering && <option value="">{vehicleEstimateMissingLabel(locale)}</option>}
-                            <option value="left">{t('left')}</option>
-                            <option value="right">{t('right')}</option>
+                            <option value="left">{t('factoryLeft')}</option>
+                            <option value="right">{t('rightOrConverted')}</option>
                           </select>
                         </div>
                       </div>
@@ -798,6 +801,27 @@ export function CalculatorPage({
                         )}
                   </p>
                 </div>
+              )}
+              {!rangeResult && result.status === 'needs_review' && result.lines.length > 0 && (
+                <section className="additional-costs" data-testid="verified-fee-items">
+                  <h3>{t('verifiedFeeItems')}</h3>
+                  {result.lines.map((line) => (
+                    <FeeLine
+                      key={line.id}
+                      line={line}
+                      label={feeLabel(line.id)}
+                      amount={format(line.amount)}
+                      usd={usdText(line.amount)}
+                      currency={result.currency}
+                      detailsId={feeDetailsId(line, false)}
+                      expanded={expandedFees.has(feeDetailsId(line, false))}
+                      onToggle={() => toggleFee(feeDetailsId(line, false))}
+                    />
+                  ))}
+                  {result.assumptions.length > 0 && <ul className="calculation-assumptions">
+                    {result.assumptions.map((key) => <li key={key}>{ta(key)}</li>)}
+                  </ul>}
+                </section>
               )}
               {result.status === 'reference' && (
                 <p className="formula-precision-note">{td('precision')}</p>

@@ -26,88 +26,6 @@ const ruSample = {
   euroRate: '94.7',
 };
 
-// Fixed outputs independently recorded from the reference site's public
-// calculator. GE's binary-floating-point 1805.0000000000002 is exactly 1805 GEL.
-// KG's target/USD rate is 0.865939 EUR/USD × 100.77 KGS/EUR.
-const countryFixtures = [
-  {
-    country: 'RU',
-    slug: 'russia',
-    currency: 'RUB',
-    price: '25000',
-    transactionRate: '81.969182',
-    euroRate: '94.7',
-    freight: '',
-    totals: ['926952', '926952', '2548125'],
-  },
-  {
-    country: 'KZ',
-    slug: 'kazakhstan',
-    currency: 'KZT',
-    price: '25000',
-    transactionRate: '468.321957',
-    euroRate: '541.1',
-    freight: '',
-    totals: ['7277481', '7277481', '3402156'],
-  },
-  {
-    country: 'UZ',
-    slug: 'uzbekistan',
-    currency: 'UZS',
-    price: '25000',
-    transactionRate: '11851.454593',
-    euroRate: '',
-    freight: '2250',
-    totals: ['355921427', '355921427', '129476657'],
-  },
-  {
-    country: 'GE',
-    slug: 'georgia',
-    currency: 'GEL',
-    price: '',
-    transactionRate: '',
-    euroRate: '',
-    freight: '',
-    totals: ['3605', '1805', '480'],
-  },
-  {
-    country: 'AM',
-    slug: 'armenia',
-    currency: 'AMD',
-    price: '9000',
-    transactionRate: '366.081469',
-    euroRate: '422.7',
-    freight: '1100',
-    totals: ['1626867', '1626867', '0'],
-  },
-  {
-    country: 'KG',
-    slug: 'kyrgyzstan',
-    currency: 'KGS',
-    price: '9000',
-    transactionRate: '87.26067303',
-    euroRate: '100.77',
-    freight: '1100',
-    totals: ['547138.77', '547138.77', '135725.09'],
-  },
-  {
-    country: 'AL',
-    slug: 'albania',
-    currency: 'ALL',
-    price: '9000',
-    transactionRate: '80.7859',
-    euroRate: '',
-    freight: '1100',
-    totals: ['171688', '171688', '171688'],
-  },
-] as const;
-type CountryFixture = (typeof countryFixtures)[number];
-const primaryPowertrains = [
-  { value: 'petrol', label: '汽油 / 柴油' },
-  { value: 'hev', label: '混合动力' },
-  { value: 'bev', label: '纯电 BEV' },
-] as const;
-
 function digits(value: string) {
   return value.replace(/[^\d]/g, '');
 }
@@ -161,29 +79,6 @@ async function fillRussianReference(page: Page) {
   await fillNumericDate(page, 'manufactureDate', ruSample.manufactureDate);
 }
 
-async function fillCountryReference(page: Page, fixture: CountryFixture, powertrainIndex = 0) {
-  await openCalculator(page, fixture.slug);
-  await openAdvanced(page);
-  if (fixture.country !== 'GE') {
-    await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
-    await page.locator('#price').fill(fixture.price);
-    await page.locator('#transactionRate').fill(fixture.transactionRate);
-  }
-  if (await page.locator('#euroRate').count())
-    await page.locator('#euroRate').fill(fixture.euroRate);
-  if (await page.locator('#manufactureDate').count())
-    await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await page.locator('#displacementCc').fill('1998');
-  if (await page.locator('#powerHp').count()) await page.locator('#powerHp').fill('150');
-  if (await page.locator('#freight').count()) {
-    await page.locator('#freight').fill(fixture.freight);
-    await page.locator('#insurance').fill('0');
-  }
-  await page
-    .getByRole('button', { name: primaryPowertrains[powertrainIndex].label, exact: true })
-    .click();
-}
-
 async function expectReferenceAmount(page: Page) {
   const total = page.getByTestId('total').or(page.getByTestId('manufacture-range-total'));
   await expect(total).toBeVisible();
@@ -195,11 +90,10 @@ async function expectReferenceAmount(page: Page) {
 test('defaults calculate immediately with settings expanded and still allow manual collapse', async ({
   page,
 }) => {
-  await openCalculator(page);
+  await openCalculator(page, 'uzbekistan');
   await expect(page.locator('#price')).toHaveValue('25000');
   await expect(page.getByRole('combobox', { name: '交易币种', exact: true })).toHaveValue('USD');
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
-  await expect(page.locator('#powerHp')).toHaveValue('150');
   await expect(page.locator('#manufactureDate')).toHaveValue('');
   await expect(page.getByTestId('manufacture-range-result')).toContainText('最近六年');
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
@@ -262,23 +156,21 @@ test('legacy empty prices do not relabel the CNY default as USD during draft mig
   expect(Math.abs(migratedPrice * migratedRate - defaultLocalValue)).toBeLessThanOrEqual(
     migratedRate * 0.011 + 0.001,
   );
-  await expectReferenceAmount(page);
+  await expect(page.getByTestId('result-status')).toBeVisible();
 });
 
-test('manual reference inputs preserve the fixed independent Russian personal reference amounts', async ({
-  page,
-}) => {
+test('manual Russian inputs show verified individual charges without a total or clipboard quote', async ({ page }) => {
   await openCalculator(page);
   await fillRussianReference(page);
-  await expectAmount(page, '926952');
-  await expect(page.getByTestId('total')).toContainText('RUB');
-  await expect(page.getByText('不含车价及运输费用', { exact: true })).toBeVisible();
+  const fees = page.getByTestId('verified-fee-items');
+  await expect(fees).toContainText('908,210.88');
+  await expect(fees).toContainText('13,541.00');
+  await expect(page.getByTestId('total')).toHaveCount(0);
+  await expect(page.locator('.copy-button')).toBeDisabled();
   await expect(page.getByTestId('fx-status')).toContainText('使用你手动设置的参考汇率');
   await page.locator('#displacementCc').fill('1700');
-  await expectAmount(page, '582206');
-
+  await expect(fees).toContainText('563,465.00');
   await expect(page.locator('#importerType')).toHaveCount(0);
-  await expectAmount(page, '582206');
 });
 
 test('an old Russian company draft cannot leave a hidden unsupported identity on the page', async ({
@@ -294,7 +186,7 @@ test('an old Russian company draft cannot leave a hidden unsupported identity on
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
   await expect(page.locator('#importerType')).toHaveCount(0);
-  await expectAmount(page, '926952');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('908,210.88');
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -312,6 +204,7 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('#importerType')).toHaveValue('individual');
   await page.locator('#importerType').selectOption('company');
   await page.locator('#price').fill('215000');
+  await fillNumericDate(page, 'manufactureDate', '2022-01');
   await expectReferenceAmount(page);
   await page.locator('.language-switch summary').click();
   await page
@@ -330,7 +223,7 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expectReferenceAmount(page);
   await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
 
   await page.locator('.country-nav a[href^="/ru/calculator/kyrgyzstan"]').click();
   await expect(page.locator('.reset-button')).toBeEnabled();
@@ -341,56 +234,35 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('#importerType')).toHaveValue('individual');
 });
 
-test('fee rows, total and copied summary show USD and follow the manually entered conversion rate', async ({
-  page,
-  context,
-}) => {
+test('fee rows, total and copied summary apply the separate Uzbekistan USD rate before rounding', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await openCalculator(page);
-  await fillRussianReference(page);
-  await expectAmount(page, '926952');
-  await expectUsdAmount(page.getByTestId('total-usd'), 11308.54);
-
-  // Independent fixture values: the displayed USD total is converted before rounding;
-  // summing the three separately rounded USD fees would instead produce 11308.55.
-  const fees = [
-    { label: '进口关税', local: '908211', usd: 11079.91, usdAt100: 9082.11 },
-    { label: '报关手续费', local: '13541', usd: 165.2, usdAt100: 135.41 },
-    { label: '回收费', local: '5200', usd: 63.44, usdAt100: 52 },
-  ];
-  await expect(page.getByTestId('fee-usd')).toHaveCount(3);
-  for (const fee of fees) {
-    const row = page
-      .locator('.fee-line')
-      .filter({ has: page.getByText(fee.label, { exact: true }) });
-    await expect
-      .poll(async () => digits(await row.locator('strong').first().innerText()))
-      .toBe(fee.local + '00');
-    await expectUsdAmount(row.getByTestId('fee-usd'), fee.usd);
+  await openCalculator(page, 'uzbekistan');
+  await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
+  await page.locator('#price').fill('50000');
+  await page.locator('#transactionRate').fill('200');
+  await page.locator('#usdRate').fill('1011');
+  await page.locator('#freight').fill('0');
+  await page.locator('#insurance').fill('0');
+  await fillNumericDate(page, 'manufactureDate', '2026-01');
+  await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
+  await expectAmount(page, '54440000');
+  await expectUsdAmount(page.getByTestId('total-usd'), 53847.68);
+  for (const amount of [435.21, 1186.94, 52225.52]) {
+    const shown = (await page.locator('.fee-lines').getByTestId('fee-usd').allTextContents())
+      .map(text => Number(text.replace(/[^\d.]/g, '')));
+    expect(shown).toContain(amount);
   }
-
-  await page.locator('#transactionRate').fill('100');
-  await expectAmount(page, '926952');
-  await expectUsdAmount(page.getByTestId('total-usd'), 9269.52);
-  for (const fee of fees) {
-    const row = page
-      .locator('.fee-line')
-      .filter({ has: page.getByText(fee.label, { exact: true }) });
-    await expect
-      .poll(async () => digits(await row.locator('strong').first().innerText()))
-      .toBe(fee.local + '00');
-    await expectUsdAmount(row.getByTestId('fee-usd'), fee.usdAt100);
-  }
-
-  await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('9,269.52 USD');
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain('926,952.00 RUB');
-  expect(copied).toMatch(/908,211\.00 RUB[^\n]*9,082\.11 USD/);
-  expect(copied).toMatch(/13,541\.00 RUB[^\n]*135\.41 USD/);
-  expect(copied).toMatch(/5,200\.00 RUB[^\n]*52(?:\.00)? USD/);
+  await page.locator('#usdRate').fill('1000');
+  await expectAmount(page, '54440000');
+  await expectUsdAmount(page.getByTestId('total-usd'), 54440);
+  const registration = page.getByTestId('additional-costs').locator('[data-extra-cost="registration"]');
+  await expect(registration).toContainText('660,000.00 UZS');
+  await expectUsdAmount(registration.getByTestId('fee-usd'), 660);
+  await page.locator('.copy-button').click();
+  const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+  await expect.poll(clipboard).toContain('54,440,000.00 UZS');
+  expect(await clipboard()).toContain('54,440.00 USD');
+  expect(await clipboard()).toContain('660,000.00 UZS');
 });
 
 test('ambiguous grouping separators are rejected rather than silently changing the amount', async ({
@@ -398,15 +270,15 @@ test('ambiguous grouping separators are rejected rather than silently changing t
 }) => {
   await openCalculator(page);
   await fillRussianReference(page);
-  await expectAmount(page, '926952');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('908,210.88');
   await page.locator('#price').fill('25,000');
-  await expect(page.getByTestId('total')).toHaveCount(0);
+  await expect(page.getByTestId('verified-fee-items')).toHaveCount(0);
   await expect(page.locator('#price')).toHaveAttribute('aria-invalid', 'true');
   await expect(page.locator('#price-error')).toContainText('不含逗号或千位分隔符');
   await page.locator('#price').fill('25000');
-  await expectAmount(page, '926952');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('908,210.88');
   await page.locator('#displacementCc').fill('1,998');
-  await expect(page.getByTestId('total')).toHaveCount(0);
+  await expect(page.getByTestId('verified-fee-items')).toHaveCount(0);
 });
 
 test('Georgia defaults need no price or FX and the three fuel groups update the result', async ({
@@ -421,50 +293,37 @@ test('Georgia defaults need no price or FX and the three fuel groups update the 
   await openAdvanced(page);
   await expect(page.locator('#steering')).toHaveValue('left');
   await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
   await expect(page.getByTestId('total')).toContainText('GEL');
 
   await page.getByRole('button', { name: '混合动力', exact: true }).click();
   await expect(page.locator('#powertrainDetail')).toHaveValue('hev');
-  await expectAmount(page, '1805');
+  await expectAmount(page, '1473.68');
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
   await expect(page.locator('#powertrainDetail')).toHaveValue('bev');
   await expect(page.locator('#displacementCc')).toHaveCount(0);
-  await expectAmount(page, '480');
+  await expectAmount(page, '150');
   await page.getByRole('button', { name: '汽油 / 柴油', exact: true }).click();
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
 });
 
-test('Georgia policy notes follow age, steering and powertrain without retaining conflicting exemptions', async ({
-  page,
-}) => {
+test('Georgia applies hybrid relief only through six years and distinguishes converted steering', async ({ page }) => {
   await openCalculator(page, 'georgia');
   await fillNumericDate(page, 'manufactureDate', '2020-01');
   await page.getByRole('button', { name: '混合动力', exact: true }).click();
-  const notes = page.getByTestId('country-policy-notes');
-  const note = (key: string) => notes.locator(`[data-policy-note="${key}"]`);
-  await expect(note('GE.hybridRelief')).toBeVisible();
-  await expect(note('GE.hybridNoRelief')).toHaveCount(0);
-  await expect(note('GE.older')).toHaveCount(0);
-
+  await expectAmount(page, '1478.67');
+  await expect(page.getByTestId('country-policy-notes')).toContainText('中国优惠原产地证明');
+  await expect(page.locator('#steering option[value="right"]')).toContainText('改舵');
   await page.locator('#steering').selectOption('right');
-  await expect(note('GE.rightHand')).toBeVisible();
-  await expect(note('GE.hybridNoRelief')).toBeVisible();
-  await expect(note('GE.hybridRelief')).toHaveCount(0);
-
+  await expectAmount(page, '9270.87');
   await page.locator('#steering').selectOption('left');
   await fillNumericDate(page, 'manufactureDate', '2019-01');
-  await expect(note('GE.older')).toBeVisible();
-  await expect(note('GE.hybridNoRelief')).toBeVisible();
-  await expect(note('GE.hybridRelief')).toHaveCount(0);
-  await expect(note('GE.rightHand')).toHaveCount(0);
-
+  await expectAmount(page, '9275.87');
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
-  await expect(note('GE.electric')).toBeVisible();
-  await expect(note('GE.older')).toHaveCount(0);
-  await expect(note('GE.hybridNoRelief')).toHaveCount(0);
-  await expectAmount(page, '480');
+  await expectAmount(page, '150');
+  await page.locator('#steering').selectOption('right');
+  await expectAmount(page, '3150');
 });
 
 test('switching language preserves destination, entered values and manually overridden FX', async ({
@@ -473,7 +332,7 @@ test('switching language preserves destination, entered values and manually over
   await openCalculator(page);
   await fillRussianReference(page);
   await page.locator('#displacementCc').fill('1700');
-  await expectAmount(page, '582206');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('563');
   await page.locator('.advanced-settings summary').click();
   await expect(page.locator('.advanced-settings')).not.toHaveAttribute('open');
   await page.locator('.language-switch summary').click();
@@ -486,7 +345,7 @@ test('switching language preserves destination, entered values and manually over
   await expect(page.locator('#displacementCc')).toHaveValue('1700');
   await expect(page.locator('#price')).toHaveValue('25000');
   await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
-  await expectAmount(page, '582206');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('563');
   await expect(page.getByTestId('fx-status')).toContainText(
     'Используются введённые вами справочные курсы',
   );
@@ -520,13 +379,13 @@ test('changing currency converts the price and preserves its value with the auto
   );
   await expect(page.locator('#euroRate')).toHaveValue(initialEuroRate);
   await expect(page.getByTestId('fx-status')).not.toContainText('手动');
-  await expectReferenceAmount(page);
-  await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('result-status')).toBeVisible();
+  await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeDisabled();
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('USD');
   expect(
     Math.abs(Number(await readExact(page.locator('#price'))) - initialPrice),
   ).toBeLessThanOrEqual(0.1);
-  await expectReferenceAmount(page);
+  await expect(page.getByTestId('result-status')).toBeVisible();
 });
 
 test('restore defaults resets vehicle facts, current date and automatic FX and expands settings', async ({
@@ -552,7 +411,7 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await expect(page.locator('#powerHp')).toHaveValue('150');
   await expect(page.locator('#manufactureDate')).toHaveValue('');
   await expect(page.getByTestId('fx-status')).not.toContainText('手动');
-  await expectReferenceAmount(page);
+  await expect(page.getByTestId('result-status')).toBeVisible();
   await openAdvanced(page);
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expect(page.locator('#powertrainDetail')).toHaveValue('petrol');
@@ -560,109 +419,53 @@ test('restore defaults resets vehicle facts, current date and automatic FX and e
   await expect(page.locator('#euroRate')).toHaveValue(defaultEuroRate);
 });
 
-test('all seven destinations navigate correctly and provide default reference amounts', async ({
-  page,
-}) => {
+test('all nine destinations show either a supported quote or a manual review and official sources', async ({ page }) => {
   await openCalculator(page);
   const destinations = [
-    ['kazakhstan', '哈萨克斯坦'],
-    ['uzbekistan', '乌兹别克斯坦'],
-    ['georgia', '格鲁吉亚'],
-    ['armenia', '亚美尼亚'],
-    ['kyrgyzstan', '吉尔吉斯斯坦'],
-    ['albania', '阿尔巴尼亚'],
-    ['russia', '俄罗斯'],
+    ['kazakhstan', '哈萨克斯坦', false], ['uzbekistan', '乌兹别克斯坦', true],
+    ['georgia', '格鲁吉亚', true], ['armenia', '亚美尼亚', false],
+    ['kyrgyzstan', '吉尔吉斯斯坦', false], ['albania', '阿尔巴尼亚', false],
+    ['russia', '俄罗斯', false], ['tajikistan', '塔吉克斯坦', true], ['turkmenistan', '土库曼斯坦', true],
   ] as const;
-
-  for (const [slug, label] of destinations) {
+  for (const [slug, label, quote] of destinations) {
     await page.locator('.advanced-settings summary').click();
     await expect(page.locator('.advanced-settings')).not.toHaveAttribute('open');
     const nav = page.getByRole('navigation', { name: '目的国', exact: true });
     await nav.getByRole('link', { name: label, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/zh/calculator/${slug}/?$`));
-    await expect(nav.getByRole('link', { name: label, exact: true })).toHaveAttribute(
-      'aria-current',
-      'page',
-    );
+    await expect(nav.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
     await expect(page.locator('#importerType')).toHaveCount(slug === 'kyrgyzstan' ? 1 : 0);
-    const policyNotes = page.getByTestId('country-policy-notes');
-    await expect(policyNotes).toBeVisible();
-    expect(await policyNotes.locator('li').count()).toBeGreaterThan(0);
-    await expect(policyNotes.locator('a')).toHaveAttribute(
-      'href',
-      `https://www.kmotors.shop/en/calculator${slug === 'russia' ? '' : `/${slug}`}`,
-    );
-    await expectReferenceAmount(page);
-    const quote = page.getByTestId('total-usd').or(page.getByTestId('manufacture-range-usd'));
-    await expect(quote).toContainText('USD');
-
-    await expect(page.getByRole('button', { name: '复制测算结果', exact: true })).toBeEnabled();
+    const notes = page.getByTestId('country-policy-notes');
+    await expect(notes).toBeVisible();
+    const sources = await notes.locator('a').evaluateAll(links => links.map(link => (link as HTMLAnchorElement).href));
+    expect(sources.length).toBeGreaterThan(1);
+    expect(sources.every(url => url.startsWith('https://') && !url.includes('kmotors.shop'))).toBe(true);
+    if (quote) {
+      await expectReferenceAmount(page);
+      await expect(page.getByTestId('total-usd').or(page.getByTestId('manufacture-range-usd'))).toContainText('USD');
+      await expect(page.locator('.copy-button')).toBeEnabled();
+    } else {
+      await expect(page.getByTestId('result-status')).toBeVisible();
+      await expect(page.locator('.copy-button')).toBeDisabled();
+    }
+    // Avoid passing another country's condition, engine type or steering into the next check.
+    await page.locator('.reset-button').click();
   }
 });
 
-for (const fixture of countryFixtures) {
-  for (const [index, powertrain] of primaryPowertrains.entries()) {
-    test(`${fixture.country} ${powertrain.value}: static public page and copied quote match the independent reference amount`, async ({
-      page,
-      context,
-    }) => {
-      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-      await fillCountryReference(page, fixture, index);
-      const expectedTotal = fixture.totals[index];
-      await expectAmount(page, expectedTotal);
-      await expect(page.getByTestId('total')).toContainText(fixture.currency);
-      await expect(page.getByTestId('total-usd')).toContainText('USD');
-      for (const value of await page.getByTestId('fee-usd').all()) {
-        await expect(value).toContainText('USD');
-        await expect(value).not.toContainText('—');
-      }
-
-      if (fixture.country === 'RU' && powertrain.value === 'bev') {
-        // A BEV has no engine displacement, but its power still selects recycling.
-        await expect(page.locator('#displacementCc')).toHaveCount(0);
-        await expect(page.locator('#powerHp')).toBeVisible();
-        await page.locator('#euroRate').fill('');
-        await expectAmount(page, '2548125');
-        await page.locator('#powerHp').fill('');
-        await expect(page.getByTestId('total')).toHaveCount(0);
-        await page.locator('#powerHp').fill('150');
-        await expectAmount(page, '2548125');
-      }
-
-      await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-      const localText = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
-        Number(expectedTotal),
-      );
-      await expect
-        .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-        .toContain(`${localText} ${fixture.currency}`);
-      expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('USD');
-    });
-  }
-}
-
-test('KG personal registration stays outside total, is copied in both currencies and disappears for company', async ({
-  page,
-  context,
-}) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  const fixture = countryFixtures.find((item) => item.country === 'KG')!;
-  await fillCountryReference(page, fixture);
-  await expectAmount(page, '547138.77');
-  const extra = page
-    .getByTestId('additional-costs')
-    .locator('[data-extra-cost="registrationEstimate"]');
-  await expect(extra).toContainText('KGS');
-  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('4406672');
-  await expectUsdAmount(extra.locator('.fee-usd'), 505);
-  await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('44,066.72 KGS (≈ 505.00 USD)');
-
+test('Kyrgyz company charges have a total and personal charges need review', async ({ page }) => {
+  await openCalculator(page, 'kyrgyzstan');
+  await page.locator('#price').fill('10000');
+  await page.locator('#transactionRate').fill('87.5');
+  await page.locator('#euroRate').fill('100');
+  await page.locator('#freight').fill('0');
+  await page.locator('#insurance').fill('0');
+  await fillNumericDate(page, 'manufactureDate', '2022-01');
+  await expect(page.getByTestId('verified-fee-items')).toContainText('539,460.00');
+  await expect(page.getByTestId('total')).toHaveCount(0);
   await page.locator('#importerType').selectOption('company');
-  await expectAmount(page, '306703.56');
+  await expectAmount(page, '304500');
   await expect(page.getByTestId('additional-costs')).toHaveCount(0);
 });
 
@@ -680,36 +483,35 @@ test('UZ registration condition and separate CNY/USD rates change tax for the sa
   await page.locator('#freight').fill('0');
   await page.locator('#insurance').fill('0');
   await expect(page.locator('#condition')).toHaveValue('used');
-  await expectAmount(page, '27184480');
+  await expectAmount(page, '22680000');
   await page.locator('#condition').selectOption('new');
-  await expectAmount(page, '21472480');
+  await expectAmount(page, '16968000');
   await page.locator('#condition').selectOption('used');
-  await expectAmount(page, '27184480');
+  await expectAmount(page, '22680000');
 });
 
-test('AL annual luxury cost is shown and copied in both currencies without entering the import total', async ({
-  page,
-  context,
-}) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  const fixture = countryFixtures.find((item) => item.country === 'AL')!;
-  await fillCountryReference(page, fixture);
-  await page.locator('#displacementCc').fill('3000');
-  await expectAmount(page, '241688');
-  const extra = page.getByTestId('additional-costs').locator('[data-extra-cost="annualLuxury"]');
-  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('2100000');
-  await expect(extra).toContainText('ALL');
-  await expectUsdAmount(extra.locator('.fee-usd'), 259.95);
-  await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('21,000.00 ALL (≈ 259.95 USD)');
+test('Albania shows ordinary VAT and registration separately and requires assessment for the total', async ({ page }) => {
+  await openCalculator(page, 'albania');
+  await page.locator('#price').fill('9000');
+  await page.locator('#freight').fill('1100');
+  await page.locator('#insurance').fill('0');
+  await page.locator('#transactionRate').fill('81.16');
+  const fees = page.getByTestId('verified-fee-items');
+  await expect(fees).toContainText('163,943.20');
+  await expect(fees).toContainText('8,500.00');
+  await expect(page.getByTestId('total')).toHaveCount(0);
+  await expect(page.locator('.copy-button')).toBeDisabled();
+  await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
+  await expect(fees).toContainText('163,943.20');
+  await page.locator('#condition').selectOption('new');
+  await expect(fees).not.toContainText('163,943.20');
+  await expect(fees).toContainText('0.00');
 });
 
 test('currency switches convert price, freight and insurance together instead of changing their labels', async ({
   page,
 }) => {
-  await openCalculator(page, 'albania');
+  await openCalculator(page, 'uzbekistan');
   await page.getByRole('combobox', { name: '交易币种', exact: true }).selectOption('CNY');
   await page.locator('#price').fill('180000');
   await page.locator('#freight').fill('6900');
@@ -741,7 +543,8 @@ test('currency switches convert price, freight and insurance together instead of
 test('unknown transport stays an explicit tax-base assumption and clears when both costs are supplied', async ({
   page,
 }) => {
-  await openCalculator(page, 'albania');
+  await openCalculator(page, 'uzbekistan');
+  await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expectReferenceAmount(page);
   await expect(page.getByTestId('calculation-assumptions')).toContainText(
     '未填写的运费或保险尚未加入计税基础',
@@ -757,7 +560,7 @@ for (const width of [390, 360]) {
       page,
     }) => {
       await page.setViewportSize({ width, height: 844 });
-      await openCalculator(page, 'russia', locale);
+      await openCalculator(page, 'uzbekistan', locale);
       await expectReferenceAmount(page);
       await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
       await expect

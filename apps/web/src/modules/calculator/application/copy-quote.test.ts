@@ -38,7 +38,7 @@ describe('copied quote input facts', () => {
       euroRate: '94.7 RUB/EUR',
       fxStatus: 'manualFx',
       fxSnapshotDate: rates.asOf,
-      ruleVersion: 'ru-personal-reference-2026.10.23-v2',
+      ruleVersion: 'ru-personal-2026.11.23-v3',
     });
   });
 
@@ -52,7 +52,7 @@ describe('copied quote input facts', () => {
       usdRate: `${rates.rates.GEL} GEL/USD`,
       fxStatus: 'fallbackFx',
       fxSnapshotDate: rates.asOf,
-      ruleVersion: 'ge-personal-reference-2026.10.22-v1',
+      ruleVersion: 'ge-hs8703-2026.04.02-v2',
     });
   });
 

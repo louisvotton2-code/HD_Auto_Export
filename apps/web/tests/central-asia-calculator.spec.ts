@@ -27,7 +27,7 @@ test('the homepage, standalone calculator and vehicle estimate share the destina
     .toEqual(['KG', 'UZ', 'KZ', 'TJ', 'TM', 'RU', 'GE', 'AM', 'AL']);
 });
 
-test('Tajikistan prefills editable fuel tariff references and retains an override on refresh', async ({ page }) => {
+test('Tajikistan retains an override on refresh and withholds an amount until official rates are restored', async ({ page }) => {
   await page.goto('/zh/calculator/tajikistan/');
   await expect(page.getByTestId('total')).toContainText('TJS');
   await expect(page.getByTestId('total-usd')).toContainText('USD');
@@ -43,6 +43,9 @@ test('Tajikistan prefills editable fuel tariff references and retains an overrid
   await page.locator('#tjExciseMinimum').fill('0.25');
   await page.reload();
   await expect(page.locator('#tjExciseMinimum')).toHaveValue('0.25');
+  await expect(page.getByTestId('total')).toHaveCount(0);
+  await expect(page.getByTestId('result-status')).toBeVisible();
+  await page.locator('#tjExciseMinimum').fill('0.20');
   await expect(page.getByTestId('total')).toContainText('TJS');
 });
 

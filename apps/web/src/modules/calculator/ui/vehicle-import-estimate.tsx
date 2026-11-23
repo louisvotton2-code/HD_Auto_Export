@@ -10,7 +10,7 @@ import { useDestinationCountry } from '@/shared/ui/use-destination-country';
 import { DestinationCountryUrlObserver } from '@/shared/ui/destination-country-url-observer';
 import { calculateImportEstimate, type CalculationLine, type CountryCode } from '../index';
 import { countries, getCountryByCode } from '../config/countries';
-import { CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from '../application/draft';
+import { AL_NEW_VEHICLE_BASIS, CALCULATOR_POWERTRAINS, isEnginePowerPrefill } from '../application/draft';
 import { convertTransactionPrice } from '../application/defaults';
 import { convertImportAmountToUsd } from '../application/display-currency';
 import { normalizePageInput } from '../application/page-input';
@@ -178,6 +178,7 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
   const seed = active ? createVehicleEstimateFragment({
     version: 1, sourceId: vehicle.id, input, rates: initialRates,
     ...(enginePowerPrefill ? { enginePowerPrefill: true } : {}),
+    ...(input.country === 'AL' && input.condition === 'new' ? { conditionBasis: AL_NEW_VEHICLE_BASIS } : {}),
   }) : null;
   const toolHref = `/${locale}/calculator/${country.slug}/${seed ?? ''}`;
   const feeId = (line: CalculationLine, extra = false) => `${prefix}-${country.code}-${extra ? 'extra-' : ''}${line.id}`;
@@ -246,7 +247,8 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         </details>
       </div>
       {country.needsPrice && <div className={styles.priceRow}>
-        {field('price', priceLabel, country.code === 'TJ' ? { note: t('tjCustomsValueHelp') } : undefined)}
+        {field('price', priceLabel, country.code === 'TJ' ? { note: t('tjCustomsValueHelp') }
+          : country.code === 'AM' ? { note: t('amValueNote') } : undefined)}
         <div className={styles.field}>
           <label htmlFor={`${prefix}-currency`}>{t('currency')}</label>
           <select id={`${prefix}-currency`} name="currency" value={input.currency}
@@ -269,14 +271,18 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
           publishedPower.source === 'engineKw' ? manufactureRangeCopy[locale].convertedEnginePower : manufactureRangeCopy[locale].suppliedPower
         }</p>}
       </>}
-      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month' })}
-      {country.code === 'UZ' && select('condition', t('condition'), <>{emptyOption}
-        <option value="used">{t('usedVehicle')}</option><option value="new">{t('newVehicle')}</option></>)}
+      {country.needsManufactureDate && field('manufactureDate', t('manufactureDate'), { type: 'month',
+        note: input.manufactureDate.length === 10 ? t('knownManufactureDate', { date: input.manufactureDate }) : undefined })}
+      {(country.code === 'UZ' || country.code === 'AL' && input.powertrain === 'bev') && select('condition', t('condition'), <>{emptyOption}
+        <option value="used">{t('usedVehicle')}</option>
+        <option value="new">{t(country.code === 'AL' ? 'alNewVehicle' : 'newVehicle')}</option></>)}
       {country.code === 'UZ' && <p className={styles.note}>{t('conditionHelp')}</p>}
+      {country.code === 'AL' && input.powertrain === 'bev' && <p className={styles.note}>{t('alEvConditionHelp')}</p>}
       {country.hasImporterChoice && select('importerType', t('importer'), <>
         <option value="individual">{t('personal')}</option><option value="company">{t('company')}</option></>)}
       {country.needsSteering && select('steering', t('steering'), <>{emptyOption}
-        <option value="left">{t('left')}</option><option value="right">{t('right')}</option></>)}
+        <option value="left">{t('factoryLeft')}</option><option value="right">{t('rightOrConverted')}</option></>)}
+      {country.code === 'GE' && <p className={styles.note}>{t('geNoPreferenceNote')}</p>}
       <details className={styles.settings} open>
         <summary>{t('advanced')}<Icon name="chevron" size={14} /></summary>
         <div className={styles.settingsFields}>
@@ -341,6 +347,15 @@ export function VehicleImportEstimate({ vehicle, locale, initialDate, initialRat
         )}
       </div>
     </div>}
+    {active && !rangeResult && result.status === 'needs_review' && result.lines.length > 0 && (
+      <section className={styles.result} data-testid="inline-verified-fee-items">
+        <h3>{t('verifiedFeeItems')}</h3>
+        {result.lines.map((line) => renderLine(line))}
+        {result.assumptions.length > 0 && <ul className={styles.assumptions}>
+          {result.assumptions.map((key) => <li key={key}>{ta(key)}</li>)}
+        </ul>}
+      </section>
+    )}
     <a className={styles.fullTool} href={preference.ready ? toolHref : `/${locale}/calculator/`} data-testid="vehicle-full-calculator">{copy.completeTool}<Icon name="diagonal" size={15} /></a>
     {active && !seed && <p className={styles.note}>{copy.seedHint}</p>}
   </div>;

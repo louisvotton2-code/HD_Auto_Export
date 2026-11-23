@@ -21,7 +21,7 @@ describe('Central Asian passenger-vehicle policies', () => {
     expect(quote('TJ', { freight: '1000', insurance: '300' }).total).toBe(priced.total);
     expect(quote('TJ', { price: '1000' }).lines.find(({ id }) => id === 'excise')?.amount).toBe('4395.60');
     expect(quote('TJ', { powertrain: 'diesel', price: '1000', tjExciseMinimum: '0.15' })
-      .lines.find(({ id }) => id === 'excise')?.amount).toBe('3296.70');
+      .reason).toBe('manual_pricing');
     expect(quote('TJ', { tjDutyPercent: '101' })).toMatchObject({ status: 'invalid', total: null });
     expect(quote('TJ', { manufactureDate: '2012-12' })).toMatchObject({ reason: 'tj_age_limit', total: null });
   });

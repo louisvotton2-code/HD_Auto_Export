@@ -12,6 +12,8 @@ const reasons: Record<string, string> = {
   powertrain_rules_pending: 'powertrain_pending',
   recycling_rules_pending: 'power_pending',
   rule_date_outside_reference: 'year_pending',
+  manual_pricing: 'manual_pricing',
+  age_boundary_manual: 'age_boundary_manual',
   tj_age_limit: 'tj_age_limit',
   tj_electric_age_review: 'tj_electric_age_review',
   tm_age_limit: 'tm_age_limit',

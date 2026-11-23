@@ -2,7 +2,7 @@ import { Amount } from '../../core/decimal';
 import { tariffLine } from '../../core/tariff-line';
 import type { ReferencePolicyFacts, ReferencePolicyResult } from '../../core/types';
 
-export const TJ_REFERENCE_VERSION = 'tj-personal-2026.11.22-v2';
+export const TJ_REFERENCE_VERSION = 'tj-personal-2026.11.23-v3';
 export const TJ_REFERENCE_SOURCE = 'https://tajtrade.tj/procedure/356?l=ru';
 
 const clearanceBands = [
@@ -19,6 +19,8 @@ export function calculateTjReference({ input, ageMonths }: ReferencePolicyFacts)
   if (!electric && input.powertrain !== 'petrol' && input.powertrain !== 'diesel') {
     return unavailable('powertrain_rules_pending');
   }
+  if (!electric && (!new Amount(input.tjDutyPercent!).eq(10) || !new Amount(input.tjExcisePercent!).eq(14) ||
+    !new Amount(input.tjExciseMinimum!).eq('0.20'))) return unavailable('manual_pricing');
 
   const usd = new Amount(input.usdRate!);
   // The declared customs value is entered directly, with no automatic CIF adjustment.

@@ -1,5 +1,7 @@
 export const uzMethodMessages = {
   zh: {
+    registrationCore: '基础登记费为 {coefficient} × 当前 BRV {brv} UZS，单列供参考。号牌与证书另核。',
+    dutyHybridOther: '适用普通混合动力乘用车税号，按 {customsUsd} USD 的 {percentage}% 计算，不附加排量额。',
     dutyElectric: '纯电车型在当前参考口径下关税为 0，但增值税、回收费和注册费仍分别计算。',
     vat: '将车价和已填运保折合的 {value} UZS 加上未取整关税 {duty} UZS，得到增值税税基 {base} UZS；不把手续费、回收费及注册费加入该税基。按税基的 {percentage}% 计算并四舍五入至整 UZS。',
     registrationElectric:
@@ -34,6 +36,8 @@ export const uzMethodMessages = {
       '纯电车龄 {ageMonths} 个月，使用电动车超过 36 个月档，对应回收系数 {coefficient}。以当年基本计算值 BRV {brv} UZS 乘该系数。',
   },
   en: {
+    registrationCore: 'The basic registration charge is {coefficient} times the current BRV of {brv} UZS. Plates and certificates are separate.',
+    dutyHybridOther: 'The ordinary hybrid passenger classification applies {percentage}% to USD {customsUsd}, with no per-cc addition.',
     dutyElectric:
       'For a BEV, duty is zero under this reference schedule; VAT, recycling and registration fees are still calculated separately.',
     vat: 'The VAT base is vehicle price plus supplied freight and insurance, converted to {value} UZS, plus unrounded duty of {duty} UZS, totalling {base} UZS; clearance, recycling and registration fees are excluded from this base. Apply {percentage}% and round to whole UZS.',
@@ -69,6 +73,8 @@ export const uzMethodMessages = {
       'For a BEV aged {ageMonths} months, use the electric over-36-month band, with recycling coefficient {coefficient}. Multiply by the reference basic calculation value (BRV) of {brv} UZS.',
   },
   ru: {
+    registrationCore: 'Базовый сбор регистрации равен {coefficient} × БРВ {brv} UZS. Номера и свидетельство оплачиваются отдельно.',
+    dutyHybridOther: 'Для обычной категории гибридного легкового авто применяется {percentage}% от {customsUsd} USD без доплаты за см³.',
     dutyElectric:
       'Для электромобиля пошлина по текущей справочной схеме равна нулю; НДС, утилизация и регистрация рассчитываются отдельно.',
     vat: 'База НДС: автомобиль и указанные перевозка со страховкой {value} UZS + неокруглённая пошлина {duty} UZS = {base} UZS; сбор за оформление, утилизация и регистрация в базу не входят. Применяется ставка {percentage}% с округлением до целых UZS.',
