@@ -131,3 +131,61 @@ test('misses with missing or invalid proof never become hits', async () => {
   ]) assert.equal(await cache.read('invalid', () => invalid), null);
   assert.throws(() => createBrowseCache({ readGeneration: () => first, maxEntries: 0 }), TypeError);
 });
+
+test('an authority read started before a visible withdrawal cannot restore the retired generation', async () => {
+  const { cache, value } = fixture();
+  const older = 'c'.repeat(64);
+  const newer = 'd'.repeat(64);
+  const oldPage = value('old published vehicle');
+  const newPage = value('withdrawn vehicle omitted');
+  const key = 'document:/en/';
+  await cache.read(key, () => oldPage, () => older);
+  const slow = Promise.withResolvers();
+  const delayed = cache.read(key, () => assert.fail('stale reader must not fill'), () => slow.promise);
+  const current = await cache.read(key, () => newPage, () => newer);
+  slow.resolve(older);
+  assert.equal(await delayed, null);
+  assert.deepEqual(current, { value: newPage, hit: false });
+  assert.deepEqual(await cache.read(key, () => assert.fail(), () => newer), { value: newPage, hit: true });
+});
+
+test('a cold fill must finish inside the same database authority as it started', async () => {
+  const { cache, value } = fixture();
+  let authority = 'c'.repeat(64);
+  const fromSource = Promise.withResolvers();
+  const starting = Promise.withResolvers();
+  const pending = cache.read('document:/zh/', () => {
+    starting.resolve();
+    return fromSource.promise;
+  }, () => authority);
+  await starting.promise;
+  authority = 'd'.repeat(64);
+  fromSource.resolve(value('renders before archive'));
+  assert.equal(await pending, null);
+  const fresh = value('renders after archive');
+  assert.deepEqual(await cache.read('document:/zh/', () => fresh, () => authority), { value: fresh, hit: false });
+});
+
+test('a newer authority accepted between proof resolution and insertion wins', async () => {
+  const { cache, value } = fixture();
+  const older = 'c'.repeat(64);
+  const newer = 'd'.repeat(64);
+  const lastCheckStarted = Promise.withResolvers();
+  const lastCheck = Promise.withResolvers();
+  const freshCheck = Promise.withResolvers();
+  const key = 'document:/ru/';
+  let oldReads = 0;
+  let newReads = 0;
+  const oldFill = cache.read(key, () => value('older card'), () => {
+    if (++oldReads === 1) return older;
+    lastCheckStarted.resolve();
+    return lastCheck.promise;
+  });
+  await lastCheckStarted.promise;
+  const fresh = value('withdrawn vehicle omitted');
+  const newFill = cache.read(key, () => fresh, () => ++newReads === 1 ? freshCheck.promise : newer);
+  lastCheck.resolve(older);
+  freshCheck.resolve(newer);
+  assert.equal(await oldFill, null);
+  assert.deepEqual(await newFill, { value: fresh, hit: false });
+});

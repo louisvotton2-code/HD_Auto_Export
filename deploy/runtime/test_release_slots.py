@@ -145,6 +145,7 @@ class Slots(unittest.TestCase):
 
     def test_browse_documents_require_matching_slot_and_shared_generation_mount(self):
         config = self.config()
+        config['secrets']['ssr_service_secret'] = {'file': '/srv/hd-auto/secrets/ssr_service_secret'}
         config['services']['proxy'] = {'networks': {'default': {'ipv4_address': '172.20.0.2'}}}
         web = config['services']['web']
         web.update(platform='linux/amd64', user='1000:1000', logging={})
@@ -157,8 +158,14 @@ class Slots(unittest.TestCase):
                         mode_root=f'/srv/hd-auto/staging/slots/{slot}', html_cache_ip='172.20.0.23',
                         html_cache_secret_file='/srv/hd-auto/secrets/html-cache')
             result = m.slot_config(config, **args, html_cache_protocol='4', browse_generation_dir=directory)
-            self.assertEqual(result['services'][f'html-cache-{slot}']['environment']['HD_HTML_CACHE_PROTOCOL'], '4')
+            cache = result['services'][f'html-cache-{slot}']
+            self.assertEqual(cache['environment']['HD_HTML_CACHE_PROTOCOL'], '4')
+            self.assertEqual(cache['environment']['HD_BROWSE_AUTHORITY_ORIGIN'], f'http://api-{slot}:3320')
+            self.assertIn('ssr_service_secret', cache['secrets'])
             self.assertEqual(result['services'][f'api-{slot}']['environment']['PUBLIC_BROWSE_CACHE_ENABLED'], 'true')
+            self.assertEqual(result['services'][f'api-{slot}']['environment']['HD_SSR_SERVICE_PEERS'],
+                             '172.20.0.22/32,172.20.0.23/32')
+            self.assertIn('172.20.0.23/32', result['services'][f'api-{slot}']['environment']['TRUST_PROXY'])
             self.assertNotIn('PUBLIC_BROWSE_CACHE_ENABLED', result['services'][f'web-{slot}']['environment'])
             for service in result['services'].values():
                 self.assertEqual(service['environment']['HD_BROWSE_GENERATION_FILE'], '/run/hd-browse/generation')

@@ -125,7 +125,18 @@ def slot_config(config, *, slot, release, api_ip, web_ip, mode_root,
             'logging': web['logging'],
         }
         if browse_generation_dir:
-            result['services'][f'api-{slot}']['environment']['PUBLIC_BROWSE_CACHE_ENABLED'] = 'true'
+            if 'ssr_service_secret' not in result['secrets']:
+                raise ValueError('Protocol 4 needs the same-slot private catalog credential')
+            api = result['services'][f'api-{slot}']['environment']
+            api['PUBLIC_BROWSE_CACHE_ENABLED'] = 'true'
+            api['HD_SSR_SERVICE_PEERS'] += f',{html_cache_ip}/32'
+            api['TRUST_PROXY'] += f',{html_cache_ip}/32'
+            cache = result['services'][name]
+            cache['environment'].update(
+                HD_BROWSE_AUTHORITY_ORIGIN=f'http://api-{slot}:3320',
+                HD_BROWSE_AUTHORITY_SECRET_FILE='/run/secrets/ssr_service_secret',
+            )
+            cache['secrets'].append('ssr_service_secret')
             for service in result['services'].values():
                 service['environment']['HD_BROWSE_GENERATION_FILE'] = '/run/hd-browse/generation'
                 service.setdefault('volumes', []).append({'type': 'bind', 'source': str(browse_root),

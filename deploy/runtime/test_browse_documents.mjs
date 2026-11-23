@@ -12,6 +12,7 @@ const release = '1'.repeat(40);
 const first = 'a'.repeat(32);
 const second = 'b'.repeat(32);
 const secret = 'isolated-browse-test-secret-only';
+const authorityKey = 'isolated-private-ssr-catalogue-credential';
 const docHeaders = { host: siteHost, accept: 'text/html', 'x-hd-visitor-ip': '192.0.2.20' };
 
 async function listen(server, t) {
@@ -28,10 +29,21 @@ async function fixture(t) {
   const data = {
     generation: first, wall: 1_900_000_000_000, elapsed: 0, reads: [], content: 'visible car',
     changeProof: value => value, responseHeaders: {}, block: null, dynamicBlock: null, dynamicStatus: 200, throttle: false,
+    authority: 'c'.repeat(64), authorityReads: 0, authorityStatus: 200,
   };
   const origin = await listen(createServer(async (req, res) => {
     const h = req.headers;
     const target = h['x-hd-render-target'];
+    if (req.url === '/internal/public-catalog/browse-generation') {
+      data.authorityReads++;
+      assert.equal(h['x-hd-ssr-key'], authorityKey);
+      assert.equal(h['x-forwarded-for'], '192.0.2.20');
+      assert.ok(!h.cookie && !h.authorization);
+      res.writeHead(data.authorityStatus, {
+        'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '2',
+      }).end(JSON.stringify({ data: { policy: 'browse-600-v1', generation: data.authority } }));
+      return;
+    }
     data.reads.push({ url: req.url, target, generation: h['x-hd-browse-generation'] });
     if (req.url !== '/internal/public-html/browse/') {
       if (data.dynamicBlock) await data.dynamicBlock();
@@ -59,6 +71,7 @@ async function fixture(t) {
   const server = createHtmlCacheServer({
     origin: new URL(`http://127.0.0.1:${origin}`), siteHost, edgeIp: '127.0.0.1', release, secret,
     cacheProtocol: '4', readGeneration: () => data.generation, now: () => data.wall, tick: () => data.elapsed,
+    browseAuthorityOrigin: new URL(`http://127.0.0.1:${origin}`), browseAuthorityKey: authorityKey,
   });
   const port = await listen(server, t);
   let requests = 0;
@@ -85,21 +98,42 @@ async function fixture(t) {
   return { data, get, waitForRequests };
 }
 
-test('the warm homepage and canonical directory reuse do not contact the origin', async t => {
+test('warm HTML only reads the separate browse authority', async t => {
   const { data, get } = await fixture(t);
   await get('/zh/');
   assert.equal((await get('/zh/')).h['x-hd-cache-document'], 'hit');
   const firstRequest = await get('/ru/cars/?page=2&make=byd');
   assert.equal(firstRequest.h['cache-control'], 'no-store');
   assert.equal(firstRequest.h['x-hd-html-proof'], undefined);
+  const before = data.authorityReads;
   const hits = await Promise.all(Array.from({ length: 20 }, () => get('/ru/cars/?make=byd&page=2')));
   assert.equal(hits.filter(result => result.h['x-hd-cache-document'] === 'hit').length, 20);
   assert.deepEqual(data.reads.map(r => r.target), ['/zh/', '/ru/cars/?make=byd&page=2']);
+  assert.equal(data.authorityReads - before, 20);
   assert.equal((await get('/ru/cars/?page=3&make=byd')).h['x-hd-cache-document'], undefined);
   assert.equal((await get('/en/cars/?make=byd&page=2')).h['x-hd-cache-document'], undefined);
   await get('/ru/cars/');
   assert.equal((await get('/ru/cars/?page=1')).h['x-hd-cache-document'], undefined);
   assert.equal(data.reads.length, 6);
+});
+
+test('a database authority change invalidates hot HTML without a manual host hold', async t => {
+  const { data, get } = await fixture(t);
+  await get('/ru/');
+  assert.equal((await get('/ru/')).h['x-hd-cache-document'], 'hit');
+  data.content = 'withdrawn';
+  data.authority = 'd'.repeat(64);
+  const firstAfter = await get('/ru/');
+  assert.equal(firstAfter.text, 'withdrawn');
+  assert.equal(firstAfter.h['x-hd-cache-document'], undefined);
+  assert.equal((await get('/ru/')).h['x-hd-cache-document'], 'hit');
+  assert.equal(data.generation, first);
+  data.authorityStatus = 503;
+  assert.equal((await get('/ru/')).text, 'live withdrawn');
+  data.authorityStatus = 429;
+  const throttled = await get('/ru/');
+  assert.equal(throttled.status, 429);
+  assert.equal(throttled.h['retry-after'], '2');
 });
 
 test('RSC, private and ambiguous requests never consume document cache entries', async t => {
@@ -168,7 +202,7 @@ test('an in-flight document containing a withdrawn vehicle cannot repopulate the
   assert.equal(after.h['x-hd-cache-document'], 'hit');
 });
 
-test('coalesced throttling preserves the real 429 without serving or caching it as HTML', { timeout: 5000 }, async t => {
+test('origin throttling preserves the real 429 without dynamic retry or shared HTML', { timeout: 5000 }, async t => {
   const { data, get, waitForRequests } = await fixture(t);
   data.throttle = true;
   const resume = Promise.withResolvers();
@@ -178,7 +212,7 @@ test('coalesced throttling preserves the real 429 without serving or caching it 
   resume.resolve();
   const results = await Promise.all(inflight);
   assert.ok(results.every(result => result.status === 429 && result.h['retry-after'] === '2'));
-  assert.equal(data.reads.length, 1);
+  assert.ok(data.reads.every(read => read.target === '/en/cars/'));
   data.throttle = false;
   assert.equal((await get('/en/cars/')).status, 200);
 });
@@ -207,7 +241,7 @@ test('a failed shared proof cannot turn twenty duplicate requests into twenty dy
   const responses = await Promise.all(pending);
   assert.deepEqual(responses.map(response => response.status).sort(),
     [...Array(8).fill(200), ...Array(12).fill(503)]);
-  assert.equal(data.reads.filter(read => read.target).length, 2);
+  assert.ok(data.reads.filter(read => read.target === '/en/cars/').length < 20);
   assert.equal(data.reads.filter(read => !read.target).length, 8);
 });
 

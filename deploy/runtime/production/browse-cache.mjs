@@ -2,6 +2,8 @@
 // origin proof. This store enforces its lifetime and the local withdrawal fence.
 const lifetime = 600_000;
 const generationPattern = /^[a-f0-9]{32}$/u;
+const authorityPattern = /^[a-f0-9]{64}$/u;
+const maxRetiredAuthorities = 256;
 
 export function createBrowseCache({
   readGeneration,
@@ -29,7 +31,7 @@ export function createBrowseCache({
     try { value = readGeneration(); } catch { /* An unreadable fence disables reuse. */ }
     const id = typeof value === 'string' && generationPattern.test(value) ? value : null;
     if (active?.id !== id) {
-      active = { id, sequence: ++sequence };
+      active = { id, sequence: ++sequence, issued: 0, boundary: 0, authority: null, retired: new Set() };
       entries.clear();
       usedBytes = 0;
     }
@@ -45,6 +47,26 @@ export function createBrowseCache({
 
   function current(entry) {
     return now() < entry.wallDeadline && tick() < entry.elapsedDeadline;
+  }
+
+  async function verifyAuthority(fence, readAuthority) {
+    if (!readAuthority) return fence;
+    const probe = ++fence.issued;
+    let value;
+    try { value = await readAuthority(); } catch { return null; }
+    if (generation() !== fence || fence.retired.size >= maxRetiredAuthorities) return null;
+    if (value?.retryAfter) return value;
+    if (typeof value !== 'string' || !authorityPattern.test(value) || fence.retired.has(value)) return null;
+    if (fence.authority?.value === value) return fence.authority;
+    // A request already on the wire when an authority was accepted cannot
+    // replace it. PostgreSQL may start its statement before or after our peer.
+    if (fence.authority && probe <= fence.boundary) return null;
+    if (fence.authority) fence.retired.add(fence.authority.value);
+    fence.authority = { value };
+    fence.boundary = fence.issued;
+    entries.clear();
+    usedBytes = 0;
+    return fence.authority;
   }
 
   function acquireFill() {
@@ -82,9 +104,13 @@ export function createBrowseCache({
     return entry;
   }
 
-  async function read(key, load) {
+  async function read(key, load, readAuthority) {
     const fence = generation();
     if (!fence.id || typeof key !== 'string' || key.length === 0 || key.length > 2048) return null;
+    const authority = await verifyAuthority(fence, readAuthority);
+    if (!authority || authority.retryAfter) return authority;
+    const valid = () => generation() === fence && (!readAuthority || fence.authority === authority);
+    if (!valid()) return null;
     const stored = entries.get(key);
     if (stored && current(stored)) {
       entries.delete(key);
@@ -95,16 +121,24 @@ export function createBrowseCache({
 
     // Old fills still count toward the cap during an emergency. They cannot
     // publish into the new generation or answer requests that joined them.
-    const fillKey = fence.sequence + ':' + key;
+    const fillKey = fence.sequence + ':' + (authority.value ?? '') + ':' + key;
     let inFlight = fills.get(fillKey);
     if (!inFlight) {
       if (fills.size >= maxFills + maxQueuedFills) return { unavailable: true };
       const startedWall = now();
       const startedTick = tick();
       inFlight = acquireFill()
-        .then(() => generation() === fence ? load(fence.id) : null)
-        .then(value => value?.retryAfter ? { retryAfter: value.retryAfter }
-          : insert(key, fence, startedWall, startedTick, value))
+        .then(() => valid() ? load(fence.id) : null)
+        .then(async value => {
+          if (value?.retryAfter) return { retryAfter: value.retryAfter };
+          if (!value || !valid()) return null;
+          if (readAuthority) {
+            const after = await verifyAuthority(fence, readAuthority);
+            if (after?.retryAfter) return after;
+            if (after !== authority || !valid()) return null;
+          }
+          return insert(key, fence, startedWall, startedTick, value);
+        })
         .catch(() => null)
         .finally(() => {
           fills.delete(fillKey);
@@ -113,7 +147,7 @@ export function createBrowseCache({
       fills.set(fillKey, inFlight);
     }
     const result = await inFlight;
-    if (generation() !== fence || !result) return null;
+    if (!valid() || !result) return null;
     if (result.retryAfter) return result;
     if (!current(result)) return null;
     return { value: result.value, hit: false };

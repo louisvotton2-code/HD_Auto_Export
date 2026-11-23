@@ -13,12 +13,14 @@ const MAX_HTML = 512 * 1024;
 const MAX_CONTROL = 8192;
 const MAX_LOOKUPS = 8;
 const MAX_BROWSE_FALLBACKS = 8;
+const MAX_BROWSE_AUTHORITY = 32;
 const protocol = 'x-hd-cache-protocol';
 const keyHeader = 'x-hd-html-key';
 const nonceHeader = 'x-hd-html-nonce';
 const proofHeader = 'x-hd-html-proof';
 const targetHeader = 'x-hd-render-target';
 const generationHeader = 'x-hd-browse-generation';
+const authorityPath = '/internal/public-catalog/browse-generation';
 const homepage = /^\/(zh|en|ru)\/$/;
 const directory = /^\/(zh|en|ru)\/cars\/$/;
 const directoryQuery = new Set([
@@ -243,12 +245,15 @@ function throttled(response) {
 }
 
 export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secret, cacheProtocol = '2',
-  readGeneration, now = Date.now, tick = () => performance.now() }) {
+  readGeneration, browseAuthorityOrigin, browseAuthorityKey, now = Date.now, tick = () => performance.now() }) {
   const maxAge = protocolMaxAge.get(cacheProtocol);
   if (!ascii(release, /^[a-f0-9]{40}$/) || !ascii(secret, privateKey) || !isIP(edgeIp) ||
       origin.protocol !== 'http:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash ||
       !ascii(siteHost, /^[a-z0-9.-]+$/) || maxAge === undefined ||
-      (cacheProtocol === '4' && (siteHost !== 'hongdingauto.com' || typeof readGeneration !== 'function')))
+      (cacheProtocol === '4' && (siteHost !== 'hongdingauto.com' || typeof readGeneration !== 'function' ||
+        !browseAuthorityOrigin || browseAuthorityOrigin.protocol !== 'http:' || browseAuthorityOrigin.username ||
+        browseAuthorityOrigin.password || browseAuthorityOrigin.pathname !== '/' || browseAuthorityOrigin.search ||
+        browseAuthorityOrigin.hash || !ascii(browseAuthorityKey, privateKey))))
     throw new Error('Invalid HTML cache configuration');
 
   const browse = cacheProtocol === '4' ? createBrowseCache({ readGeneration, now, tick }) : null;
@@ -256,6 +261,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
   const agent = new Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 8 });
   let activeLookups = 0;
   let activeBrowseFallbacks = 0;
+  let activeBrowseAuthority = 0;
 
   function trustedHeaders(visitor, nonce) {
     return {
@@ -325,6 +331,32 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     return { ...stamp, body, headers: { ...headers, 'cache-control': 'no-store' } };
   }
 
+  async function browseAuthority(visitor) {
+    if (activeBrowseAuthority >= MAX_BROWSE_AUTHORITY) return { retryAfter: '1' };
+    activeBrowseAuthority++;
+    try {
+      const response = await open(browseAuthorityOrigin, authorityPath, {
+        accept: 'application/json', 'cache-control': 'no-store',
+        'x-hd-ssr-key': browseAuthorityKey, 'x-forwarded-for': visitor,
+      }, AbortSignal.timeout(1000), agent);
+      const limit = throttled(response);
+      if (limit) return limit;
+      if (response.statusCode !== 200 || Object.hasOwn(response.headers, 'set-cookie') ||
+          !parts(response.headers['cache-control']).includes('no-store') ||
+          !/^application\/json(?:;|$)/i.test(response.headers['content-type'] ?? '')) {
+        response.destroy();
+        return null;
+      }
+      const body = await boundedBody(response, 4096);
+      if (!body || response.trailers['set-cookie']) return null;
+      const value = JSON.parse(body);
+      return value?.data?.policy === 'browse-600-v1' && hexVersion(value.data.generation)
+        ? value.data.generation : null;
+    } finally {
+      activeBrowseAuthority--;
+    }
+  }
+
   function sendPage(reply, page, preferGzip = false, cacheHit = false) {
     if (reply.destroyed) return;
     const compressed = preferGzip && page.gzipBody;
@@ -370,7 +402,8 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
       const target = browse && !rscAccept && (!destination || destination === 'document') && eligible(request, encoding)
         ? browseTarget(request.url) : null;
       if (target) {
-        const rendered = await browse.read(target, generation => browseRender(target, visitor, generation));
+        const rendered = await browse.read(target, generation => browseRender(target, visitor, generation),
+          () => browseAuthority(visitor));
         if (rendered?.unavailable) {
           sendBusy(reply);
           return;
