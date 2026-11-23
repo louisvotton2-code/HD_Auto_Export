@@ -2,6 +2,7 @@ import {
   INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
   INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS,
 } from '@hd/contracts/public';
+import type { PublicBrowseStamp } from './public-browse-stamp';
 
 const maxLifetimeMs = {
   2: INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
@@ -25,7 +26,9 @@ export type PublicHtmlCacheData = Readonly<Record<PublicHtmlCacheScope, PublicHt
 export type PublicHtmlRenderProof = { healthy: true; data: PublicHtmlCacheData };
 type PendingRender = {
   observed: Partial<Record<PublicHtmlCacheScope, PublicHtmlCacheStamp>>;
-  protocol: PublicHtmlCacheProtocol;
+  protocol: PublicHtmlCacheProtocol | 4;
+  browse?: PublicBrowseStamp;
+  retryAfter?: number;
   now: () => number;
   complete: boolean;
   failed: boolean;
@@ -79,7 +82,30 @@ export function matchPublicHtmlCacheScopes(
 }
 
 export function publicHtmlRenderProtocol(ticket: string | null): PublicHtmlCacheProtocol | undefined {
-  return ticket ? pendingRenders().get(ticket)?.protocol : undefined;
+  const protocol = ticket ? pendingRenders().get(ticket)?.protocol : undefined;
+  return protocol === 4 ? undefined : protocol;
+}
+
+export function isPublicBrowseRender(ticket: string | null) {
+  return Boolean(ticket && pendingRenders().get(ticket)?.protocol === 4);
+}
+
+export function recordPublicBrowseStamp(ticket: string | null, stamp: PublicBrowseStamp) {
+  const render = ticket ? pendingRenders().get(ticket) : undefined;
+  if (!render || render.failed) return;
+  const previous = render.browse;
+  if (render.protocol !== 4 || previous && previous.generation !== stamp.generation) {
+    render.failed = true;
+    return;
+  }
+  render.browse = previous ? { generation: stamp.generation, observedAt: Math.min(previous.observedAt, stamp.observedAt),
+    expiresAt: Math.min(previous.expiresAt, stamp.expiresAt) } : stamp;
+}
+
+export function recordPublicBrowseThrottle(ticket: string | null, seconds: number) {
+  const render = ticket ? pendingRenders().get(ticket) : undefined;
+  if (render?.protocol === 4 && Number.isSafeInteger(seconds) && seconds > 0)
+    render.retryAfter = Math.max(render.retryAfter ?? 0, seconds);
 }
 
 /** Copy only the actual version and deadline accepted for a rendered dependency. */
@@ -176,6 +202,20 @@ export async function capturePublicHtmlRender(
   render: (ticket: string | null) => Promise<Response>,
   { now = Date.now, protocol = 2 }: { now?: () => number; protocol?: PublicHtmlCacheProtocol } = {},
 ): Promise<{ response: Response; proof: PublicHtmlRenderProof | null }> {
+  return captureRender(render, protocol, now, record => {
+    const { catalog, filters } = record.observed;
+    if (!catalog || !filters) return null;
+    const data = matchPublicHtmlCacheScopes(catalog, filters);
+    return data && Date.parse(data.catalog.validUntil) > now() ? { healthy: true as const, data } : null;
+  });
+}
+
+export function capturePublicBrowseRender(render: (ticket: string | null) => Promise<Response>, now = Date.now) {
+  return captureRender(render, 4, now, ({ browse }) => browse && browse.expiresAt > now() ? browse : null);
+}
+
+async function captureRender<P>(render: (ticket: string | null) => Promise<Response>, protocol: PendingRender['protocol'],
+  now: () => number, finish: (record: PendingRender) => P | null): Promise<{ response: Response; proof: P | null; retryAfter?: number }> {
   const pending = pendingRenders();
   if (pending.size >= maxPendingRenders)
     return { response: await render(null), proof: null };
@@ -203,12 +243,8 @@ export async function capturePublicHtmlRender(
 
     const captured = await captureDocument(response, response.body, release);
     replaying = captured.replaying;
-    const { catalog, filters } = record.observed;
-    if (!captured.complete || !record.complete || record.failed || !catalog || !filters)
-      return { response: captured.response, proof: null };
-    const data = matchPublicHtmlCacheScopes(catalog, filters);
-    const proof = data && Date.parse(data.catalog.validUntil) > now() ? { healthy: true as const, data } : null;
-    return { response: captured.response, proof };
+    const proof = captured.complete && record.complete && !record.failed ? finish(record) : null;
+    return { response: captured.response, proof, retryAfter: record.retryAfter };
   } finally {
     if (!replaying) release();
   }

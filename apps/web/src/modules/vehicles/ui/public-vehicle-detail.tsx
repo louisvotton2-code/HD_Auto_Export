@@ -13,7 +13,7 @@ import {
   publicVehicleFacts,
 } from '../public-presentation';
 import { ExternalVehicleInformation } from './external-vehicle-information';
-import { PublicCatalogLink } from './public-catalog-link';
+import { VehicleCatalogReturnLink } from './vehicle-catalog-return-link';
 import { PublicVehicleContacts } from './public-vehicle-contacts';
 import { VehicleRateAttribution } from './vehicle-rate-attribution';
 import { VehiclePriceValues } from './vehicle-price-values';
@@ -83,9 +83,9 @@ export function PublicVehicleDetail({
       data-meta-pixel-navigation={fresh ? pixelNavigation : undefined}
     >
       <div className={styles.container}>
-        <PublicCatalogLink locale={locale} className={styles.back} href={`/${locale}/cars/`}>
+        <VehicleCatalogReturnLink locale={locale} className={styles.back}>
           <Icon name="arrow-left" size={16} />{t.back}
-        </PublicCatalogLink>
+        </VehicleCatalogReturnLink>
         <div className={styles.grid}>
           <div className={styles.mainColumn}>
             <h1 className={styles.title} lang={lang}>

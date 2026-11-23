@@ -20,6 +20,7 @@ HD_DEPLOYMENT_ENV=local HD_RELEASE_ID="$(git rev-parse HEAD)" HD_SSR_SERVICE_SEC
 - `HD_DEPLOYMENT_ENV` / `HD_RELEASE_ID`：所有实际Node启动显式配置。环境只允许production／local／test；正式版本只允许完整小写commit SHA（40–64位）或`sha256:`加64位摘要，本地／隔离测试可使用固定ASCII标签。缺失、非法或`unreleased`会在启动时退出，不自动生成默认版本。生产值由OPS绑定最终交付版本，不根据访客或公开构建变量生成；与正式API联调的本地环境也使用完整SHA。
 - `HD_DEPLOYMENT_ID`：生产镜像构建传入最终合并提交的完整 SHA。Next 同时使用该值识别客户端版本和生成 `/_next/static/<BUILD_ID>/` 下的版本清单，使新旧清单可在网关保留。隔离构建可省略此值，使用 Next 的默认构建标识。
 - `HD_SSR_SERVICE_SECRET_FILE`：与API一致、仅服务端可读的静态服务凭据文件绝对路径。普通文件、owner-only权限（例如0600）、32–256字节可打印ASCII，可含一个结尾换行；拒绝符号链接和过大文件。不要把值放入环境变量、浏览器、镜像层或Git。Node启动会核验；构建阶段不需要真实密钥。API原始socket peer白名单及公网`/internal`拒绝由OPS配置，完整协议见[车辆接口§19](../../docs/开发/车辆接口.md#19-be-rel-03-目录缓存与分页契约)。
+- `HD_BROWSE_GENERATION_FILE` 由 OPS 在同版协议 4 槽配置为共享代际文件的只读绝对路径。活动文件含 32 位小写十六进制值和换行。`hold-…`、无效或不可读文件让 Web 放弃协议 4，改用既有实时读取。BE 与网关须服从同一屏障。
 - `NEXT_PUBLIC_SITE_URL`：正式官网为 `https://hongdingauto.com`。生产构建和运行均使用该 origin，客户端咨询草稿和 metadata 会使用构建值；更换公开域名须重建。内部 3317 成品经 3363 提供用户验收，canonical 和咨询草稿使用该成品配置的公开地址。
 - `SITE_INDEXABLE=false` 默认禁止抓取和索引，地图为空。经批准的静态首批可在官网构建和运行均设置 `SITE_INDEXABLE=static`，只开放中英俄的关于我们与购车指南。此阶段的 sitemap 无需车辆名单，API 可保持 `PUBLIC_SEO_ENABLED=false`。完整模式使用 `SITE_INDEXABLE=true`，车辆资格与分语言名单由同版 API 提供。启用任何收录模式都须配置正式 `NEXT_PUBLIC_SITE_URL`；生产开放步骤仍由发布验收决定。
 
@@ -66,6 +67,7 @@ EXT07 目录显式使用 `projection=card` 与独立轻量 schema；首页／逐
 - 协商内部缓存协议 2 时最长 300 秒，旧协议最长 15 秒。按单调时钟扣除版本和内容读取耗时，并受 API 剩余有效期、汇率和远图签名约束。命中不续期，版本不一致最多重试一次；版本检查失败、错误或过期结果不使用旧缓存。
 - HTML、RSC 和公开 JSON 各走独立路径。生产网关可复用公开整页 HTML，每次命中前仍验证当前目录、筛选及汇率版本。浏览器响应保留 `Cache-Control: no-store`，是否命中以 `X-HD-Cache-Document: hit` 或同版网关收据为准。根路径以 307 转至默认俄语 `/ru/`，站内 Logo 直达当前语言首页。带内容指纹的静态资源可跨导航复用；内部 `/internal` 路由拒绝公网访问。
 - 官网、API 与网关同版协商私有协议 3 后，匿名首页整页复用上限为 600 秒。协议 3 只用于认证过的 `/internal/public-html/version/` 及 `/internal/public-html/render/`。官网按当前语言向 API 查询首页版本，并对精选车源、无筛选 `overview` 和 `home-models` 请求 `X-HD-Catalog-Homepage: exact-v1`。API 须在版本查询和每条数据响应确认精准范围。两个筛选结果必须对应同一个有效版本，整页取三个资源的最早期限并受汇率及图片有效期约束。缺少确认、版本或协议不一致时不保存这个页面。普通 SSR、详情、目录和公开 JSON 沿用原协议。
+- BROWSE-600 协议 4 为匿名三语首页及目录页复用 BE 浏览快照。SSR 数据与软导航 JSON 共用 BE 截止时间，浏览器 HTML、RSC 和 JSON 继续 `no-store`。认证的 `/internal/public-html/browse/` 仅为可规范化的首页和目录查询出具完整文档证明。期限取已渲染依赖最早截止时间，受汇率、签名媒体及 600 秒约束。网关热命中只读本地代际和原证明；冷填充会再次核对 BE 紧急代际。详情普通链接发起实时文档请求，浏览器恢复期间隐藏旧详情并核对最新数据。同源目录进入详情时，返回链接恢复原过滤、排序与分页。混版回退与受控紧急下架须同版验收后启用。
 - 目录offset上限10000（含），按实际pageSize计算，真实total不裁剪。分页省略号／末页限制在可达范围；合法超限深链接保留筛选并显示三语收窄条件入口，不报404。明显非法参数仍拒绝。API无光标offset与FE共用contracts helper。
 
 ### 2026-11-15 官网体验修订

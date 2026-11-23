@@ -18,10 +18,20 @@ function serviceKey() {
 }
 
 export function publicHtmlCacheRequest(request: Request) {
+  const protocol = request.headers.get('x-hd-cache-protocol');
+  if (protocol !== '2' && protocol !== '3') return null;
+  const identity = authenticate(request);
+  return identity ? { ...identity, protocol: protocol === '2' ? 2 as const : 3 as const } : null;
+}
+
+export function publicBrowseRenderRequest(request: Request) {
+  return request.headers.get('x-hd-cache-protocol') === '4' ? authenticate(request) : null;
+}
+
+function authenticate(request: Request) {
   const { headers } = request;
-  const protocol = headers.get('x-hd-cache-protocol');
   if (
-    request.method !== 'GET' || (protocol !== '2' && protocol !== '3')
+    request.method !== 'GET'
     || process.env.VEHICLE_API_TRUST_PROXY_IP !== 'true' || privateHeaders.some(name => headers.has(name))
   ) return null;
   const provided = headers.get('x-hd-html-key');
@@ -33,7 +43,7 @@ export function publicHtmlCacheRequest(request: Request) {
   const expected = serviceKey();
   const candidate = Buffer.from(provided);
   if (!expected || expected.length !== candidate.length || !timingSafeEqual(expected, candidate)) return null;
-  return { nonce, visitor, protocol: protocol === '2' ? 2 as const : 3 as const };
+  return { nonce, visitor };
 }
 
 export function publicHtmlCacheStatus(status: 404 | 429 | 503, retryAfter?: string) {

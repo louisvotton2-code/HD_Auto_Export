@@ -22,6 +22,8 @@ export const getPublicVehicleById = cache((id: string, locale: Locale, includePi
 export { getSsrPublicVehicle as readPublicVehicleDocument } from './infrastructure/ssr-public-api';
 export { proxyPublicRequest } from './infrastructure/public-proxy';
 export { getPublicHtmlCacheVersions } from './infrastructure/public-html-cache-version';
+export { readSsrBrowseGeneration } from './infrastructure/ssr-service-http';
+export { isPublicApiError } from './infrastructure/public-http';
 export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';
 export { catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';
 export { vehicleSeoPresentation, vehicleStructuredData } from './vehicle-seo';

@@ -79,7 +79,7 @@ export default async function LocaleLayout({
             <TrackingConsentControls locale={locale} sessionAnalyticsEnabled={sessionAnalyticsEnabled} metaEnabled={Boolean(pixelId)} />
           } />
           <InteractionMotion />
-          <PublicNavigationFreshness verifyVehicleOnRestore={Boolean(pixelId)} />
+          <PublicNavigationFreshness />
           <SiteAnalytics locale={locale} sessionAnalyticsEnabled={sessionAnalyticsEnabled} pixelId={pixelId} />
           </EnquiryProvider>
         </NextIntlClientProvider>

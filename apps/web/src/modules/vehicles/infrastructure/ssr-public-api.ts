@@ -1,8 +1,9 @@
 import { PublicVehicleQuerySchema, type PublicFilterQuery, type PublicVehicleQuery, type PublicVehicle } from '@hd/contracts/public';
 import { headers } from 'next/headers';
 import type { Locale } from '@/i18n/routing';
+import { readPublicBrowseFence } from '@/shared/config/public-browse-fence';
 import { getServerReleaseIdentity } from '@/shared/config/server-runtime';
-import { invalidatePublicHtmlRender, publicHtmlRenderTicketHeader, recordPublicHtmlRenderStamp,
+import { invalidatePublicHtmlRender, isPublicBrowseRender, publicHtmlRenderTicketHeader, recordPublicBrowseStamp, recordPublicBrowseThrottle, recordPublicHtmlRenderStamp,
   type PublicHtmlCacheProtocol } from '@/shared/lib/public-html-render-proof';
 import { localizedHomeSchema, publicFiltersSchema, localizedCardListSchema, localizedInlineVehicleSchema } from '../localized-projection';
 import {
@@ -13,7 +14,7 @@ import { publicApiOrigin, PublicApiError } from './public-http';
 import { publicRequestHeaders } from './public-request-context';
 import { SsrDtoCache } from './ssr-dto-cache';
 import { canonicalPublicPath, createSsrPublicReader, type SsrInitialVersionRead, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
-import { readAnonymousPublicResource, readSsrServiceVersion, readSsrServiceVersions } from './ssr-service-http';
+import { readAnonymousPublicResource, readSsrBrowseResource, readSsrServiceVersion, readSsrServiceVersions } from './ssr-service-http';
 
 // One bounded store for this Node process, including separate Next route bundles.
 const cacheSymbol = Symbol.for('hd-auto.ssr-public-dto-cache.v1');
@@ -27,7 +28,18 @@ async function readSsr<T extends SsrPublicEnvelope>(
   const protocol = exactHomepageLocale ? 3 : 2;
   let ticket: string | null = null;
   try {
-    if (!incoming) ticket = (await headers()).get(publicHtmlRenderTicketHeader);
+    const request = incoming ?? await headers();
+    if (!incoming) ticket = request.get(publicHtmlRenderTicketHeader);
+    const browsable = descriptor.path.startsWith('/api/v1/home/vehicles?') || descriptor.scope === 'filters' || descriptor.allowOffsetSnapshot;
+    if (browsable && !request.get('authorization') && !request.get('cookie') && readPublicBrowseFence()) {
+      const browse = await readSsrBrowseResource(descriptor, await publicRequestHeaders(request));
+      if (browse) {
+        if (isPublicBrowseRender(ticket)) recordPublicBrowseStamp(ticket, browse.stamp);
+        else invalidatePublicHtmlRender(ticket);
+        return browse.resource;
+      }
+      invalidatePublicHtmlRender(ticket);
+    }
     const identity = { ...getServerReleaseIdentity(), apiOrigin: publicApiOrigin() };
     const read = createSsrPublicReader({
       identity, cache: store(), readAnonymous: resource => readAnonymousPublicResource(resource, protocol),
@@ -49,7 +61,10 @@ async function readSsr<T extends SsrPublicEnvelope>(
     return { ...resource, meta };
   } catch (error) {
     invalidatePublicHtmlRender(ticket);
-    if (error instanceof PublicApiError) throw error;
+    if (error instanceof PublicApiError) {
+      if (error.status === 429) recordPublicBrowseThrottle(ticket, Number(error.retryAfter));
+      throw error;
+    }
     throw new PublicApiError(503);
   }
 }

@@ -11,7 +11,7 @@ import { PublicVehicleDetail } from './public-vehicle-detail';
 import { PublicResourceStatus } from './public-resource-status';
 import { localizedInlineVehicleSchema } from '../localized-projection';
 import { publicQueryString, publicInlineVehicleView } from '../public-query';
-import { PublicCatalogLink } from './public-catalog-link';
+import { VehicleCatalogReturnLink } from './vehicle-catalog-return-link';
 import type { VehicleDestination } from './vehicle-gallery';
 
 export function PublicDetailResource({
@@ -48,8 +48,16 @@ export function PublicDetailResource({
     initialRetryAfter,
     cooldown,
   });
-  const detailVehicle = resource.data?.data;
+  const detailVehicle = resource.phase === 'fresh' ? resource.data?.data : undefined;
   const segmentContext = useMemo(() => ({ cooldown, onMissing: resource.markMissing }), [resource.markMissing]);
+  useEffect(() => {
+    if (!detailVehicle) return;
+    const element = document.querySelector<HTMLElement>('[data-public-vehicle-detail]');
+    if (element?.dataset.publicVehicleDetail === id) {
+      element.style.removeProperty('visibility');
+      element.inert = false;
+    }
+  }, [detailVehicle, id, resource.navigation]);
   useEffect(() => {
     if (!resource.missing) return;
     // A removed detail reached through history must not retain an indexable old document.
@@ -80,9 +88,9 @@ export function PublicDetailResource({
               <a href={`/${locale}/cars/${id}/`}>{publicVehicleMessages(locale).retry}</a>
             </noscript>
           )}
-          <PublicCatalogLink locale={locale} href={`/${locale}/cars/`}>
+          <VehicleCatalogReturnLink locale={locale}>
             {publicVehicleMessages(locale).back}
-          </PublicCatalogLink>
+          </VehicleCatalogReturnLink>
         </main>
       ) : (
         <PublicVehicleDetail

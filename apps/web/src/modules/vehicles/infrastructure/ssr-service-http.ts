@@ -2,6 +2,9 @@ import {
   INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER,
   INTERNAL_PUBLIC_HOMEPAGE_SCOPE,
   INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER,
+  PUBLIC_BROWSE_CACHE_POLICY,
+  PUBLIC_BROWSE_CACHE_POLICY_HEADER,
+  InternalPublicBrowseGenerationResponseSchema,
   InternalPublicCatalogHomepageVersionResponseSchema,
   InternalPublicCatalogVersionResponseSchema,
   InternalPublicHomepageVersionResponseSchema,
@@ -11,6 +14,7 @@ import {
 } from '@hd/contracts/public';
 import { getSsrServiceSecret } from '@/shared/config/ssr-service-secret';
 import type { PublicHtmlCacheProtocol } from '@/shared/lib/public-html-render-proof';
+import { parsePublicBrowseStamp } from '@/shared/lib/public-browse-stamp';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
 import { PublicApiError, publicApiOrigin, readPublicJsonBody } from './public-http';
 import { anonymousPublicEnvelope, ssrCacheStampSchema, type SsrCacheProtocol, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
@@ -36,10 +40,11 @@ type InternalRequestOptions = {
   signal?: AbortSignal;
   protocol?: PublicHtmlCacheProtocol;
   exactHomepageResource?: boolean;
+  browse?: boolean;
 };
 
 async function requestInternal(path: string, { visitorHeaders, scope, snapshot, signal, protocol = 2,
-  exactHomepageResource }: InternalRequestOptions = {}) {
+  exactHomepageResource, browse }: InternalRequestOptions = {}) {
   try {
     const origin = publicApiOrigin();
     const target = new URL(path, origin);
@@ -55,6 +60,7 @@ async function requestInternal(path: string, { visitorHeaders, scope, snapshot, 
         Accept: 'application/json', 'Cache-Control': 'no-store', 'X-HD-SSR-Key': getSsrServiceSecret(),
         [INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]: String(protocol),
         ...(exactHomepageResource ? { [INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER]: INTERNAL_PUBLIC_HOMEPAGE_SCOPE } : {}),
+        ...(browse ? { [PUBLIC_BROWSE_CACHE_POLICY_HEADER]: PUBLIC_BROWSE_CACHE_POLICY } : {}),
         ...(visitorHeaders?.['X-Forwarded-For'] ? { 'X-Forwarded-For': visitorHeaders['X-Forwarded-For'] } : {}),
         ...(scope ? { 'X-HD-Catalog-Scope': scope } : {}),
         ...(snapshot?.allowOffsetSnapshot ? { [offsetSnapshotHeader]: '1' } : {}),
@@ -196,4 +202,32 @@ export async function readAnonymousPublicResource<T extends SsrPublicEnvelope>(d
     if (error instanceof PublicApiError) throw error;
     throw new PublicApiError(503);
   }
+}
+
+export async function readSsrBrowseResource<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>,
+  visitorHeaders: Record<string, string>) {
+  const path = internalCatalogPath(descriptor.path);
+  if (!/^\/internal\/public-catalog\/(?:home\/vehicles|vehicles|vehicle-filters)\?/.test(path)) throw new PublicApiError(503);
+  const response = await requestInternal(path, { visitorHeaders, browse: true, scope: descriptor.scope });
+  if (response.headers.get(PUBLIC_BROWSE_CACHE_POLICY_HEADER) !== PUBLIC_BROWSE_CACHE_POLICY) {
+    await response.body?.cancel().catch(() => undefined);
+    return null; // A mixed, older deployment can continue on its live SSR transport.
+  }
+  const stamp = parsePublicBrowseStamp(response.headers);
+  if (!stamp) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new PublicApiError(503);
+  }
+  const resource = await readPublicJsonBody(response, descriptor.schema);
+  const mediaExpiry = (descriptor.media?.(anonymousPublicEnvelope(resource)) ?? []).reduce((expiry, image) =>
+    image.remote?.expiresAt ? Math.min(expiry, Date.parse(image.remote.expiresAt)) : expiry, Infinity);
+  stamp.expiresAt = Math.min(stamp.expiresAt, mediaExpiry);
+  if (!(stamp.expiresAt > Date.now())) throw new PublicApiError(503);
+  return { resource, stamp };
+}
+
+export async function readSsrBrowseGeneration(visitorHeaders: Record<string, string>, signal: AbortSignal) {
+  const response = await requestInternal(`${prefix}/browse-generation`, { visitorHeaders, signal });
+  const result = await readPublicJsonBody(response, InternalPublicBrowseGenerationResponseSchema, 4096);
+  return result.data.generation;
 }
