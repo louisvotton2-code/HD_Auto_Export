@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {workerEnvironment, workerInvocation} from './production/worker-entrypoint.mjs';
+import {checkWorkerMode, workerEnvironment, workerInvocation} from './production/worker-entrypoint.mjs';
 
 const approved = {HD_DEPLOYMENT_ENV: 'production', HD_RELEASE_ID: 'a'.repeat(40),
   HD_DATABASE_NAME: 'hd_release_' + 'b'.repeat(16), EXTERNAL_SYNC_MODE: 'off', TRANSLATION_PROVIDER: 'disabled'};
@@ -60,6 +60,28 @@ test('formal full sync has an explicit CLI and cannot select another program', (
   for (const args of [['full-sync'], ['full-sync', 'dist/main.js'], ['full-sync', '--seed']]) {
     assert.throws(() => workerInvocation(args));
   }
+});
+
+test('one-shot replay accepts only the fixed plan and the exact argument shape', () => {
+  const plan = '/private/replay/plan.json', id = '781af2ee-24b6-4b2f-8613-556805f53a16';
+  for (const args of [['replay-check', '--plan', plan], ['replay-prepare', '--actor', 'ExistingStaff-01', '--plan', plan],
+    ['replay-status', '--replay-id', id]]) {
+    const operation = workerInvocation(['full-sync', ...args]);
+    assert.deepEqual(operation, {argv: ['dist/external/full-sync/cli.js', ...args], formalFx: false, fullSync: false, replay: true});
+    assert.doesNotThrow(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true'}, operation));
+    assert.throws(() => checkWorkerMode({}, operation));
+    assert.throws(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', CHINACARAPI_KEY_FILE: '/run/secrets/provider'}, operation));
+    assert.throws(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', FULL_SYNC_ARCHIVE_ROOT: '/private/full-sync'}, operation));
+  }
+  for (const args of [['replay-check', '--plan', '/tmp/other'], ['replay-check', '--plan', plan, '--plan', plan],
+    ['replay-prepare', '--plan', plan], ['replay-prepare', '--actor', '--force', '--plan', plan],
+    ['replay-status', '--replay-id', 'not-a-uuid'], ['replay-status', '--replay-id', id, '--force']]) {
+    assert.throws(() => workerInvocation(['full-sync', ...args]));
+  }
+  for (const args of [['full-sync', 'serve'], ['backup-lease', 'release', '--reference', 'backup:a'], ['fx-refresh']]) {
+    assert.throws(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', FULL_SYNC_ARCHIVE_ROOT: '/private/full-sync'}, workerInvocation(args)));
+  }
+  assert.doesNotThrow(() => checkWorkerMode({FULL_SYNC_ARCHIVE_ROOT: '/private/full-sync'}, workerInvocation(['full-sync', 'serve'])));
 });
 
 

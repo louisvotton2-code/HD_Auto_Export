@@ -2,6 +2,11 @@ import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {deploymentDatabaseIdentity} from '../database-name.mjs';
 
+const replayPlan = '/private/replay/plan.json';
+const replayId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const staffId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
+const replayCommands = new Set(['replay-check', 'replay-prepare', 'replay-status']);
+
 export function workerEnvironment(input, password, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('Worker must start as a non-root user');
   if (input.DATABASE_URL || input.DATABASE_URL_FILE) throw new Error('Worker database override rejected');
@@ -28,6 +33,17 @@ export function workerInvocation(args) {
     return {argv: ['dist/backup-lease-cli.js', ...args.slice(1)], formalFx: false, fullSync: false};
   }
   if (args[0] === 'full-sync') {
+    const [, command, ...flags] = args;
+    if (replayCommands.has(command)) {
+      const allowed = command === 'replay-check'
+        ? flags.length === 2 && flags[0] === '--plan' && flags[1] === replayPlan
+        : command === 'replay-status'
+          ? flags.length === 2 && flags[0] === '--replay-id' && replayId.test(flags[1])
+          : flags.length === 4 && flags[0] === '--actor' && staffId.test(flags[1]) &&
+            flags[2] === '--plan' && flags[3] === replayPlan;
+      if (!allowed) throw new Error('Replay requires a supported operation and fixed private input');
+      return {argv: ['dist/external/full-sync/cli.js', ...args.slice(1)], formalFx: false, fullSync: false, replay: true};
+    }
     if (!['configure', 'run', 'serve', 'status', 'control', 'archive-pin', 'archive-release'].includes(args[1])) {
       throw new Error('Full sync requires an explicit supported operation');
     }
@@ -41,13 +57,25 @@ export function workerInvocation(args) {
   return {argv: ['dist/external/ingestion/cli.js', ...args], formalFx: false};
 }
 
-export async function main(args = process.argv.slice(2)) {
-  const operation = workerInvocation(args);
-  const {readLocalSecret} = await import('/app/apps/api/dist/local-secrets.js');
-  const env = workerEnvironment(process.env, readLocalSecret('/run/secrets/app_db_password'));
-  if (operation.fullSync && env.FULL_SYNC_ARCHIVE_ROOT !== '/private/full-sync') {
+export function checkWorkerMode(input, operation) {
+  if ((input.HD_FULL_REPLAY_OPS !== undefined && input.HD_FULL_REPLAY_OPS !== 'true') ||
+      Boolean(operation.replay) !== (input.HD_FULL_REPLAY_OPS === 'true')) {
+    throw new Error('Replay requires the dedicated one-shot service');
+  }
+  if (operation.replay && (input.CHINACARAPI_KEY_FILE || input.CHINACARAPI_ACCOUNT_KEY_FILE ||
+      input.FULL_SYNC_ARCHIVE_ROOT || input.FULL_SYNC_CAPACITY_DECISION_FILE)) {
+    throw new Error('Replay operation must not inherit worker mounts or credentials');
+  }
+  if (operation.fullSync && input.FULL_SYNC_ARCHIVE_ROOT !== '/private/full-sync') {
     throw new Error('Full sync requires the dedicated persistent archive mount');
   }
+}
+
+export async function main(args = process.argv.slice(2)) {
+  const operation = workerInvocation(args);
+  checkWorkerMode(process.env, operation);
+  const {readLocalSecret} = await import('/app/apps/api/dist/local-secrets.js');
+  const env = workerEnvironment(process.env, readLocalSecret('/run/secrets/app_db_password'));
   if (operation.formalFx) {
     env.EXTERNAL_CATALOG_MODE = 'disabled';
     env.EXTERNAL_FX_NETWORK = 'enabled';

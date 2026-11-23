@@ -4,6 +4,7 @@ import {physicalCleanupAllowed} from '../../backup-lease.js';
 import type {Database} from '../../db/index.js';
 import {FORMAL_LISTING_LIMIT_CODE, DEFAULT_FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 import {jsonHash} from '../normalize.js';
+import type {ReplayOperatorApproval} from './replay-approval.js';
 import {FullSyncError, type Actor, type Source} from './types.js';
 
 const digest=z.string().regex(/^[a-f0-9]{64}$/);
@@ -18,6 +19,16 @@ export type AdmissionReplayRequest=z.infer<typeof AdmissionReplayRequest>;
 type Snapshot={id:string;sha256:string;rows:number;active:boolean;target:number};
 export type ReplayEvent={event_id:string;source:Source;external_id:string;business_at:Date;operation:'upsert'|'relist'};
 export const ADMISSION_REPLAY_BATCH=25;
+const operatorQueryLimits="SET LOCAL lock_timeout='200ms'; SET LOCAL statement_timeout='2s'; SET LOCAL max_parallel_workers_per_gather=0; SET LOCAL jit=off";
+
+export async function requireAdmissionReplayMigration(db:Database) {
+  const result=await db.pool.query(`SELECT to_regclass('public.external_full_admission_replays') IS NOT NULL
+   AND to_regclass('public.external_full_admission_replay_items') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM pg_index
+    WHERE indexrelid=to_regclass('public.external_full_event_identity_latest') AND indisvalid AND indisready AND indislive)
+   AS installed`);
+  if(!result.rows[0]?.installed)throw new FullSyncError('SYNC_REPLAY_MIGRATION_REQUIRED');
+}
 
 // All newer received events, including unapplied ones, participate in supersession.
 // A relist must independently outrank each recorded withdrawal.
@@ -108,6 +119,7 @@ async function replayStatusInTransaction(tx:PoolClient,id:string) {
 export async function admissionReplayStatus(db:Database,id:string) {
   return db.transaction(async tx=>{
     await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await tx.query(operatorQueryLimits);
     return replayStatusInTransaction(tx,z.uuid().parse(id));
   });
 }
@@ -130,8 +142,6 @@ async function replayBasis(tx:PoolClient,input:AdmissionReplayRequest,admission:
     priorLimit:admission.ceiling,deltaOnly:events.length,targetRows};
 }
 
-const operatorQueryLimits="SET LOCAL lock_timeout='200ms'; SET LOCAL statement_timeout='2s'; SET LOCAL max_parallel_workers_per_gather=0; SET LOCAL jit=off";
-
 /** Compare the same denominator and target without planning work or changing a ceiling. */
 export async function inspectAdmissionReplay(db:Database,request:AdmissionReplayRequest) {
   const input=AdmissionReplayRequest.parse(request);
@@ -143,7 +153,7 @@ export async function inspectAdmissionReplay(db:Database,request:AdmissionReplay
 }
 
 /** The operator binds capacity evidence before staging; the running worker still requires its native live allow. */
-export async function prepareAdmissionReplay(db:Database,actor:Actor,request:AdmissionReplayRequest) {
+export async function prepareAdmissionReplay(db:Database,actor:Actor,request:AdmissionReplayRequest,approval?:ReplayOperatorApproval) {
   const input=AdmissionReplayRequest.parse(request);
   const requestHash=jsonHash({...input,eventIds:[...input.eventIds].sort()});
   return db.transaction(async tx=>{
@@ -160,14 +170,16 @@ export async function prepareAdmissionReplay(db:Database,actor:Actor,request:Adm
       throw new FullSyncError('SYNC_REPLAY_WORKER_RUNNING');
     await tx.query('SELECT pg_advisory_xact_lock(78291332)');
     if(!await physicalCleanupAllowed(tx))throw new FullSyncError('SYNC_REPLAY_BACKUP_ACTIVE');
-    const state=(await tx.query(`SELECT enabled,paused,disk_paused,capacity_pending,last_capacity_sample
+    const state=(await tx.query(`SELECT enabled,paused,disk_paused,capacity_pending,last_capacity_sample,worker_fence::text
       FROM external_full_sync WHERE id=1 FOR UPDATE`)).rows[0]!;
     if(!state.enabled||state.paused||state.disk_paused||state.capacity_pending||Number(state.last_capacity_sample)<=0)
       throw new FullSyncError('SYNC_REPLAY_CAPACITY_NOT_READY');
+    if(approval&&state.worker_fence!==approval.workerFence)throw new FullSyncError('SYNC_REPLAY_WORKER_CHANGED');
     const admission=(await tx.query<AdmissionState>(`${admissionStateSql} FOR UPDATE`)).rows[0]!;
     if((await tx.query("SELECT 1 FROM external_full_admission_replays WHERE state IN ('pending','scheduled')")).rowCount)
       throw new FullSyncError('SYNC_REPLAY_PLAN_PENDING');
     const basis=await replayBasis(tx,input,admission);
+    if(approval&&Date.now()>=approval.expiresAt)throw new FullSyncError('SYNC_REPLAY_APPROVAL_INVALID');
     const {targetRows:target,snapshotId,csvSha256}=basis;
     await tx.query(`INSERT INTO external_full_admission_replays
       (id,snapshot_id,csv_sha256,capacity_receipt,requested_by,target_rows,request_hash,coverage)
