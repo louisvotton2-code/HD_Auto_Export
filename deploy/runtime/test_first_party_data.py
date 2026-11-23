@@ -27,6 +27,17 @@ class FirstPartyAnalytics(unittest.TestCase):
                 self.assertNotIn(f"'{table}'", data.measurement_sql())
 
 
+class FirstPartySupplierFacets(unittest.TestCase):
+    def test_rebuildable_global_facets_data_is_excluded_from_first_party_backups(self):
+        table = 'external_catalog_global_facets'
+        options = data.dump_options()
+        self.assertIn(f'--exclude-table-data=public.{table}', options)
+        self.assertNotIn(f'--exclude-table=public.{table}', options)
+        self.assertIn(f"'{table}'", data._validate_supplier_tables_sql())
+        self.assertIn(f"'{table}'", data.measurement_sql())
+        self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
+
+
 class FirstPartyPixelSettings(unittest.TestCase):
     def test_supplier_settings_are_staged_and_staff_settings_remain_in_the_dump(self):
         options = data.dump_options()

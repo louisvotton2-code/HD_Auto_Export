@@ -149,6 +149,21 @@ def gateway_files(source, *, web_host, public_api_host, admin_api_host, freeze_a
                           .replace('^cars[.]hongdingauto[.]com$', '^hongdingauto[.]com$')
                           .replace('/run/tls/current/', '/run/tls/apex/current/'))
                 admin = admin.replace('/run/tls/current/', '/run/tls/admin/current/')
+                # Inline only the apex HTTPS server's existing edge policy, changing
+                # its idle timeout without altering the shared include or rollback files.
+                marker = ('server {\n    include /etc/nginx/hd-domains/edge-server.conf;\n'
+                          '    listen 8443 ssl;\n    server_name hongdingauto.com;')
+                if public.count(marker) != 1:
+                    raise ValueError('Expected exactly one apex TLS server')
+                edge = files['hd-domains/edge-server.conf']
+                if edge.count('keepalive_timeout 15s;') != 1:
+                    raise ValueError('Unexpected shared edge keepalive policy')
+                inline = ''.join('    '+line if line.strip() else line for line in edge.replace(
+                    'keepalive_timeout 15s;', 'keepalive_timeout 60s;').splitlines(keepends=True))
+                replacement = ('server {\n' + inline + '    listen 8443 ssl;\n'
+                               '    server_name hongdingauto.com;')
+                public = public.replace(marker, replacement, 1)
+
             if freeze_admin:
                 # Block all admin API traffic, including auth GET side effects.
                 admin=admin.replace('    location /api/ {', '    location /api/ {\n        return 503;')

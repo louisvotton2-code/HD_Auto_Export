@@ -58,6 +58,33 @@ class Slots(unittest.TestCase):
                 self.assertNotIn('http://api-green:3320', website)
                 self.assertEqual('location /api/ {\n        return 503;' in admin, freeze)
 
+    def test_apex_tls_keepalive_is_scoped_and_preserves_shared_policy(self):
+        source=Path(__file__).parent
+        baseline=m.gateway_files(source,web_host='web-blue',public_api_host='api-blue',admin_api_host='api-blue')
+        for freeze in (False,True):
+            result=m.gateway_files(source,web_host='web-blue',public_api_host='api-blue',admin_api_host='api-blue',freeze_admin=freeze,website_origin=m.APEX_WEBSITE_ORIGIN)
+            text=result['default.conf']
+            start=text.index('server {\n    # Explicit server override')
+            end=text.index('\n}',start)
+            apex=text[start:end]
+            self.assertIn('server_name hongdingauto.com;',apex)
+            self.assertIn('listen 8443 ssl;',apex)
+            self.assertEqual(apex.count('keepalive_timeout 60s;'),1)
+            shared=result['hd-domains/edge-server.conf']
+            for line in shared.splitlines():
+                if line and not line.startswith('#'):
+                    expected=line.replace('keepalive_timeout 15s;', 'keepalive_timeout 60s;')
+                    self.assertIn('    '+expected,apex)
+            self.assertIn('access_log /dev/stdout hd_edge;',apex)
+            self.assertEqual(text.count('keepalive_timeout 60s;'),1)
+            self.assertEqual(result['hd-domains/edge-server.conf'],baseline['hd-domains/edge-server.conf'])
+            self.assertIn('keepalive_timeout 15s;',result['hd-domains/edge-server.conf'])
+            self.assertEqual(set(result),set(baseline))
+            for name in ('admin.hongdingauto.com','www.hongdingauto.com'):
+                pos=text.rindex('server_name '+name+';');start=text.rfind('server {',0,pos)
+                self.assertIn('include /etc/nginx/hd-domains/edge-server.conf;',text[start:pos])
+        self.assertNotIn('keepalive_timeout 60s;',baseline['default.conf'])
+
     def test_no_config_injection(self):
         with self.assertRaises(ValueError):m.gateway_files(Path(__file__).parent,web_host='web;bad',public_api_host='api',admin_api_host='api')
         with self.assertRaises(ValueError):m.slot_config(self.config(),slot='bad',release='a'*40,api_ip='172.20.0.21',web_ip='172.20.0.22',mode_root='/srv')

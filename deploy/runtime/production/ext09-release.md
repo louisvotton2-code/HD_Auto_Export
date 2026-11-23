@@ -12,7 +12,7 @@
 
 ### 官网根域
 
-根域发布使用 `https://hongdingauto.com`。构建前将 `SITE_ORIGIN`、`WEB_SITE_ORIGIN` 和 `ANALYTICS_ORIGINS` 均设为该来源。用实际 Compose 输出生成应用槽，并将同一官网来源作为 `website_origin` 传给 `gateway_files()`。保持 `ADMIN_ORIGIN=https://admin.hongdingauto.com`，登录与员工 Cookie 沿用现有域。根域和 www 使用 `/run/tls/apex/current`，后台使用 `/run/tls/admin/current`。两个独立的 Certbot 证书在现有 ACME 挂载下续期。
+根域发布使用 `https://hongdingauto.com`。构建前将 `SITE_ORIGIN`、`WEB_SITE_ORIGIN` 和 `ANALYTICS_ORIGINS` 均设为该来源。用实际 Compose 输出生成应用槽，并将同一官网来源作为 `website_origin` 传给 `gateway_files()`。保持 `ADMIN_ORIGIN=https://admin.hongdingauto.com`，登录与员工 Cookie 沿用现有域。根域和 www 使用 `/run/tls/apex/current`，后台使用 `/run/tls/admin/current`。两个独立的 Certbot 证书在现有 ACME 挂载下续期。 根域 HTTPS 的空闲连接保持为 60 秒，切换前确认在连接预算内可复用且后台和 www 仍为 15 秒。保持现有会话票据、请求上限和限流。
 
 切流和回退前核对根域两套网关配置都能提供首页、目录与 API，www 跳转保留路径和查询参数。现有旧版回退材料若生成于换域前，先用该版 Web 和同版受信 API 验证根域入口，再切换；保留原配置供回退复查。上线后核对三语 canonical、已准入的站点地图、首页缓存及两条同源统计入口。两条统计入口只用缺字段的合成请求验路由，使用包含根域的 API 原生配置后移除临时代理映射。
 
@@ -34,7 +34,7 @@
 
 首次旧e623不认识mode：新candidate公开读健康后，将公开web/API先接新槽；冻结旧后台全部API（含auth GET）并禁止所有可能副作用入口。至少保留旧进程150秒，检查translation_plans/segments running=0、预算预留不再增长；有不确定状态就停在此阶段协调，不自动杀调用或重试翻译。随后优雅停止旧API确保唯一写入，再提升新active、后台切新。旧SSR公共请求要在停止旧API前排空。公网读保持可访问；后台写入短暂停顿如实记录。
 
-新写入后的回退是兼容应用切换，使用当前数据库与媒体。新 API 和 worker 均识别备份租约之后，才启用新版在线每日备份。
+新写入后的回退是兼容应用切换，使用当前数据库与媒体。新 API 和 worker 均识别备份租约之后，才启用新版在线每日备份。 启用 0051 前，核对实际定时任务读取的首方备份程序已识别供应商全局筛选分组表，转储只排除该派生表的数据，隔离恢复后分组从空表开始。
 
 ### 发布后的运行槽保留
 
