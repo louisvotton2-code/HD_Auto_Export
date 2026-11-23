@@ -46,9 +46,11 @@ test('publication unchanged state survives refresh and internal or inventory cha
   await tab(page, '发布预览'); await expect(publishButton(page)).toBeDisabled();
   await select(page, '核验后的库存状态', '已售');
   await page.getByRole('button', { name: /核验并更新库存$/ }).click();
-  await page.getByRole('dialog').getByRole('button', { name: /确认操作$/ }).click();
+  const confirmInventory = page.getByRole('dialog', { name: '确认库存核验结果' });
+  await expect(confirmInventory).toContainText('首页和列表可能在 10 分钟内显示旧库存。');
+  await confirmInventory.getByRole('button', { name: /确认操作$/ }).click();
   await expect(page.locator('.ant-message-success').filter({ hasText: '库存状态和核验时间已更新' })).toBeVisible();
-  await expect(page.locator('.ant-alert-success').filter({ hasText: '官网库存已同步，无需再次保存或发布。' })).toBeVisible();
+  await expect(page.locator('.ant-alert-success').filter({ hasText: '官网详情读取最新库存。首页和列表可能在 10 分钟内显示旧库存。无需再次保存或发布。' })).toBeVisible();
   expect(record.hasUnpublishedChanges).toBe(false); await expect(publishButton(page)).toBeDisabled();
 });
 

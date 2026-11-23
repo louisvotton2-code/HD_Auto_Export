@@ -91,6 +91,7 @@ export function BulkVisibility({ ids, onComplete }: { ids: string[]; onComplete:
       onCancel={() => { if (!locked) { setPreview(undefined); action.clear(); } }} onOk={() => void submit()}>
       {preview && <div>
         <p>将按下列当前版本处理 {preview.listings.length} 条挂牌。来源已撤回的挂牌无法恢复展示。</p>
+        {preview.hidden && <p>本次新隐藏的挂牌会立即退出公开目录。官网首页和列表的后续访问会读取更新后的结果。</p>}
         <ul>{preview.listings.map(row => <li key={row.id}>{row.identity.externalId} · {listingLabels[row.state]} · 版本 {row.version}</li>)}</ul>
       </div>}
       <ActionFeedback {...action} retry={() => void submit(true)} reconcile={() => void reconcile()} />

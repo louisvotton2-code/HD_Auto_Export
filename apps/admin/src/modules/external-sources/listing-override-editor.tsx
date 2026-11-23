@@ -137,6 +137,8 @@ export function ListingOverrideEditor({ listing, initialLocale, onClose, onRefre
         </div>
         <Checkbox checked={hidden} disabled={editorDisabled || listing.state === 'withdrawn'} onChange={event => setHidden(event.target.checked)}>从公开目录隐藏</Checkbox>
       </div>
+      {!listing.overrides.hidden && listing.state !== 'withdrawn' &&
+        <Typography.Text type="secondary">勾选隐藏并保存会立即撤下此挂牌。官网首页和列表的后续访问会读取更新后的结果。</Typography.Text>}
       <p className={styles.help}>直接修改需要更正的内容，最后统一保存。未修改的事实继续跟随来源；“修订为未知”会保留人工清空，“恢复跟随来源”会移除人工修订。</p>
       {factGroups.map(group => <section key={group.label} className={styles.section} aria-label={group.label}>
         <Typography.Title level={5}>{group.label}</Typography.Title>

@@ -328,6 +328,35 @@ test('external override rejects stale versions and replays uncertain writes with
   expect(attempts[2]).toEqual(attempts[1]);
 });
 
+test('external emergency hide submits the existing versioned override only after saving', async ({ page }) => {
+  await setup(page);
+  let current = listing;
+  await page.route(`**${root}/listings/${listing.id}?*`, route => reply(route, envelope(current)));
+  const writes: Array<{ method: string; path: string }> = [];
+  page.on('request', request => {
+    const method = request.method();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) writes.push({ method, path: new URL(request.url()).pathname });
+  });
+  const overridePath = `${root}/listings/${listing.id}/overrides`;
+  await page.route(`**${overridePath}`, route => {
+    const input = SaveExternalOverridesSchema.parse(route.request().postDataJSON());
+    expect(input).toEqual({ version: listing.version, overrides: { ...listing.overrides, hidden: true } });
+    expect(route.request().headers()['idempotency-key']).toBeTruthy();
+    current = { ...listing, version: listing.version + 1, overrides: input.overrides, state: 'hidden', vehicle: null };
+    return reply(route, envelope({ id: current.id, version: current.version, state: current.state }));
+  });
+  await page.goto(`${ui}/listings/${listing.id}`);
+  await page.getByRole('button', { name: '人工修订' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText(/勾选隐藏并保存会立即撤下此挂牌/)).toBeVisible();
+  await dialog.getByRole('checkbox', { name: '从公开目录隐藏' }).check();
+  expect(writes).toEqual([]);
+  await dialog.getByRole('button', { name: '保存修订' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('人工隐藏', { exact: true })).toBeVisible();
+  expect(writes).toEqual([{ method: 'PUT', path: overridePath }]);
+});
+
 test('external bulk visibility submits displayed versions and reports partial failure', async ({ page }) => {
   await setup(page);
   const withdrawn = { ...fixture.withdrawn, id: records[3].listingId! };
