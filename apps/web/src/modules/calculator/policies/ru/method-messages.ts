@@ -2,6 +2,7 @@ import { eaeuMethodMessages } from '../eaeu-method-messages';
 
 export const ruMethodMessages = {
   zh: {
+    recyclingOfficialHighPower: '输入的 {hp} hp 折算为 {kw} kW，按功率和车龄选取系数 {coefficient}，乘以基数 {base} RUB。',
     ...eaeuMethodMessages.zh,
     dutyElectric:
       '纯电车型按折合车价 {value} RUB 的 {percentage}% 计征关税，结果四舍五入至整 RUB。',
@@ -19,6 +20,7 @@ export const ruMethodMessages = {
       "按车型、车龄及 {hp} hp 选取适用系数 {coefficient}，乘基数 {base} RUB。",
   },
   en: {
+    recyclingOfficialHighPower: 'The entered {hp} hp converts to {kw} kW. Use the coefficient {coefficient} for this power and age, and multiply it by the base of {base} RUB.',
     ...eaeuMethodMessages.en,
     dutyElectric:
       'For a battery electric vehicle, duty is {percentage}% of the converted vehicle price of {value} RUB, rounded to whole RUB.',
@@ -36,6 +38,7 @@ export const ruMethodMessages = {
       "For this type, age and power of {hp} hp, multiply the applicable coefficient {coefficient} by the base of {base} RUB.",
   },
   ru: {
+    recyclingOfficialHighPower: 'Введённые {hp} л. с. соответствуют {kw} кВт. Коэффициент {coefficient} для этой мощности и возраста умножается на базу {base} RUB.',
     ...eaeuMethodMessages.ru,
     dutyElectric:
       'Для электромобиля пошлина составляет {percentage}% от стоимости автомобиля {value} RUB с округлением до целых RUB.',

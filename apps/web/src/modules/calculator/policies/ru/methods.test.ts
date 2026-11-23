@@ -79,6 +79,7 @@ describe('RU fee explanations', () => {
       quote({ price: '200000', transactionRate: '1', euroRate: '1' }, 24),
       quote({ displacementCc: '4000', powerHp: '161' }, 36),
       quote({ displacementCc: '4000', powerHp: '161' }),
+      quote({ displacementCc: '2500', powerHp: '510' }, 24),
       quote({ price: '10000001', transactionRate: '1' }),
     ];
     const keys = new Set<string>();

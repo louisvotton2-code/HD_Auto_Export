@@ -11,6 +11,7 @@ const reasons: Record<string, string> = {
   company_rules_pending: 'company_pending',
   powertrain_rules_pending: 'powertrain_pending',
   recycling_rules_pending: 'power_pending',
+  ru_recycling_age_review: 'ru_recycling_age_review',
   rule_date_outside_reference: 'year_pending',
   kz_declaration_review: 'kz_declaration_review',
   uz_age_boundary: 'uz_age_boundary',

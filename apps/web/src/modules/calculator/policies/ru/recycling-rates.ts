@@ -6,7 +6,8 @@
  * The standard low-power (<=160 hp ICE, <=80 hp BEV) rows for ineligible
  * importers use Resolution 1713, section I, points 1–2, 2026 columns:
  * https://publication.pravo.gov.ru/document/0001202511010019
- * Remaining coefficients retain the earlier reference snapshot. Base: 20,000 RUB.
+ * The 2–3 L high-power rows are verified separately under section I, point 4.
+ * Other coefficients retain the earlier reference snapshot. Base: 20,000 RUB.
  * Each upper power boundary is inclusive; null denotes the unbounded final row.
  */
 export interface RecyclingBand {
@@ -48,9 +49,18 @@ export const RECYCLING_UP_TO_3000: readonly RecyclingBand[] = [
   { maxHp: 340, fresh: '136.32', aged: '193.68' },
   { maxHp: 370, fresh: '141.72', aged: '199.08' },
   { maxHp: 400, fresh: '147.48', aged: '204.72' },
-  { maxHp: 430, fresh: '153.36', aged: '210.48' },
-  { maxHp: null, fresh: '153.36', aged: '228.6' },
+  { maxHp: null, fresh: '153.36', aged: '210.48' },
 ];
+
+/** Resolution 1713, § I(4), >2,000–3,000 cc, 2026 columns. */
+export const RECYCLING_2_TO_3_L_HIGH_POWER = {
+  minimumKw: '316.27',
+  bands: [
+    { maxKw: '338.33', fresh: '159.48', aged: '216.36' },
+    { maxKw: '367.75', fresh: '165.84', aged: '222.36' },
+    { maxKw: null, fresh: '172.44', aged: '228.60' },
+  ],
+} as const;
 
 export const RECYCLING_UP_TO_3500: readonly RecyclingBand[] = [
   { maxHp: 160, fresh: '129.2', aged: '197.81' },

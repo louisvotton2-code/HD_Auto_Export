@@ -64,7 +64,7 @@ describe('reference snapshots and result contract', () => {
       reason: 'reference_preview_only',
       currency: 'RUB',
       total: '529610',
-      ruleVersion: 'ru-personal-2026.11.23',
+      ruleVersion: 'ru-personal-2026.11.23-v2',
     });
     expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
       ['duty', '510869'],

@@ -39,7 +39,7 @@ describe('copied quote input facts', () => {
       euroRate: '94.7 RUB/EUR',
       fxStatus: 'manualFx',
       fxSnapshotDate: rates.asOf,
-      ruleVersion: 'ru-personal-2026.11.23',
+      ruleVersion: 'ru-personal-2026.11.23-v2',
     });
   });
 

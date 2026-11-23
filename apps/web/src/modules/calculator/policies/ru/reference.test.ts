@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Amount } from '../../core/decimal';
+import { calculateImportEstimate } from '../../core/calculate';
 import type { CalculationInput, ReferencePolicyFacts } from '../../core/types';
 import fixtures from './reference-fixtures.json';
 import { calculateRuReference, RU_REFERENCE_VERSION } from './reference';
@@ -36,7 +37,10 @@ function recycling(changes: Partial<CalculationInput>, ageMonths = 60) {
 describe('RU public reference compatibility fixtures', () => {
   // Frozen, literal expected values were obtained from the public reference
   // calculator in an isolated research VM, never from calculateRuReference.
-  it.each(fixtures.cases)(
+  // The official high-power schedule supersedes the public-reference catch-all.
+  const compatibleCases = fixtures.cases.filter(({ fuel, cc, hp }) =>
+    !(fuel === 'ice' && cc > 2000 && cc <= 3000 && hp > 430));
+  it.each(compatibleCases)(
     '$fuel / $cc cc / $hp hp: preserves both age columns of the published matrix',
     ({ fuel, cc, hp, fresh, aged }) => {
       const input: Partial<CalculationInput> = {
@@ -62,7 +66,7 @@ describe('RU public reference compatibility fixtures', () => {
       '926952',
     );
     expect(result.additionalCosts).toEqual([]);
-    expect(RU_REFERENCE_VERSION).toBe('ru-personal-2026.11.23');
+    expect(RU_REFERENCE_VERSION).toBe('ru-personal-2026.11.23-v2');
   });
 
   it('includes aggregate EV taxes and distinguishes the substantiated personal concession', () => {
@@ -164,5 +168,64 @@ describe('RU public reference compatibility fixtures', () => {
     const before = JSON.stringify(facts);
     expect(calculateRuReference(facts)).toEqual(calculateRuReference(facts));
     expect(JSON.stringify(facts)).toBe(before);
+  });
+});
+
+describe('official 2026 recycling coefficients for >2,000–3,000 cc', () => {
+  const input: CalculationInput = {
+    ...SAMPLE, displacementCc: '2500', powerHp: '510', transactionRate: '80', euroRate: '100',
+    customsDate: '2026-11-23', manufactureDate: '2025-01',
+  };
+
+  it.each([
+    ['430', '3067200', '4209600'],
+    ['430.01', '3189600', '4327200'],
+    ['460', '3189600', '4327200'],
+    ['460.01', '3316800', '4447200'],
+    ['500', '3316800', '4447200'],
+    ['500.01', '3448800', '4572000'],
+    ['501', '3448800', '4572000'],
+    ['510', '3448800', '4572000'],
+  ])('selects the official power band and both age columns at %s hp', (powerHp, fresh, aged) => {
+    for (const [manufactureDate, amount] of [['2025-01', fresh], ['2022-01', aged]]) {
+      const result = calculateImportEstimate({ ...input, powerHp, manufactureDate });
+      expect(result.status).toBe('reference');
+      expect(result.lines.find(line => line.id === 'recycling')?.amount).toBe(amount);
+    }
+  });
+
+  it('reproduces the 510 hp example and its full amount', () => {
+    const result = calculateImportEstimate(input);
+    expect(result.total).toBe('4837341');
+    expect(result.lines.find(line => line.id === 'recycling')).toMatchObject({
+      amount: '3448800',
+      method: { key: 'RU.recyclingOfficialHighPower', params: { kw: '375.10', coefficient: '172.44' } },
+    });
+    expect(result.assumptions).toContain('ru_recycling_payment_date_assumed');
+  });
+
+  it('uses the exact anniversary when known and withholds the total for a disputed month', () => {
+    const near = { ...input, manufactureDate: '2023-11' };
+    expect(calculateImportEstimate(near)).toMatchObject({
+      status: 'needs_review', reason: 'ru_recycling_age_review', total: null,
+    });
+    expect(calculateImportEstimate({ ...near, customsDate: '2026-11-01' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '3448800' }));
+    expect(calculateImportEstimate({ ...near, manufactureDay: '2023-11-23' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '3448800' }));
+    expect(calculateImportEstimate({ ...near, manufactureDay: '2023-11-22' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '4572000' }));
+  });
+
+  it('keeps the scope at 2026 individual imports', () => {
+    expect(calculateImportEstimate({ ...input, importerType: 'company' })).toMatchObject({
+      status: 'needs_review', reason: 'company_rules_pending', total: null,
+    });
+    expect(calculateImportEstimate({ ...input, customsDate: '2025-12-01' })).toMatchObject({
+      status: 'needs_review', reason: 'rule_date_outside_reference', total: null,
+    });
+    expect(calculateImportEstimate({ ...input, customsDate: '2027-01-01' })).toMatchObject({
+      status: 'needs_review', reason: 'rule_date_outside_reference', total: null,
+    });
   });
 });

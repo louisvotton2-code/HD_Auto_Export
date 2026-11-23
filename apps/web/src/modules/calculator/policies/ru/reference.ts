@@ -1,11 +1,13 @@
 import { personalCombustionDuty, throughEaeuAnniversary } from '../eaeu-personal';
 import { Amount, roundedAmount } from '../../core/decimal';
+import { compareManufactureAnniversary } from '../../core/dates';
 import type {
   CalculationLine,
   ReferencePolicyFacts,
   ReferencePolicyResult,
 } from '../../core/types';
 import {
+  RECYCLING_2_TO_3_L_HIGH_POWER,
   RECYCLING_ELECTRIC,
   RECYCLING_OVER_3500,
   RECYCLING_UP_TO_1000,
@@ -14,7 +16,7 @@ import {
   RECYCLING_UP_TO_3500,
 } from './recycling-rates';
 
-export const RU_REFERENCE_VERSION = 'ru-personal-2026.11.23';
+export const RU_REFERENCE_VERSION = 'ru-personal-2026.11.23-v2';
 
 // Article 193, Tax Code of the Russian Federation, passenger-car rates for 2026 (RUB/hp).
 const EXCISE_PER_HP = [
@@ -63,10 +65,24 @@ export function calculateRuReference(facts: ReferencePolicyFacts): ReferencePoli
           : cc.lte('3500')
             ? RECYCLING_UP_TO_3500
             : RECYCLING_OVER_3500;
-  const row = recyclingTable.find((item) => item.maxHp === null || hp.lte(item.maxHp))!;
-  const young = throughEaeuAnniversary(facts, 3);
+  // The public form uses metric hp. Compare the converted power at the table's kW precision.
+  const powerKw = hp.div('1.35962').toDecimalPlaces(2);
+  const officialHighPower = recyclingTable === RECYCLING_UP_TO_3000 &&
+    powerKw.gte(RECYCLING_2_TO_3_L_HIGH_POWER.minimumKw);
+  const anniversary = officialHighPower
+    ? compareManufactureAnniversary(input, facts.ageMonths, 3)
+    : undefined;
+  // On the first day of the anniversary month, no manufacture day can be over three years old.
+  if (anniversary === null && !input.customsDate.endsWith('-01')) {
+    return { reason: 'ru_recycling_age_review', lines: [], additionalCosts: [] };
+  }
+  const row = officialHighPower
+    ? RECYCLING_2_TO_3_L_HIGH_POWER.bands.find((item) => item.maxKw === null || powerKw.lte(item.maxKw))!
+    : recyclingTable.find((item) => item.maxHp === null || hp.lte(item.maxHp))!;
+  const young = anniversary === undefined ? throughEaeuAnniversary(facts, 3) : anniversary !== 1;
   const recyclingCoefficient = concession ? (young ? '0.17' : '0.26') : (young ? row.fresh : row.aged);
   const assumptions: string[] = [];
+  if (officialHighPower) assumptions.push('ru_recycling_payment_date_assumed');
   if (concession && !input.ruPersonalRelief) assumptions.push('ru_personal_relief_assumed');
   if (input.powertrain === 'hev' || input.powertrain === 'phev') assumptions.push('ru_hybrid_certified_power');
   const taxes = [duty];
@@ -105,8 +121,12 @@ export function calculateRuReference(facts: ReferencePolicyFacts): ReferencePoli
         amount: roundedAmount(new Amount('20000').mul(recyclingCoefficient)),
         formula: `20000 × ${recyclingCoefficient}`,
         method: {
-          key: concession ? 'RU.recyclingConcession' : 'RU.recyclingTable',
-          params: { hp: hp.toFixed(), coefficient: recyclingCoefficient, base: '20000' },
+          key: officialHighPower ? 'RU.recyclingOfficialHighPower'
+            : concession ? 'RU.recyclingConcession' : 'RU.recyclingTable',
+          params: {
+            hp: hp.toFixed(), coefficient: recyclingCoefficient, base: '20000',
+            ...(officialHighPower ? { kw: powerKw.toFixed(2) } : {}),
+          },
         },
       },
     ],
