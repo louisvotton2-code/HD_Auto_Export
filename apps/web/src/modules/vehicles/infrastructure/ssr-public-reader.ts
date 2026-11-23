@@ -1,7 +1,9 @@
 import {
   INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS,
   InternalPublicCatalogCacheStampSchema,
   InternalPublicCatalogVersionResponseSchema,
+  InternalPublicHomepageCacheStampSchema,
   PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
   PublicCatalogCacheStampSchema,
   PublicCatalogVersionResponseSchema,
@@ -27,7 +29,7 @@ export type SsrPublicDescriptor<T extends Envelope> = {
   media?: (resource: Anonymous<T>) => readonly PublicMedia[];
 };
 export type SsrCacheIdentity = { deploymentEnv: string; releaseId: string; apiOrigin: string };
-export type SsrCacheProtocol = 1 | 2;
+export type SsrCacheProtocol = 1 | 2 | 3;
 type Negotiated<T> = { protocol: SsrCacheProtocol; value: T; offsetSnapshot?: PublicCatalogCacheStamp; inlineSnapshot?: true };
 export type SsrInitialVersionRead = (startedAt: number) => {
   startedAt: number;
@@ -52,8 +54,23 @@ function deadlineAt(startedAt: number, stamp: PublicCatalogCacheStamp, maxLifeti
   return startedAt + Math.min(maxLifetime, Date.parse(stamp.validUntil) - Date.parse(stamp.checkedAt));
 }
 
-const protocolLifetime = (protocol: SsrCacheProtocol) => protocol === 2
-  ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
+const protocolLifetime = {
+  1: PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  2: INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  3: INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS,
+};
+
+export const ssrCacheStampSchema = {
+  1: PublicCatalogCacheStampSchema,
+  2: InternalPublicCatalogCacheStampSchema,
+  3: InternalPublicHomepageCacheStampSchema,
+};
+
+const versionResponseSchema = {
+  1: PublicCatalogVersionResponseSchema,
+  2: InternalPublicCatalogVersionResponseSchema,
+  3: InternalPublicCatalogVersionResponseSchema.extend({ data: InternalPublicHomepageCacheStampSchema }),
+};
 
 /** This closure only receives public descriptors/stamps and a static service reader, never visitor context. */
 function anonymousLoad<T extends Envelope>(
@@ -65,8 +82,7 @@ function anonymousLoad<T extends Envelope>(
     // The HTTP adapter validates the official schema and removes its trace first.
     const { protocol: resourceProtocol, value: resource, offsetSnapshot, inlineSnapshot } = await readAnonymous(descriptor);
     const rawStamp = resource.meta.catalogCache;
-    const schema = resourceProtocol === 2 ? InternalPublicCatalogCacheStampSchema : PublicCatalogCacheStampSchema;
-    const parsed = schema.safeParse(rawStamp);
+    const parsed = ssrCacheStampSchema[resourceProtocol].safeParse(rawStamp);
     const stamp = parsed.success ? parsed.data : undefined;
     if ((rawStamp !== undefined && !stamp) || (stamp && stamp.priceView !== expected.priceView))
       throw new ChangedPublicVersion();
@@ -74,8 +90,9 @@ function anonymousLoad<T extends Envelope>(
     const oneOffOffset = rawStamp === undefined && descriptor.allowOffsetSnapshot && offsetSnapshot
       && samePriceView(offsetSnapshot, expected) ? offsetSnapshot : undefined;
     const oneOffInline = descriptor.allowInlineSnapshot && inlineSnapshot && stamp && samePriceView(stamp, expected);
-    if (!reusable && descriptor.scope !== 'filters' && !oneOffOffset && !oneOffInline) throw new ChangedPublicVersion();
-    const maxLifetime = Math.min(protocolLifetime(protocol), protocolLifetime(resourceProtocol));
+    const oneOffFilters = descriptor.scope === 'filters' && (protocol !== 3 || stamp === undefined);
+    if (!reusable && !oneOffFilters && !oneOffOffset && !oneOffInline) throw new ChangedPublicVersion();
+    const maxLifetime = Math.min(protocolLifetime[protocol], protocolLifetime[resourceProtocol]);
     const mediaExpiry = (descriptor.media?.(resource) ?? []).reduce((expiry, image) =>
       image.remote?.expiresAt ? Math.min(expiry, Date.parse(image.remote.expiresAt)) : expiry, Infinity);
     const freshness = stamp ?? oneOffOffset;
@@ -83,7 +100,7 @@ function anonymousLoad<T extends Envelope>(
       startedAt + mediaExpiry - Date.parse(freshness.checkedAt)) : startedAt + maxLifetime;
     const deadline = Math.min(versionDeadline, resourceDeadline);
     if (now() >= deadline) throw new SsrDtoCacheExpiredError();
-    const proofExpiry = protocol === 2 && resourceProtocol === 2 && reusable
+    const proofExpiry = protocol !== 1 && protocol === resourceProtocol && reusable
       ? Math.min(Date.parse(stamp.validUntil), mediaExpiry) : null;
     if (oneOffInline && !reusable) delete resource.meta.catalogCache;
     // A consistent one-off snapshot may finish during a version change. Share it with
@@ -114,11 +131,10 @@ export function createSsrPublicReader({ identity, readVersion, readAnonymous, ca
           ? initialVersion(startedAt)
           : { startedAt, result: readVersion(descriptor.priceView, descriptor.scope) };
         const { protocol, value } = await version.result;
-        const schema = protocol === 2 ? InternalPublicCatalogVersionResponseSchema : PublicCatalogVersionResponseSchema;
-        const current = schema.parse(value);
+        const current = versionResponseSchema[protocol].parse(value);
         const stamp = current.data;
         if (stamp.priceView !== descriptor.priceView) throw new PublicApiError(503);
-        const versionDeadline = deadlineAt(version.startedAt, stamp, protocolLifetime(protocol));
+        const versionDeadline = deadlineAt(version.startedAt, stamp, protocolLifetime[protocol]);
         if (now() >= versionDeadline) throw new PublicApiError(503);
         const key = JSON.stringify([
           identity.deploymentEnv, identity.releaseId, identity.apiOrigin,

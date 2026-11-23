@@ -2,7 +2,8 @@ import { PublicVehicleQuerySchema, type PublicFilterQuery, type PublicVehicleQue
 import { headers } from 'next/headers';
 import type { Locale } from '@/i18n/routing';
 import { getServerReleaseIdentity } from '@/shared/config/server-runtime';
-import { invalidatePublicHtmlRender, publicHtmlRenderTicketHeader, recordPublicHtmlRenderStamp } from '@/shared/lib/public-html-render-proof';
+import { invalidatePublicHtmlRender, publicHtmlRenderTicketHeader, recordPublicHtmlRenderStamp,
+  type PublicHtmlCacheProtocol } from '@/shared/lib/public-html-render-proof';
 import { localizedHomeSchema, publicFiltersSchema, localizedCardListSchema, localizedInlineVehicleSchema } from '../localized-projection';
 import {
   publicUsdCatalogQuery, publicUsdFilterQuery, publicUsdView, publicInlineVehicleView,
@@ -21,17 +22,25 @@ function store() { return processStores[cacheSymbol] ??= new SsrDtoCache(); }
 
 async function readSsr<T extends SsrPublicEnvelope>(
   descriptor: SsrPublicDescriptor<T>, incoming?: Pick<Headers, 'get'>, initialVersion?: SsrInitialVersionRead,
+  exactHomepageLocale?: Locale,
 ) {
+  const protocol = exactHomepageLocale ? 3 : 2;
   let ticket: string | null = null;
   try {
     if (!incoming) ticket = (await headers()).get(publicHtmlRenderTicketHeader);
     const identity = { ...getServerReleaseIdentity(), apiOrigin: publicApiOrigin() };
     const read = createSsrPublicReader({
-      identity, cache: store(), readAnonymous: readAnonymousPublicResource,
+      identity, cache: store(), readAnonymous: resource => readAnonymousPublicResource(resource, protocol),
       // This function runs per call, even if the DTO key is already warm.
-      readVersion: async (priceView, scope) => readSsrServiceVersion(priceView, await publicRequestHeaders(incoming), scope),
+      readVersion: async (priceView, scope) => {
+        const visitor = await publicRequestHeaders(incoming);
+        // A homepage conflict requires a fresh paired check under the same protocol.
+        return exactHomepageLocale
+          ? selectVersion(readSsrServiceVersions(visitor, undefined, exactHomepageLocale), scope ?? 'catalog')
+          : readSsrServiceVersion(priceView, visitor, scope);
+      },
       onStamp: ticket ? (stamp, deadline) => {
-        if (stamp) recordPublicHtmlRenderStamp(ticket, descriptor.scope ?? 'catalog', stamp, deadline);
+        if (stamp) recordPublicHtmlRenderStamp(ticket, descriptor.scope ?? 'catalog', stamp, deadline, protocol);
         else invalidatePublicHtmlRender(ticket);
       } : undefined,
     });
@@ -61,32 +70,39 @@ function readSsrFilters(
   scope: UsdFilterScope,
   projection: Pick<PublicFilterQuery, 'projection' | 'make' | 'model'>,
   initialVersion?: SsrInitialVersionRead,
+  exactHomepageLocale?: Locale,
 ) {
   return readSsr({ path: canonicalPublicPath('/api/v1/vehicle-filters', { ...publicUsdFilterQuery(locale, scope), ...projection }),
-    priceView: 'usd', scope: 'filters', schema: publicFiltersSchema }, undefined, initialVersion);
+    priceView: 'usd', scope: 'filters', schema: publicFiltersSchema }, undefined, initialVersion, exactHomepageLocale);
 }
 
-export function getSsrPublicHomepage(locale: Locale) {
-  const versions = createSsrCatalogVersionScope();
+export function getSsrPublicHomepage(locale: Locale, protocol: PublicHtmlCacheProtocol = 2) {
+  const exactHomepageLocale = protocol === 3 ? locale : undefined;
+  const versions = createSsrCatalogVersionScope(exactHomepageLocale);
   return [
     readSsr({ path: canonicalPublicPath('/api/v1/home/vehicles', { locale, ...publicUsdView }),
       priceView: 'usd', schema: localizedHomeSchema(locale, 'usd'),
-      media: value => media(value.data.sections.flatMap(section => section.vehicles)) }, undefined, versions.catalog),
-    readSsrFilters(locale, {}, { projection: 'overview' }, versions.filters),
-    readSsrFilters(locale, {}, { projection: 'home-models' }, versions.filters),
+      media: value => media(value.data.sections.flatMap(section => section.vehicles)) }, undefined, versions.catalog, exactHomepageLocale),
+    readSsrFilters(locale, {}, { projection: 'overview' }, versions.filters, exactHomepageLocale),
+    readSsrFilters(locale, {}, { projection: 'home-models' }, versions.filters, exactHomepageLocale),
   ] as const;
 }
-export function createSsrCatalogVersionScope() {
+type SsrVersionPair = ReturnType<typeof readSsrServiceVersions>;
+type VersionScope = keyof Awaited<SsrVersionPair>;
+
+async function selectVersion(pair: SsrVersionPair, scope: VersionScope) {
+  const result = await (await pair)[scope];
+  if (result.status === 'rejected') throw result.reason;
+  return result.value;
+}
+
+export function createSsrCatalogVersionScope(exactHomepageLocale?: Locale) {
   let first: { startedAt: number; result: ReturnType<typeof readSsrServiceVersions> } | undefined;
-  const read = (scope: 'catalog' | 'filters'): SsrInitialVersionRead => startedAt => {
-    first ??= { startedAt, result: publicRequestHeaders().then(visitor => readSsrServiceVersions(visitor)) };
+  const read = (scope: VersionScope): SsrInitialVersionRead => startedAt => {
+    first ??= { startedAt, result: publicRequestHeaders().then(visitor => readSsrServiceVersions(visitor, undefined, exactHomepageLocale)) };
     return {
       startedAt: first.startedAt,
-      result: first.result.then(async versions => {
-        const result = await versions[scope];
-        if (result.status === 'rejected') throw result.reason;
-        return result.value;
-      }),
+      result: selectVersion(first.result, scope),
     };
   };
   return { catalog: read('catalog'), filters: read('filters') };

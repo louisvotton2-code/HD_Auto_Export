@@ -19,8 +19,9 @@ function serviceKey() {
 
 export function publicHtmlCacheRequest(request: Request) {
   const { headers } = request;
+  const protocol = headers.get('x-hd-cache-protocol');
   if (
-    request.method !== 'GET' || headers.get('x-hd-cache-protocol') !== '2'
+    request.method !== 'GET' || (protocol !== '2' && protocol !== '3')
     || process.env.VEHICLE_API_TRUST_PROXY_IP !== 'true' || privateHeaders.some(name => headers.has(name))
   ) return null;
   const provided = headers.get('x-hd-html-key');
@@ -32,7 +33,7 @@ export function publicHtmlCacheRequest(request: Request) {
   const expected = serviceKey();
   const candidate = Buffer.from(provided);
   if (!expected || expected.length !== candidate.length || !timingSafeEqual(expected, candidate)) return null;
-  return { nonce, visitor };
+  return { nonce, visitor, protocol: protocol === '2' ? 2 as const : 3 as const };
 }
 
 export function publicHtmlCacheStatus(status: 404 | 429 | 503, retryAfter?: string) {

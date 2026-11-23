@@ -9,15 +9,15 @@ const root = 'http://api.example.invalid/internal/public-catalog/version?priceVi
 const protocol = { 'Cache-Control': 'no-store', 'X-HD-Cache-Protocol': '2' };
 const meta = { requestId: 'version-trace' };
 
-function scopePair() {
+function scopePair(lifetimeMs = 60_000) {
   const checkedAt = new Date();
-  const validUntil = new Date(+checkedAt + 60_000).toISOString();
+  const validUntil = new Date(+checkedAt + lifetimeMs).toISOString();
   const stamp = { priceView: 'usd', fx: null, checkedAt: checkedAt.toISOString(), validUntil };
   return { catalog: { ...stamp, version: 'a'.repeat(64) }, filters: { ...stamp, version: 'b'.repeat(64) } };
 }
 
-function read(ip = visitor) {
-  return getPublicHtmlCacheVersions(ip, new AbortController().signal);
+function read(ip = visitor, mode: 2 | 3 = 2) {
+  return getPublicHtmlCacheVersions(ip, new AbortController().signal, 'ru', mode);
 }
 
 function rejectedBodyResponse(status: number, headers?: HeadersInit) {
@@ -45,6 +45,18 @@ describe('homepage HTML version preflight', () => {
         Accept: 'application/json', 'Cache-Control': 'no-store', 'x-hd-cache-protocol': '2',
         'X-HD-SSR-Key': key, 'X-Forwarded-For': visitor,
       },
+    }));
+  });
+
+  it('authorizes the precise pair for the requested language and its longer deadline', async () => {
+    const data = scopePair(600_000);
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ data, meta }, { headers: {
+      'Cache-Control': 'no-store', 'X-HD-Cache-Protocol': '3', 'X-HD-Catalog-Homepage': 'exact-v1',
+    } }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(read(visitor, 3)).resolves.toEqual(data);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(root + '&scope=homepage&locale=ru', expect.objectContaining({
+      headers: expect.objectContaining({ 'x-hd-cache-protocol': '3', 'X-Forwarded-For': visitor }),
     }));
   });
 
