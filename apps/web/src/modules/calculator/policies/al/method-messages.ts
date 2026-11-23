@@ -1,71 +1,38 @@
-/** Localized descriptions; threshold decisions remain entirely in the policy. */
 export const alMethodMessages = {
   zh: {
-    duty: '本参考采用个人乘用车进口口径，关税按 0 计；这不代表增值税、注册费或豪车税也为 0。',
-    excise: '本参考口径对本类乘用车不另计消费税，因此本项为 0；增值税和豪车税另行判断。',
-    vatElectric:
-      '纯电不使用燃油车排量最低估值，计税基数为车价加已填运保换算取整后的申报价值 {declared} ALL。乘 {rate}% 后四舍五入至整数 ALL。',
-    vatDeclared:
-      '排量 {cc} cc 对应最低估值 {minimum} ALL；申报价值（车价加已填运保换算取整）为 {declared} ALL，不低于最低估值，因此税基采用 {taxableBase} ALL。乘 {rate}% 后四舍五入至整数 ALL。',
-    vatMinimum:
-      '排量 {cc} cc 对应最低估值 {minimum} ALL；申报价值（车价加已填运保换算取整）为 {declared} ALL，低于最低估值，因此税基提高至 {taxableBase} ALL。乘 {rate}% 后四舍五入至整数 ALL。',
-    registration:
-      '采用参考站的固定注册费用估算 {fee} ALL，计入上方进口费用合计；实际收费仍以办理机构为准。',
-    luxuryDisplacement:
-      '本车非纯电，排量 {cc} cc 达到 3,000 cc 门槛，触发一次性豪车税 {fee} ALL；价值门槛无需同时满足。',
-    luxuryValue:
-      '本车增值税计税价值 {taxableBase} ALL 达到 5,000,000 ALL 门槛，触发一次性豪车税 {fee} ALL；排量门槛无需同时满足。',
-    luxuryBelow:
-      '排量 {cc} cc 低于 3,000 cc，且增值税计税价值 {taxableBase} ALL 低于 5,000,000 ALL；两项门槛都未达到，因此一次性豪车税为 0。',
-    luxuryElectricBelow:
-      '纯电不使用排量豪车门槛；增值税计税价值 {taxableBase} ALL 低于 5,000,000 ALL，因此一次性豪车税为 0。',
-    annualLuxury:
-      '车辆已触发豪车条件，另有每年 {fee} ALL 的参考年度豪车税。它是后续年度支出，未计入上方一次性进口费用合计。',
+    duty: '普通 HS 8703 乘用车进口按零关税测算。',
+    excise: '普通 HS 8703 乘用车进口不另计消费税。',
+    vatDeclared: '按海关接受成交价格的情形，车价加已填运保换算为 {taxableBase} ALL，再乘以 20%。海关改用其他估值方法时，以核定价值为准。',
+    vatElectric: '普通纯电车按含已填运保的 {taxableBase} ALL 计 20% 增值税。零公里新车须同时确认从未登记才能适用豁免。',
+    vatNewElectric: '这辆纯电车为零公里、从未登记，按新车进口增值税豁免测算。',
+    registration: '在国外购买的普通乘用车登记包括实车核验证书 2,000 ALL、行驶证 2,500 ALL 和两块号牌 4,000 ALL。',
+    luxuryConfirmed: '座位数最多 6+1，排量达到 3,000 cc 或登记认可价值达到 5,000,000 ALL，应缴首次登记豪车税 70,000 ALL。',
+    luxuryConditional: '若核实座位数最多 6+1，且排量达到 3,000 cc 或登记认可价值达到 5,000,000 ALL，首次登记另缴 70,000 ALL。',
+    annualLuxury: '符合豪车条件，另有每年 21,000 ALL 税费。',
+    annualConditional: '经登记机关认定为豪车时，每年另缴 21,000 ALL。',
   },
   en: {
-    duty: 'This reference uses the personal passenger-car import treatment with zero customs duty. VAT, registration and luxury tax are assessed separately and may still be payable.',
-    excise:
-      'This reference treatment adds no separate excise charge for this passenger-car category, so this line is zero; VAT and luxury tax are assessed separately.',
-    vatElectric:
-      'BEVs do not use the combustion displacement minimum; the base is declared value ALL {declared}, obtained by converting the price plus supplied freight and insurance and rounding to whole ALL. Apply {rate}% and round to whole ALL.',
-    vatDeclared:
-      'The {cc} cc engine selects a minimum value of ALL {minimum}; declared value, including supplied freight and insurance after conversion and whole-ALL rounding, is ALL {declared}, at least that minimum, so use ALL {taxableBase}. Apply {rate}% and round to whole ALL.',
-    vatMinimum:
-      'The {cc} cc engine selects a minimum value of ALL {minimum}; declared value, including supplied freight and insurance after conversion and whole-ALL rounding, is ALL {declared}, below that minimum, so raise the base to ALL {taxableBase}. Apply {rate}% and round to whole ALL.',
-    registration:
-      'Use the reference site’s fixed registration estimate of ALL {fee}, included in the import-fee total above. The administering authority determines the actual charge.',
-    luxuryDisplacement:
-      'The non-BEV engine is {cc} cc, reaching the 3,000 cc threshold and triggering one-time luxury tax of ALL {fee}. The value threshold need not also be met.',
-    luxuryValue:
-      'The VAT value of ALL {taxableBase} reaches the ALL 5,000,000 threshold and triggers one-time luxury tax of ALL {fee}. The displacement threshold need not also be met.',
-    luxuryBelow:
-      'The {cc} cc engine is below 3,000 cc and the VAT value of ALL {taxableBase} is below ALL 5,000,000. Neither threshold is met, so one-time luxury tax is zero.',
-    luxuryElectricBelow:
-      'BEVs do not use the displacement luxury threshold; the VAT value of ALL {taxableBase} is below ALL 5,000,000, so one-time luxury tax is zero.',
-    annualLuxury:
-      'The vehicle meets a luxury threshold, so a separate reference annual luxury tax of ALL {fee} applies. This is an ongoing annual expense and is excluded from the one-time import-fee total above.',
+    duty: 'Ordinary HS 8703 passenger cars have zero import duty.',
+    excise: 'There is no separate import excise for ordinary HS 8703 passenger cars.',
+    vatDeclared: 'If Customs accepts the transaction value, convert the price and supplied freight and insurance to ALL {taxableBase}, then apply 20%. An alternative valuation uses the amount assessed by Customs.',
+    vatElectric: 'Standard import VAT for an electric car is 20% of ALL {taxableBase}, including the freight and insurance entered. The new-car exemption requires zero mileage and no prior registration.',
+    vatNewElectric: 'This electric passenger car has zero mileage and has never been registered, qualifying for the new-car import VAT exemption.',
+    registration: 'Ordinary registration for a passenger car purchased abroad includes the physical inspection certificate (ALL 2,000), road permit (ALL 2,500), and two plates (ALL 4,000).',
+    luxuryConfirmed: 'The car has at most seven seats including the driver, and either displacement of at least 3,000 cc or an assessed registration value of at least ALL 5,000,000. First registration incurs ALL 70,000.',
+    luxuryConditional: 'A possible ALL 70,000 charge at first registration depends on having at most seven seats including the driver and either at least 3,000 cc or an assessed registration value of at least ALL 5,000,000.',
+    annualLuxury: 'The separate annual luxury vehicle tax is ALL 21,000.',
+    annualConditional: 'If the registration authority classifies the car as a luxury vehicle, an additional ALL 21,000 is due annually.',
   },
   ru: {
-    duty: 'Применяется справочная схема личного ввоза легкового автомобиля с нулевой таможенной пошлиной. НДС, регистрация и налог на роскошь проверяются отдельно и могут подлежать уплате.',
-    excise:
-      'По этой справочной схеме для данной категории легковых автомобилей отдельный акциз не начисляется, поэтому строка равна 0; НДС и налог на роскошь проверяются отдельно.',
-    vatElectric:
-      'Для электромобиля не применяется минимальная оценка по объёму ДВС; база — заявленная стоимость {declared} ALL, полученная переводом цены с указанными перевозкой и страховкой и округлением до целого ALL. Применяется {rate}%, результат округляется до целого ALL.',
-    vatDeclared:
-      'Объём {cc} см³ соответствует минимальной оценке {minimum} ALL; заявленная стоимость с указанными перевозкой и страховкой после перевода и округления составляет {declared} ALL и не ниже минимума, поэтому база — {taxableBase} ALL. Применяется {rate}%, результат округляется до целого ALL.',
-    vatMinimum:
-      'Объём {cc} см³ соответствует минимальной оценке {minimum} ALL; заявленная стоимость с указанными перевозкой и страховкой после перевода и округления составляет {declared} ALL и ниже минимума, поэтому база повышается до {taxableBase} ALL. Применяется {rate}%, результат округляется до целого ALL.',
-    registration:
-      'Используется фиксированная оценка регистрации сайта-образца: {fee} ALL, включённая в итог импортных платежей выше. Фактическую сумму определяет орган регистрации.',
-    luxuryDisplacement:
-      'Автомобиль не является электромобилем; объём {cc} см³ достигает порога 3 000 см³, поэтому разовый налог на роскошь составляет {fee} ALL. Одновременное достижение стоимостного порога не требуется.',
-    luxuryValue:
-      'Стоимость для НДС {taxableBase} ALL достигает порога 5 000 000 ALL, поэтому разовый налог на роскошь составляет {fee} ALL. Одновременное достижение порога объёма не требуется.',
-    luxuryBelow:
-      'Объём {cc} см³ ниже 3 000 см³, а стоимость для НДС {taxableBase} ALL ниже 5 000 000 ALL. Оба порога не достигнуты, поэтому разовый налог на роскошь равен 0.',
-    luxuryElectricBelow:
-      'Для электромобиля не применяется порог объёма двигателя; стоимость для НДС {taxableBase} ALL ниже 5 000 000 ALL, поэтому разовый налог на роскошь равен 0.',
-    annualLuxury:
-      'Автомобиль соответствует условиям роскоши, поэтому отдельно указан справочный ежегодный налог {fee} ALL. Это последующий ежегодный расход, не включённый в итог разовых импортных платежей выше.',
+    duty: 'Для обычного легкового автомобиля кода 8703 ввозная пошлина равна нулю.',
+    excise: 'Отдельный импортный акциз для обычного легкового автомобиля кода 8703 не начисляется.',
+    vatDeclared: 'Если таможня признаёт цену сделки, стоимость с указанными доставкой и страховкой составляет {taxableBase} ALL. К ней применяется ставка 20%. При ином методе оценки используется стоимость, определённая таможней.',
+    vatElectric: 'Обычный НДС при ввозе электромобиля равен 20% от {taxableBase} ALL с учётом указанной доставки и страховки. Для льготы нужны нулевой пробег и отсутствие предыдущей регистрации.',
+    vatNewElectric: 'Нулевой пробег и отсутствие предыдущей регистрации дают этому электромобилю право на освобождение от импортного НДС для новых машин.',
+    registration: 'Обычная регистрация купленного за границей легкового автомобиля включает документ о проверке (2 000 ALL), разрешение на движение (2 500 ALL) и два номера (4 000 ALL).',
+    luxuryConfirmed: 'До семи мест вместе с водителем и объём от 3 000 см³ либо регистрационная стоимость от 5 000 000 ALL. При первой регистрации взимается 70 000 ALL.',
+    luxuryConditional: 'Возможный сбор при первой регистрации — 70 000 ALL, если в машине до семи мест вместе с водителем и объём от 3 000 см³ либо регистрационная стоимость от 5 000 000 ALL.',
+    annualLuxury: 'Отдельный ежегодный налог на автомобиль класса люкс составляет 21 000 ALL.',
+    annualConditional: 'Если при регистрации автомобиль признают автомобилем класса люкс, дополнительно взимают 21 000 ALL ежегодно.',
   },
 } as const;

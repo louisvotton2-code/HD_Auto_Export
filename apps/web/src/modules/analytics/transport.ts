@@ -53,13 +53,13 @@ export function enqueueAnalytics(event: AnalyticsEvent) {
   schedule();
 }
 
-export function flushAnalyticsOnExit() {
+export function flushAnalyticsImmediately() {
   clearTimeout(timer);
   timer = undefined;
   if (!pending.length) return;
   const events = pending.splice(-analyticsEventBatchLimit);
   pending = [];
-  // Unload delivery is best-effort. No retry queue or persistence across sessions.
+  // Delivery during navigation is best-effort. No retry queue or session persistence.
   void send(events, true);
 }
 

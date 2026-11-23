@@ -22,6 +22,7 @@ const RU_SAMPLE: CalculationInput = {
 const GE_SAMPLE: CalculationInput = {
   ...RU_SAMPLE,
   country: 'GE',
+  customsDate: '2026-11-23',
   price: '',
   powerHp: '',
   transactionRate: '',
@@ -62,11 +63,11 @@ describe('reference snapshots and result contract', () => {
       quality: 'reference_only',
       reason: 'reference_preview_only',
       currency: 'RUB',
-      total: '926952',
-      ruleVersion: 'ru-personal-reference-2026.10.23-v2',
+      total: '529610',
+      ruleVersion: 'ru-personal-2026.11.23-v2',
     });
     expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['duty', '908211'],
+      ['duty', '510869'],
       ['customsFee', '13541'],
       ['recycling', '5200'],
     ]);
@@ -80,8 +81,8 @@ describe('reference snapshots and result contract', () => {
     expect(calculateImportEstimate(GE_SAMPLE)).toMatchObject({
       status: 'reference',
       currency: 'GEL',
-      total: '3605',
-      ruleVersion: 'ge-personal-reference-2026.10.22-v1',
+      total: '3271.88',
+      ruleVersion: 'ge-hs8703-2026.11.23-v3',
       missingFields: [],
       fieldErrors: {},
     });
@@ -102,19 +103,15 @@ describe('reference snapshots and result contract', () => {
 });
 
 describe('RU reference boundaries', () => {
-  it('changes duty and recycling at 36 months and duty again at 60 months', () => {
-    expect(calculate({ manufactureDate: '2023-02' }).lines.map((line) => line.amount)).toEqual([
-      '1040658',
-      '13541',
-      '3400',
-    ]);
-    expect(calculate({ manufactureDate: '2023-01' }).lines.map((line) => line.amount)).toEqual([
-      '510869',
-      '13541',
-      '5200',
-    ]);
-    expect(calculate({ manufactureDate: '2021-02' }).lines[0].amount).toBe('510869');
-    expect(calculate({ manufactureDate: '2021-01' }).lines[0].amount).toBe('908211');
+  it('changes three- and five-year duty bands only after the applicable anniversary', () => {
+    for (const [manufactureDate, inclusive, next] of [
+      ['2023-11', '1040658', '510869'], ['2021-11', '510869', '908211'],
+    ]) {
+      expect(calculate({ manufactureDate, customsDate: '2026-11-15' }).lines[0].amount).toBe(inclusive);
+      expect(calculate({ manufactureDate, customsDate: '2026-11-16' }).lines[0].amount).toBe(next);
+    }
+    expect(calculate({ manufactureDate: '2023-11', customsDate: '2026-11-15' }).lines[2].amount).toBe('3400');
+    expect(calculate({ manufactureDate: '2023-11', customsDate: '2026-11-16' }).lines[2].amount).toBe('5200');
   });
 
   it('uses the percentage when it exceeds the per-cc minimum for a new car', () => {
@@ -149,20 +146,20 @@ describe('RU reference boundaries', () => {
 });
 
 describe('GE reference boundaries', () => {
-  it('rounds displacement upwards to the next 100cc', () => {
-    expect(amount({ ...GE_SAMPLE, displacementCc: '2000' }, 'excise')).toBe('3000');
-    expect(amount({ ...GE_SAMPLE, displacementCc: '2001' }, 'excise')).toBe('3150');
+  it('uses actual displacement, including the first cc above a hundred', () => {
+    expect(amount({ ...GE_SAMPLE, displacementCc: '2000' }, 'excise')).toBe('3000.00');
+    expect(amount({ ...GE_SAMPLE, displacementCc: '2001' }, 'excise')).toBe('3001.50');
   });
 
-  it.each(['hev', 'phev', 'erev'] as const)(
+  it.each(['hev', 'phev'] as const)(
     'applies the left-steering discount to the %s preview through age six',
     (powertrain) => {
       expect(
         calculateImportEstimate({ ...GE_SAMPLE, powertrain, manufactureDate: '2020-12' }).total,
-      ).toBe('1810');
+      ).toBe('1478.67');
       expect(
         calculateImportEstimate({ ...GE_SAMPLE, powertrain, manufactureDate: '2019-12' }).total,
-      ).toBe('9615');
+      ).toBe('9275.87');
     },
   );
 
@@ -174,7 +171,7 @@ describe('GE reference boundaries', () => {
         steering: 'right',
         manufactureDate: '2020-12',
       }).total,
-    ).toBe('9610');
+    ).toBe('9270.87');
   });
 
   it('retains fixed fees for BEV and does not require displacement or power', () => {
@@ -185,7 +182,7 @@ describe('GE reference boundaries', () => {
         displacementCc: '',
         steering: 'right',
       }),
-    ).toMatchObject({ status: 'reference', total: '480', missingFields: [] });
+    ).toMatchObject({ status: 'reference', total: '3150.00', missingFields: [] });
   });
 
   it('keeps the fixed service breakdown in the policy and ignores hidden input from another country', () => {
@@ -197,17 +194,17 @@ describe('GE reference boundaries', () => {
       powerHp: 'bad',
       freight: '-1',
     });
-    expect(result).toMatchObject({ status: 'reference', total: '3605', fieldErrors: {} });
+    expect(result).toMatchObject({ status: 'reference', total: '3271.88', fieldErrors: {} });
     expect(result.lines.find((line) => line.id === 'service')).toEqual({
       id: 'service',
-      amount: '480',
-      formula: '150 + 200 + 30 + 50 + 50',
+      amount: '150.00',
+      formula: '150',
       method: { key: 'GE.service', params: {} },
     });
     expect(
       calculateImportEstimate({ ...GE_SAMPLE, powertrain: 'bev', displacementCc: 'not applicable' })
         .total,
-    ).toBe('480');
+    ).toBe('150.00');
   });
 });
 
@@ -258,7 +255,7 @@ describe('input validation and incomplete states', () => {
         freight: '0',
         insurance: '0',
       }).total,
-    ).toBe('926952');
+    ).toBe('529610');
   });
 
   it.each(['2026-02-29', '2026-04-31', '2026-00-01', '2026-13-01', '0000-01-01', '2026-1-01'])(
@@ -314,11 +311,9 @@ describe('reference coverage and unsupported combinations', () => {
     },
   );
 
-  it.each([
-    ['bev', '2548125'],
-    ['erev', '926952'],
-  ] as const)('provides RU %s reference amounts', (powertrain, total) => {
-    expect(calculate({ powertrain })).toMatchObject({ status: 'reference', total });
+  it('includes ordinary BEV taxation and requests classification for unverified range extenders', () => {
+    expect(calculate({ powertrain: 'bev' })).toMatchObject({ status: 'reference', total: '3078292' });
+    expect(calculate({ powertrain: 'erev' })).toMatchObject({ status: 'needs_review', total: null });
   });
 
   it.each(['2025-12-31', '2027-01-01'])(

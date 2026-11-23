@@ -26,9 +26,8 @@ const ruSample = {
   euroRate: '94.7',
 };
 
-// Fixed outputs independently recorded from the reference site's public
-// calculator. GE's binary-floating-point 1805.0000000000002 is exactly 1805 GEL.
-// KG's target/USD rate is 0.865939 EUR/USD × 100.77 KGS/EUR.
+// Ordinary passenger vehicles, cleared on 2026-11-07 with the verified 2026 schedules.
+// Duty, national charges and separately quoted extras have distinct bases.
 const countryFixtures = [
   {
     country: 'RU',
@@ -38,7 +37,7 @@ const countryFixtures = [
     transactionRate: '81.969182',
     euroRate: '94.7',
     freight: '',
-    totals: ['926952', '926952', '2548125'],
+    totals: ['926952', '926952', '3078292'],
   },
   {
     country: 'KZ',
@@ -48,7 +47,7 @@ const countryFixtures = [
     transactionRate: '468.321957',
     euroRate: '541.1',
     freight: '',
-    totals: ['7277481', '7277481', '3402156'],
+    totals: ['8152206', '8152206', '5039356'],
   },
   {
     country: 'UZ',
@@ -58,7 +57,7 @@ const countryFixtures = [
     transactionRate: '11851.454593',
     euroRate: '',
     freight: '2250',
-    totals: ['355921427', '355921427', '129476657'],
+    totals: ['356498947', '240766174', '132254257'],
   },
   {
     country: 'GE',
@@ -68,7 +67,7 @@ const countryFixtures = [
     transactionRate: '',
     euroRate: '',
     freight: '',
-    totals: ['3605', '1805', '480'],
+    totals: ['3271.88', '1473.68', '150'],
   },
   {
     country: 'AM',
@@ -78,7 +77,7 @@ const countryFixtures = [
     transactionRate: '366.081469',
     euroRate: '422.7',
     freight: '1100',
-    totals: ['1626867', '1626867', '0'],
+    totals: ['4185651', '4185651', '1383788'],
   },
   {
     country: 'KG',
@@ -88,7 +87,7 @@ const countryFixtures = [
     transactionRate: '87.26067303',
     euroRate: '100.77',
     freight: '1100',
-    totals: ['547138.77', '547138.77', '135725.09'],
+    totals: ['969565.61', '969565.61', '229321.29'],
   },
   {
     country: 'AL',
@@ -174,7 +173,6 @@ async function fillCountryReference(page: Page, fixture: CountryFixture, powertr
   if (await page.locator('#manufactureDate').count())
     await fillNumericDate(page, 'manufactureDate', '2021-01');
   await page.locator('#displacementCc').fill('1998');
-  if (await page.locator('#powerHp').count()) await page.locator('#powerHp').fill('150');
   if (await page.locator('#freight').count()) {
     await page.locator('#freight').fill(fixture.freight);
     await page.locator('#insurance').fill('0');
@@ -182,6 +180,8 @@ async function fillCountryReference(page: Page, fixture: CountryFixture, powertr
   await page
     .getByRole('button', { name: primaryPowertrains[powertrainIndex].label, exact: true })
     .click();
+  await fillNumericDate(page, 'customsDate', '2026-11-07');
+  if (await page.locator('#powerHp').count()) await page.locator('#powerHp').fill('150');
 }
 
 async function expectReferenceAmount(page: Page) {
@@ -204,7 +204,7 @@ test('defaults calculate immediately with settings expanded and still allow manu
   await expect(page.getByTestId('manufacture-range-result')).toContainText('最近六年');
   await expect(page.locator('.advanced-settings')).toHaveAttribute('open', '');
   await expect(page.locator('#importerType')).toHaveCount(0);
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
   await expect(page.locator('#transactionRate')).toBeVisible();
   await expect(page.getByRole('button', { name: '载入示例', exact: true })).toHaveCount(0);
   await expect(page.locator('.simple-powertrain button')).toHaveCount(3);
@@ -330,7 +330,7 @@ test('Kyrgyzstan preserves the chosen importer in its language routes but resets
   await expect(page.locator('#importerType')).toHaveCount(0);
   await expectReferenceAmount(page);
   await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
 
   await page.locator('.country-nav a[href^="/ru/calculator/kyrgyzstan"]').click();
   await expect(page.locator('.reset-button')).toBeEnabled();
@@ -421,19 +421,19 @@ test('Georgia defaults need no price or FX and the three fuel groups update the 
   await openAdvanced(page);
   await expect(page.locator('#steering')).toHaveValue('left');
   await fillNumericDate(page, 'manufactureDate', '2021-01');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
   await expect(page.getByTestId('total')).toContainText('GEL');
 
   await page.getByRole('button', { name: '混合动力', exact: true }).click();
   await expect(page.locator('#powertrainDetail')).toHaveValue('hev');
-  await expectAmount(page, '1805');
+  await expectAmount(page, '1473.68');
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
   await expect(page.locator('#powertrainDetail')).toHaveValue('bev');
   await expect(page.locator('#displacementCc')).toHaveCount(0);
-  await expectAmount(page, '480');
+  await expectAmount(page, '150');
   await page.getByRole('button', { name: '汽油 / 柴油', exact: true }).click();
   await expect(page.locator('#displacementCc')).toHaveValue('1998');
-  await expectAmount(page, '3605');
+  await expectAmount(page, '3271.88');
 });
 
 test('Georgia policy notes follow age, steering and powertrain without retaining conflicting exemptions', async ({
@@ -464,7 +464,7 @@ test('Georgia policy notes follow age, steering and powertrain without retaining
   await expect(note('GE.electric')).toBeVisible();
   await expect(note('GE.older')).toHaveCount(0);
   await expect(note('GE.hybridNoRelief')).toHaveCount(0);
-  await expectAmount(page, '480');
+  await expectAmount(page, '150');
 });
 
 test('switching language preserves destination, entered values and manually overridden FX', async ({
@@ -497,7 +497,7 @@ test('switching language preserves destination, entered values and manually over
   await page.locator('#transactionRate').focus();
   await expect(page.locator('#transactionRate')).toHaveValue('81.969182');
   await page.locator('#transactionRate').blur();
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
 });
 
 test('changing currency converts the price and preserves its value with the automatic FX snapshot', async ({
@@ -564,6 +564,12 @@ test('all seven destinations navigate correctly and provide default reference am
   page,
 }) => {
   await openCalculator(page);
+  const sources: Record<string, string> = {
+    kazakhstan: 'https://www.gov.kz/org/kgd/activities/10380?lang=ru', uzbekistan: 'https://lex.uz/ru/docs/3802363',
+    georgia: 'https://matsne.gov.ge/ka/document/view/6826443', armenia: 'https://exim.src.am/ru/transport',
+    kyrgyzstan: 'https://docs.eaeunion.org/documents/317/8824/', albania: 'https://www.dogana.gov.al/english/c/179/customs-clearance-of-vehicles',
+    russia: 'https://docs.eaeunion.org/documents/317/8824/',
+  };
   const destinations = [
     ['kazakhstan', '哈萨克斯坦'],
     ['uzbekistan', '乌兹别克斯坦'],
@@ -591,7 +597,7 @@ test('all seven destinations navigate correctly and provide default reference am
     expect(await policyNotes.locator('li').count()).toBeGreaterThan(0);
     await expect(policyNotes.locator('a')).toHaveAttribute(
       'href',
-      `https://www.kmotors.shop/en/calculator${slug === 'russia' ? '' : `/${slug}`}`,
+      sources[slug],
     );
     await expectReferenceAmount(page);
     const quote = page.getByTestId('total-usd').or(page.getByTestId('manufacture-range-usd'));
@@ -622,12 +628,12 @@ for (const fixture of countryFixtures) {
         // A BEV has no engine displacement, but its power still selects recycling.
         await expect(page.locator('#displacementCc')).toHaveCount(0);
         await expect(page.locator('#powerHp')).toBeVisible();
-        await page.locator('#euroRate').fill('');
-        await expectAmount(page, '2548125');
+        if (await page.locator('#euroRate').count()) await page.locator('#euroRate').fill('');
+        await expectAmount(page, '3078292');
         await page.locator('#powerHp').fill('');
         await expect(page.getByTestId('total')).toHaveCount(0);
         await page.locator('#powerHp').fill('150');
-        await expectAmount(page, '2548125');
+        await expectAmount(page, '3078292');
       }
 
       await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
@@ -649,20 +655,20 @@ test('KG personal registration stays outside total, is copied in both currencies
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const fixture = countryFixtures.find((item) => item.country === 'KG')!;
   await fillCountryReference(page, fixture);
-  await expectAmount(page, '547138.77');
+  await expectAmount(page, '969565.61');
   const extra = page
     .getByTestId('additional-costs')
     .locator('[data-extra-cost="registrationEstimate"]');
   await expect(extra).toContainText('KGS');
-  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('4406672');
-  await expectUsdAmount(extra.locator('.fee-usd'), 505);
+  await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('3926705');
+  await expectUsdAmount(extra.locator('.fee-usd'), 450);
   await page.getByRole('button', { name: '复制测算结果', exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain('44,066.72 KGS (≈ 505.00 USD)');
+    .toContain('39,267.05 KGS (≈ 450.00 USD)');
 
   await page.locator('#importerType').selectOption('company');
-  await expectAmount(page, '306703.56');
+  await expectAmount(page, '306703.96');
   await expect(page.getByTestId('additional-costs')).toHaveCount(0);
 });
 
@@ -680,11 +686,11 @@ test('UZ registration condition and separate CNY/USD rates change tax for the sa
   await page.locator('#freight').fill('0');
   await page.locator('#insurance').fill('0');
   await expect(page.locator('#condition')).toHaveValue('used');
-  await expectAmount(page, '27184480');
+  await expectAmount(page, '22680000');
   await page.locator('#condition').selectOption('new');
-  await expectAmount(page, '21472480');
+  await expectAmount(page, '16968000');
   await page.locator('#condition').selectOption('used');
-  await expectAmount(page, '27184480');
+  await expectAmount(page, '22680000');
 });
 
 test('AL annual luxury cost is shown and copied in both currencies without entering the import total', async ({
@@ -695,7 +701,7 @@ test('AL annual luxury cost is shown and copied in both currencies without enter
   const fixture = countryFixtures.find((item) => item.country === 'AL')!;
   await fillCountryReference(page, fixture);
   await page.locator('#displacementCc').fill('3000');
-  await expectAmount(page, '241688');
+  await expectAmount(page, '171688');
   const extra = page.getByTestId('additional-costs').locator('[data-extra-cost="annualLuxury"]');
   await expect.poll(async () => digits(await extra.locator('strong').innerText())).toBe('2100000');
   await expect(extra).toContainText('ALL');

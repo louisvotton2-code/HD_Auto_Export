@@ -9,7 +9,7 @@ export const fieldLabels: Record<string, string> = {
   inspection: '检测', relatedListingUrls: '相关挂牌',
 };
 export const recordLabels = { applied: '已应用', unchanged: '无变化', ignored: '已忽略', rejected: '已拒绝' };
-export const listingLabels = { published: '已展示', hidden: '人工隐藏', withdrawn: '来源已撤回' };
+export const listingLabels = { published: '活跃且未隐藏', hidden: '人工隐藏', withdrawn: '来源已撤回' };
 export const batchLabels = { completed: '已完成', completed_with_issues: '已完成，有待处理项' };
 export const reasonLabels = {
   invalid_record: '记录结构有误', identity_unconfirmed: '来源身份待确认',

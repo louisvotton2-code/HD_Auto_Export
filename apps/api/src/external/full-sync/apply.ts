@@ -21,12 +21,15 @@ export async function bindAlias(tx:PoolClient,source:Source,id:string,target:{so
  if(!await isFormalListingAdmitted(tx,target.source,target.id)&&
    (!allowAdmission||await formalWithdrawal(tx,target.source,target.id)||!await admitFormalListing(tx,target.source,target.id)))return;
  const left=await ensureMember(tx,source,id),right=await ensureMember(tx,target.source,target.id);
- await tx.query(`INSERT INTO external_full_aliases VALUES($1,$2,$3,$4,$5) ON CONFLICT(source,external_id) DO UPDATE SET target_source=excluded.target_source,target_id=excluded.target_id,observed_at=excluded.observed_at WHERE external_full_aliases.observed_at<=excluded.observed_at`,[source,id,target.source,target.id,at]);
+ await tx.query(`INSERT INTO external_full_aliases AS a VALUES($1,$2,$3,$4,$5)
+  ON CONFLICT(source,external_id) DO UPDATE SET target_source=excluded.target_source,target_id=excluded.target_id,observed_at=excluded.observed_at
+  WHERE a.observed_at<excluded.observed_at OR (a.observed_at=excluded.observed_at
+    AND ROW(a.target_source,a.target_id) IS DISTINCT FROM ROW(excluded.target_source,excluded.target_id))`,[source,id,target.source,target.id,at]);
  if(left.canonical_id===right.canonical_id)return;
  const bindings=(await tx.query("SELECT canonical_id,created_at FROM external_canonical_bindings WHERE provider='chinacarapi' AND canonical_id=ANY($1::text[]) ORDER BY created_at,canonical_id",[[left.canonical_id,right.canonical_id]])).rows;
  const keep=bindings[0]?.canonical_id??[left.canonical_id,right.canonical_id].sort()[0],drop=keep===left.canonical_id?right.canonical_id:left.canonical_id;
  // Keep public UUIDs and overrides in place; new representative is selected atomically after a qualified apply.
- const old=(await tx.query("UPDATE external_listings SET formal_primary=false WHERE provider='chinacarapi' AND formal_canonical_id=$1 RETURNING id",[drop])).rows;
+ const old=(await tx.query("UPDATE external_listings SET formal_primary=false WHERE provider='chinacarapi' AND formal_canonical_id=$1 AND formal_primary RETURNING id",[drop])).rows;
  for(const listing of old)await reprojectFormalListing(tx,listing.id);
  await tx.query("UPDATE external_listings SET formal_canonical_id=$1 WHERE provider='chinacarapi' AND formal_canonical_id=$2",[keep,drop]);
  await tx.query('UPDATE external_full_members SET canonical_id=$1 WHERE canonical_id=$2',[keep,drop]);
@@ -34,15 +37,20 @@ export async function bindAlias(tx:PoolClient,source:Source,id:string,target:{so
 }
 export async function chooseRepresentative(tx:PoolClient,canonicalId:string){
  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
- const candidates=(await tx.query(`SELECT l.id,l.platform_id,l.external_id,l.formal_primary FROM external_listings l JOIN external_full_members m ON m.source=l.platform_id AND m.external_id=l.external_id
+ const candidates=(await tx.query(`SELECT l.id,l.platform_id,l.external_id,l.formal_primary,
+    EXISTS(SELECT FROM external_catalog c WHERE c.listing_id=l.id) AS projected
+  FROM external_listings l JOIN external_full_members m ON m.source=l.platform_id AND m.external_id=l.external_id
   WHERE l.provider='chinacarapi' AND m.canonical_id=$1 AND m.state='active' AND l.upstream_state='active' AND l.source_data IS NOT NULL AND cardinality(m.locales)=3
   ORDER BY l.formal_primary DESC,l.first_imported_at NULLS LAST,l.platform_id,l.external_id LIMIT 1`,[canonicalId])).rows;
  const next=candidates[0];
  const previous=(await tx.query("UPDATE external_listings SET formal_primary=false WHERE provider='chinacarapi' AND formal_canonical_id=$1 AND formal_primary AND ($2::uuid IS NULL OR id<>$2) RETURNING id",[canonicalId,next?.id??null])).rows;
  for(const item of previous)await reprojectFormalListing(tx,item.id);
  if(!next)return;
- await tx.query("INSERT INTO external_canonical_bindings(provider,canonical_id,source,external_id) VALUES('chinacarapi',$1,$2,$3) ON CONFLICT(provider,canonical_id) DO UPDATE SET source=excluded.source,external_id=excluded.external_id",[canonicalId,next.platform_id,next.external_id]);
- await tx.query('UPDATE external_listings SET formal_primary=true WHERE id=$1',[next.id]);await reprojectFormalListing(tx,next.id);
+ await tx.query(`INSERT INTO external_canonical_bindings AS binding(provider,canonical_id,source,external_id)
+  VALUES('chinacarapi',$1,$2,$3) ON CONFLICT(provider,canonical_id) DO UPDATE SET source=excluded.source,external_id=excluded.external_id
+  WHERE ROW(binding.source,binding.external_id) IS DISTINCT FROM ROW(excluded.source,excluded.external_id)`,[canonicalId,next.platform_id,next.external_id]);
+ if(!next.formal_primary)await tx.query('UPDATE external_listings SET formal_primary=true WHERE id=$1',[next.id]);
+ if(!next.formal_primary||!next.projected)await reprojectFormalListing(tx,next.id);
 }
 export const applyFullSource:FullApply=async(tx,input)=>{
  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
@@ -55,7 +63,7 @@ export const applyFullSource:FullApply=async(tx,input)=>{
  }else{
   const projection=adaptSourceDocuments(await loadSourceDocuments(tx,{provider:'chinacarapi',source:input.source,externalId:input.externalId}),revision,input.at);
   if(!projection)throw new FullSyncError('SYNC_DETAILS_INCOMPLETE');
-  const result=await applyFormalCandidate(tx,projection.candidate,actor,input.batchId,{id:input.canonicalId,primary:existing?.formal_primary??false});
+  const result=await applyFormalCandidate(tx,projection.candidate,actor,input.batchId,{id:input.canonicalId,primary:existing?.formal_primary??false},{deferMedia:true});
   const segments=await refreshSourceSegments(tx,result.listingId,projection,input.at);if(segments.changed)await tx.query('UPDATE external_catalog_state SET revision=revision+1 WHERE id=1');
  }
  await chooseRepresentative(tx,input.canonicalId);

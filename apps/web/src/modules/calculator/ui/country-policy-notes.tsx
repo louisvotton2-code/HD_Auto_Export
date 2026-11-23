@@ -32,7 +32,7 @@ export function CountryPolicyNotes({ input }: { input: CalculationInput }) {
           {t('officialSource', { name })}<Icon name="diagonal" size={11} />
         </a></li>)}
       </ul> : <a href={getCountryReferenceUrl(input.country)} target="_blank" rel="noreferrer">
-        {t('source', { date: '2026-10-23' })}
+        {t('source', { date: '2026-11-23' })}
         <Icon name="diagonal" size={11} />
       </a>}
     </section>

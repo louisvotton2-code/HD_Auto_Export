@@ -56,9 +56,9 @@ export function FullSyncStatusCard() {
         <IngestionCounts items={[
           { key: 'raw', label: '同步已登记来源记录', value: status.counts.raw },
           { key: 'canonical', label: '去重车辆', value: status.counts.canonical },
-          { key: 'public', label: '当前公开车辆', value: status.counts.public },
+          { key: 'public', label: '当前公开三方车辆', value: status.counts.public },
         ]} />
-        <Typography.Paragraph type="secondary" className={styles.note}>一辆车可关联多条来源记录。公开车辆的详情、语言或报告仍可能待补齐。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary" className={styles.note}>一辆车可关联多条来源记录。公开三方车辆按去重后的代表车辆统计，至少有一种语言可展示。</Typography.Paragraph>
       </section>
       <section aria-labelledby="full-sync-admission" className={styles.section}>
         <Typography.Title level={3} id="full-sync-admission" className={styles.sectionTitle}>准入席位</Typography.Title>

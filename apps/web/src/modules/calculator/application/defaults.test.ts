@@ -32,7 +32,7 @@ describe('ready-to-edit calculator defaults', () => {
     const input = createDefaultInput('GE', '2026-10-23');
     expect(
       calculateImportEstimate({ ...input, price: '', transactionRate: '', euroRate: '' }),
-    ).toMatchObject({ status: 'reference', total: '3605' });
+    ).toMatchObject({ status: 'reference', total: '3271.88' });
   });
 
   it.each(['KZ', 'UZ', 'AM', 'KG', 'AL'] as CountryCode[])(
@@ -43,7 +43,7 @@ describe('ready-to-edit calculator defaults', () => {
       const result = calculateImportEstimate(input);
       expect(result.status).toBe('reference');
       expect(result.total).not.toBeNull();
-      if (['UZ', 'AM', 'KG', 'AL'].includes(country))
+      if (['UZ', 'AL'].includes(country))
         expect(result.assumptions).toContain('transport_not_in_tax_base');
     },
   );

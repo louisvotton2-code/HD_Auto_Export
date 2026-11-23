@@ -54,9 +54,9 @@ describe('vehicle facts to import estimate', () => {
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
   });
 
-  it('prefills verified engine power for a plug-in hybrid and prefers supplied horsepower', () => {
+  it('prefills verified engine power for a combustion engine and prefers supplied horsepower', () => {
     const vehicle: VehicleEstimateSource = knownVehicle();
-    Object.assign(vehicle.facts, { powertrain: 'phev', powerHp: null });
+    Object.assign(vehicle.facts, { powertrain: 'petrol', powerHp: null });
     const power: NonNullable<VehicleEstimateSource['technicalDetails']>['power'] = { engineKw: 265, systemKw: 395, motorKw: 130 };
     vehicle.technicalDetails = { power, configurationMatches: [] };
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('360.2993');
@@ -68,7 +68,8 @@ describe('vehicle facts to import estimate', () => {
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('355');
     vehicle.facts.powerHp = 354;
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('354');
-    vehicle.facts.powerHp = null;
+    vehicle.facts.powertrain = 'phev';
+    expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
     vehicle.facts.powertrain = 'bev';
     expect(createVehicleEstimateDraft(vehicle, 'RU', date, rates).powerHp).toBe('');
   });
@@ -131,7 +132,7 @@ describe('vehicle facts to import estimate', () => {
       const result = calculateImportEstimate(vehicleEstimateInput(input));
       expect(result.status).toBe('reference');
       expect(result.total).not.toBeNull();
-      if (['UZ', 'AM', 'KG', 'AL'].includes(country)) expect(result.assumptions).toContain('transport_not_in_tax_base');
+      if (['UZ', 'AL'].includes(country)) expect(result.assumptions).toContain('transport_not_in_tax_base');
       expect(result.excludedCosts).toContain('vehicle_price');
     },
   );

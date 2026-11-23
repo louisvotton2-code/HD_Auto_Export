@@ -29,7 +29,7 @@ describe('explicit vehicle calculator fragment handoff', () => {
 
   it('preserves the origin of positive inferred engine power for combustion vehicles only', () => {
     const value = seed();
-    value.input.powertrain = 'phev';
+    value.input.powertrain = 'petrol';
     value.input.powerHp = '360.2993';
     value.enginePowerPrefill = true;
     const fragment = createVehicleEstimateFragment(value)!;

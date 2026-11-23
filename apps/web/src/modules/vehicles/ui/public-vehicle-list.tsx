@@ -125,7 +125,7 @@ export function PublicVehicleList({
   const filterUrl = catalogFacetUrl(locale, selected, {
     selectedModel: selected.make ? undefined : selected.model,
   });
-  const facetOptions = { cooldown, loadOnMount: deferFilters };
+  const facetOptions = { navigationPath: `/${locale}/cars/`, cooldown, loadOnMount: deferFilters };
   const facets = usePublicResource(filterUrl, filters, catalogFacetOverviewSchema, facetOptions);
   const brand = usePublicResource(
     make ? catalogFacetUrl(locale, selected, { make }) : null,

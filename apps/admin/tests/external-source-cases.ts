@@ -105,6 +105,10 @@ test('external catalog sends identifier URL and title searches to the server and
   })));
   await page.goto('/admin/public-catalog');
   await expect(page.getByRole('heading', { name: '三方车源管理' })).toBeVisible();
+  const overview = page.getByRole('region', { name: '车源概览' });
+  const activeListings = overview.locator('.ant-statistic').filter({ has: page.getByText('活跃且未隐藏', { exact: true }) });
+  await expect(activeListings.locator('.ant-statistic-content-value')).toHaveText('170');
+  await expect(page.getByRole('link', { name: '公开车源核验' })).toHaveAttribute('href', '/admin/public-catalog/verification');
   const search = page.getByRole('searchbox', { name: '搜索三方车源' });
   for (const q of [summary.id, summary.externalId, summary.listingUrl, summary.title]) {
     await search.fill(q);
@@ -115,7 +119,7 @@ test('external catalog sends identifier URL and title searches to the server and
   await expect.poll(() => searches.at(-1)).toEqual({ q: summary.title, page: '2', pageSize: '25' });
   const row = page.getByRole('row').filter({ hasText: summary.title });
   await expect(row).toContainText(summary.externalId);
-  await expect(row).toContainText('已展示');
+  await expect(row).toContainText('活跃且未隐藏');
   await expect(row).toContainText('已修订');
   await expect(row.getByRole('link', { name: '访问原站' })).toHaveAttribute('href', summary.listingUrl);
   const unsafeRow = page.getByRole('row').filter({ hasText: unsafe.title });
@@ -164,7 +168,7 @@ test('external overview counts all listings and composes attribute filters on th
   await select(page, '品牌', '丰田');
   await select(page, '车型', '示例 R1');
   await select(page, '来源平台', '懂车帝');
-  await select(page, '挂牌状态', '已展示');
+  await select(page, '挂牌状态', '活跃且未隐藏');
   await select(page, '动力类型', '油电混动');
   await select(page, '年款', '2024 款');
   await select(page, '里程上限', '30,000 公里以内');
@@ -322,6 +326,35 @@ test('external override rejects stale versions and replays uncertain writes with
   await expect(dialog).toHaveCount(0);
   expect(attempts[1].key).toBeTruthy();
   expect(attempts[2]).toEqual(attempts[1]);
+});
+
+test('external emergency hide submits the existing versioned override only after saving', async ({ page }) => {
+  await setup(page);
+  let current = listing;
+  await page.route(`**${root}/listings/${listing.id}?*`, route => reply(route, envelope(current)));
+  const writes: Array<{ method: string; path: string }> = [];
+  page.on('request', request => {
+    const method = request.method();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) writes.push({ method, path: new URL(request.url()).pathname });
+  });
+  const overridePath = `${root}/listings/${listing.id}/overrides`;
+  await page.route(`**${overridePath}`, route => {
+    const input = SaveExternalOverridesSchema.parse(route.request().postDataJSON());
+    expect(input).toEqual({ version: listing.version, overrides: { ...listing.overrides, hidden: true } });
+    expect(route.request().headers()['idempotency-key']).toBeTruthy();
+    current = { ...listing, version: listing.version + 1, overrides: input.overrides, state: 'hidden', vehicle: null };
+    return reply(route, envelope({ id: current.id, version: current.version, state: current.state }));
+  });
+  await page.goto(`${ui}/listings/${listing.id}`);
+  await page.getByRole('button', { name: '人工修订' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText(/勾选隐藏并保存会立即撤下此挂牌/)).toBeVisible();
+  await dialog.getByRole('checkbox', { name: '从公开目录隐藏' }).check();
+  expect(writes).toEqual([]);
+  await dialog.getByRole('button', { name: '保存修订' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('人工隐藏', { exact: true })).toBeVisible();
+  expect(writes).toEqual([{ method: 'PUT', path: overridePath }]);
 });
 
 test('external bulk visibility submits displayed versions and reports partial failure', async ({ page }) => {

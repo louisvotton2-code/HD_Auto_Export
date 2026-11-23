@@ -1,20 +1,27 @@
 import { createHash } from 'node:crypto';
-import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, PUBLIC_CATALOG_CACHE_MAX_TTL_MS, type PublicCatalogCacheStamp } from '@hd/contracts/public';
+import { INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS, INTERNAL_PUBLIC_HOMEPAGE_SCOPE,
+  PUBLIC_BROWSE_CACHE_MAX_TTL_MS, PUBLIC_BROWSE_CACHE_POLICY, PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  type Locale, type PublicCatalogCacheStamp } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
 import { ApiError } from '../errors.js';
+import { readBrowseFence } from './browse-fence.js';
 import { ACTIVE_FX_SQL } from './fx.js';
-import { canonicalJson } from './normalize.js';
+import { canonicalJson, jsonHash } from './normalize.js';
 import { createRedisPublicCacheStore, type PublicCacheStore, type RedisPublicCacheOptions } from './redis-cache.js';
 
-export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null };
+export type PublicCatalogRevision = { epoch: string; revision: string; fx?: { version: string; expiresAt: number } | null; browseFence?: string };
 export type CatalogRevisionProof = (deadline: number, signal: AbortSignal) => Promise<PublicCatalogRevision | null>;
 type RevisionScope = 'catalog' | 'filters';
+type StorageScope = RevisionScope | 'browse';
 type HomepageRevisions = Record<RevisionScope, PublicCatalogRevision>;
-type CacheProtocol = 1 | 2;
-const maxLifetime = (protocol: CacheProtocol) => protocol === 2 ? INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS : PUBLIC_CATALOG_CACHE_MAX_TTL_MS;
+export type CacheProtocol = 1 | 2 | 3;
+type StorageProtocol = CacheProtocol | 4;
+const cacheLifetimes = { 1: PUBLIC_CATALOG_CACHE_MAX_TTL_MS, 2: INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  3: INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS, 4: PUBLIC_BROWSE_CACHE_MAX_TTL_MS };
+const maxLifetime = (protocol: StorageProtocol) => cacheLifetimes[protocol];
 type DatabaseReader = { pool: Pick<Database['pool'], 'query'> };
 type CatalogUnavailableReason = 'revision-read' | 'revision-capacity' | 'revision-changed' | 'load-capacity' |
-  'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input';
+  'deadline' | 'expired' | 'cancelled' | 'closed' | 'invalid-input' | 'browse-fence';
 type RevisionConflict = 'catalog-advanced' | 'epoch-changed' | 'fx-changed' | 'revision-regressed' | 'offset-page-changed';
 export class PublicCatalogUnavailableError extends ApiError {
   constructor(readonly reason: CatalogUnavailableReason, readonly revisionConflicts?: readonly RevisionConflict[], readonly sqlState?:'57014') {
@@ -23,8 +30,8 @@ export class PublicCatalogUnavailableError extends ApiError {
 }
 const unavailable = (reason: CatalogUnavailableReason) => new PublicCatalogUnavailableError(reason);
 const validRevision = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value);
-async function readRevisionRow(db: DatabaseReader, usd: boolean, scope: RevisionScope, includeFilters = false) {
-  const revisionColumn = scope === 'filters' ? 'filter_revision' : 'revision';
+async function readRevisionRow(db: DatabaseReader, usd: boolean, scope: StorageScope, includeFilters = false) {
+  const revisionColumn = {catalog:'revision',filters:'filter_revision',browse:'browse_generation'}[scope];
   try {
     const result = await db.pool.query<PublicCatalogRevision & {filter_revision?:string;fx_version?:string|null;fx_expires_at?:Date|null}>(`SELECT s.epoch::text,s.${revisionColumn}::text AS revision
       ${includeFilters ? ',s.filter_revision::text AS filter_revision' : ''}
@@ -47,7 +54,7 @@ async function readRevisionRow(db: DatabaseReader, usd: boolean, scope: Revision
     throw unavailable('revision-read');
   }
 }
-export async function readPublicCatalogRevision(db: DatabaseReader, usd = false, scope: RevisionScope = 'catalog'): Promise<PublicCatalogRevision> {
+export async function readPublicCatalogRevision(db: DatabaseReader, usd = false, scope: StorageScope = 'catalog'): Promise<PublicCatalogRevision> {
   return (await readRevisionRow(db,usd,scope)).revision;
 }
 async function readHomepageRevisions(db: DatabaseReader): Promise<HomepageRevisions> {
@@ -57,6 +64,7 @@ async function readHomepageRevisions(db: DatabaseReader): Promise<HomepageRevisi
 }
 
 export type PublicCacheRoute = 'list' | 'filters' | 'detail' | 'home';
+export type PublicBrowseRoute = Exclude<PublicCacheRoute,'detail'>;
 export type PublicCacheReadPhase = 'cache_revision' | 'cache_lookup' | 'origin_queue' | 'origin_shared';
 type CacheReadObserver = (phase: PublicCacheReadPhase) => void;
 export type PublicCatalogCacheOptions = {
@@ -65,6 +73,7 @@ export type PublicCatalogCacheOptions = {
   maxQueuedLoads?: number;
   enabled?: boolean; externalCatalog?: boolean;
   deployment?: {environment:string;releaseId:string};
+  browseGenerationFile?: string;
 };
 export type PublicCacheMetrics = {
   localHits: number; redisHits: number; misses: number; originLoads: number; rejectedLoads: number;
@@ -76,13 +85,16 @@ type Envelope = { format: 1; key: string; expiresAt: number; value: unknown };
 type MemoryEntry = { encoded: string; expiresAt: number; bytes: number };
 type PublicSourceResult<T> = { value: T; expiresAt?: number };
 type PublicSnapshot<T> = PublicSourceResult<T> & { revision: PublicCatalogRevision; verifyAfterAdvance?: CatalogRevisionProof };
+type HomepageValue = { home: unknown; overview: unknown; models: unknown };
+type BrowseValue<T> = { value:T; generatedAt:number };
 type LoadedEnvelope = Envelope & { revision: PublicCatalogRevision; snapshotOnly?: true };
 type Flight = {promise:Promise<LoadedEnvelope>;controller:AbortController;waiters:number};
-type Dependencies = { readRevision: (usd: boolean, scope: RevisionScope) => Promise<PublicCatalogRevision>;
+type Dependencies = { readRevision: (usd: boolean, scope: StorageScope) => Promise<PublicCatalogRevision>;
   readHomepageRevisions?: () => Promise<HomepageRevisions>; store?: PublicCacheStore; now?: () => number };
 const sameEpochAndFx = (a: PublicCatalogRevision, b: PublicCatalogRevision) => a.epoch === b.epoch &&
   a.fx?.version === b.fx?.version && a.fx?.expiresAt === b.fx?.expiresAt;
-const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) => sameEpochAndFx(a,b) && a.revision === b.revision;
+const sameRevision = (a: PublicCatalogRevision, b: PublicCatalogRevision) =>
+  sameEpochAndFx(a,b) && a.revision === b.revision && a.browseFence === b.browseFence;
 function snapshotConflict(start: PublicCatalogRevision, snapshot: PublicCatalogRevision, current: PublicCatalogRevision): RevisionConflict | undefined {
   if (start.epoch !== snapshot.epoch || snapshot.epoch !== current.epoch) return 'epoch-changed';
   if (!sameEpochAndFx(start,snapshot) || !sameEpochAndFx(snapshot,current)) return 'fx-changed';
@@ -138,7 +150,7 @@ export class PublicCatalogCache {
   }
 
   metrics(): PublicCacheMetrics { return { ...this.values, entries: this.memory.size }; }
-  private stamp(revision: PublicCatalogRevision, usd: boolean, scope: RevisionScope, protocol: CacheProtocol, expiresAt = Infinity,
+  private stamp(revision: PublicCatalogRevision, usd: boolean, scope: RevisionScope, protocol: StorageProtocol, expiresAt = Infinity,
     checkedAt = this.now()): PublicCatalogCacheStamp {
     const validUntil = Math.min(expiresAt, checkedAt + maxLifetime(protocol), revision.fx?.expiresAt ?? Infinity);
     if (validUntil <= checkedAt) throw unavailable('expired');
@@ -154,18 +166,39 @@ export class PublicCatalogCache {
   async currentVersion(usd = false,signal?:AbortSignal,scope:RevisionScope='catalog',protocol:CacheProtocol=1) {
     return this.withDeadline(async () => this.stamp(await this.revision(usd,scope), usd, scope, protocol),signal);
   }
-  async currentHomepageVersions(signal?:AbortSignal) {
+  async currentHomepageVersions(signal?:AbortSignal,protocol:2|3=2) {
     return this.withDeadline(async()=>{
       const read=this.dependencies.readHomepageRevisions;
       if(!read)throw unavailable('revision-read');
       const {catalog,filters}=await this.checkedRevisionRead(read);
       const checkedAt=this.now();
-      return {catalog:this.stamp(catalog,true,'catalog',2,Infinity,checkedAt),
-        filters:this.stamp(filters,true,'filters',2,Infinity,checkedAt)};
+      return {catalog:this.stamp(catalog,true,'catalog',protocol,Infinity,checkedAt),
+        filters:this.stamp(filters,true,'filters',protocol,Infinity,checkedAt)};
     },signal);
   }
-  private revision(usd: boolean, scope: RevisionScope) {
-    return this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+  private browseGeneration(revision:PublicCatalogRevision) {
+    return jsonHash([PUBLIC_BROWSE_CACHE_POLICY,this.options.namespace,this.options.deployment,
+      !!this.options.externalCatalog,revision.epoch,revision.revision,...(revision.browseFence?[revision.browseFence]:[])]);
+  }
+  async currentBrowseGeneration(signal?:AbortSignal) {
+    return this.withDeadline(async()=>this.browseGeneration(await this.revision(false,'browse')),signal);
+  }
+  private activeBrowseFence() {
+    if (!this.options.browseGenerationFile) return undefined;
+    const fence = readBrowseFence(this.options.browseGenerationFile);
+    if (!fence) throw unavailable('browse-fence');
+    return fence;
+  }
+  private assertBrowseFence(expected: string | undefined) {
+    if (this.activeBrowseFence() !== expected) throw unavailable('browse-fence');
+  }
+  private async revision(usd: boolean, scope: StorageScope) {
+    if (scope !== 'browse' || !this.options.browseGenerationFile)
+      return this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+    const browseFence = this.activeBrowseFence();
+    const revision = await this.checkedRevisionRead(()=>this.dependencies.readRevision(usd,scope));
+    this.assertBrowseFence(browseFence);
+    return { ...revision, browseFence };
   }
   private async checkedRevisionRead<T>(read:()=>Promise<T>) {
     // A slow/unavailable database cannot grow an unbounded pool wait queue through cache lookups.
@@ -187,24 +220,29 @@ export class PublicCatalogCache {
     while (this.memory.size >= this.maxEntries || this.values.bytes + bytes > this.maxBytes) this.remove(this.memory.keys().next().value!);
     this.memory.set(key, { encoded, expiresAt, bytes }); this.values.bytes += bytes;
   }
-  private parse(encoded: string, key: string, protocol: CacheProtocol): Envelope | null {
+  private parse(encoded: string, key: string, protocol: StorageProtocol): Envelope | null {
     try {
       if (Buffer.byteLength(encoded) > this.maxValueBytes) return null;
       const value = JSON.parse(encoded) as Envelope;
       if (value?.format !== 1 || value.key !== key || !Number.isFinite(value.expiresAt) || value.expiresAt <= this.now() ||
           value.expiresAt > this.now() + maxLifetime(protocol) || !Object.hasOwn(value, 'value') || json(value) !== encoded) return null;
+      if(protocol===4) {
+        const browse=value.value as BrowseValue<unknown> | null;
+        if(!browse || !Number.isSafeInteger(browse.generatedAt) || browse.generatedAt>this.now() ||
+          value.expiresAt>browse.generatedAt+PUBLIC_BROWSE_CACHE_MAX_TTL_MS || !Object.hasOwn(browse,'value')) return null;
+      }
       // JSON roundtrip comparison also excludes requestId in poisoned/old cache entries.
       return value;
     } catch { return null; }
   }
   private slot(key: string) { return `${this.options.namespace}:slot:${parseInt(key.slice(0, 8), 16) % this.maxEntries}`; }
   private resourceKey(route: PublicCacheRoute, input: string, revision: PublicCatalogRevision,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol) {
-    const version = this.stamp(revision,usd,scope,protocol).version;
-    return createHash('sha256').update(canonicalJson(protocol === 2 ? [version,route,input,protocol] : [version,route,input])).digest('hex');
+    usd: boolean, scope: StorageScope, protocol: StorageProtocol) {
+    const version = scope==='browse'?this.browseGeneration(revision):this.stamp(revision,usd,scope,protocol).version;
+    return createHash('sha256').update(canonicalJson(protocol === 1 ? [version,route,input] : [version,route,input,protocol])).digest('hex');
   }
-  private deadline(value: unknown, protocol: CacheProtocol): number {
-    let deadline = this.now() + (protocol === 2 ? maxLifetime(protocol) : Math.min(this.ttlMs,maxLifetime(protocol)));
+  private deadline(value: unknown, protocol: StorageProtocol): number {
+    let deadline = this.now() + (protocol === 1 ? Math.min(this.ttlMs,maxLifetime(protocol)) : maxLifetime(protocol));
     const stack: unknown[] = [value];
     while (stack.length) {
       const item = stack.pop();
@@ -227,7 +265,7 @@ export class PublicCatalogCache {
     }
     return deadline;
   }
-  private async lookup(key: string, protocol: CacheProtocol, flightKey: string): Promise<Envelope | null> {
+  private async lookup(key: string, protocol: StorageProtocol, flightKey: string): Promise<Envelope | null> {
     if (this.options.enabled === false) return null;
     const local = this.memory.get(key);
     if (local) {
@@ -247,7 +285,7 @@ export class PublicCatalogCache {
     try {return await read;}
     finally {this.redisReads.delete(key);}
   }
-  private async lookupRedis(key:string,protocol:CacheProtocol,store:PublicCacheStore):Promise<Envelope|null> {
+  private async lookupRedis(key:string,protocol:StorageProtocol,store:PublicCacheStore):Promise<Envelope|null> {
     try {
       const encoded = await store.get(this.slot(key));
       if (encoded === null || this.closed) return null;
@@ -258,7 +296,7 @@ export class PublicCatalogCache {
   }
   private async load<T>(route: PublicCacheRoute, input: string, key: string, revision: PublicCatalogRevision,
     load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, deadline: number, signal:AbortSignal,
+    usd: boolean, scope: StorageScope, protocol: StorageProtocol, deadline: number, signal:AbortSignal,
     refreshOffsetOnAdvance: boolean): Promise<LoadedEnvelope> {
     await this.acquireLoad(deadline,signal);
     try {
@@ -387,13 +425,31 @@ export class PublicCatalogCache {
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
   async getCatalogSnapshot<T>(route: Exclude<PublicCacheRoute,'filters'>, normalizedInput: unknown,
-    load: () => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
-    const result = await this.read(route,normalizedInput,load,usd,'catalog',protocol,signal,observe);
+    load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false, signal?: AbortSignal, protocol:CacheProtocol=1, observe?:CacheReadObserver) {
+    const result = await this.read(route,normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'catalog',protocol,signal,observe);
     return {value:result.value,stamp:this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt)};
   }
-  async getOffsetListSnapshot<T>(normalizedInput: unknown, load: () => Promise<PublicSnapshot<T>>, usd = false,
+  async getPreciseHomepage<T extends HomepageValue>(locale:Locale,mediaPolicy:string,
+    load:(deadline:number,signal:AbortSignal)=>Promise<PublicSnapshot<T>>,signal?:AbortSignal) {
+    const result=await this.read('home',[INTERNAL_PUBLIC_HOMEPAGE_SCOPE,locale,mediaPolicy],
+      async(_,deadline,flightSignal)=>{
+        const snapshot=await load(deadline,flightSignal);
+        const {value}=snapshot;
+        return {...snapshot,value:{data:value,catalogDigest:jsonHash(value.home),filtersDigest:jsonHash([value.overview,value.models])}};
+      },true,'catalog',3,signal);
+    const checkedAt=this.now();
+    const stamp=this.stamp(result.revision,true,'catalog',3,result.expiresAt,checkedAt);
+    const identity=[INTERNAL_PUBLIC_HOMEPAGE_SCOPE,locale,mediaPolicy,this.options.deployment,!!this.options.externalCatalog,
+      result.revision.epoch,stamp.fx];
+    const scoped=(scope:RevisionScope,digest:string)=>({
+      ...stamp,version:jsonHash([...identity,scope,digest]),
+    });
+    return {value:result.value.data,versions:{catalog:scoped('catalog',result.value.catalogDigest),
+      filters:scoped('filters',result.value.filtersDigest)}};
+  }
+  async getOffsetListSnapshot<T>(normalizedInput: unknown, load: (deadline:number,signal:AbortSignal) => Promise<PublicSnapshot<T>>, usd = false,
     signal?: AbortSignal, protocol: CacheProtocol=1, observe?: CacheReadObserver) {
-    const result = await this.read('list',normalizedInput,load,usd,'catalog',protocol,signal,observe,true);
+    const result = await this.read('list',normalizedInput,(_,deadline,flightSignal)=>load(deadline,flightSignal),usd,'catalog',protocol,signal,observe,true);
     const stamp=this.stamp(result.revision,usd,'catalog',protocol,result.expiresAt);
     return {value:result.value,stamp:result.snapshotOnly?undefined:stamp,offsetSnapshot:result.snapshotOnly?stamp:undefined};
   }
@@ -403,8 +459,20 @@ export class PublicCatalogCache {
     if (result.snapshotOnly && result.expiresAt <= this.now()) throw unavailable('expired');
     return { value: result.value, stamp: result.snapshotOnly ? undefined : this.stamp(result.revision,usd,'filters',protocol,result.expiresAt) };
   }
+  async getBrowseSnapshot<T>(route:PublicBrowseRoute, input:unknown,
+    load:(deadline:number,signal:AbortSignal)=>Promise<PublicSourceResult<T>>, signal?:AbortSignal, observe?:CacheReadObserver) {
+    const result=await this.read(route,input,async(revision,deadline,flightSignal)=>{
+      const source=await load(deadline,flightSignal);
+      const generatedAt=this.now();
+      return {revision,value:{value:source.value,generatedAt},
+        expiresAt:Math.min(generatedAt+PUBLIC_BROWSE_CACHE_MAX_TTL_MS,source.expiresAt??Infinity)};
+    },false,'browse',4,signal,observe);
+    this.assertBrowseFence(result.revision.browseFence);
+    return {value:result.value.value,generation:this.browseGeneration(result.revision),
+      generatedAt:new Date(result.value.generatedAt).toISOString(),expiresAt:new Date(result.expiresAt).toISOString()};
+  }
   private async read<T>(route: PublicCacheRoute, normalizedInput: unknown, load: (revision: PublicCatalogRevision, deadline: number, signal: AbortSignal) => Promise<PublicSnapshot<T>>,
-    usd: boolean, scope: RevisionScope, protocol: CacheProtocol, signal?: AbortSignal, observe?: CacheReadObserver, offsetList = false) {
+    usd: boolean, scope: StorageScope, protocol: StorageProtocol, signal?: AbortSignal, observe?: CacheReadObserver, offsetList = false) {
     const deadline=performance.now()+this.timeoutMs;
     if (this.closed) throw unavailable('closed');
     if (!['list', 'filters', 'detail', 'home'].includes(route)) throw unavailable('invalid-input');

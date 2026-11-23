@@ -1,5 +1,5 @@
 import { applyFormalCandidate } from '../store.js';
-import { adaptSourceDocuments, loadSourceDocuments, persistSourceDocument, persistTrimDocument, refreshSourceSegments, type SourceDocument } from '../sources/index.js';
+import { adaptSourceDocuments, loadSourceDocuments, persistSourceDocument, refreshSourceSegments, type SourceDocument } from '../sources/index.js';
 import { IngestionError, identityKey, type SourceApplier } from './types.js';
 
 /** Raw evidence, source heads, public projection and checkpoint share the worker transaction. */
@@ -9,9 +9,6 @@ export const applyIngestionEvent:SourceApplier=async(tx,event,context)=>{
   for(const document of documents){
     if(!document.identity || identityKey(document.identity)!==identityKey(event.identity))throw new IngestionError('INGESTION_DOCUMENT_IDENTITY');
     await persistSourceDocument(tx,document,!context.obsolete);
-    if(document.kind==='specs'&&document.payload&&typeof document.payload==='object'&&'trimId' in document.payload){
-      await persistTrimDocument(tx,String(document.payload.trimId),document.locale,document.payload,document.observedAt);
-    }
   }
   if(context.obsolete)return;
   const prior=(await tx.query('SELECT source_revision FROM external_listings WHERE provider=$1 AND platform_id=$2 AND external_id=$3',
@@ -31,7 +28,7 @@ export const applyIngestionEvent:SourceApplier=async(tx,event,context)=>{
   }
   const projection=adaptSourceDocuments(await loadSourceDocuments(tx,event.identity),revision,event.observedAt);
   if(!projection)throw new IngestionError('INGESTION_DETAIL_INCOMPLETE');
-  const applied=await applyFormalCandidate(tx,projection.candidate,context.actor,context.jobId,canonical);
+  const applied=await applyFormalCandidate(tx,projection.candidate,context.actor,context.jobId,canonical,{deferMedia:true});
   const segments=await refreshSourceSegments(tx,applied.listingId,projection,event.observedAt);
   if(segments.changed)await tx.query('UPDATE external_catalog_state SET revision=revision+1 WHERE id=1');
 };

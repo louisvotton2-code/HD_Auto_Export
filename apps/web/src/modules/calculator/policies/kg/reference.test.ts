@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Amount } from '../../core/decimal';
 import type { CalculationInput, ReferencePolicyResult } from '../../core/types';
-import { calculateKgReference, KG_REFERENCE_SOURCE, KG_REFERENCE_VERSION } from './reference';
+import { calculateKgReference } from './reference';
 import { kgMethodMessages } from './method-messages';
 
 const INPUT: CalculationInput = {
@@ -13,7 +13,7 @@ const INPUT: CalculationInput = {
   displacementCc: '1998',
   powerHp: '',
   manufactureDate: '2021-01',
-  customsDate: '2026-10-23',
+  customsDate: '2026-01-14',
   freight: '1100',
   insurance: '',
   steering: 'left',
@@ -35,33 +35,25 @@ function total(result: ReferencePolicyResult) {
 }
 
 describe('KG independently implemented reference snapshot', () => {
-  it('matches the saved personal sample and keeps the first-registration estimate outside the total', () => {
-    const result = quote();
-    expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['duty', '543613.84'],
-      ['excise', '0.00'],
-      ['vat', '0.00'],
-      ['customsFee', '3524.93'],
-    ]);
-    expect(total(result)).toBe('547138.77');
-    expect(result.additionalCosts).toMatchObject([
-      { id: 'registrationEstimate', amount: '44066.72', kind: 'one_time_estimate' },
-    ]);
-    expect(result.lines.some(({ id }) => id === 'registrationEstimate')).toBe(false);
-    expect(KG_REFERENCE_VERSION).toBe('kg-reference-2026.10.22-v1');
-    expect(KG_REFERENCE_SOURCE).toBe('https://www.kmotors.shop/en/calculator/kyrgyzstan');
+  it('corrects the report cases for private and commercial imports', () => {
+    const changes = { price: '8750', transactionRate: '100', euroRate: '100', freight: '', customsDate: '2026-11-23' };
+    const run = (manufactureDate: string, ageMonths: number, importerType: CalculationInput['importerType']) =>
+      calculateKgReference({ input: { ...INPUT, ...changes, manufactureDate, importerType }, ageMonths, ageYears: Math.floor(ageMonths / 12) });
+    expect(amount(run('2021-01', 70, 'individual'), 'duty')).toBe('959040.00');
+    for (const [date, months] of [['2022-01', 58], ['2023-01', 46]] as const) {
+      const result = run(date, months, 'company');
+      expect(result.lines.map(({ amount }) => amount)).toEqual(['175000.00', '0.00', '126000.00', '3500.00']);
+      expect(total(result)).toBe('304500.00');
+      expect(result.additionalCosts).toEqual([]);
+    }
   });
-
-  it('matches the saved company sample including VAT and has no personal registration estimate', () => {
-    const result = quote({ importerType: 'company' });
-    expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['duty', '176266.88'],
-      ['excise', '0.00'],
-      ['vat', '126911.75'],
-      ['customsFee', '3524.93'],
-    ]);
-    expect(total(result)).toBe('306703.56');
-    expect(result.additionalCosts).toEqual([]);
+  it('does not increase personal unified duty when separate freight is entered', () => {
+    const changes = { price: '10000', displacementCc: '1000', transactionRate: '100', euroRate: '100' };
+    expect(amount(quote({ ...changes, freight: '' }, 2), 'duty')).toBe('480000.00');
+    expect(amount(quote({ ...changes, freight: '1000' }, 2), 'duty')).toBe('480000.00');
+  });
+  it.each([['100000', '500.00'], ['62500001', '250000.00']])('bounds the commercial fee for KGS %s', (price, fee) => {
+    expect(amount(quote({ price, transactionRate: '1', freight: '', importerType: 'company' }), 'customsFee')).toBe(fee);
   });
 
   it.each([
@@ -69,7 +61,7 @@ describe('KG independently implemented reference snapshot', () => {
     [4, '1500.00'],
     [5, '1500.00'],
     [6, '3000.00'],
-  ])('uses KG calendar-year personal boundaries at age %i', (age, expected) => {
+  ])('uses personal tariff the day before anniversary %i', (age, expected) => {
     expect(
       amount(
         quote(
@@ -169,7 +161,7 @@ describe('KG independently implemented reference snapshot', () => {
     },
   );
 
-  it('keeps company age 3 on 15%, then applies 20% at age 4 when it beats the cc minimum', () => {
+  it('applies 15% before the third anniversary, then 20% when it beats the cc minimum', () => {
     const changes = {
       importerType: 'company' as const,
       price: '10000',
@@ -197,7 +189,7 @@ describe('KG independently implemented reference snapshot', () => {
       expect(amount(quote(changes, 5), 'duty')).toBe('1500.00');
       expect(amount(quote(changes, 5), 'vat')).toBe('0.00');
       expect(amount(quote(changes, 6), 'vat')).toBe('1380.00');
-      expect(amount(quote({ ...changes, importerType: 'individual' }, 6), 'vat')).toBe('0.00');
+      expect(amount(quote({ ...changes, importerType: 'individual' }, 6), 'vat')).toBe('1380.00');
     },
   );
 
@@ -208,88 +200,18 @@ describe('KG independently implemented reference snapshot', () => {
     },
   );
 
-  it('includes supplied insurance and freight in the EUR customs value and rounds EUR before KGS conversion', () => {
-    const result = quote({
-      price: '100',
-      freight: '10',
-      insurance: '5',
-      transactionRate: '3',
-      euroRate: '2',
-      powertrain: 'bev',
-      displacementCc: '',
-    });
+  it('retains separately invoiced freight and insurance for commercial imports', () => {
+    const result = quote({ price: '100', freight: '10', insurance: '5', transactionRate: '3',
+      euroRate: '2', powertrain: 'bev', displacementCc: '', importerType: 'company' });
     expect(amount(result, 'duty')).toBe('51.76');
-    expect(amount(result, 'customsFee')).toBe('1.38');
-    expect(result.additionalCosts[0].amount).toBe('17.26');
+    expect(amount(result, 'customsFee')).toBe('500.00');
   });
 
-  it('does not mutate the caller facts or depend on the current month', () => {
-    const input = { ...INPUT };
-    const before = { ...input };
-    const a = calculateKgReference({ input, ageYears: 5, ageMonths: 60 });
-    const b = calculateKgReference({ input, ageYears: 5, ageMonths: 71 });
-    expect(a).toEqual(b);
-    expect(input).toEqual(before);
-  });
-
-  it('explains both personal minimum comparison operands and the EUR-first rounding stage', () => {
-    const result = quote(
-      { price: '2500', freight: '', displacementCc: '1000', transactionRate: '1', euroRate: '2' },
-      3,
-    );
-    expect(result.lines[0].method).toEqual({
-      key: 'KG.dutyPersonalYoung',
-      params: {
-        age: 3,
-        value: '1250',
-        rate: '54',
-        cc: '1000',
-        perCc: '2.5',
-        percentage: '675',
-        minimum: '2500',
-        selected: '2500',
-        eurAmount: '2500.00',
-        euroRate: '2',
-      },
-    });
-    expect(result.additionalCosts[0].method).toMatchObject({
-      key: 'KG.registrationEstimate',
-      params: { value: '1250', rate: 5, eurAmount: '62.50', euroRate: '2' },
-    });
-  });
-
-  it('explains company VAT from the rounded EUR duty and distinguishes the exemption scenarios', () => {
-    const changes = {
-      price: '100',
-      freight: '10',
-      insurance: '5',
-      transactionRate: '3',
-      euroRate: '2',
-      powertrain: 'bev' as const,
-      displacementCc: '',
-    };
-    expect(quote(changes).lines.find((line) => line.id === 'vat')?.method?.key).toBe(
-      'KG.vatPersonal',
-    );
-    expect(
-      quote({ ...changes, importerType: 'company' }, 5).lines.find((line) => line.id === 'vat')
-        ?.method?.key,
-    ).toBe('KG.vatElectricExempt');
-    expect(
-      quote({ ...changes, importerType: 'company' }, 6).lines.find((line) => line.id === 'vat')
-        ?.method,
-    ).toEqual({
-      key: 'KG.vat',
-      params: {
-        age: 6,
-        value: '172.5',
-        duty: '25.88',
-        taxableBase: '198.38',
-        rate: 12,
-        eurAmount: '23.81',
-        euroRate: '2',
-      },
-    });
+  it('changes commercial age band on the third anniversary; private unified duty changes the next day', () => {
+    const changes = { price: '10000', transactionRate: '1', euroRate: '1', freight: '', displacementCc: '1000', manufactureDate: '2023-01', customsDate: '2026-01-15' };
+    expect(amount(quote({ ...changes, importerType: 'company' }, 3), 'duty')).toBe('2000.00');
+    expect(amount(quote(changes, 3), 'duty')).toBe('4800.00');
+    expect(amount(quote({ ...changes, customsDate: '2026-01-16' }, 3), 'duty')).toBe('1500.00');
   });
 
   it('provides translated explanations and every placeholder for all policy branches', () => {

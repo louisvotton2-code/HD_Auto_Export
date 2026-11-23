@@ -4,6 +4,7 @@ import en from '../../../messages/en.json';
 import ru from '../../../messages/ru.json';
 import { calculateImportEstimate } from '../core/calculate';
 import { countries } from '../config/countries';
+import type { CountryCode } from '../core/types';
 import { createDefaultInput } from './defaults';
 import { getCalculatorMessages } from './calculator-messages';
 
@@ -42,7 +43,7 @@ describe('calculation method and live translation contract', () => {
     const messages = (['zh', 'en', 'ru'] as const).map((locale) =>
       flatten(getCalculatorMessages(locale).FeeMethods),
     );
-    let explained = 0;
+    const explained = new Set<CountryCode>();
     for (const { code } of countries) {
       for (const powertrain of ['petrol', 'diesel', 'hev', 'phev', 'erev', 'bev'] as const) {
         for (const manufactureDate of [
@@ -67,13 +68,16 @@ describe('calculation method and live translation contract', () => {
               powerHp: '220',
               freight: '1000',
               insurance: '100',
-              ...(code === 'TJ' ? { tjDutyPercent: '10', tjExcisePercent: '14', tjExciseMinimum: '0.15' } : {}),
+              ...(code === 'TJ' ? { tjDutyPercent: '10', tjExcisePercent: '14', tjExciseMinimum: '0.20' } : {}),
             });
-            if ((code === 'TJ' || code === 'TM') && result.status === 'needs_review') {
-              expect(result).toMatchObject({ total: null, lines: [], additionalCosts: [] });
-              continue;
+            if (result.status === 'needs_review') {
+              expect(result.reason).toBeTruthy();
+              expect(result.total).toBeNull();
+            } else {
+              expect(result.status, `${code} ${powertrain} ${manufactureDate}`).toBe('reference');
+              expect(result.lines.length).toBeGreaterThan(0);
+              explained.add(code);
             }
-            expect(result.status, `${code} ${powertrain} ${manufactureDate}`).toBe('reference');
             for (const fee of [...result.lines, ...result.additionalCosts]) {
               expect(fee.method, `${code} ${fee.id}`).toBeDefined();
               for (const language of messages) {
@@ -82,12 +86,11 @@ describe('calculation method and live translation contract', () => {
                 for (const name of placeholders(template))
                   expect(fee.method!.params[name], `${fee.method!.key}.{${name}}`).toBeDefined();
               }
-              explained++;
             }
           }
         }
       }
     }
-    expect(explained).toBeGreaterThan(1000);
+    expect([...explained].sort()).toEqual(countries.map(c => c.code).sort());
   });
 });

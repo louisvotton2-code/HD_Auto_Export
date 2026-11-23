@@ -8,9 +8,9 @@ import { routing, type Locale } from '@/i18n/routing';
 import { pageMetadata, publicPageSchema } from '@/shared/lib/page-seo';
 import { JsonLd } from '@/shared/ui/json-ld';
 import { InterFontFaces, interFontUrls } from '@/shared/ui/inter-fonts';
-import { markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
+import { markPublicHtmlRenderComplete, publicHtmlRenderProtocol, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 import { PublicHome } from '@/modules/home';
-import { getPublicCatalog, getPublicHome, getPublicHomeFilters, publicRetryAfter } from '@/modules/vehicles/server';
+import { getPublicCatalog, getPublicHomepage, publicRetryAfter } from '@/modules/vehicles/server';
 
 const metadataByLocale = {
   zh: {
@@ -42,10 +42,8 @@ export default async function Home({ params }: Props) {
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
   await connection();
-  const [home, overview, models] = await Promise.allSettled([
-    getPublicHome(locale),
-    ...getPublicHomeFilters(locale),
-  ]);
+  const ticket = (await headers()).get(publicHtmlRenderTicketHeader);
+  const [home, overview, models] = await Promise.allSettled(getPublicHomepage(locale, publicHtmlRenderProtocol(ticket)));
   const facets = overview.status === 'fulfilled' ? overview.value.data : null;
   let initialRetryAfter = publicRetryAfter(home, overview, models);
   let catalogTotal = facets?.total ?? null;
@@ -60,7 +58,7 @@ export default async function Home({ params }: Props) {
     initialRetryAfter = publicRetryAfter(catalog);
   }
   if (home.status === 'fulfilled' && models.status === 'fulfilled' && facets?.total !== undefined) {
-    markPublicHtmlRenderComplete((await headers()).get(publicHtmlRenderTicketHeader));
+    markPublicHtmlRenderComplete(ticket);
   }
   const { title, description } = metadataByLocale[locale];
   return <>

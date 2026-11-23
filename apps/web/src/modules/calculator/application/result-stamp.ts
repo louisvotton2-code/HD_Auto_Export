@@ -1,5 +1,6 @@
 import { ageInMonths, parseCustomsDate, parseManufactureMonth } from '../core/dates';
-import { Amount } from '../core/decimal';
+import { applyDocumentedYear } from '../core/documented-facts';
+import { throughEaeuAnniversary } from '../policies/eaeu-personal';
 import type { CalculationInput, CalculationResult, CountryCode } from '../core/types';
 import type { StampMessageKey } from './stamp-messages';
 
@@ -24,9 +25,10 @@ const text = (key: StampMessageKey): StampText => ({ key });
  * It does not calculate tax, certify an exemption, or make an import eligibility decision.
  */
 export function getResultStamp(
-  input: CalculationInput,
+  rawInput: CalculationInput,
   result: CalculationResult,
 ): ResultStampDescriptor {
+  const input = applyDocumentedYear(rawInput);
   const pending: ResultStampDescriptor = {
     country: input.country,
     tone: 'muted',
@@ -45,11 +47,11 @@ export function getResultStamp(
   const electric = input.powertrain === 'bev';
   const hybrid = ['hev', 'phev', 'erev'].includes(input.powertrain);
   const propulsion = text(electric ? 'electric' : hybrid ? 'hybrid' : 'fuel');
-  // Consume the policy's selected charge instead of recreating its luxury thresholds.
-  const charged = (id: string) => {
-    const amount = result.lines.find((line) => line.id === id)?.amount;
-    return amount !== undefined && new Amount(amount).gt(0);
-  };
+  const line = (id: string) => result.lines.find(entry => entry.id === id);
+  const charged = (id: string) => Number(line(id)?.amount ?? 0) > 0;
+  const facts = { input, ageMonths: months, ageYears: years };
+  const personalAge = () => text(throughEaeuAnniversary(facts, 3) ? 'upTo3'
+    : throughEaeuAnniversary(facts, 5) ? 'kgPersonalMiddle' : 'over5');
   const base = {
     country: input.country,
     tone: 'gold' as const,
@@ -58,103 +60,69 @@ export function getResultStamp(
   switch (input.country) {
     case 'RU':
       return {
-        ...base,
-        tone: electric ? 'blue' : 'gold',
-        title: text(electric ? 'electricSchedule' : 'personalTariff'),
-        subtitle: text(months < 36 ? 'under3' : months < 60 ? 'ruMiddle' : 'fivePlus'),
-        condition: electric
-          ? propulsion
-          : result.assumptions.includes('ru_personal_relief_assumed')
-            ? text('personalRecyclingAssumed')
-            : text('standardRecycling'),
+        ...base, tone: electric ? 'blue' : 'gold',
+        title: text(electric ? 'electricSchedule' : 'personalTariff'), subtitle: personalAge(),
+        condition: text(result.assumptions.includes('ru_personal_relief_assumed') ? 'personalRecyclingAssumed'
+          : line('recycling')?.method?.key === 'RU.recyclingConcession' ? 'personalRecycling' : 'standardRecycling'),
       };
-    case 'KZ':
+    case 'KZ': {
+      const personal = result.assumptions.includes('kz_personal_declaration');
       return {
-        ...base,
-        tone: electric || input.powertrain === 'erev' ? 'blue' : 'gold',
-        title: text(charged('luxuryExcise') ? 'luxurySchedule' : 'commonTariff'),
-        subtitle: text(months > 84 ? 'over7' : 'upTo7'),
-        condition: text(
-          electric ? 'electric' : input.powertrain === 'erev' ? 'seriesHybrid' : 'fuelSchedule',
-        ),
-      };
-    case 'UZ':
-      return {
-        ...base,
-        tone: electric ? 'blue' : input.condition === 'new' ? 'green' : 'gold',
-        title: text(
-          input.condition === 'new' ? (months <= 12 ? 'newUnder12' : 'newOver12') : 'used',
-        ),
-        subtitle: text(months > 36 ? 'recyclingOver36' : 'recyclingUpTo36'),
-        condition: propulsion,
-      };
-    case 'GE': {
-      const hybridRelief = hybrid && years <= 6 && input.steering === 'left';
-      return {
-        ...base,
-        tone: electric ? 'blue' : hybridRelief ? 'green' : 'gold',
-        title: text(
-          electric
-            ? 'electricSchedule'
-            : input.steering === 'right'
-              ? 'rightHandSchedule'
-              : hybridRelief
-                ? 'hybridRelief'
-                : 'geSchedule',
-        ),
-        subtitle: text(years > 6 ? 'over6' : 'upTo6'),
-        condition: text(input.steering === 'right' ? 'rightHand' : 'leftHand'),
+        ...base, tone: electric ? 'blue' : 'gold',
+        title: text(charged('luxuryExcise') ? 'luxurySchedule' : personal ? 'personalTariff' : 'commonTariff'),
+        subtitle: personal ? personalAge() : propulsion,
+        condition: personal ? propulsion : text('goodsDeclaration'),
       };
     }
-    case 'AM':
+    case 'UZ': {
+      const duty = line('duty')?.method?.key;
+      const newTitle = duty === 'UZ.dutyHybridNewYoung' || duty === 'UZ.dutyNewYoung' ? 'newUnder12'
+        : electric ? 'new' : 'newOver12';
       return {
-        ...base,
-        tone: electric ? 'blue' : hybrid ? 'green' : 'gold',
-        title: text(electric ? 'electricReliefAssumed' : 'commonTariff'),
-        subtitle: text(years < 3 ? 'under3' : years < 7 ? 'amMiddle' : 'sevenPlus'),
-        condition: text(
-          electric || hybrid || years <= 5
-            ? 'environmentNone'
-            : years <= 10
-              ? 'environment2'
-              : years <= 15
-                ? 'environment10'
-                : 'environment20',
-        ),
+        ...base, tone: electric ? 'blue' : input.condition === 'new' ? 'green' : 'gold',
+        title: text(input.condition === 'new' ? newTitle : 'used'),
+        subtitle: text(line('recycling')?.method?.key.endsWith('Old') ? 'recyclingOver36' : 'recyclingUpTo36'),
+        condition: propulsion,
       };
+    }
+    case 'GE': {
+      const hybridRelief = line('excise')?.method?.key === 'GE.exciseHybridRelief';
+      const converted = input.steeringConverted === 'yes';
+      const right = converted || input.steering === 'right';
+      return {
+        ...base, tone: electric ? 'blue' : hybridRelief ? 'green' : 'gold',
+        title: text(electric ? 'electricSchedule' : right ? 'rightHandSchedule' : hybridRelief ? 'hybridRelief' : 'geSchedule'),
+        subtitle: text(years > 6 ? 'over6' : 'upTo6'),
+        condition: text(converted ? 'convertedSteering' : right ? 'rightHand' : 'leftHand'),
+      };
+    }
+    case 'AM': {
+      const rate = line('environmental')?.method?.params.rate;
+      return {
+        ...base, tone: electric ? 'blue' : hybrid ? 'green' : 'gold',
+        title: text(electric ? 'electricSchedule' : 'personalTariff'),
+        subtitle: electric ? text(charged('vat') ? 'vat20' : 'vatExempt') : personalAge(),
+        condition: rate === undefined ? null : { key: 'environmentRate', params: { rate } },
+      };
+    }
     case 'KG': {
       const personal = input.importerType === 'individual';
       const electricSchedule = electric || input.powertrain === 'erev';
+      const duty = line('duty')?.method?.key;
+      const companyAge = duty === 'KG.dutyCompanyMiddle' ? 'kgCompanyMiddle'
+        : duty === 'KG.dutyCompanyOld' ? 'over7' : 'companyUnder3';
       return {
-        ...base,
-        tone: electricSchedule ? 'blue' : 'gold',
+        ...base, tone: electricSchedule ? 'blue' : 'gold',
         title: text(personal ? 'personalSchedule' : 'companySchedule'),
-        subtitle: text(
-          years <= 3
-            ? 'upTo3'
-            : personal
-              ? years <= 5
-                ? 'kgPersonalMiddle'
-                : 'over5'
-              : years <= 7
-                ? 'kgCompanyMiddle'
-                : 'over7',
-        ),
-        condition: text(
-          electricSchedule
-            ? personal || years <= 5
-              ? 'electricStandard'
-              : 'electricWithVat'
-            : 'fuelSchedule',
-        ),
+        subtitle: electricSchedule ? propulsion : personal ? personalAge() : text(companyAge),
+        condition: text(electricSchedule ? (charged('vat') ? 'electricWithVat' : 'electricStandard') : 'fuelSchedule'),
       };
     }
     case 'AL':
       return {
-        ...base,
-        tone: electric ? 'blue' : 'gold',
-        title: text(charged('luxuryOnce') ? 'luxurySchedule' : 'vat20'),
-        subtitle: text(electric ? 'electricValue' : 'minimumValue'),
+        ...base, tone: electric ? 'blue' : 'gold',
+        title: text(charged('luxuryOnce') ? 'luxurySchedule' : line('vat')?.method?.key === 'AL.vatNewElectric' ? 'vatExempt' : 'vat20'),
+        subtitle: text('acceptedValue'),
         condition: text(charged('luxuryOnce') ? 'annualTaxExtra' : 'registrationIncluded'),
       };
     case 'TJ':

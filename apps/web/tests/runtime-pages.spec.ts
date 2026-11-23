@@ -170,7 +170,7 @@ test('calculating and navigating use local assets without a calculation API or r
   await expect(page).toHaveURL(/\/zh\/calculator\/georgia\/$/);
   await expect(page.locator('.reset-button')).toBeEnabled();
   await page.getByRole('button', { name: '纯电 BEV', exact: true }).click();
-  await expect(page.getByTestId('manufacture-range-total')).toHaveText('480.00 – 480.00 GEL');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveText('150.00 – 150.00 GEL');
   await page.waitForLoadState('networkidle');
   const origin = new URL(page.url()).origin;
   expect(requests.filter(({ url, method }) => {
@@ -195,16 +195,16 @@ test('browser initialization and reset use the Shanghai calendar date and ignore
     JSON.parse(sessionStorage.getItem('hd-auto.calculator.draft.v2') ?? '{}').input?.customsDate);
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
-  await expect.poll(effectiveDate).toBe('2026-12-11');
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
+  await expect.poll(effectiveDate).toBe('2026-12-25');
   await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
   await page.reload();
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect.poll(effectiveDate).toBe('2026-12-11');
+  await expect.poll(effectiveDate).toBe('2026-12-25');
   await page.clock.setFixedTime(new Date('2026-12-20T20:30:00Z'));
   await page.locator('.reset-button').click();
-  await expect.poll(effectiveDate).toBe('2026-12-21');
-  await expect(page.getByTestId('manufacture-range-total')).toBeVisible();
+  await expect.poll(effectiveDate).toBe('2027-01-04');
+  await expect(page.getByTestId('manufacture-range-total')).toHaveCount(0);
 });
 
 test('a future browser year remains explicit instead of silently applying expired reference rules', async ({
@@ -213,7 +213,7 @@ test('a future browser year remains explicit instead of silently applying expire
   await page.clock.setFixedTime(new Date('2027-01-01T04:00:00Z'));
   await page.goto('/zh/calculator/russia/');
   await expect(page.locator('.reset-button')).toBeEnabled();
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
   await expect(page.getByTestId('manufacture-range-total')).toHaveCount(0);
   await fillNumericDate(page, 'manufactureDate', '2021-01');
   await expect(page.getByTestId('total')).toHaveCount(0);

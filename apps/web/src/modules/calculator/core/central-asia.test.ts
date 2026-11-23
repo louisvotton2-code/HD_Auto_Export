@@ -4,7 +4,7 @@ import { createDefaultInput } from '../application/defaults';
 
 const date = '2026-11-22';
 const quote = (country: 'TJ' | 'TM', changes: Partial<CalculationInput> = {}) => calculateImportEstimate({
-  ...createDefaultInput(country, date), price: '20000', displacementCc: '1998', manufactureDate: '2023-01',
+  ...createDefaultInput(country, date), customsDate: date, price: '20000', displacementCc: '1998', manufactureDate: '2023-01',
   transactionRate: country === 'TJ' ? '10' : '3.5', euroRate: '11', ...changes,
 });
 
@@ -35,6 +35,18 @@ describe('Central Asian passenger-vehicle policies', () => {
     });
   });
 
+  it.each([
+    ['2025-11-24', 'reference'], ['2025-11-23', 'reference'], ['2025-11-22', 'needs_review'],
+  ])('checks Tajik BEV relief using the certified manufacture day %s', (manufactureDay, status) => {
+    expect(quote('TJ', { powertrain: 'bev', manufactureDate: '2025-11', manufactureDay, customsDate: '2026-11-23' }).status).toBe(status);
+  });
+
+  it.each([['petrol', '3637.90'], ['phev', '2937.90'], ['bev', '140.00']] as const)(
+    'preserves the audited production-year Turkmen fee for %s', (powertrain, total) => {
+      expect(quote('TM', { manufactureDate: '2026-01', powertrain }).total).toBe(total);
+    },
+  );
+
   it('Turkmenistan uses personal value, the completed-year duty band and official border charges', () => {
     expect(quote('TM', { freight: '1000', insurance: '100' })).toMatchObject({
       status: 'reference', currency: 'TMT', total: '30237.90',
@@ -49,6 +61,7 @@ describe('Central Asian passenger-vehicle policies', () => {
   it.each([
     [{ manufactureDate: '2021-12' }, 'tm_age_limit'],
     [{ steering: 'right' }, 'tm_steering_limit'],
+    [{ steering: 'left', steeringConverted: 'yes' }, 'tm_steering_limit'],
     [{ displacementCc: '3501' }, 'tm_displacement_review'],
     [{ powertrain: 'erev' }, 'powertrain_rules_pending'],
   ] as const)('does not quote a Turkmenistan restriction or unverified classification (%o)', (changes, reason) => {

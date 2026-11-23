@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { Amount } from '../../core/decimal';
 import type { CalculationInput, ReferencePolicyFacts } from '../../core/types';
-import { calculateKzReference, KZ_REFERENCE_VERSION } from './reference';
+import { calculateKzReference } from './reference';
 
 const SAMPLE: CalculationInput = {
   country: 'KZ',
@@ -36,71 +35,42 @@ function amount(
 }
 
 describe('KZ 2026 research reference', () => {
-  it('reproduces the independently recorded nine-fee default sample', () => {
-    const quote = result();
-    expect(KZ_REFERENCE_VERSION).toBe('kz-reference-2026.10.22-v1');
+  it('applies the unified passenger charge to a four-year-old 1500cc car without duplicating VAT', () => {
+    const quote = result({ price: '20000', transactionRate: '500', euroRate: '550', displacementCc: '1500',
+      manufactureDate: '2022-10', customsDate: '2026-11-23' }, { ageMonths: 49, ageYears: 4 });
     expect(quote.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['customsFee', '25950'],
-      ['duty', '1756207'],
-      ['excise', '0'],
-      ['luxuryExcise', '0'],
-      ['vat', '2158433'],
-      ['registration', '2162500'],
-      ['plates', '17516'],
-      ['recycling', '756875'],
-      ['relatedCosts', '400000'],
+      ['customsFee', '25950'], ['duty', '1402500'], ['registration', '2162500'],
+      ['plates', '17516'], ['recycling', '756875'],
     ]);
-    expect(quote.lines.reduce((sum, line) => sum.add(line.amount), new Amount(0)).toFixed(0)).toBe(
-      '7277481',
-    );
-    expect(quote.additionalCosts).toEqual([]);
+    expect(quote.additionalCosts).toMatchObject([{ id: 'relatedCosts', amount: '400000' }]);
+    expect(quote.assumptions).toEqual(['kz_personal_declaration']);
   });
 
-  it('uses the engine minimum only after 84 months', () => {
-    const changes = {
-      price: '1000',
-      transactionRate: '500',
-      euroRate: '500',
-      displacementCc: '1000',
-    };
-    expect(amount('duty', changes, { ageMonths: 84 })).toBe('75000');
-    expect(amount('duty', changes, { ageMonths: 85 })).toBe('180000');
+  it('applies the general-goods 15% to a BEV, using supplied freight and insurance only once', () => {
+    const changes = { powertrain: 'bev' as const, displacementCc: '', price: '20000', transactionRate: '500' };
+    expect(amount('duty', changes)).toBe('1500000');
+    expect(amount('vat', changes)).toBe('1844152');
+    expect(amount('duty', { ...changes, freight: '200', insurance: '20' })).toBe('1516500');
+    expect(result(changes).assumptions).toEqual(['kz_standard_goods']);
+    expect(result({ ...changes, importerType: 'company' }).lines).toEqual(result(changes).lines);
   });
 
-  it.each([
-    ['1000', '180000'],
-    ['1001', '200200'],
-    ['1500', '300000'],
-    ['1501', '450300'],
-    ['3001', '900300'],
-  ])('applies the old-car minimum for %s cc', (displacementCc, expected) => {
-    expect(
-      amount(
-        'duty',
-        { price: '1', transactionRate: '500', euroRate: '500', displacementCc },
-        { ageMonths: 85 },
-      ),
-    ).toBe(expected);
+  it('charges luxury excise at the inclusive threshold, using the import acquisition value', () => {
+    const changes = { powertrain: 'bev' as const, transactionRate: '1' };
+    expect(amount('luxuryExcise', { ...changes, price: '77849999' })).toBe('0');
+    expect(amount('luxuryExcise', { ...changes, price: '77850000' })).toBe('7785000');
+    expect(amount('luxuryExcise', { ...changes, price: '77849999', freight: '1' })).toBe('7785000');
   });
 
-  it('keeps the higher value-based duty for an expensive old car', () => {
-    expect(amount('duty', {}, { ageMonths: 85 })).toBe('1756207');
-  });
-
-  it('uses unrounded duty inside the VAT base', () => {
-    expect(amount('duty', { price: '2.72', transactionRate: '1' })).toBe('0');
-    expect(amount('vat', { price: '2.72', transactionRate: '1' })).toBe('4153');
-  });
-
-  it('charges displacement excise on the entire engine only above 3000 cc', () => {
-    expect(amount('excise', { displacementCc: '3000' })).toBe('0');
-    expect(amount('excise', { displacementCc: '3001' })).toBe('300100');
-  });
-
-  it('charges and rounds luxury excise only above the strict value threshold', () => {
-    expect(amount('luxuryExcise', { price: '77850000', transactionRate: '1' })).toBe('0');
-    expect(amount('luxuryExcise', { price: '77850005', transactionRate: '1' })).toBe('7785001');
-    expect(amount('vat', { price: '77850005', transactionRate: '1' })).toBe('15574153');
+  it('requires a tariff code or proof for an unresolved declaration without granting relief', () => {
+    expect(result({ kzDeclaration: 'wto' }).reason).toBe('kz_declaration_review');
+    expect(result({ powertrain: 'bev', kzDeclaration: 'personal' }).reason).toBe('kz_declaration_review');
+    expect(result({ importerType: 'company', kzDeclaration: 'personal' }).reason).toBe('kz_declaration_review');
+    expect(result({ importerType: 'company' }).reason).toBe('kz_declaration_review');
+    expect(amount('excise', { importerType: 'company', displacementCc: '3000' })).toBe('0');
+    expect(amount('excise', { importerType: 'company', displacementCc: '3001' })).toBe('300100');
+    expect(result({ powertrain: 'erev' }).reason).toBe('kz_declaration_review');
+    expect(amount('recycling', { powertrain: 'erev', displacementCc: '1500' })).toBe('756875');
   });
 
   it.each([
@@ -126,22 +96,6 @@ describe('KZ 2026 research reference', () => {
     ['3001', '2486875'],
   ])('applies the recycling band at %s cc', (displacementCc, expected) => {
     expect(amount('recycling', { displacementCc })).toBe(expected);
-  });
-
-  it('supports a BEV without hidden displacement and retains its VAT/administrative fees', () => {
-    const quote = result({ powertrain: 'bev', displacementCc: '' });
-    expect(quote.lines.find((line) => line.id === 'duty')!.amount).toBe('0');
-    expect(quote.lines.find((line) => line.id === 'vat')!.amount).toBe('1877440');
-    expect(quote.lines.find((line) => line.id === 'recycling')!.amount).toBe('0');
-    expect(quote.lines.find((line) => line.id === 'registration')!.amount).toBe('1081250');
-  });
-
-  it('distinguishes EREV from ordinary hybrid and retains EREV engine excise', () => {
-    expect(amount('duty', { powertrain: 'hev' })).toBe('1756207');
-    expect(amount('duty', { powertrain: 'erev', displacementCc: '3500' })).toBe('0');
-    expect(amount('excise', { powertrain: 'erev', displacementCc: '3500' })).toBe('350000');
-    expect(amount('registration', { powertrain: 'erev' })).toBe('1081250');
-    expect(amount('recycling', { powertrain: 'erev' })).toBe('0');
   });
 
   it('ignores freight principal and is stable for equivalent currency facts without mutation', () => {

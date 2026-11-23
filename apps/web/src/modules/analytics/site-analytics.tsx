@@ -12,7 +12,7 @@ import { getTrackingConsent, refreshTrackingConsent, subscribeTrackingConsent } 
 import { countVehicleContact } from './contact-count';
 import { trackPixel } from './pixel';
 import { clearAnalyticsSession, nextAnalyticsSession } from './session';
-import { enqueueAnalytics, flushAnalyticsOnExit, stopAnalyticsTransport } from './transport';
+import { enqueueAnalytics, flushAnalyticsImmediately, stopAnalyticsTransport } from './transport';
 
 type PageType = AnalyticsEvent['pageType'];
 type EventDetails = AnalyticsEvent extends infer T
@@ -46,7 +46,7 @@ function pageContext(pathname: string, locale: Locale) {
   const page = document.querySelector<HTMLElement>(selector);
   if (!page || page.hasAttribute('data-analytics-demo')) return null;
   const detailId = pageType === 'vehicle' ? vehicleId(page.getAttribute('data-public-vehicle-detail')) : undefined;
-  if (pageType === 'vehicle' && (!detailId || detailId !== segments.at(-1) ||
+  if (pageType === 'vehicle' && (!detailId || detailId !== segments.at(-1) || page.inert ||
       page.closest('[data-freshness]')?.getAttribute('data-freshness') !== 'fresh')) return null;
   const navigation = publicNavigationVersion(pathname);
   const pixelFresh = !detailId || (page.dataset.metaPixelNavigation === String(navigation) &&
@@ -116,7 +116,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const recoveryBoundary = main?.closest('[data-freshness]') ?? main?.parentElement;
       if (recoveryBoundary) onResource.observe(recoveryBoundary, {
         childList: true, subtree: true, attributes: true,
-        attributeFilter: ['data-freshness', 'data-meta-pixel-navigation'],
+        attributeFilter: ['data-freshness', 'data-meta-pixel-navigation', 'inert'],
       });
     };
     watchUntilReady();
@@ -153,7 +153,12 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const { pageType } = context;
       const clickedVehicle = vehicleId(anchor.dataset.analyticsVehicle);
       if (clickedVehicle) {
-        record(sessionAnalyticsEnabled, { type: 'vehicle_click', pageType, locale, vehicleId: clickedVehicle });
+        if (sessionAnalyticsEnabled && getTrackingConsent().analytics) {
+          record(true, { type: 'vehicle_click', pageType, locale, vehicleId: clickedVehicle });
+          // A live detail link replaces the document. Start the keepalive request before unload.
+          if (event.type === 'click' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey &&
+              (!anchor.target || anchor.target === '_self')) flushAnalyticsImmediately();
+        }
         return;
       }
       const channel = anchor.dataset.analyticsContact;
@@ -188,7 +193,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
         const path = location.pathname;
         frozenPixelSnapshot = { path, navigation: publicNavigationVersion(path) };
       }
-      flushAnalyticsOnExit();
+      flushAnalyticsImmediately();
     };
     stopWithoutConsent();
     document.addEventListener('click', onClick, true);

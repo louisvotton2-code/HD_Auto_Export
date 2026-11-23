@@ -19,6 +19,7 @@ import {
 import { siteConfig } from '@/shared/config/site';
 import { pageMetadata, publicPageSchema } from '@/shared/lib/page-seo';
 import { JsonLd } from '@/shared/ui/json-ld';
+import { isPublicBrowseRender, markPublicHtmlRenderComplete, publicHtmlRenderTicketHeader } from '@/shared/lib/public-html-render-proof';
 
 type Props = {
   params: Promise<{ locale: string }>;
@@ -29,7 +30,7 @@ const catalogRender = cache(async () => {
   const incoming = await headers();
   const deferFilters = incoming.get('sec-fetch-dest') === 'empty' &&
     incoming.get('sec-fetch-site') === 'same-origin' && incoming.get('accept') === '*/*';
-  return { deferFilters, versions: deferFilters ? undefined : createCatalogVersionScope() };
+  return { deferFilters, versions: deferFilters ? undefined : createCatalogVersionScope(), ticket: incoming.get(publicHtmlRenderTicketHeader) };
 });
 
 const readBaseCatalog = cache(async (locale: Locale) => {
@@ -62,7 +63,7 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
   const { make, model } = query;
-  const { deferFilters, versions } = await catalogRender();
+  const { deferFilters, versions, ticket } = await catalogRender();
   const [result, filters, brandFilters, modelFilters] = await Promise.allSettled([
     base ? readBaseCatalog(locale) : getPublicCatalog(query, versions?.catalog),
     deferFilters ? null : getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model }), versions?.filters),
@@ -70,6 +71,10 @@ export default async function CarsPage({ params, searchParams }: Props) {
     !deferFilters && make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model }), versions?.filters) : null,
   ]);
   const t = publicVehicleMessages(locale);
+  if (isPublicBrowseRender(ticket) && !deferFilters && result.status === 'fulfilled' &&
+      filters.status === 'fulfilled' && filters.value &&
+      (!make || brandFilters.status === 'fulfilled' && brandFilters.value) &&
+      (!make || !model || modelFilters.status === 'fulfilled' && modelFilters.value)) markPublicHtmlRenderComplete(ticket);
   return <>
     {base && result.status === 'fulfilled' && result.value.data.items.some((item) => item.source.kind !== 'demo') &&
       <JsonLd data={publicPageSchema(locale, '/cars/', t.title, 'CollectionPage', t.intro)} />}

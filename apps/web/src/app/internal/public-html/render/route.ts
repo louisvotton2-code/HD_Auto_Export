@@ -27,6 +27,7 @@ export async function GET(request: Request) {
         redirect: 'manual',
         signal,
       }),
+      { protocol: identity.protocol },
     );
     const headers = new Headers(response.headers);
     for (const name of [...headers.keys()]) {
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
         headers.delete(name);
     }
     headers.set('Cache-Control', 'no-store');
-    headers.set('X-HD-Cache-Protocol', '2');
+    if (response.status === 200) headers.set('X-HD-Cache-Protocol', String(identity.protocol));
     if (proof) {
       const encoded = Buffer.from(JSON.stringify({ release, nonce: identity.nonce, ...proof })).toString('base64url');
       if (encoded.length <= 8192) headers.set('X-HD-HTML-Proof', encoded);

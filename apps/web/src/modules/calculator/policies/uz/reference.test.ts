@@ -22,8 +22,9 @@ const SAMPLE: CalculationInput = {
   usdRate: '11851.454593',
 };
 function result(changes: Partial<CalculationInput> = {}, ages: Partial<ReferencePolicyFacts> = {}) {
+  const produced = new Date(Date.UTC(2026, -(ages.ageMonths ?? 60), 1)).toISOString().slice(0, 10);
   return calculateUzReference({
-    input: { ...SAMPLE, ...changes },
+    input: { ...SAMPLE, manufactureDate: produced.slice(0, 7), manufactureDay: produced, ...changes },
     ageMonths: 60,
     ageYears: 5,
     ...ages,
@@ -47,18 +48,17 @@ const SIMPLE = {
 describe('UZ 2026 research reference', () => {
   it('reproduces the independently recorded five-fee default sample', () => {
     const quote = result();
-    expect(UZ_REFERENCE_VERSION).toBe('uz-reference-2026.10.22-v1');
+    expect(UZ_REFERENCE_VERSION).toBe('uz-hs8703-2026.11.23-v2');
     expect(quote.lines.map(({ id, amount }) => [id, amount])).toEqual([
       ['customsFee', '1030000'],
       ['duty', '200218474'],
       ['vat', '62780473'],
       ['recycling', '86520000'],
-      ['registration', '5372480'],
     ]);
     expect(quote.lines.reduce((sum, line) => sum.add(line.amount), new Amount(0)).toFixed(0)).toBe(
-      '355921427',
+      '350548947',
     );
-    expect(quote.additionalCosts).toEqual([]);
+    expect(quote.additionalCosts).toMatchObject([{ id: 'registration', amount: '2818080' }]);
   });
 
   it('adds freight and insurance to tax base without adding their principal as a fee', () => {
@@ -68,7 +68,6 @@ describe('UZ 2026 research reference', () => {
       ['duty', '10834000'],
       ['vat', '2752080'],
       ['recycling', '86520000'],
-      ['registration', '5372480'],
     ]);
   });
 
@@ -117,12 +116,12 @@ describe('UZ 2026 research reference', () => {
     ).toBe('7000000');
   });
 
-  it.each(['hev', 'phev', 'erev'] as const)('uses the hybrid tariff for %s', (powertrain) => {
+  it.each(['hev', 'phev'] as const)('uses the hybrid tariff for %s', (powertrain) => {
     const changes = { ...SIMPLE, powertrain, displacementCc: '1500' };
     expect(amount('duty', { ...changes, condition: 'new' }, { ageMonths: 12 })).toBe('1500000');
     expect(amount('duty', { ...changes, condition: 'new' }, { ageMonths: 13 })).toBe('3000000');
-    expect(amount('duty', changes, { ageMonths: 36 })).toBe('3900000');
-    expect(amount('duty', changes, { ageMonths: 37 })).toBe('8500000');
+    expect(amount('duty', changes, { ageMonths: 36 })).toBe('3000000');
+    expect(amount('duty', changes, { ageMonths: 37 })).toBe('3000000');
   });
 
   it.each([
@@ -143,7 +142,6 @@ describe('UZ 2026 research reference', () => {
       ['duty', '0'],
       ['vat', '1200000'],
       ['recycling', '49440000'],
-      ['registration', '3172400'],
     ]);
     expect(amount('recycling', changes, { ageMonths: 37 })).toBe('86520000');
   });
@@ -157,10 +155,41 @@ describe('UZ 2026 research reference', () => {
     ['100000', '2884000'],
     ['200000', '4120000'],
     ['500000', '6180000'],
-    ['1000000', '8240000'],
+    ['999999.99', '8240000'],
+    ['1000000', '10300000'],
     ['1000000.01', '10300000'],
   ])('uses the USD customs value band at %s', (price, expected) => {
     expect(amount('customsFee', { ...SIMPLE, price })).toBe(expected);
+  });
+
+  it('matches the 2026-11-23 audited four-year-old hybrid and separates registration', () => {
+    const quote = result({ price: '20000', freight: '0', insurance: '0', transactionRate: '12000', usdRate: '12000',
+      powertrain: 'hev', displacementCc: '1500', customsDate: '2026-11-23', manufactureDate: '2022-10' }, { ageMonths: 49 });
+    expect(Object.fromEntries(quote.lines.map(({ id, amount }) => [id, amount]))).toEqual({
+      customsFee: '660000', duty: '72000000', vat: '37440000', recycling: '92400000',
+    });
+    expect(quote.additionalCosts).toMatchObject([{ id: 'registration', amount: '660000' }]);
+  });
+
+  it('changes the BRV on September 1, including BEV recycling', () => {
+    const changes = { ...SIMPLE, powertrain: 'bev' as const, displacementCc: '', manufactureDate: '2025-01' };
+    expect(amount('recycling', { ...changes, customsDate: '2026-08-31' }, { ageMonths: 19 })).toBe('49440000');
+    expect(amount('recycling', { ...changes, customsDate: '2026-09-01' }, { ageMonths: 20 })).toBe('52800000');
+  });
+
+  it('resolves exact first and third anniversaries separately for tariff and recycling', () => {
+    const timing = { ...SIMPLE, powertrain: 'petrol' as const, condition: 'new' as const, displacementCc: '1000',
+      customsDate: '2026-11-23', manufactureDate: '2025-11' };
+    expect(amount('duty', { ...timing, manufactureDay: '2025-11-23' }, { ageMonths: 12 })).toBe('1900000');
+    expect(amount('duty', { ...timing, manufactureDay: '2025-11-22' }, { ageMonths: 12 })).toBe('4800000');
+    expect(result({ ...timing, manufactureDay: undefined }, { ageMonths: 12 }).reason).toBe('uz_age_boundary');
+    expect(result({ ...timing, manufactureDate: '2023-11', manufactureDay: '2023-11-23' }, { ageMonths: 36 }).reason).toBe('uz_classification_review');
+    expect(amount('duty', { ...timing, manufactureDate: '2023-11', manufactureDay: '2023-11-24' }, { ageMonths: 36 })).toBe('4800000');
+    const bev = { ...timing, powertrain: 'bev' as const, manufactureDate: '2023-11' };
+    expect(amount('recycling', { ...bev, manufactureDay: '2023-11-23' }, { ageMonths: 36 })).toBe('52800000');
+    expect(amount('recycling', { ...bev, manufactureDay: '2023-11-22' }, { ageMonths: 36 })).toBe('92400000');
+    expect(result({ ...bev, manufactureDay: undefined }, { ageMonths: 36 }).reason).toBe('uz_age_boundary');
+    expect(result({ powertrain: 'erev' }).reason).toBe('uz_classification_review');
   });
 
   it('keeps omitted optional freight at the explicitly assumed no-added-cost basis', () => {

@@ -47,11 +47,12 @@ function read(origin, headers, path, method) {
   });
 }
 
-async function fixture(t, edgeIp = '127.0.0.1') {
+async function fixture(t, edgeIp = '127.0.0.1', cacheProtocol = '2') {
   const calls = [];
+  const ttlForProtocol = cacheProtocol === '3' ? 600_000 : 300_000;
   const state = {
-    now: start, tick: 0, catalog: 'a', filters: 'b', ttl: 300_000, renderTtl: 300_000,
-    versionStatus: 200, confirm: '2', renderConfirm: '2', renderStatus: 200, healthy: true,
+    now: start, tick: 0, catalog: 'a', filters: 'b', ttl: ttlForProtocol, renderTtl: ttlForProtocol,
+    versionStatus: 200, confirm: cacheProtocol, renderConfirm: cacheProtocol, renderStatus: 200, healthy: true,
     renderHeaders: {}, actualFilters: null, fxUntil: null, fxVersion: '11111111-1111-4111-8111-111111111111',
     omitProof: false, proofSource: 'header', nonceMismatch: false, scopeOmitted: false,
     duplicateScope: false, rewindWhenRendering: 0,
@@ -79,7 +80,7 @@ async function fixture(t, edgeIp = '127.0.0.1') {
     if (isVersion) {
       counts.version++;
       assert.equal(req.headers['x-hd-html-key'], secret);
-      assert.equal(req.headers[control.toLowerCase()], '2');
+      assert.equal(req.headers[control.toLowerCase()], cacheProtocol);
       assert.equal(req.headers['x-hd-visitor-ip'], '192.0.2.21');
       res.writeHead(state.versionStatus, {
         'Content-Type': 'application/json', 'Cache-Control': 'no-store', [control]: state.confirm,
@@ -96,6 +97,7 @@ async function fixture(t, edgeIp = '127.0.0.1') {
     if (isPrivate) {
       assert.equal(req.headers['x-hd-render-target'], '/zh/');
       assert.equal(req.headers['x-hd-html-key'], secret);
+      assert.equal(req.headers[control.toLowerCase()], cacheProtocol);
       assert.equal(req.headers.accept, 'text/html');
       assert.equal(req.headers['accept-encoding'], 'identity');
     }
@@ -125,7 +127,7 @@ async function fixture(t, edgeIp = '127.0.0.1') {
     res.end(!isPrivate && state.dynamicGzip ? gzipSync(body) : body);
   });
   const remote = await listen(origin);
-  const cache = createHtmlCacheServer({ origin: remote, siteHost: site, edgeIp, release, secret,
+  const cache = createHtmlCacheServer({ origin: remote, siteHost: site, edgeIp, release, secret, cacheProtocol,
     now: () => state.now, tick: () => state.tick });
   const endpoint = await listen(cache);
   t.after(async () => {
@@ -271,6 +273,56 @@ test('300 second maximum never extends from a hit and expiry stays closed on clo
   state.tick += 50_000;
   state.now -= 240_000; // Actual elapsed deadline is still 300s.
   assert.notEqual((await get()).body, first.body);
+});
+
+test('protocol 3 retains authenticated homepage HTML up to 600 seconds with a live read on every hit', async t => {
+  const { advance, counts, get } = await fixture(t, '127.0.0.1', '3');
+  const first = await get();
+  advance(300_001);
+  const warm = await get();
+  assert.equal(warm.body, first.body);
+  assert.equal(warm.headers['x-hd-cache-document'], 'hit');
+  assert.equal(warm.headers['cache-control'], 'no-store');
+  assert.equal(warm.headers[control.toLowerCase()], undefined);
+  advance(299_998);
+  assert.equal((await get()).body, first.body);
+  advance(1);
+  assert.notEqual((await get()).body, first.body);
+  assert.deepEqual(counts, { version: 4, render: 2 });
+});
+
+test('protocol 3 invalidates a live revision and also honors a shorter render or FX deadline', async t => {
+  for (const reason of ['revision', 'render', 'fx']) {
+    await t.test(reason, async context => {
+      const { advance, get, state } = await fixture(context, '127.0.0.1', '3');
+      if (reason === 'render') state.renderTtl = 350_000;
+      if (reason === 'fx') state.fxUntil = start + 350_000;
+      const first = await get();
+      advance(349_999);
+      assert.equal((await get()).body, first.body);
+      if (reason === 'revision') state.filters = 'c';
+      else advance(1);
+      assert.notEqual((await get()).body, first.body);
+    });
+  }
+});
+
+test('protocol 3 treats older version or render confirmation as a dynamic request', async t => {
+  const { get, state, calls } = await fixture(t, '127.0.0.1', '3');
+  state.confirm = '2';
+  let response = await get();
+  assert.deepEqual(calls.map(call => call.path), [versionUrl, '/zh/']);
+  assert.equal(response.headers['x-hd-cache-document'], undefined);
+  calls.length = 0;
+  state.confirm = '3';
+  state.renderConfirm = '2';
+  response = await get();
+  assert.deepEqual(calls.map(call => call.path), [versionUrl, renderUrl, '/zh/']);
+  assert.equal(response.headers['x-hd-cache-document'], undefined);
+  calls.length = 0;
+  response = await get({ Cookie: 'session=private' });
+  assert.deepEqual(calls.map(call => call.path), ['/zh/']);
+  assert.equal(response.headers['cache-control'], 'no-store');
 });
 
 test('a clock rollback during render cannot extend the previously checked live deadline', async t => {

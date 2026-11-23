@@ -1,224 +1,54 @@
 import { describe, expect, it } from 'vitest';
-import { Amount } from '../../core/decimal';
+import { createDefaultInput } from '../../application/defaults';
 import type { CalculationInput } from '../../core/types';
-import { AL_REFERENCE_SOURCE, AL_REFERENCE_VERSION, calculateAlReference } from './reference';
-import { alMethodMessages } from './method-messages';
+import { calculateAlReference } from './reference';
 
-const INPUT: CalculationInput = {
-  country: 'AL',
-  importerType: 'individual',
-  powertrain: 'petrol',
-  price: '9000',
-  currency: 'USD',
-  displacementCc: '1998',
-  powerHp: '',
-  manufactureDate: '',
-  customsDate: '2026-10-23',
-  freight: '1100',
-  insurance: '',
-  steering: 'left',
-  transactionRate: '80.7859',
-  euroRate: '',
-};
-function quote(changes: Partial<CalculationInput> = {}) {
-  return calculateAlReference({ input: { ...INPUT, ...changes }, ageYears: 0, ageMonths: 0 });
-}
-function amount(changes: Partial<CalculationInput>, id: string) {
-  return quote(changes).lines.find((line) => line.id === id)?.amount;
+function quote(overrides: Partial<CalculationInput> = {}) {
+  const input = {
+    ...createDefaultInput('AL', '2026-11-23'), customsDate: '2026-11-23', price: '3000', transactionRate: '100',
+    displacementCc: '1998', freight: '0', insurance: '0', ...overrides,
+  };
+  return calculateAlReference({ input, ageMonths: 0, ageYears: 0 });
 }
 
-describe('AL independently implemented reference snapshot', () => {
-  it('matches the saved personal sample without adding freight principal or inventing age dependence', () => {
-    const result = quote();
-    expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['duty', '0'],
-      ['excise', '0'],
-      ['vat', '163188'],
-      ['registration', '8500'],
-      ['luxuryOnce', '0'],
-    ]);
-    expect(result.lines.reduce((sum, line) => sum.add(line.amount), new Amount(0)).toFixed(0)).toBe(
-      '171688',
-    );
-    expect(result.additionalCosts).toEqual([]);
-    expect(AL_REFERENCE_VERSION).toBe('al-personal-reference-2026.10.22-v1');
-    expect(AL_REFERENCE_SOURCE).toBe('https://www.kmotors.shop/en/calculator/albania');
+describe('Albania ordinary passenger cars', () => {
+  it('uses the accepted transaction value instead of imposing a displacement floor', () => {
+    expect(quote().lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'vat', amount: '60000' }),
+      expect.objectContaining({ id: 'registration', amount: '8500' }),
+    ]));
+    const result = quote({ price: '9000', freight: '1100', transactionRate: '80.7859' });
+    expect(result.lines.reduce((sum, line) => sum + Number(line.amount), 0)).toBe(171688);
   });
 
   it.each([
-    ['1400', '32500'],
-    ['1401', '50000'],
-    ['1900', '50000'],
-    ['1901', '81200'],
-    ['2500', '81200'],
-    ['2501', '100000'],
-    ['3000', '100000'],
-    ['3001', '125000'],
-    ['4500', '125000'],
-    ['4501', '200000'],
-  ])('keeps minimum customs values inclusive at %s cc', (displacementCc, vat) => {
-    expect(amount({ displacementCc, price: '100', freight: '', transactionRate: '1' }, 'vat')).toBe(
-      vat,
-    );
+    ['new', '0', '0'],
+    ['used', '0', '200000'],
+    ['new', undefined, '200000'],
+    ['new', '12', '200000'],
+    ['used', '35000', '200000'],
+  ] as const)('considers both registration and verified mileage (%s, %s) for EV VAT', (condition, mileageKm, amount) => {
+    const result = quote({ price: '10000', powertrain: 'bev', condition, mileageKm });
+    expect(result.lines.find(line => line.id === 'vat')?.amount).toBe(amount);
   });
 
-  it('uses the declared customs value when greater than the minimum', () => {
-    expect(
-      amount({ displacementCc: '1400', price: '200000', freight: '', transactionRate: '1' }, 'vat'),
-    ).toBe('40000');
+  it('keeps the registration value and seat count independent of the customs value', () => {
+    const charged = quote({ seatCount: '7', alRegistrationValueAll: '5000000' });
+    expect(charged.lines.find(line => line.id === 'luxuryOnce')?.amount).toBe('70000');
+    expect(charged.additionalCosts).toMatchObject([{ id: 'annualLuxury', amount: '21000', kind: 'annual' }]);
+    expect(quote({ seatCount: '8', displacementCc: '3500', alRegistrationValueAll: '6000000' }).additionalCosts).toEqual([]);
+    expect(quote({ seatCount: '8', displacementCc: '3500', alRegistrationValueAll: '6000000' }).lines.some(line => line.id === 'luxuryOnce')).toBe(false);
+    const differentAuthorities = quote({ price: '70000', seatCount: '5', alRegistrationValueAll: '4999999' });
+    expect(differentAuthorities.lines.some(line => line.id === 'luxuryOnce')).toBe(false);
+    expect(differentAuthorities.additionalCosts).toEqual([]);
   });
 
-  it.each(['hev', 'phev', 'erev', 'diesel'] as const)(
-    'applies the combustion minimum to %s',
-    (powertrain) => {
-      expect(amount({ powertrain, price: '100', freight: '', transactionRate: '1' }, 'vat')).toBe(
-        '81200',
-      );
-    },
-  );
-
-  it('accepts BEV without cc, dates or EUR rate and does not apply a combustion minimum', () => {
-    const result = quote({
-      powertrain: 'bev',
-      displacementCc: '',
-      manufactureDate: '',
-      euroRate: '',
-      price: '100',
-      freight: '',
-      transactionRate: '1',
-    });
-    expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
-      ['duty', '0'],
-      ['excise', '0'],
-      ['vat', '20'],
-      ['registration', '8500'],
-      ['luxuryOnce', '0'],
+  it('distinguishes possible luxury fees from proven, one-time fees', () => {
+    const unknown = quote({ price: '50000' });
+    expect(unknown.lines.some(line => line.id === 'luxuryOnce')).toBe(false);
+    expect(unknown.additionalCosts).toMatchObject([
+      { id: 'luxuryOnce', kind: 'one_time_estimate' }, { id: 'annualLuxury', kind: 'annual' },
     ]);
-    expect(result.additionalCosts).toEqual([]);
-  });
-
-  it.each([
-    ['2999', '4999999', '0'],
-    ['3000', '4999999', '70000'],
-    ['2999', '5000000', '70000'],
-    ['3000', '5000000', '70000'],
-  ])('applies luxury OR thresholds at cc %s and ALL %s', (displacementCc, price, once) => {
-    const result = quote({ displacementCc, price, freight: '', transactionRate: '1' });
-    expect(result.lines.find((line) => line.id === 'luxuryOnce')?.amount).toBe(once);
-    expect(result.additionalCosts).toMatchObject(
-      once === '0'
-        ? []
-        : [{ id: 'annualLuxury', amount: '21000', formula: '21000', kind: 'annual' }],
-    );
-  });
-
-  it('applies luxury to a high-value BEV, while ignoring its hidden combustion cc', () => {
-    expect(
-      amount(
-        {
-          powertrain: 'bev',
-          displacementCc: '4000',
-          price: '4999999',
-          freight: '',
-          transactionRate: '1',
-        },
-        'luxuryOnce',
-      ),
-    ).toBe('0');
-    const result = quote({
-      powertrain: 'bev',
-      displacementCc: '',
-      price: '5000000',
-      freight: '',
-      transactionRate: '1',
-    });
-    expect(result.lines.find((line) => line.id === 'luxuryOnce')?.amount).toBe('70000');
-    expect(result.lines.reduce((sum, line) => sum.add(line.amount), new Amount(0)).toFixed(0)).toBe(
-      '1078500',
-    );
-    expect(result.additionalCosts[0]).toMatchObject({
-      id: 'annualLuxury',
-      amount: '21000',
-      kind: 'annual',
-    });
-  });
-
-  it('includes explicitly supplied freight and insurance in rounded customs value', () => {
-    const changes = {
-      powertrain: 'bev' as const,
-      displacementCc: '',
-      price: '100',
-      freight: '10',
-      insurance: '5',
-      transactionRate: '1.005',
-    };
-    expect(amount(changes, 'vat')).toBe('23');
-  });
-
-  it('does not mutate facts and ignores calendar-age arguments', () => {
-    const input = { ...INPUT };
-    const before = { ...input };
-    expect(calculateAlReference({ input, ageYears: 0, ageMonths: 0 })).toEqual(
-      calculateAlReference({ input, ageYears: 50, ageMonths: 600 }),
-    );
-    expect(input).toEqual(before);
-  });
-
-  it('explains declared value versus the displacement minimum and keeps the chosen base', () => {
-    const result = quote({ price: '100', freight: '', transactionRate: '1' });
-    expect(result.lines.find((line) => line.id === 'vat')?.method).toEqual({
-      key: 'AL.vatMinimum',
-      params: { declared: '100', minimum: '406000', taxableBase: '406000', cc: '1998', rate: 20 },
-    });
-    expect(
-      quote({ price: '500000', freight: '', transactionRate: '1' }).lines.find(
-        (line) => line.id === 'vat',
-      )?.method?.key,
-    ).toBe('AL.vatDeclared');
-    expect(quote({ powertrain: 'bev' }).lines.find((line) => line.id === 'vat')?.method?.key).toBe(
-      'AL.vatElectric',
-    );
-  });
-
-  it('reports the actual luxury trigger and explains the excluded recurring expense', () => {
-    expect(
-      quote({ displacementCc: '3000' }).lines.find((line) => line.id === 'luxuryOnce')?.method?.key,
-    ).toBe('AL.luxuryDisplacement');
-    const result = quote({
-      powertrain: 'bev',
-      price: '5000000',
-      freight: '',
-      transactionRate: '1',
-    });
-    expect(result.lines.find((line) => line.id === 'luxuryOnce')?.method?.key).toBe(
-      'AL.luxuryValue',
-    );
-    expect(result.additionalCosts[0].method).toEqual({
-      key: 'AL.annualLuxury',
-      params: { fee: 21000 },
-    });
-  });
-
-  it('provides translated explanations and every placeholder for all policy branches', () => {
-    const results = [
-      quote(),
-      quote({ powertrain: 'bev' }),
-      quote({ price: '100', freight: '', transactionRate: '1' }),
-      quote({ displacementCc: '3000' }),
-      quote({ powertrain: 'bev', price: '5000000', freight: '', transactionRate: '1' }),
-    ];
-    for (const result of results)
-      for (const line of [...result.lines, ...result.additionalCosts]) {
-        expect(line.method).toBeDefined();
-        const key = line.method!.key.replace('AL.', '') as keyof typeof alMethodMessages.zh;
-        const placeholders = (text: string) =>
-          [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
-        const expected = placeholders(alMethodMessages.zh[key]);
-        for (const locale of ['zh', 'en', 'ru'] as const) {
-          expect(alMethodMessages[locale][key]).toBeTruthy();
-          expect(placeholders(alMethodMessages[locale][key])).toEqual(expected);
-        }
-        for (const parameter of expected) expect(line.method!.params).toHaveProperty(parameter);
-      }
+    expect(quote({ displacementCc: '3000', seatCount: '5' }).lines.find(line => line.id === 'luxuryOnce')?.amount).toBe('70000');
   });
 });

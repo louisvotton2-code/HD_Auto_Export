@@ -31,7 +31,7 @@ describe('optional backend adapter, outside the static site', () => {
       [sample, '926952', 'RUB'],
       [
         { ...sample, country: 'GE', price: '', powerHp: '', transactionRate: '', euroRate: '' },
-        '3605',
+        '3271.88',
         'GEL',
       ],
     ] as const) {

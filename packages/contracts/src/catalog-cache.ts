@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RequestMetaSchema, TimestampSchema, responseSchema } from './common.js';
+import { LocaleSchema, RequestMetaSchema, TimestampSchema, responseSchema } from './common.js';
 
 export const PUBLIC_CATALOG_MAX_OFFSET = 10_000;
 export function isPublicCatalogOffsetAllowed(page: number, pageSize: number): boolean {
@@ -8,14 +8,27 @@ export function isPublicCatalogOffsetAllowed(page: number, pageSize: number): bo
 }
 export const PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 15_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS = 300_000;
+export const INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS = 600_000;
 export const INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER = 'x-hd-cache-protocol';
+export const INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER = 'x-hd-catalog-homepage';
+export const INTERNAL_PUBLIC_HOMEPAGE_SCOPE = 'exact-v1';
+export const PUBLIC_BROWSE_CACHE_MAX_TTL_MS = 600_000;
+export const PUBLIC_BROWSE_CACHE_POLICY = 'browse-600-v1';
+export const PUBLIC_BROWSE_CACHE_POLICY_HEADER = 'x-hd-browse-policy';
+export const PUBLIC_BROWSE_GENERATION_HEADER = 'x-hd-browse-generation';
+export const PUBLIC_BROWSE_GENERATED_AT_HEADER = 'x-hd-browse-generated-at';
+export const PUBLIC_BROWSE_EXPIRES_AT_HEADER = 'x-hd-browse-expires-at';
+export const InternalPublicBrowseGenerationResponseSchema = responseSchema(z.strictObject({
+  policy: z.literal(PUBLIC_BROWSE_CACHE_POLICY),
+  generation: z.string().regex(/^[a-f0-9]{64}$/),
+}));
 export const PublicCatalogVersionQuerySchema = z.strictObject({
   priceView: z.literal('usd').optional(),
   scope: z.literal('filters').optional(),
 });
 export const InternalPublicCatalogVersionQuerySchema = z.union([
   PublicCatalogVersionQuerySchema,
-  z.strictObject({ priceView: z.literal('usd'), scope: z.literal('homepage') }),
+  z.strictObject({ priceView: z.literal('usd'), scope: z.literal('homepage'), locale: LocaleSchema.optional() }),
 ]);
 function catalogCacheStampSchema(maxLifetimeMs: number) {
   return z.strictObject({
@@ -46,6 +59,12 @@ export const InternalPublicCatalogVersionResponseSchema = responseSchema(Interna
 export const InternalPublicCatalogHomepageVersionResponseSchema = responseSchema(z.strictObject({
   catalog: InternalPublicCatalogCacheStampSchema,
   filters: InternalPublicCatalogCacheStampSchema,
+}));
+/** Protocol 3 applies only to the authenticated homepage resources and their live version pair. */
+export const InternalPublicHomepageCacheStampSchema = catalogCacheStampSchema(INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS);
+export const InternalPublicHomepageVersionResponseSchema = responseSchema(z.strictObject({
+  catalog: InternalPublicHomepageCacheStampSchema,
+  filters: InternalPublicHomepageCacheStampSchema,
 }));
 export const PublicCatalogResponseMetaSchema = RequestMetaSchema.extend({
   // Optional for older servers/fixtures. An absent stamp prohibits SSR reuse.

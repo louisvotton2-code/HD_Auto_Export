@@ -1,14 +1,13 @@
 import { Amount, roundedAmount } from '../../core/decimal';
+import { compareManufactureAnniversary } from '../../core/dates';
 import type {
   CalculationLine,
   ReferencePolicyFacts,
   ReferencePolicyResult,
 } from '../../core/types';
 
-/** Competitor research snapshot; new/used status requires the actual registration history. */
-export const UZ_REFERENCE_VERSION = 'uz-reference-2026.10.22-v1';
+export const UZ_REFERENCE_VERSION = 'uz-hs8703-2026.11.23-v2';
 
-const BRV = new Amount('412000');
 const CLEARANCE_BANDS = [
   { limit: '10000', coefficient: '1' },
   { limit: '20000', coefficient: '1.5' },
@@ -43,10 +42,19 @@ const RECYCLING_BANDS = [
 export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePolicyResult {
   const { input, ageMonths } = facts;
   const electric = input.powertrain === 'bev';
-  const hybrid = ['hev', 'phev', 'erev'].includes(input.powertrain);
+  const hybrid = input.powertrain === 'hev' || input.powertrain === 'phev';
   const used = input.condition !== 'new';
-  const freshNew = !used && ageMonths <= 12;
-  const olderThanThree = ageMonths > 36;
+  const manual = (reason: string) => ({ reason, lines: [], additionalCosts: [] });
+  if (input.powertrain === 'erev') return manual('uz_classification_review');
+  const firstAnniversary = compareManufactureAnniversary(input, ageMonths, 1);
+  const thirdAnniversary = compareManufactureAnniversary(input, ageMonths, 3);
+  if (thirdAnniversary === null || (!electric && !used && firstAnniversary === null))
+    return manual('uz_age_boundary');
+  // PP-3818 distinguishes new combustion vehicles <3 years from used tariff codes.
+  if (!electric && !hybrid && !used && thirdAnniversary >= 0) return manual('uz_classification_review');
+  const brv = new Amount(input.customsDate >= '2026-09-01' ? 440000 : 412000);
+  const freshNew = !used && firstAnniversary !== null && firstAnniversary <= 0;
+  const olderThanThree = thirdAnniversary > 0;
   const cc = new Amount(electric ? '0' : input.displacementCc);
   const transactionRate = new Amount(input.transactionRate);
   const usdRate = new Amount(input.usdRate ?? input.transactionRate);
@@ -61,12 +69,7 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
 
   if (!electric) {
     if (hybrid) {
-      dutyRate = used ? (olderThanThree ? '0.4' : '0.3') : freshNew ? '0.15' : '0.3';
-      perCc = used
-        ? olderThanThree
-          ? '3'
-          : PETROL_BANDS.find((band) => band.limit === null || cc.lte(band.limit))!.fresh
-        : '0';
+      dutyRate = freshNew ? '0.15' : '0.30';
     } else if (used) {
       dutyRate = '0.4';
       perCc = '3';
@@ -81,7 +84,7 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
   const dutyUsd = customsUsd.mul(dutyRate).add(cc.mul(perCc));
   const duty = dutyUsd.mul(usdRate);
   const clearanceBand = CLEARANCE_BANDS.find(
-    (band) => band.limit === null || customsUsd.lte(band.limit),
+    (band) => band.limit === null || (band.limit === '1000000' ? customsUsd.lt(band.limit) : customsUsd.lte(band.limit)),
   )!;
   const clearanceCoefficient = clearanceBand.coefficient;
   const clearanceIndex = CLEARANCE_BANDS.indexOf(clearanceBand);
@@ -93,18 +96,12 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
     : olderThanThree
       ? recyclingBand.older
       : recyclingBand.fresh;
-  const registrationCoefficient = electric ? '7.7' : '13.04';
+  const registrationCoefficient = electric || hybrid ? '1.5' : '6.84';
   const vatBase = customsValue.add(duty);
   const dutyKey = electric
     ? 'dutyElectric'
     : hybrid
-      ? used
-        ? olderThanThree
-          ? 'dutyHybridUsedOld'
-          : 'dutyHybridUsedYoung'
-        : freshNew
-          ? 'dutyHybridNewYoung'
-          : 'dutyHybridNewOld'
+      ? freshNew ? 'dutyHybridNewYoung' : 'dutyHybridOther'
       : used
         ? 'dutyUsed'
         : freshNew
@@ -118,7 +115,7 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
           ageMonths,
           customsUsd: customsUsd.toString(),
           percentage: new Amount(dutyRate).mul(100).toString(),
-          ...(!hybrid || used ? { cc: cc.toString(), perCc } : {}),
+          ...(!hybrid ? { cc: cc.toString(), perCc } : {}),
           usdRate: usdRate.toString(),
         },
   };
@@ -126,15 +123,15 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
   const lines: CalculationLine[] = [
     {
       id: 'customsFee',
-      amount: roundedAmount(BRV.mul(clearanceCoefficient)),
-      formula: `412000 × ${clearanceCoefficient}`,
+      amount: roundedAmount(brv.mul(clearanceCoefficient)),
+      formula: `${brv} × ${clearanceCoefficient}`,
       method: {
         key: clearanceBand.limit === null ? 'UZ.customsFeeTop' : 'UZ.customsFee',
         params: {
           customsUsd: customsUsd.toString(),
           lower: clearanceIndex === 0 ? '0' : CLEARANCE_BANDS[clearanceIndex - 1].limit!,
           ...(clearanceBand.limit === null ? {} : { upper: clearanceBand.limit }),
-          brv: BRV.toString(),
+          brv: brv.toString(),
           coefficient: clearanceCoefficient,
         },
       },
@@ -144,7 +141,9 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
       amount: roundedAmount(duty),
       formula: electric
         ? '0'
-        : `round((${customsUsd.toString()} × ${dutyRate} + ${cc.toString()} × ${perCc}) × ${usdRate.toString()})`,
+        : hybrid
+          ? `round(${customsUsd} × ${dutyRate} × ${usdRate})`
+          : `round((${customsUsd} × ${dutyRate} + ${cc} × ${perCc}) × ${usdRate})`,
       method: dutyMethod,
     },
     {
@@ -163,27 +162,23 @@ export function calculateUzReference(facts: ReferencePolicyFacts): ReferencePoli
     },
     {
       id: 'recycling',
-      amount: roundedAmount(BRV.mul(recyclingCoefficient)),
-      formula: `412000 × ${recyclingCoefficient}`,
+      amount: roundedAmount(brv.mul(recyclingCoefficient)),
+      formula: `${brv} × ${recyclingCoefficient}`,
       method: {
         key: `UZ.recycling${electric ? 'Electric' : 'Standard'}${olderThanThree ? 'Old' : 'Young'}`,
         params: {
           ageMonths,
           ...(electric ? {} : { cc: cc.toString() }),
-          brv: BRV.toString(),
+          brv: brv.toString(),
           coefficient: recyclingCoefficient,
         },
       },
     },
-    {
-      id: 'registration',
-      amount: roundedAmount(BRV.mul(registrationCoefficient)),
-      formula: `412000 × ${registrationCoefficient}`,
-      method: {
-        key: electric ? 'UZ.registrationElectric' : 'UZ.registrationStandard',
-        params: { brv: BRV.toString(), coefficient: registrationCoefficient },
-      },
-    },
   ];
-  return { lines, additionalCosts: [] };
+  return { lines, additionalCosts: [{
+    id: 'registration', kind: 'one_time_estimate',
+    amount: roundedAmount(brv.mul(registrationCoefficient)),
+    formula: `${brv} × ${registrationCoefficient}`,
+    method: { key: 'UZ.registrationCore', params: { brv: brv.toString(), coefficient: registrationCoefficient } },
+  }] };
 }

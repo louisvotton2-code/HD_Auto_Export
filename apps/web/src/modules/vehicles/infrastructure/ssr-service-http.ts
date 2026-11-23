@@ -1,16 +1,23 @@
 import {
   INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER,
-  InternalPublicCatalogCacheStampSchema,
+  INTERNAL_PUBLIC_HOMEPAGE_SCOPE,
+  INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER,
+  PUBLIC_BROWSE_CACHE_POLICY,
+  PUBLIC_BROWSE_CACHE_POLICY_HEADER,
+  InternalPublicBrowseGenerationResponseSchema,
   InternalPublicCatalogHomepageVersionResponseSchema,
   InternalPublicCatalogVersionResponseSchema,
-  PublicCatalogCacheStampSchema,
+  InternalPublicHomepageVersionResponseSchema,
   PublicCatalogVersionResponseSchema,
+  type Locale,
   type PublicCatalogCacheStamp,
 } from '@hd/contracts/public';
 import { getSsrServiceSecret } from '@/shared/config/ssr-service-secret';
+import type { PublicHtmlCacheProtocol } from '@/shared/lib/public-html-render-proof';
+import { parsePublicBrowseStamp } from '@/shared/lib/public-browse-stamp';
 import { retryAfterSeconds } from '@/shared/lib/retry-after';
 import { PublicApiError, publicApiOrigin, readPublicJsonBody } from './public-http';
-import { anonymousPublicEnvelope, type SsrCacheProtocol, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
+import { anonymousPublicEnvelope, ssrCacheStampSchema, type SsrCacheProtocol, type SsrPublicDescriptor, type SsrPublicEnvelope } from './ssr-public-reader';
 
 const prefix = '/internal/public-catalog';
 const offsetSnapshotHeader = 'X-HD-Catalog-Offset-Snapshot';
@@ -26,7 +33,18 @@ export function internalCatalogPath(publicPath: string) {
 }
 
 type SnapshotOptions = Pick<SsrPublicDescriptor<SsrPublicEnvelope>, 'allowOffsetSnapshot' | 'allowInlineSnapshot'>;
-async function requestInternal(path: string, visitorHeaders?: Record<string, string>, scope?: 'filters', snapshot?: SnapshotOptions, signal?: AbortSignal) {
+type InternalRequestOptions = {
+  visitorHeaders?: Record<string, string>;
+  scope?: 'filters';
+  snapshot?: SnapshotOptions;
+  signal?: AbortSignal;
+  protocol?: PublicHtmlCacheProtocol;
+  exactHomepageResource?: boolean;
+  browse?: boolean;
+};
+
+async function requestInternal(path: string, { visitorHeaders, scope, snapshot, signal, protocol = 2,
+  exactHomepageResource, browse }: InternalRequestOptions = {}) {
   try {
     const origin = publicApiOrigin();
     const target = new URL(path, origin);
@@ -40,7 +58,9 @@ async function requestInternal(path: string, visitorHeaders?: Record<string, str
       method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', signal: signal ?? AbortSignal.timeout(5000),
       headers: {
         Accept: 'application/json', 'Cache-Control': 'no-store', 'X-HD-SSR-Key': getSsrServiceSecret(),
-        [INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]: '2',
+        [INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER]: String(protocol),
+        ...(exactHomepageResource ? { [INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER]: INTERNAL_PUBLIC_HOMEPAGE_SCOPE } : {}),
+        ...(browse ? { [PUBLIC_BROWSE_CACHE_POLICY_HEADER]: PUBLIC_BROWSE_CACHE_POLICY } : {}),
         ...(visitorHeaders?.['X-Forwarded-For'] ? { 'X-Forwarded-For': visitorHeaders['X-Forwarded-For'] } : {}),
         ...(scope ? { 'X-HD-Catalog-Scope': scope } : {}),
         ...(snapshot?.allowOffsetSnapshot ? { [offsetSnapshotHeader]: '1' } : {}),
@@ -63,11 +83,16 @@ async function requestInternal(path: string, visitorHeaders?: Record<string, str
   }
 }
 
-function confirmedProtocol(response: Response): SsrCacheProtocol {
-  return response.headers.get(INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER) === '2' ? 2 : 1;
+function confirmedProtocol(response: Response, requested: PublicHtmlCacheProtocol = 2): SsrCacheProtocol {
+  const value = response.headers.get(INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER);
+  const precise = response.headers.get(INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER) === INTERNAL_PUBLIC_HOMEPAGE_SCOPE;
+  if (value === String(requested) && (requested === 2 || precise)) return requested;
+  if (requested === 2 && value !== '3') return 1;
+  void response.body?.cancel().catch(() => undefined);
+  throw new PublicApiError(503);
 }
 
-function internalResourceSchema<T extends SsrPublicEnvelope>(schema: SsrPublicDescriptor<T>['schema']) {
+function internalResourceSchema<T extends SsrPublicEnvelope>(schema: SsrPublicDescriptor<T>['schema'], protocol: PublicHtmlCacheProtocol) {
   return { parse(body: unknown): T {
     // Validate the negotiated stamp separately; the public DTO parser remains strict
     // and never learns to accept a longer stamp on a browser or public API response.
@@ -75,7 +100,7 @@ function internalResourceSchema<T extends SsrPublicEnvelope>(schema: SsrPublicDe
     const metadata = body.meta;
     if (metadata === null || typeof metadata !== 'object' || !('catalogCache' in metadata)) return schema.parse(body);
     const { catalogCache, ...meta } = metadata;
-    const stamp = InternalPublicCatalogCacheStampSchema.parse(catalogCache);
+    const stamp = ssrCacheStampSchema[protocol].parse(catalogCache);
     const value = schema.parse({ ...body, meta });
     return { ...value, meta: { ...value.meta, catalogCache: stamp } };
   } };
@@ -92,7 +117,7 @@ export async function readSsrServiceVersion(
   if (priceView === 'usd') query.set('priceView', 'usd');
   if (scope) query.set('scope', scope);
   try {
-    const response = await requestInternal(`${prefix}/version${query.size ? `?${query}` : ''}`, visitorHeaders, undefined, undefined, signal);
+    const response = await requestInternal(`${prefix}/version${query.size ? `?${query}` : ''}`, { visitorHeaders, signal });
     if (response.status !== 200) {
       await response.body?.cancel();
       throw new PublicApiError(503);
@@ -117,27 +142,31 @@ function validateAtomicVersions(catalog: PublicCatalogCacheStamp, filters: Publi
 
 type SsrVersionOutcome = PromiseSettledResult<Awaited<ReturnType<typeof readSsrServiceVersion>>>;
 
-/** Both live scopes share one authenticated check and, for old APIs, one fallback deadline. */
-export async function readSsrServiceVersions(visitorHeaders: Record<string, string>, signal?: AbortSignal):
+/** Both live scopes share one authenticated check. An explicit homepage locale opts into precise protocol 3. */
+export async function readSsrServiceVersions(visitorHeaders: Record<string, string>, signal?: AbortSignal, homepageLocale?: Locale):
   Promise<{ catalog: Promise<SsrVersionOutcome>; filters: Promise<SsrVersionOutcome> }> {
+  const requested = homepageLocale ? 3 : 2;
+  const query = new URLSearchParams({ priceView: 'usd', scope: 'homepage' });
+  if (homepageLocale) query.set('locale', homepageLocale);
   const timeout = AbortSignal.timeout(5000);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   try {
-    const response = await requestInternal(`${prefix}/version?priceView=usd&scope=homepage`,
-      visitorHeaders, undefined, undefined, deadline).catch((error: unknown) => {
-      if (error instanceof PublicApiError && error.status === 400) return null;
+    const response = await requestInternal(`${prefix}/version?${query}`,
+      { visitorHeaders, signal: deadline, protocol: requested }).catch((error: unknown) => {
+      if (requested === 2 && error instanceof PublicApiError && error.status === 400) return null;
       throw error;
     });
     if (response) {
-      if (response.status !== 200 || confirmedProtocol(response) !== 2) {
+      if (response.status !== 200 || confirmedProtocol(response, requested) !== requested) {
         await response.body?.cancel();
         throw new PublicApiError(503);
       }
-      const { data, meta } = await readPublicJsonBody(response, InternalPublicCatalogHomepageVersionResponseSchema, 16_384);
+      const schema = requested === 3 ? InternalPublicHomepageVersionResponseSchema : InternalPublicCatalogHomepageVersionResponseSchema;
+      const { data, meta } = await readPublicJsonBody(response, schema, 16_384);
       validateAtomicVersions(data.catalog, data.filters);
       return {
-        catalog: Promise.resolve({ status: 'fulfilled', value: { protocol: 2, value: { data: data.catalog, meta } } }),
-        filters: Promise.resolve({ status: 'fulfilled', value: { protocol: 2, value: { data: data.filters, meta } } }),
+        catalog: Promise.resolve({ status: 'fulfilled', value: { protocol: requested, value: { data: data.catalog, meta } } }),
+        filters: Promise.resolve({ status: 'fulfilled', value: { protocol: requested, value: { data: data.filters, meta } } }),
       };
     }
     deadline.throwIfAborted();
@@ -155,14 +184,17 @@ export async function readSsrServiceVersions(visitorHeaders: Record<string, stri
 }
 
 /** Static service identity only. No Next headers, visitor IP, cookie or caller trace enters this loader. */
-export async function readAnonymousPublicResource<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>) {
+export async function readAnonymousPublicResource<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>,
+  requested: PublicHtmlCacheProtocol = 2) {
   try {
-    const response = await requestInternal(internalCatalogPath(descriptor.path), undefined, descriptor.scope, descriptor);
-    const protocol = confirmedProtocol(response);
-    const schema = protocol === 2 ? internalResourceSchema(descriptor.schema) : descriptor.schema;
+    const response = await requestInternal(internalCatalogPath(descriptor.path), {
+      scope: descriptor.scope, snapshot: descriptor, protocol: requested, exactHomepageResource: requested === 3,
+    });
+    const protocol = confirmedProtocol(response, requested);
+    const schema = protocol === 1 ? descriptor.schema : internalResourceSchema(descriptor.schema, protocol);
     const parsed = await readPublicJsonBody(response, schema);
     const snapshot = descriptor.allowOffsetSnapshot ? response.headers.get(offsetSnapshotHeader) : null;
-    const stampSchema = protocol === 2 ? InternalPublicCatalogCacheStampSchema : PublicCatalogCacheStampSchema;
+    const stampSchema = ssrCacheStampSchema[protocol];
     return { protocol, value: anonymousPublicEnvelope(parsed),
       ...(snapshot ? { offsetSnapshot: stampSchema.parse(JSON.parse(snapshot)) } : {}),
       ...(descriptor.allowInlineSnapshot && response.headers.get(inlineSnapshotHeader) === '1' ? { inlineSnapshot: true as const } : {}) };
@@ -170,4 +202,32 @@ export async function readAnonymousPublicResource<T extends SsrPublicEnvelope>(d
     if (error instanceof PublicApiError) throw error;
     throw new PublicApiError(503);
   }
+}
+
+export async function readSsrBrowseResource<T extends SsrPublicEnvelope>(descriptor: SsrPublicDescriptor<T>,
+  visitorHeaders: Record<string, string>) {
+  const path = internalCatalogPath(descriptor.path);
+  if (!/^\/internal\/public-catalog\/(?:home\/vehicles|vehicles|vehicle-filters)\?/.test(path)) throw new PublicApiError(503);
+  const response = await requestInternal(path, { visitorHeaders, browse: true, scope: descriptor.scope });
+  if (response.headers.get(PUBLIC_BROWSE_CACHE_POLICY_HEADER) !== PUBLIC_BROWSE_CACHE_POLICY) {
+    await response.body?.cancel().catch(() => undefined);
+    return null; // A mixed, older deployment can continue on its live SSR transport.
+  }
+  const stamp = parsePublicBrowseStamp(response.headers);
+  if (!stamp) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new PublicApiError(503);
+  }
+  const resource = await readPublicJsonBody(response, descriptor.schema);
+  const mediaExpiry = (descriptor.media?.(anonymousPublicEnvelope(resource)) ?? []).reduce((expiry, image) =>
+    image.remote?.expiresAt ? Math.min(expiry, Date.parse(image.remote.expiresAt)) : expiry, Infinity);
+  stamp.expiresAt = Math.min(stamp.expiresAt, mediaExpiry);
+  if (!(stamp.expiresAt > Date.now())) throw new PublicApiError(503);
+  return { resource, stamp };
+}
+
+export async function readSsrBrowseGeneration(visitorHeaders: Record<string, string>, signal: AbortSignal) {
+  const response = await requestInternal(`${prefix}/browse-generation`, { visitorHeaders, signal });
+  const result = await readPublicJsonBody(response, InternalPublicBrowseGenerationResponseSchema, 4096);
+  return result.data.generation;
 }

@@ -1,59 +1,41 @@
 export const geMethodMessages = {
   zh: {
-    exciseElectric: '纯电在参考乘用车口径下免消费税，排量和舵位不增加该项税额。',
-    exciseRight:
-      '制造年份差为 {age} 年，排量由 {originalCc} cc 向上取整为 {cc} cc，适用基础税率 {baseRate} GEL/cc。右舵按基础额的 3 倍计，不叠加左舵混动优惠。',
-    exciseHybridRelief:
-      '制造年份差为 {age} 年，排量由 {originalCc} cc 向上取整为 {cc} cc，基础税率为 {baseRate} GEL/cc。左舵混动不超过 6 年，减免 60%，按基础额的 40% 计。',
-    exciseStandard:
-      '制造年份差为 {age} 年，排量由 {originalCc} cc 向上取整为 {cc} cc。按该年份档的 {baseRate} GEL/cc 计消费税，不采用额外舵位或混动减免。',
-    importTaxElectric: '纯电在参考口径下不计这项进口税；仍需支付已列手续费用。',
-    importTax:
-      '按取整排量 {cc} cc 计税，每 cc 税率为 0.05 加年份差 {age} × 0.0025，合计 {rate} GEL/cc。',
-    service:
-      '固定手续费用合计 480 GEL：服务税 150、办理费 200、鉴定 30、申报 50、境内过境 50；不包含车辆和运输本金。',
-    dutyZero:
-      '参考乘用车口径中此项关税为 0；上方单列的“进口税”和消费税是其他费用，不能据此视为全部进口税费为 0。',
-    vatZero: '参考乘用车口径中不另计 VAT，消费税、进口税和手续费用仍按各自明细计算。',
+    exciseElectricPrior: '适用 2026 年 4 月 2 日之前的税表，右舵或改舵纯电车按年份差 {age} 年对应的税率 {baseRate} 乘以 2,000 计税。',
+    importTaxPreferential: '按已确认的中格协定税号、原产资格和运输凭证，本车享受零进口关税。',
+    exciseElectric: '原厂左舵纯电乘用车免消费税。',
+    exciseElectricRight: '右舵或改舵的纯电乘用车按每辆 3,000 GEL 缴纳消费税。',
+    exciseRight: '车龄按年份差为 {age} 年。按实报排量 {cc} cc、基础税率 {baseRate} GEL/cc 和右舵或改舵的 3 倍系数计算。',
+    exciseHybridRelief: '不超过 6 年的左舵混动减免 60%。车龄 {age} 年，实报 {cc} cc，基础税率 {baseRate} GEL/cc。',
+    exciseStandard: '车龄 {age} 年，按实报排量 {cc} cc 和税率 {baseRate} GEL/cc 计算。',
+    importTaxElectric: '纯电乘用车免进口税。',
+    importTax: '无原产地优惠时，实报排量 {cc} cc × 0.05 GEL/cc，每年在基础税额上增加 5%。车龄 {age} 年，每 cc 税额 {rate} GEL。',
+    service: '使用税务局车证计算器所列的基础车辆清关服务费。申报、鉴定、过境及登记视实际服务另计。',
+    vatZero: '本项适用于税法所定义的 HS 8703 普通乘用车进口，可免进口增值税。',
   },
   en: {
-    exciseElectric:
-      'Electric passenger cars have zero excise in this reference scenario; capacity and steering do not add excise.',
-    exciseRight:
-      'Calendar-year age is {age}. Capacity is rounded up from {originalCc} cc to {cc} cc at {baseRate} GEL/cc. Right-hand drive triples the base charge, without the left-hand hybrid reduction.',
-    exciseHybridRelief:
-      'Calendar-year age is {age}. Capacity is rounded up from {originalCc} cc to {cc} cc at {baseRate} GEL/cc. A left-hand hybrid up to 6 years receives a 60% reduction and pays 40% of the base.',
-    exciseStandard:
-      'Calendar-year age is {age}; capacity rounds up from {originalCc} cc to {cc} cc. Excise uses the age-band rate of {baseRate} GEL/cc, without a further steering or hybrid adjustment.',
-    importTaxElectric:
-      'The reference applies no import tax to electric cars; the listed administrative charges remain.',
-    importTax:
-      'Rounded capacity is {cc} cc. The per-cc rate is 0.05 plus calendar-year age {age} × 0.0025, giving {rate} GEL/cc.',
-    service:
-      'Fixed charges total 480 GEL: service tax 150, processing 200, appraisal 30, declaration 50 and internal transit 50. Vehicle and transport costs are separate.',
-    dutyZero:
-      'This reference passenger-car duty is zero. The separately listed import tax and excise are different charges, so total import payments are not necessarily zero.',
-    vatZero:
-      'No additional VAT is charged in this reference passenger-car scenario. Excise, import tax and administrative charges follow their own lines.',
+    exciseElectricPrior: 'Under the pre-April 2, 2026 schedule, excise for a right-hand-drive or steering-converted EV is 2,000 times the rate of {baseRate} for calendar-year age {age}.',
+    importTaxPreferential: 'The confirmed tariff code, preferential origin and transport documentation qualify the vehicle for zero import duty under the Georgia–China agreement.',
+    exciseElectric: 'An original left-hand-drive electric passenger car is exempt from excise.',
+    exciseElectricRight: 'A right-hand-drive or steering-converted electric passenger car pays GEL 3,000 excise.',
+    exciseRight: 'Calendar-year age is {age}. Use actual capacity {cc} cc at {baseRate} GEL/cc with a factor of 3 for right-hand or converted steering.',
+    exciseHybridRelief: 'Left-hand-drive hybrids up to 6 years receive a 60% reduction. Age {age}, actual capacity {cc} cc, base rate {baseRate} GEL/cc.',
+    exciseStandard: 'Calendar-year age is {age}. Apply {baseRate} GEL/cc to the actual {cc} cc.',
+    importTaxElectric: 'Electric passenger cars are exempt from import duty.',
+    importTax: 'Without a preference, duty starts at 0.05 GEL per actual cc, then rises 5% of the base per year. Age {age}, {cc} cc, rate {rate} GEL/cc.',
+    service: 'The Revenue Service calculator lists this basic vehicle clearance charge. Declaration, examination, transit and registration depend on the services used.',
+    vatZero: 'For an eligible ordinary HS 8703 passenger car, import VAT is exempt.',
   },
   ru: {
-    exciseElectric:
-      'В справочной схеме для легкового электромобиля акциз нулевой; объём и расположение руля его не увеличивают.',
-    exciseRight:
-      'Разница лет — {age}. Объём округлён вверх с {originalCc} до {cc} см³, базовая ставка — {baseRate} GEL/см³. Для правого руля сумма утраивается, без льготы леворульного гибрида.',
-    exciseHybridRelief:
-      'Разница лет — {age}. Объём округлён вверх с {originalCc} до {cc} см³, ставка — {baseRate} GEL/см³. Для леворульного гибрида не старше 6 лет действует снижение на 60%: к оплате 40% базовой суммы.',
-    exciseStandard:
-      'Разница лет — {age}; объём округлён вверх с {originalCc} до {cc} см³. Акциз рассчитан по возрастной ставке {baseRate} GEL/см³ без дополнительной поправки на руль или гибрид.',
-    importTaxElectric:
-      'Для электромобиля справочник не начисляет импортный налог; указанные административные сборы сохраняются.',
-    importTax:
-      'Расчётный объём — {cc} см³. Ставка на см³: 0,05 плюс разница лет {age} × 0,0025, итого {rate} GEL/см³.',
-    service:
-      'Фиксированные сборы — 480 GEL: сервисный налог 150, оформление 200, экспертиза 30, декларация 50 и внутренний транзит 50. Покупка и перевозка оплачиваются отдельно.',
-    dutyZero:
-      'Эта справочная пошлина на легковой автомобиль нулевая. Отдельные импортный налог и акциз — другие платежи, поэтому общий итог не обязательно равен нулю.',
-    vatZero:
-      'В справочной схеме для легкового автомобиля дополнительный НДС не начисляется. Акциз, импортный налог и административные сборы рассчитываются отдельно.',
+    exciseElectricPrior: 'По шкале, действовавшей до 2 апреля 2026 года, акциз на электромобиль с правым или переоборудованным рулём равен 2 000 × {baseRate}. Разница лет — {age}.',
+    importTaxPreferential: 'Подтверждённые код товара, происхождение и документы о перевозке дают право на нулевую пошлину по соглашению Грузии и Китая.',
+    exciseElectric: 'Легковой электромобиль с заводским левым рулём освобождён от акциза.',
+    exciseElectricRight: 'Для легкового электромобиля с правым или переоборудованным рулём акциз составляет 3 000 GEL.',
+    exciseRight: 'Разница лет — {age}. Фактический объём {cc} см³ умножается на {baseRate} GEL/см³ и коэффициент 3 для правого или переоборудованного руля.',
+    exciseHybridRelief: 'Для леворульного гибрида до 6 лет действует снижение на 60%. Разница лет — {age}, объём — {cc} см³, базовая ставка — {baseRate} GEL/см³.',
+    exciseStandard: 'Разница лет — {age}. Ставка {baseRate} GEL/см³ применяется к фактическому объёму {cc} см³.',
+    importTaxElectric: 'Легковые электромобили освобождены от импортной пошлины.',
+    importTax: 'Без преференции пошлина начинается с 0,05 GEL за см³, плюс 5% от исходной суммы за год. Разница лет — {age}, объём — {cc} см³, ставка — {rate} GEL/см³.',
+    service: 'Базовый сбор за оформление из калькулятора Службы доходов. Декларация, экспертиза, транзит и регистрация зависят от оказанных услуг.',
+    vatZero: 'Ввоз обычного легкового автомобиля соответствующей категории HS 8703 освобождён от НДС.',
   },
 } as const;

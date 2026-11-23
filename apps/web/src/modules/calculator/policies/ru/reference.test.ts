@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Amount } from '../../core/decimal';
+import { calculateImportEstimate } from '../../core/calculate';
 import type { CalculationInput, ReferencePolicyFacts } from '../../core/types';
 import fixtures from './reference-fixtures.json';
 import { calculateRuReference, RU_REFERENCE_VERSION } from './reference';
@@ -13,7 +14,7 @@ const SAMPLE: CalculationInput = {
   displacementCc: '1998',
   powerHp: '150',
   manufactureDate: '2021-01',
-  customsDate: '2026-01-01',
+  customsDate: '2026-01-16',
   freight: '',
   insurance: '',
   steering: 'left',
@@ -36,7 +37,10 @@ function recycling(changes: Partial<CalculationInput>, ageMonths = 60) {
 describe('RU public reference compatibility fixtures', () => {
   // Frozen, literal expected values were obtained from the public reference
   // calculator in an isolated research VM, never from calculateRuReference.
-  it.each(fixtures.cases)(
+  // The official high-power schedule supersedes the public-reference catch-all.
+  const compatibleCases = fixtures.cases.filter(({ fuel, cc, hp }) =>
+    !(fuel === 'ice' && cc > 2000 && cc <= 3000 && hp > 430));
+  it.each(compatibleCases)(
     '$fuel / $cc cc / $hp hp: preserves both age columns of the published matrix',
     ({ fuel, cc, hp, fresh, aged }) => {
       const input: Partial<CalculationInput> = {
@@ -44,8 +48,10 @@ describe('RU public reference compatibility fixtures', () => {
         displacementCc: cc ? String(cc) : '',
         powerHp: String(hp),
       };
-      expect(calculate(input, 24).lines.map((line) => line.amount)).toEqual(fresh);
-      expect(calculate(input, 36).lines.map((line) => line.amount)).toEqual(aged);
+      const comparableLines = (months: number) => calculate(input, months).lines
+        .filter(({ id }) => ['duty', 'customsFee', 'recycling'].includes(id)).map(({ amount }) => amount);
+      expect(comparableLines(24)).toEqual(fresh);
+      expect(comparableLines(36)).toEqual(aged);
     },
   );
 
@@ -60,15 +66,32 @@ describe('RU public reference compatibility fixtures', () => {
       '926952',
     );
     expect(result.additionalCosts).toEqual([]);
-    expect(RU_REFERENCE_VERSION).toBe('ru-personal-reference-2026.10.23-v2');
+    expect(RU_REFERENCE_VERSION).toBe('ru-personal-2026.11.23-v2');
   });
 
-  it('calculates BEV with no displacement or EUR exchange rate', () => {
-    const result = calculate({ powertrain: 'bev', displacementCc: '', euroRate: '' });
-    expect(result.lines.map((line) => line.amount)).toEqual(['307384', '13541', '2227200']);
-    expect(result.lines.reduce((sum, line) => sum.add(line.amount), new Amount(0)).toString()).toBe(
-      '2548125',
-    );
+  it('includes aggregate EV taxes and distinguishes the substantiated personal concession', () => {
+    const changes = { powertrain: 'bev', price: '20000', transactionRate: '100', powerHp: '70', displacementCc: '', euroRate: '' } as const;
+    const result = calculate({ ...changes, ruPersonalRelief: 'eligible' }, 22);
+    expect(result.lines.map(({ id, amount }) => [id, amount])).toEqual([
+      ['duty', '300000'], ['excise', '0'], ['vat', '506000'], ['customsFee', '13541'], ['recycling', '3400'],
+    ]);
+    expect(recycling({ ...changes, ruPersonalRelief: 'ineligible' }, 22)).toBe('800800');
+    expect(calculate(changes, 22).assumptions).toContain('ru_personal_relief_assumed');
+    expect(recycling({ powerHp: '150', displacementCc: '1998', ruPersonalRelief: 'ineligible' }, 22)).toBe('800800');
+  });
+
+  it.each([[90, 0], [91, 64], [150, 64], [151, 613], [200, 613], [201, 1004], [300, 1004], [301, 1711], [401, 1771], [501, 1829]])(
+    'uses the 2026 excise band for %i certified hp', (hp, rate) => {
+      const result = calculate({ powertrain: 'bev', powerHp: String(hp), displacementCc: '' }, 22);
+      expect(result.lines.find(({id}) => id === 'excise')?.amount).toBe(String(hp * rate));
+    },
+  );
+
+  it('uses the 15th for a known month and an evidenced day when present', () => {
+    const input = { manufactureDate: '2021-11', euroRate: '100' };
+    expect(calculate({ ...input, customsDate: '2026-11-15' }).lines[0].amount).toBe('539460');
+    expect(calculate({ ...input, customsDate: '2026-11-16' }).lines[0].amount).toBe('959040');
+    expect(calculate({ ...input, manufactureDay: '2021-11-20', customsDate: '2026-11-20' }).lines[0].amount).toBe('539460');
   });
 
   it('does not grant the combustion personal-use low coefficient to BEV', () => {
@@ -121,12 +144,14 @@ describe('RU public reference compatibility fixtures', () => {
     expect(calculate(input, 60).lines[0].amount).toBe('1619910');
   });
 
-  it.each(['hev', 'phev', 'erev'] as const)(
-    'maps %s to the reference hybrid/combustion branch rather than assuming BEV exemption',
-    (powertrain) => {
-      expect(calculate({ powertrain, powerHp: '161' })).toEqual(calculate({ powerHp: '161' }));
-    },
-  );
+  it.each(['hev', 'phev'] as const)('applies the parallel hybrid schedule with an explicit rated power basis for %s', (powertrain) => {
+    const hybrid = calculate({ powertrain, powerHp: '161' });
+    expect(hybrid.lines).toEqual(calculate({ powerHp: '161' }).lines);
+    expect(hybrid.assumptions).toContain('ru_hybrid_certified_power');
+  });
+  it('requires classification for a range extender', () => {
+    expect(calculate({ powertrain: 'erev' }).reason).toBe('powertrain_rules_pending');
+  });
 
   it('uses the explicit CNY transaction rate without changing destination amounts', () => {
     expect(calculate({ currency: 'CNY', price: '250000', transactionRate: '8.1969182' })).toEqual(
@@ -143,5 +168,64 @@ describe('RU public reference compatibility fixtures', () => {
     const before = JSON.stringify(facts);
     expect(calculateRuReference(facts)).toEqual(calculateRuReference(facts));
     expect(JSON.stringify(facts)).toBe(before);
+  });
+});
+
+describe('official 2026 recycling coefficients for >2,000–3,000 cc', () => {
+  const input: CalculationInput = {
+    ...SAMPLE, displacementCc: '2500', powerHp: '510', transactionRate: '80', euroRate: '100',
+    customsDate: '2026-11-23', manufactureDate: '2025-01',
+  };
+
+  it.each([
+    ['430', '3067200', '4209600'],
+    ['430.01', '3189600', '4327200'],
+    ['460', '3189600', '4327200'],
+    ['460.01', '3316800', '4447200'],
+    ['500', '3316800', '4447200'],
+    ['500.01', '3448800', '4572000'],
+    ['501', '3448800', '4572000'],
+    ['510', '3448800', '4572000'],
+  ])('selects the official power band and both age columns at %s hp', (powerHp, fresh, aged) => {
+    for (const [manufactureDate, amount] of [['2025-01', fresh], ['2022-01', aged]]) {
+      const result = calculateImportEstimate({ ...input, powerHp, manufactureDate });
+      expect(result.status).toBe('reference');
+      expect(result.lines.find(line => line.id === 'recycling')?.amount).toBe(amount);
+    }
+  });
+
+  it('reproduces the 510 hp example and its full amount', () => {
+    const result = calculateImportEstimate(input);
+    expect(result.total).toBe('4837341');
+    expect(result.lines.find(line => line.id === 'recycling')).toMatchObject({
+      amount: '3448800',
+      method: { key: 'RU.recyclingOfficialHighPower', params: { kw: '375.10', coefficient: '172.44' } },
+    });
+    expect(result.assumptions).toContain('ru_recycling_payment_date_assumed');
+  });
+
+  it('uses the exact anniversary when known and withholds the total for a disputed month', () => {
+    const near = { ...input, manufactureDate: '2023-11' };
+    expect(calculateImportEstimate(near)).toMatchObject({
+      status: 'needs_review', reason: 'ru_recycling_age_review', total: null,
+    });
+    expect(calculateImportEstimate({ ...near, customsDate: '2026-11-01' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '3448800' }));
+    expect(calculateImportEstimate({ ...near, manufactureDay: '2023-11-23' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '3448800' }));
+    expect(calculateImportEstimate({ ...near, manufactureDay: '2023-11-22' }).lines)
+      .toContainEqual(expect.objectContaining({ id: 'recycling', amount: '4572000' }));
+  });
+
+  it('keeps the scope at 2026 individual imports', () => {
+    expect(calculateImportEstimate({ ...input, importerType: 'company' })).toMatchObject({
+      status: 'needs_review', reason: 'company_rules_pending', total: null,
+    });
+    expect(calculateImportEstimate({ ...input, customsDate: '2025-12-01' })).toMatchObject({
+      status: 'needs_review', reason: 'rule_date_outside_reference', total: null,
+    });
+    expect(calculateImportEstimate({ ...input, customsDate: '2027-01-01' })).toMatchObject({
+      status: 'needs_review', reason: 'rule_date_outside_reference', total: null,
+    });
   });
 });

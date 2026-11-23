@@ -28,9 +28,9 @@ describe('policy explanations track the actual reference conditions', () => {
     },
   );
 
-  it('KZ only adds the older-car duty explanation after 84 months', () => {
-    expect(notes('KZ', { manufactureDate: '2019-10' })).not.toContain('KZ.older');
-    expect(notes('KZ', { manufactureDate: '2019-09' })).toContain('KZ.older');
+  it('uses the EAEU anniversary day in the year-five explanation', () => {
+    expect(notes('RU', { manufactureDate: '2021-11', customsDate: '2026-11-15' })).toContain('RU.middleAge');
+    expect(notes('RU', { manufactureDate: '2021-11', customsDate: '2026-11-16' })).not.toContain('RU.middleAge');
   });
 
   it('KZ registration uses the calendar year difference rather than the duty month threshold', () => {
@@ -123,7 +123,6 @@ describe('policy explanations track the actual reference conditions', () => {
     expect(personalNotes).toEqual(
       expect.arrayContaining([
         'KG.electricQuota',
-        'KG.personalLimit',
         'KG.personalFee',
         'KG.registration',
       ]),
@@ -133,13 +132,11 @@ describe('policy explanations track the actual reference conditions', () => {
 
     const companyNotes = getCountryReferenceNotes({ ...personal, importerType: 'company' });
     expect(companyNotes).toEqual(
-      expect.arrayContaining(['KG.electricQuota', 'KG.companyBroker', 'KG.companyElectricYoung']),
+      expect.arrayContaining(['KG.electricQuota', 'KG.companyBroker']),
     );
     for (const key of ['KG.personalLimit', 'KG.personalFee', 'KG.registration', 'KG.personalFuel'])
       expect(companyNotes).not.toContain(key);
-    expect(
-      notes('KG', { powertrain: 'bev', importerType: 'company', manufactureDate: '2020-01' }),
-    ).toContain('KG.companyElectricOld');
+    expect(companyNotes).not.toContain('KG.personalFee');
     expect(getCountryReferenceNotes(personal)).toEqual(personalNotes);
     expect(personal.importerType).toBe('individual');
   });
@@ -197,6 +194,7 @@ describe('country policy translation contract', () => {
     }
     for (const manufactureDate of ['2026-03', '2025-01'])
       for (const key of notes('UZ', { condition: 'new', manufactureDate })) emitted.add(key);
+    for (const key of notes('GE', { gePriorScheduleEligible: 'approved' })) emitted.add(key);
     for (const key of emitted) {
       for (const translation of translations) expect(translation[key], key).toBeTypeOf('string');
     }

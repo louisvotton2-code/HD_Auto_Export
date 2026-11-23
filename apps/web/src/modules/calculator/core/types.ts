@@ -26,6 +26,19 @@ export interface CalculationInput extends Partial<Record<TajikTariffField, strin
   euroRate: string;
   /** Destination currency per USD for policies with USD-denominated charges. */
   usdRate?: string;
+  /** Documentary facts are optional. A model year or sales specification is not a customs ruling. */
+  manufactureDay?: string;
+  manufactureYear?: string;
+  mileageKm?: string;
+  vehicleRegistration?: 'never_registered' | 'registered';
+  seatCount?: string;
+  alRegistrationValueAll?: string;
+  geChinaOriginPreference?: 'approved';
+  gePriorScheduleEligible?: 'approved';
+  steeringConverted?: 'yes';
+  kzDeclaration?: 'personal' | 'goods' | 'wto';
+  ruPowerBasis?: 'declared';
+  ruPersonalRelief?: 'eligible' | 'ineligible';
   /** UZ distinguishes never-registered new cars from used cars. */
   condition?: 'new' | 'used';
 }
@@ -55,6 +68,7 @@ export interface ReferencePolicyFacts {
 export interface ReferencePolicyResult {
   lines: CalculationLine[];
   additionalCosts: CalculationExtraLine[];
+  assumptions?: string[];
   reason?: string;
 }
 

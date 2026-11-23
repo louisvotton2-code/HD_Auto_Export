@@ -37,7 +37,7 @@ test('Tajikistan prefills editable fuel tariff references and retains an overrid
   await expect(page.getByLabel('海关计税价值', { exact: true })).toHaveValue('25000');
   await expect(page.locator('#freight, #insurance')).toHaveCount(0);
   await expect(page.getByRole('link', { name: '官方来源 · № 470' })).toHaveAttribute('href', 'https://new.edavlat.tj/api/files_storage/3467');
-  await expect(page.getByRole('link', { name: '官方来源 · № 335' })).toHaveAttribute('href', 'https://new.edavlat.tj/api/files_storage/3483');
+  await expect(page.getByRole('link', { name: '官方来源 · № 335' })).toHaveAttribute('href', 'https://mmih.adlia.tj/Search/DocumentView?DocumentId=169398');
   await page.locator('#tjExciseMinimum').fill('');
   await expect(page.getByTestId('total')).toHaveCount(0);
   await page.locator('#tjExciseMinimum').fill('0.25');

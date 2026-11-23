@@ -28,7 +28,7 @@ test('EXT07 sync read-only progress separates real counts pending classes and fa
   await expect(initial.getByText('最新来源快照', { exact: true })).toBeVisible();
   await expect(initial.getByText('10,000', { exact: true })).toBeVisible();
   await expect(initial.getByText('6,000', { exact: true })).toBeVisible();
-  for (const [label, value] of [['同步已登记来源记录', '410'], ['去重车辆', '300'], ['当前公开车辆', '290'], ['失败记录', '2'], ['待补详情', '30'], ['待补语言项', '20'], ['待补报告', '0']]) {
+  for (const [label, value] of [['同步已登记来源记录', '410'], ['去重车辆', '300'], ['当前公开三方车辆', '290'], ['失败记录', '2'], ['待补详情', '30'], ['待补语言项', '20'], ['待补报告', '0']]) {
     const metric = panel.locator('.ant-statistic').filter({ has: page.getByText(label, { exact: true }) });
     await expect(metric.locator('.ant-statistic-content-value')).toHaveText(value);
   }

@@ -17,7 +17,7 @@ describe('complete manufacture month range quotes', () => {
     const quote = calculateManufactureRange(input, { from: '2020-11', to: '2026-11' });
     expect(quote.evaluatedMonths).toBe(73);
     expect(quote.incompleteMonths).toBe(0);
-    expect(quote.minimum?.manufactureDate).toBe('2021-12');
+    expect(quote.minimum?.manufactureDate).toBe('2021-11');
     expect(quote.minimum?.result.total).toBe('563665');
     expect(quote.maximum?.result.total).toBe('1461865');
     expect(quote.minimum?.result.lines.find(line => line.id === 'recycling')?.amount).toBe('5200');
@@ -42,13 +42,15 @@ describe('complete manufacture month range quotes', () => {
   });
 
   it.each([
-    ['2023-11', '2023-12', 35, 36],
-    ['2021-11', '2021-12', 59, 60],
-  ] as const)('evaluates both sides of the exact %s / %s reference boundary', (from, to, lower, upper) => {
+    ['2023-10', '2023-11'],
+    ['2021-10', '2021-11'],
+  ] as const)('quotes both months around the %s / %s anniversary boundary', (from, to) => {
     const quote = calculateManufactureRange(input, { from, to });
     expect(quote.evaluatedMonths).toBe(2);
-    const ages = [quote.minimum!, quote.maximum!].map(scenario => scenario.result.lines.find(line => line.id === 'duty')!.method!.params.ageMonths);
-    expect(ages.sort((a, b) => Number(a) - Number(b))).toEqual([lower, upper]);
+    const amounts = [from, to].map(manufactureDate => Number(calculateImportEstimate({ ...input, manufactureDate }).total));
+    expect(amounts[0]).not.toBe(amounts[1]);
+    expect(Number(quote.minimum!.result.total)).toBe(Math.min(...amounts));
+    expect(Number(quote.maximum!.result.total)).toBe(Math.max(...amounts));
   });
 
   it('does not publish a partial interval when even one month is in the future', () => {

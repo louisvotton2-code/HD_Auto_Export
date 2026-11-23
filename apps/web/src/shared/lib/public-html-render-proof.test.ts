@@ -3,6 +3,8 @@ import {
   capturePublicHtmlRender,
   invalidatePublicHtmlRender,
   markPublicHtmlRenderComplete,
+  parsePublicHtmlCacheStamp,
+  publicHtmlRenderProtocol,
   recordPublicHtmlRenderStamp,
 } from './public-html-render-proof';
 
@@ -113,6 +115,53 @@ describe('public HTML render proof', () => {
         filters: { validUntil: expiresIn(12_000) },
       },
     });
+  });
+
+  it('bounds proof lifetimes by the negotiated protocol and the exchange-rate expiry', () => {
+    const fiveMinutes = { ...catalog, fx: null, validUntil: expiresIn(300_000) };
+    const tenMinutes = { ...fiveMinutes, validUntil: expiresIn(600_000) };
+    expect(parsePublicHtmlCacheStamp(fiveMinutes, start, 2)).toEqual(fiveMinutes);
+    expect(parsePublicHtmlCacheStamp({ ...fiveMinutes, validUntil: expiresIn(300_001) }, start, 2)).toBeNull();
+    expect(parsePublicHtmlCacheStamp(tenMinutes, start, 2)).toBeNull();
+    expect(parsePublicHtmlCacheStamp(tenMinutes, start, 3)).toEqual(tenMinutes);
+    expect(parsePublicHtmlCacheStamp({ ...tenMinutes, validUntil: expiresIn(600_001) }, start, 3)).toBeNull();
+    expect(parsePublicHtmlCacheStamp(tenMinutes, start + 600_000, 3)).toBeNull();
+    expect(parsePublicHtmlCacheStamp({ ...tenMinutes, fx: catalog.fx }, start, 3)).toBeNull();
+  });
+
+  it('uses the accepted deadline for an authenticated protocol 3 render', async () => {
+    const validUntil = expiresIn(600_000);
+    const acceptedDeadline = start + 540_000;
+    let renderTicket: string | null = null;
+    const { proof } = await capturePublicHtmlRender(async ticket => {
+      renderTicket = ticket;
+      expect(publicHtmlRenderProtocol(ticket)).toBe(3);
+      for (const [scope, stamp] of observations)
+        recordPublicHtmlRenderStamp(ticket, scope, { ...stamp, fx: null, validUntil }, acceptedDeadline, 3);
+      markPublicHtmlRenderComplete(ticket);
+      return html('<html>Valid</html>');
+    }, { now: () => start, protocol: 3 });
+    expect(proof).toMatchObject({
+      healthy: true,
+      data: {
+        catalog: { validUntil: expiresIn(540_000) },
+        filters: { validUntil: expiresIn(540_000) },
+      },
+    });
+    expect(publicHtmlRenderProtocol(renderTicket)).toBeUndefined();
+  });
+
+  it.each([[2, 3], [3, 2]] as const)('fails a protocol %s ticket after a protocol %s read', async (protocol, mismatched) => {
+    const { proof, response } = await capturePublicHtmlRender(async ticket => {
+      expect(publicHtmlRenderProtocol(ticket)).toBe(protocol);
+      recordPublicHtmlRenderStamp(ticket, 'catalog', catalog, undefined, mismatched);
+      for (const [scope, stamp] of observations)
+        recordPublicHtmlRenderStamp(ticket, scope, stamp, undefined, protocol);
+      markPublicHtmlRenderComplete(ticket);
+      return html('<html>Uncached</html>');
+    }, { now: () => start, protocol });
+    expect(proof).toBeNull();
+    expect(await response.text()).toBe('<html>Uncached</html>');
   });
 
   it('allows both dependencies to have the same null exchange-rate snapshot', async () => {

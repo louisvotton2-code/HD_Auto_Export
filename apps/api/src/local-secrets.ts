@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 
 /** Mounted secrets are regular, owner-only files. Error messages never contain the path or value. */
-export function readLocalSecret(file: string, limit = 8192): string {
+export function readLocalSecret(file: string, limit = 8192, preserveLineEnding = false): string {
   let fd: number | undefined;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -15,9 +15,10 @@ export function readLocalSecret(file: string, limit = 8192): string {
       size += count;
     }
     if (size > limit) throw new Error();
-    const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)).replace(/\r?\n$/, '');
+    const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: preserveLineEnding }).decode(bytes.subarray(0, size));
+    const value = raw.replace(/\r?\n$/, '');
     if (!value || /[\u0000\r\n]/.test(value)) throw new Error();
-    return value;
+    return preserveLineEnding ? raw : value;
   } catch { throw new Error('Cannot read the configured private secret file'); }
   finally { if (fd !== undefined) closeSync(fd); }
 }

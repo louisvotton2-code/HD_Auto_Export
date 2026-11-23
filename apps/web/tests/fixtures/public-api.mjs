@@ -207,6 +207,7 @@ const resetState = () => ({
   mode: 'normal',
   sectionCount: 1,
   homeStampSamples: false,
+  homeCardLayoutSample: false,
   futurePublished: false,
   futureAvailability: 'available',
   futureArchived: false,
@@ -218,6 +219,7 @@ const resetState = () => ({
   wideCardPhoto: false,
   ownedPhotoRevision: null,
   importedPublished: false,
+  importedPhotoRevision: 1,
   importedWithdrawn: false,
   importedPhotosRemoved: false,
   importedPixelEnabled: null,
@@ -251,6 +253,7 @@ const resetState = () => ({
   previewSlowLocale: '',
   previewImageCount: 1,
   estimateDateRange: false,
+  estimateDocumentary: false,
   estimateDisplacementMl: null,
   estimateEnginePower: false,
   segmentGalleryCount: null,
@@ -356,7 +359,7 @@ function inlineDetail(row, locale, state) {
   const semanticKeys = { displacementCc: 'displacementCc', engineKw: 'engineKw', motorKw: 'motorKw', batteryKwh: 'batteryKwh', driveType: 'driveType', lengthMm: 'lengthMm', doors: 'doors', wheelbaseMm: 'wheelbaseMm' };
   return { ...row, projection: 'detail-inline-v1',
     ...(engineExample ? {
-      facts: { ...row.facts, powertrain: 'phev', powerKw: null, powerHp: null, engineCc: 2993 },
+      facts: { ...row.facts, powertrain: state.estimateEnginePower === 'petrol' ? 'petrol' : 'phev', powerKw: null, powerHp: null, engineCc: 2993 },
       technicalDetails: { power: { engineKw: 265, systemKw: 395, motorKw: 130 }, configurationMatches: [] },
     } : {}),
     inspectionSummary: row.inspectionSummary ?? { status: 'unknown', contentLocale: null, checked: null, faults: null, categories: [] },
@@ -370,7 +373,23 @@ function inlineDetail(row, locale, state) {
     }, configurationInline: rawItems.slice(0,200).map(item => ({ ...item, semanticKey: semanticKeys[item.id] ?? null })),
   };
 }
+// Opt-in documentary facts for report-boundary checks through real public detail DTOs.
+const documentaryVehicles = {
+  fixture_car_16: ['2025-11-23', 'bev', 'never_registered', 0],
+  fixture_car_17: ['2025-11-23', 'bev', 'registered', 0],
+  fixture_car_18: ['2025-11-23', 'petrol', 'never_registered', 0],
+  fixture_car_19: ['2023-11-23', 'petrol', 'never_registered', 0],
+  fixture_car_20: ['2025-11', 'petrol', 'never_registered', 0],
+  fixture_car_21: ['2023-11', 'bev', 'registered', 10000],
+};
 function segmentSeed(state, row, locale) {
+  if (state.estimateDocumentary && documentaryVehicles[row.id]) {
+    const [value, powertrain, registrationStatus, mileageKm] = documentaryVehicles[row.id];
+    const date = { value, precision: value.length === 10 ? 'day' : 'month' };
+    row.facts = { ...row.facts, manufacturedAt: date, powertrain, registrationStatus,
+      engineCc: powertrain === 'bev' ? null : 1000, mileageKm };
+    row.manufacture = { date, range: null, source: 'supplier', basis: null };
+  }
   row.inspectionSummary = inspectionOverview(state, row, locale);
   if (row.external?.detail) row.external.detail.inspection = null;
   // A contradictory legacy supplier flag remains visible to tests; the overview is authoritative.
@@ -702,8 +721,8 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
   }
   const changed = (patch = {}) => {
     catalogRevision++;
-    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
-      'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
+    if (Object.keys(patch).some(key => ['estimateDateRange', 'estimateDocumentary', 'estimateDisplacementMl', 'estimateEnginePower', 'segmentGalleryCount', 'segmentConfigurationCount', 'segmentRevision', 'segmentFallback',
+      'inspectionSummaryStatus', 'reportPresenceMode', 'inspectionMode', 'configurationMode', 'importedPublished', 'importedPhotoRevision', 'importedWithdrawn', 'importedPhotosRemoved', 'futurePublished', 'futureArchived', 'mode'].includes(key))) segmentRevision++;
     stateChangedAt = Date.now();
     if (['usdRateAvailable', 'usdRateDivisor', 'cacheFxTtlMs'].some(key => Object.hasOwn(patch, key)))
       fxVersion = randomUUID();
@@ -751,6 +770,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           mode: (v) => ['normal', 'empty', 'unavailable', 'malformed'].includes(v),
           sectionCount: (v) => [0, 1, 2].includes(v),
           homeStampSamples: (v) => typeof v === 'boolean',
+          homeCardLayoutSample: (v) => typeof v === 'boolean',
           futurePublished: (v) => typeof v === 'boolean',
           futureAvailability: (v) => ['available', 'reserved', 'sold', 'unknown'].includes(v),
           futureArchived: (v) => typeof v === 'boolean',
@@ -761,6 +781,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           wideCardPhoto: (v) => typeof v === 'boolean',
           ownedPhotoRevision: (v) => v === null || v === 1 || v === 2,
           importedPublished: (v) => typeof v === 'boolean',
+          importedPhotoRevision: (v) => v === 1 || v === 2,
           importedWithdrawn: (v) => typeof v === 'boolean',
           importedPhotosRemoved: (v) => typeof v === 'boolean',
           importedPixelEnabled: (v) => v === null || typeof v === 'boolean',
@@ -795,8 +816,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
           previewSlowLocale: (v) => ['', 'zh', 'en', 'ru'].includes(v),
           previewImageCount: (v) => Number.isInteger(v) && v >= 1 && v <= previewMediaIds.length,
           estimateDateRange: (v) => typeof v === 'boolean',
+          estimateDocumentary: (v) => typeof v === 'boolean',
           estimateDisplacementMl: (v) => [null, 'configuration', 'structured', 'machine'].includes(v),
-          estimateEnginePower: (v) => typeof v === 'boolean',
+          estimateEnginePower: (v) => typeof v === 'boolean' || v === 'petrol',
           segmentGalleryCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1000,
           segmentConfigurationCount: (v) => v === null || Number.isInteger(v) && v >= 0 && v <= 1200,
           segmentFailure: (v) => ['none', 'missing', 'conflict', 'rate_limit', 'unavailable', 'private_field', 'wrong_locale', 'wrong_vehicle'].includes(v),
@@ -873,14 +895,16 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         }
         url.pathname = `/api/v1/${alias[1]}`;
       }
-      if (!internalRequest && url.pathname.startsWith('/api/v1/')) {
-        requests.push({
+      const publicRequest = !internalRequest && url.pathname.startsWith('/api/v1/')
+        ? {
           path: url.pathname,
           method: req.method,
           query: Object.fromEntries(url.searchParams),
           cookie: req.headers.cookie ?? null,
           authorization: req.headers.authorization ?? null,
-        });
+        } : null;
+      if (publicRequest) {
+        requests.push(publicRequest);
         if (requests.length > 1000) requests.shift();
       }
       const previewMatch = /^\/api\/v1\/admin\/vehicles\/([A-Za-z0-9_-]+)\/publication-preview\/?$/.exec(url.pathname);
@@ -918,7 +942,9 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         if (!report.success) return send(res, 400, error('INVALID_REQUEST'));
         const active = state.importedPublished && !state.importedWithdrawn &&
           mediaFailure[1] === makeImportedPublicVehicleFixture('en').images[0].id;
-        return send(res, 202, {data:{queued:active && report.data.revision===1},meta:{requestId:'fixture-media-report'}});
+        const queued = active && report.data.revision === state.importedPhotoRevision;
+        if (publicRequest) publicRequest.mediaFailure = { revision: report.data.revision, queued };
+        return send(res, 202, { data: { queued }, meta: { requestId: 'fixture-media-report' } });
       }
       if (req.method !== 'GET') return send(res, 405, error('INVALID_REQUEST'));
       const segmentMatch = /^\/api\/v1\/vehicles\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})\/(gallery|configuration|inspection|price-history)$/.exec(url.pathname);
@@ -1006,6 +1032,7 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         // Relative deadlines keep the otherwise unchanged synthetic remote records usable
         // on any test date, and let cache tests shorten their signed-media lifetime.
         for (const image of item.images) if (image.remote) {
+          if (kind === 'supplier') image.remote.revision = state.importedPhotoRevision;
           image.remote.refreshedAt = new Date(stateChangedAt).toISOString();
           image.remote.expiresAt = new Date(stateChangedAt + state.cacheMediaTtlMs).toISOString();
         }
@@ -1106,9 +1133,26 @@ export async function startPublicFixtureApi({ port = 3327 } = {}) {
         return send(res, 200, payload);
       }
       const homeSections = () => {
-        const featured = state.homeStampSamples
-          ? ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)))
-          : staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
+        let featured = staff.filter(v => v.source.kind === 'demo' || v.availability === 'available').slice(0, 3);
+        if (state.homeStampSamples) {
+          featured = ['fixture_reserved', 'fixture_sold', 'fixture_external'].map(id => project(vehicle(id, locale)));
+        }
+        if (state.homeCardLayoutSample) {
+          featured = staff.filter(v => v.source.kind === 'manual').slice(0, 2).map((row, index) =>
+            index === 0 ? {
+              ...row,
+              content: {
+                ...row.content,
+                title: {
+                  ...row.content.title,
+                  text: 'Очень длинное название автомобиля с подробным описанием комплектации и оборудования',
+                  contentLocale: 'ru',
+                },
+              },
+              availability: 'sold',
+              price: { kind: 'reference', money: { amount: '99999999999999.99', currency: 'KGS' }, includes: [] },
+            } : { ...row, availability: 'unknown', availabilityCheckedAt: null });
+        }
         const sections =
           state.sectionCount > 0 && featured.length
             ? [

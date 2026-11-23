@@ -18,9 +18,20 @@ function serviceKey() {
 }
 
 export function publicHtmlCacheRequest(request: Request) {
+  const protocol = request.headers.get('x-hd-cache-protocol');
+  if (protocol !== '2' && protocol !== '3') return null;
+  const identity = authenticate(request);
+  return identity ? { ...identity, protocol: protocol === '2' ? 2 as const : 3 as const } : null;
+}
+
+export function publicBrowseRenderRequest(request: Request) {
+  return request.headers.get('x-hd-cache-protocol') === '4' ? authenticate(request) : null;
+}
+
+function authenticate(request: Request) {
   const { headers } = request;
   if (
-    request.method !== 'GET' || headers.get('x-hd-cache-protocol') !== '2'
+    request.method !== 'GET'
     || process.env.VEHICLE_API_TRUST_PROXY_IP !== 'true' || privateHeaders.some(name => headers.has(name))
   ) return null;
   const provided = headers.get('x-hd-html-key');

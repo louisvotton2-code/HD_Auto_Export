@@ -53,7 +53,7 @@ export function PublicHome({
     `/api/v1/vehicle-filters/?${publicQueryString({ ...filterQuery, projection: 'overview' })}`,
     initialFilters,
     PublicVehicleFiltersSchema,
-    { cooldown },
+    { navigationPath: `/${locale}/`, cooldown },
   );
   const models = usePublicResource(
     `/api/v1/vehicle-filters/?${publicQueryString({ ...filterQuery, projection: 'home-models' })}`,

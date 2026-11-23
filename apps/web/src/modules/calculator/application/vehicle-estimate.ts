@@ -3,7 +3,8 @@ import type { CalculationInput, CountryCode, Powertrain } from '../index';
 import { Amount } from '../core/decimal';
 import { deriveRates, type ExchangeRateSnapshot } from '../infrastructure/exchange-rates';
 import { convertTransactionPrice, getTajikTariffDefaults } from './defaults';
-import { vehicleManufactureMonth } from './manufacture-estimate';
+import { powerBasis } from './power-basis';
+import { vehicleManufactureFacts } from './manufacture-estimate';
 
 /** The UI can leave unknown enums empty; the core's required-field checks accept empty text. */
 export type VehicleEstimateDraft = Omit<CalculationInput, 'powertrain' | 'condition' | 'steering'> & {
@@ -22,6 +23,8 @@ function positivePower(value: number | null | undefined): value is number {
 
 export function vehicleEstimatePower(vehicle: VehicleEstimateSource) {
   const { powerHp, powertrain } = vehicle.facts;
+  // Public power fields do not certify the 30-minute motor output, or its sum with ICE power.
+  if (powerBasis(powertrain) !== 'power') return null;
   if (positivePower(powerHp)) return { hp: String(powerHp), source: 'reported' as const };
   if (!supportedPowertrains.has(powertrain) || powertrain === 'bev') return null;
 
@@ -58,7 +61,10 @@ export function createVehicleEstimateDraft(
     currency,
     displacementCc: facts.engineCc !== null && facts.engineCc > 0 ? String(facts.engineCc) : '',
     powerHp: vehicleEstimatePower(vehicle)?.hp ?? '',
-    manufactureDate: vehicleManufactureMonth(vehicle),
+    ...vehicleManufactureFacts(vehicle),
+    ...(facts.registrationStatus === 'never_registered' || facts.registrationStatus === 'registered'
+      ? { vehicleRegistration: facts.registrationStatus } : {}),
+    ...(facts.mileageKm != null ? { mileageKm: String(facts.mileageKm) } : {}),
     customsDate: date,
     freight: '',
     insurance: '',
@@ -87,6 +93,7 @@ export function retargetVehicleEstimateDraft(
   return {
     ...getTajikTariffDefaults(country),
     ...input,
+    ...(country === 'AL' ? { condition: vehicle.facts.registrationStatus === 'never_registered' ? 'new' as const : 'used' as const } : {}),
     price,
     country,
     importerType: 'individual',

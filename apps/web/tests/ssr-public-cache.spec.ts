@@ -132,11 +132,19 @@ test.describe('anonymous cross-request SSR DTO reuse with the isolated catalog p
       const rows = await recorded(request);
       expect(originReads(rows)).toHaveLength(read * 2);
       expect(originReads(rows).every(row => row.filterScope)).toBe(true);
-      const checks = versions(rows).filter(row => row.query.scope === 'filters');
-      expect(checks).toHaveLength(read);
+      const checks = versions(rows);
+      expect(checks.map(row => row.query.scope)).toEqual(Array(read).fill('homepage'));
       expect(checks.every(row => row.serviceAuthenticated && row.hasVisitorIp)).toBe(true);
       expect(anonymous(rows).filter(row => row.path === `${internal}/home/vehicles`)).toHaveLength(1);
     }
+  });
+
+  test('the homepage still renders against an API without a combined version check', async ({ page, request }) => {
+    await setPublicFixtureState(request, { legacyHomepageVersion: true });
+    expect((await page.goto('/en/'))?.status()).toBe(200);
+    await expect(page.getByTestId('hero-stat-catalog').locator('strong')).toHaveText('26', { useInnerText: true });
+    await expect(page.locator('[data-home-section="popular-models"] a[href*="model="]')).toHaveCount(2);
+    expect(versions(await recorded(request)).map(row => row.query.scope ?? 'catalog').sort()).toEqual(['catalog', 'filters', 'homepage']);
   });
 
   test('business and FX changes invalidate the same URL and withdrawn vehicles disappear', async ({ page, request }) => {

@@ -6,17 +6,28 @@ import { isAbsolute } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
+import { createBrowseCache } from './browse-cache.mjs';
 
-const MAX_AGE = 300_000;
+const protocolMaxAge = new Map([['2', 300_000], ['3', 600_000], ['4', 600_000]]);
 const MAX_HTML = 512 * 1024;
 const MAX_CONTROL = 8192;
 const MAX_LOOKUPS = 8;
+const MAX_BROWSE_FALLBACKS = 8;
+const MAX_BROWSE_AUTHORITY = 32;
 const protocol = 'x-hd-cache-protocol';
 const keyHeader = 'x-hd-html-key';
 const nonceHeader = 'x-hd-html-nonce';
 const proofHeader = 'x-hd-html-proof';
 const targetHeader = 'x-hd-render-target';
+const generationHeader = 'x-hd-browse-generation';
+const authorityPath = '/internal/public-catalog/browse-generation';
 const homepage = /^\/(zh|en|ru)\/$/;
+const directory = /^\/(zh|en|ru)\/cars\/$/;
+const directoryQuery = new Set([
+  'catalog', 'locale', 'view', 'priceView', 'projection', 'q', 'sort', 'make', 'model', 'generation', 'trim',
+  'powertrain', 'drivetrain', 'priceMin', 'priceMax', 'priceCurrency', 'mileageMin', 'mileageMax',
+  'yearMin', 'yearMax', 'page', 'pageSize',
+]);
 const varyHeaders = new Set([
   'accept', 'accept-encoding', 'rsc', 'next-router-state-tree',
   'next-router-prefetch', 'next-router-segment-prefetch',
@@ -34,7 +45,7 @@ const reusableResponseHeaders = ['content-type', 'content-language', 'vary', 'li
   'permissions-policy', 'referrer-policy', 'x-content-type-options', 'x-frame-options', 'x-robots-tag'];
 
 const parts = (value) => (typeof value === 'string' ? value : '').toLowerCase().split(',').map(part => part.trim());
-const controlHeader = (name) => /^x-hd-(?:cache-|html-|public-html-|catalog-scope$|render-target$|ssr-key$|client-ip$)/.test(name);
+const controlHeader = (name) => /^x-hd-(?:cache-|html-|public-html-|browse-|catalog-scope$|render-target$|ssr-key$|client-ip$)/.test(name);
 const ascii = (value, pattern) => typeof value === 'string' && pattern.test(value);
 const time = (value) => ascii(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/) ? Date.parse(value) : NaN;
 const hexVersion = (value) => ascii(value, /^[a-f0-9]{64}$/);
@@ -64,6 +75,42 @@ export function readHtmlCacheKey(file) {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+export function readBrowseGeneration(file) {
+  let fd;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = fstatSync(fd);
+    if (!info.isFile() || (info.mode & 0o022) !== 0 || info.size !== 33) return null;
+    const value = Buffer.alloc(34);
+    if (readSync(fd, value, 0, value.length, null) !== 33) return null;
+    return /^([a-f0-9]{32})\n$/u.exec(value.subarray(0, 33).toString('latin1'))?.[1] ?? null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function browseTarget(url) {
+  if (!ascii(url, /^[\x21-\x7e]{1,1800}$/u) || url.includes('#')) return null;
+  if (homepage.test(url)) return url;
+  const at = url.indexOf('?');
+  if (at < 0) return directory.test(url) ? url : null;
+  const path = url.slice(0, at);
+  if (!directory.test(path)) return null;
+  const fields = url.slice(at + 1).split('&');
+  const seen = new Set();
+  for (const field of fields) {
+    const equals = field.indexOf('=');
+    const name = field.slice(0, equals);
+    if (equals < 1 || !directoryQuery.has(name) || seen.has(name)) return null;
+    try { decodeURIComponent(field.slice(equals + 1)); } catch { return null; }
+    seen.add(name);
+  }
+  // Preserve value bytes and explicit defaults. Only unique parameter order is normalized.
+  return path + '?' + fields.sort().join('&');
 }
 
 function forwarded(headers) {
@@ -102,7 +149,7 @@ function eligible(request, encoding) {
 
 // The opaque scope versions already bind recovery epoch and the scope's
 // revision. Both live scopes and both actually rendered scopes are mandatory.
-function readSnapshot(value, release, nonce, now, tick, render) {
+function readSnapshot(value, release, nonce, now, tick, maxAge, render) {
   if (!value || value.release !== release || value.nonce !== nonce ||
       (render && value.healthy !== true) || !value.data ||
       Object.keys(value.data).sort().join(',') !== 'catalog,filters') return null;
@@ -114,7 +161,7 @@ function readSnapshot(value, release, nonce, now, tick, render) {
     if (!stamp || stamp.priceView !== 'usd' || !hexVersion(stamp.version)) return null;
     const checkedAt = time(stamp.checkedAt);
     const validUntil = time(stamp.validUntil);
-    if (!(checkedAt <= now + 5000 && validUntil > Math.max(now, checkedAt) && validUntil - checkedAt <= MAX_AGE))
+    if (!(checkedAt <= now + 5000 && validUntil > Math.max(now, checkedAt) && validUntil - checkedAt <= maxAge))
       return null;
     if (stamp.fx !== null && (!uuid(stamp.fx?.version) || !(time(stamp.fx.expiresAt) >= validUntil))) return null;
     const fx = stamp.fx === null ? null : [stamp.fx.version, time(stamp.fx.expiresAt)];
@@ -134,13 +181,27 @@ function singleHeader(source, header) {
   return values.length === 1 ? values[0] : undefined;
 }
 
-function proof(response, release, nonce, now, tick) {
+function proof(response, release, nonce, now, tick, maxAge) {
   const supplied = singleHeader(response.rawHeaders, proofHeader);
-  if (!response.complete || singleHeader(response.rawHeaders, protocol) !== '2' ||
-      !ascii(supplied, /^[a-zA-Z0-9_-]{1,8192}$/) ||
+  if (!response.complete || !ascii(supplied, /^[a-zA-Z0-9_-]{1,8192}$/) ||
       response.trailers[proofHeader] || response.trailers['set-cookie']) return null;
   try {
-    return readSnapshot(JSON.parse(Buffer.from(supplied, 'base64url')), release, nonce, now, tick, true);
+    return readSnapshot(JSON.parse(Buffer.from(supplied, 'base64url')), release, nonce, now, tick, maxAge, true);
+  } catch {
+    return null;
+  }
+}
+
+function browseProof(response, identity) {
+  const supplied = singleHeader(response.rawHeaders, proofHeader);
+  if (!response.complete || !ascii(supplied, /^[a-zA-Z0-9_-]{1,4096}$/) ||
+      response.trailers[proofHeader] || response.trailers['set-cookie']) return null;
+  try {
+    const value = JSON.parse(Buffer.from(supplied, 'base64url'));
+    const { release, nonce, generation, target } = identity;
+    if (value?.healthy !== true || value.release !== release || value.nonce !== nonce ||
+        value.generation !== generation || value.target !== target) return null;
+    return { observedAt: value.observedAt, expiresAt: value.expiresAt };
   } catch {
     return null;
   }
@@ -183,20 +244,30 @@ function throttled(response) {
   return { retryAfter: ascii(supplied, /^(?:0|[1-9]\d{0,8})$/) ? supplied : '1' };
 }
 
-export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secret, now = Date.now, tick = () => performance.now() }) {
+export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secret, cacheProtocol = '2',
+  readGeneration, browseAuthorityOrigin, browseAuthorityKey, now = Date.now, tick = () => performance.now() }) {
+  const maxAge = protocolMaxAge.get(cacheProtocol);
   if (!ascii(release, /^[a-f0-9]{40}$/) || !ascii(secret, privateKey) || !isIP(edgeIp) ||
       origin.protocol !== 'http:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash ||
-      !ascii(siteHost, /^[a-z0-9.-]+$/)) throw new Error('Invalid HTML cache configuration');
+      !ascii(siteHost, /^[a-z0-9.-]+$/) || maxAge === undefined ||
+      (cacheProtocol === '4' && (siteHost !== 'hongdingauto.com' || typeof readGeneration !== 'function' ||
+        !browseAuthorityOrigin || browseAuthorityOrigin.protocol !== 'http:' || browseAuthorityOrigin.username ||
+        browseAuthorityOrigin.password || browseAuthorityOrigin.pathname !== '/' || browseAuthorityOrigin.search ||
+        browseAuthorityOrigin.hash || !ascii(browseAuthorityKey, privateKey))))
+    throw new Error('Invalid HTML cache configuration');
 
+  const browse = cacheProtocol === '4' ? createBrowseCache({ readGeneration, now, tick }) : null;
   const pages = new Map(); // Exactly three canonical, queryless homepage keys per release process.
   const agent = new Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 8 });
   let activeLookups = 0;
+  let activeBrowseFallbacks = 0;
+  let activeBrowseAuthority = 0;
 
   function trustedHeaders(visitor, nonce) {
     return {
       host: siteHost, 'x-forwarded-host': siteHost, 'x-forwarded-proto': 'https',
       'x-hd-visitor-ip': visitor, 'x-forwarded-for': visitor,
-      'cache-control': 'no-store', [protocol]: '2', [keyHeader]: secret, [nonceHeader]: nonce,
+      'cache-control': 'no-store', [protocol]: cacheProtocol, [keyHeader]: secret, [nonceHeader]: nonce,
     };
   }
 
@@ -208,14 +279,14 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     }, signal, agent);
     const limit = throttled(response);
     if (limit) return limit;
-    if (response.statusCode !== 200 || singleHeader(response.rawHeaders, protocol) !== '2' ||
+    if (response.statusCode !== 200 || singleHeader(response.rawHeaders, protocol) !== cacheProtocol ||
         !parts(response.headers['cache-control']).includes('no-store') ||
         !/^application\/json(?:;|$)/i.test(response.headers['content-type'] ?? '')) {
       response.destroy();
       return null;
     }
     const body = await boundedBody(response, MAX_CONTROL);
-    return body && readSnapshot(JSON.parse(body), release, nonce, now(), tick(), false);
+    return body && readSnapshot(JSON.parse(body), release, nonce, now(), tick(), maxAge, false);
   }
 
   async function privateRender(path, visitor, disconnect) {
@@ -226,17 +297,64 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     }, signal, agent);
     const limit = throttled(response);
     if (limit) return limit;
-    if (!cacheable(response) || singleHeader(response.rawHeaders, protocol) !== '2') {
+    if (!cacheable(response) || singleHeader(response.rawHeaders, protocol) !== cacheProtocol) {
       response.destroy();
       return null;
     }
     const body = await boundedBody(response, MAX_HTML);
     if (!body?.length) return null;
-    const stamp = proof(response, release, nonce, now(), tick());
+    const stamp = proof(response, release, nonce, now(), tick(), maxAge);
     const headers = stamp ? Object.fromEntries(reusableResponseHeaders
       .filter(name => Object.hasOwn(response.headers, name)).map(name => [name, response.headers[name]]))
       : forwarded(response.headers);
     return { stamp, headers: { ...headers, 'cache-control': 'no-store' }, body };
+  }
+
+  async function browseRender(target, visitor, generation) {
+    const nonce = randomBytes(16).toString('hex');
+    const response = await open(origin, '/internal/public-html/browse/', {
+      ...trustedHeaders(visitor, nonce), accept: 'text/html', 'accept-encoding': 'identity',
+      [targetHeader]: target, [generationHeader]: generation,
+    }, AbortSignal.timeout(8000), agent);
+    const limit = throttled(response);
+    if (limit) return limit;
+    if (!cacheable(response) || singleHeader(response.rawHeaders, protocol) !== cacheProtocol ||
+        !parts(response.headers['cache-control']).includes('no-store')) {
+      response.destroy();
+      return null;
+    }
+    const body = await boundedBody(response, MAX_HTML);
+    const stamp = body?.length && browseProof(response, { release, nonce, generation, target });
+    if (!stamp) return null;
+    const headers = Object.fromEntries(reusableResponseHeaders
+      .filter(name => Object.hasOwn(response.headers, name)).map(name => [name, response.headers[name]]));
+    return { ...stamp, body, headers: { ...headers, 'cache-control': 'no-store' } };
+  }
+
+  async function browseAuthority(visitor) {
+    if (activeBrowseAuthority >= MAX_BROWSE_AUTHORITY) return { retryAfter: '1' };
+    activeBrowseAuthority++;
+    try {
+      const response = await open(browseAuthorityOrigin, authorityPath, {
+        accept: 'application/json', 'cache-control': 'no-store',
+        'x-hd-ssr-key': browseAuthorityKey, 'x-forwarded-for': visitor,
+      }, AbortSignal.timeout(1000), agent);
+      const limit = throttled(response);
+      if (limit) return limit;
+      if (response.statusCode !== 200 || Object.hasOwn(response.headers, 'set-cookie') ||
+          !parts(response.headers['cache-control']).includes('no-store') ||
+          !/^application\/json(?:;|$)/i.test(response.headers['content-type'] ?? '')) {
+        response.destroy();
+        return null;
+      }
+      const body = await boundedBody(response, 4096);
+      if (!body || response.trailers['set-cookie']) return null;
+      const value = JSON.parse(body);
+      return value?.data?.policy === 'browse-600-v1' && hexVersion(value.data.generation)
+        ? value.data.generation : null;
+    } finally {
+      activeBrowseAuthority--;
+    }
   }
 
   function sendPage(reply, page, preferGzip = false, cacheHit = false) {
@@ -253,6 +371,10 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     reply.writeHead(429, { 'cache-control': 'no-store', 'retry-after': limit.retryAfter }).end();
   }
 
+  function sendBusy(reply) {
+    reply.writeHead(503, { 'cache-control': 'no-store', 'retry-after': '1' }).end();
+  }
+
   async function serve(request, reply) {
     const host = request.headers.host?.toLowerCase();
     if (request.socket.remoteAddress !== edgeIp || (host !== siteHost && host !== siteHost + ':443')) {
@@ -260,7 +382,8 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
       return;
     }
     const path = request.url.split('?')[0];
-    if (!homepage.test(path) || request.method !== 'GET' || request.headers['content-length'] || request.headers['transfer-encoding']) {
+    if (!(homepage.test(path) || (browse && directory.test(path))) || request.method !== 'GET' ||
+        request.headers['content-length'] || request.headers['transfer-encoding']) {
       reply.writeHead(502, { 'cache-control': 'no-store' }).end();
       return;
     }
@@ -270,9 +393,36 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
     const visitor = request.headers['x-hd-visitor-ip'];
     const encoding = encodingPreferences(request.headers['accept-encoding']);
     const preferGzip = encoding.gzip > 0 && encoding.gzip >= encoding.identity;
-    const lookup = request.url === path && eligible(request, encoding) && activeLookups < MAX_LOOKUPS;
+    const lookup = !browse && request.url === path && eligible(request, encoding) && activeLookups < MAX_LOOKUPS;
     if (lookup) activeLookups++;
+    let browseFallback = false;
     try {
+      const destination = request.headers['sec-fetch-dest'];
+      const rscAccept = parts(request.headers.accept).some(value => /^text\/x-component(?:\s*;|$)/.test(value));
+      const target = browse && !rscAccept && (!destination || destination === 'document') && eligible(request, encoding)
+        ? browseTarget(request.url) : null;
+      if (target) {
+        const rendered = await browse.read(target, generation => browseRender(target, visitor, generation),
+          () => browseAuthority(visitor));
+        if (rendered?.unavailable) {
+          sendBusy(reply);
+          return;
+        }
+        if (rendered?.retryAfter) {
+          sendLimit(reply, rendered);
+          return;
+        }
+        if (rendered) {
+          sendPage(reply, rendered.value, false, rendered.hit);
+          return;
+        }
+        if (activeBrowseFallbacks >= MAX_BROWSE_FALLBACKS) {
+          sendBusy(reply);
+          return;
+        }
+        browseFallback = true;
+        activeBrowseFallbacks++;
+      }
       if (lookup) {
         let live = null;
         try { live = await currentVersion(path, visitor, disconnect.signal); }
@@ -301,7 +451,7 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
             const stamp = rendered.stamp;
             if (stamp?.signature === live.signature) {
               const deadline = Math.min(live.deadline, stamp.deadline);
-              const elapsedDeadline = Math.min(initialTick + MAX_AGE, live.elapsedDeadline, stamp.elapsedDeadline);
+              const elapsedDeadline = Math.min(initialTick + maxAge, live.elapsedDeadline, stamp.elapsedDeadline);
               const gzipBody = await compressHtml(rendered.body, { level: 4 }).catch(() => null);
               const latest = pages.get(path);
               // Another lookup may publish a newer revision while this request renders or compresses.
@@ -325,13 +475,20 @@ export function createHtmlCacheServer({ origin, siteHost, edgeIp, release, secre
 
       const source = await open(origin, request.url, forwarded(request.headers),
         AbortSignal.any([disconnect.signal, AbortSignal.timeout(20_000)]), agent);
+      if (browseFallback && (source.statusCode === 502 || source.statusCode === 504)) {
+        source.destroy();
+        sendBusy(reply);
+        return;
+      }
       reply.writeHead(source.statusCode, { ...forwarded(source.headers), 'cache-control': 'no-store' });
       await pipeline(source, reply);
     } catch {
       if (reply.headersSent) reply.destroy();
+      else if (!reply.destroyed && browseFallback) sendBusy(reply);
       else if (!reply.destroyed) reply.writeHead(502, { 'cache-control': 'no-store' }).end();
     } finally {
       if (lookup) activeLookups--;
+      if (browseFallback) activeBrowseFallbacks--;
     }
   }
 

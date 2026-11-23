@@ -14,7 +14,7 @@ const base: CalculationInput = {
   displacementCc: '1998',
   powerHp: '150',
   manufactureDate: '2021-01',
-  customsDate: '2026-01-01',
+  customsDate: '2026-01-16',
   freight: '',
   insurance: '',
   steering: 'left',
@@ -39,55 +39,31 @@ describe('RU fee explanations', () => {
       { price: '10000', transactionRate: '1', euroRate: '2', displacementCc: '1000' },
       24,
     );
-    expect(details).toEqual({
-      key: 'RU.dutyYoung',
-      params: {
-        ageMonths: 24,
-        value: '10000',
-        euroRate: '2',
-        euroValue: '5000',
-        lower: '0',
-        upper: '8500',
-        percentage: '54',
-        percentageDuty: '2700',
-        cc: '1000',
-        perCc: '2.5',
-        minimumDuty: '2500',
-      },
+    expect(details).toMatchObject({
+      key: 'RU.unifiedYoung',
+      params: { euroRate: '2', euroValue: '5000', rate: '54', percentageDuty: '2700',
+        cc: '1000', minimum: '2.5', minimumDuty: '2500' },
     });
-    expect(
-      method('duty', { price: '20000', transactionRate: '1', euroRate: '2' }, 24).params.percentage,
-    ).toBe('48');
+    expect(method('duty', { price: '20000', transactionRate: '1', euroRate: '2' }, 24).params.rate).toBe('48');
   });
 
-  it('selects month-specific rates rather than presenting a generic displacement formula', () => {
-    expect(method('duty', {}, 59)).toMatchObject({
-      key: 'RU.dutyMiddle',
-      params: { lower: '1800', upper: '2300', perCc: '2.7' },
-    });
-    expect(method('duty', {}, 60)).toMatchObject({
-      key: 'RU.dutyOld',
-      params: { lower: '1800', upper: '2300', perCc: '4.8' },
-    });
+  it('explains the actual age-band rate and electric value-based duty', () => {
+    expect(method('duty', {}, 59)).toMatchObject({ key: 'RU.unifiedUsed', params: { cc: '1998', rate: '2.7' } });
+    expect(method('duty', {}, 60)).toMatchObject({ key: 'RU.unifiedUsed', params: { cc: '1998', rate: '4.8' } });
     expect(method('duty', { powertrain: 'bev', displacementCc: '', euroRate: '' })).toEqual({
-      key: 'RU.dutyElectric',
-      params: { value: '2049229.55', percentage: '15' },
+      key: 'RU.dutyElectric', params: { value: '2049229.55', percentage: 15 },
     });
   });
 
-  it('distinguishes the assumed personal coefficient, electric matrix and non-concession matrix', () => {
-    expect(method('recycling', {}, 35)).toEqual({
-      key: 'RU.recyclingPersonalYoung',
-      params: { ageMonths: 35, hp: '150', cc: '1998', coefficient: '0.17', base: '20000' },
-    });
+  it('explains the selected personal concession and standard recycling coefficients', () => {
+    expect(method('recycling', {}, 35)).toEqual({ key: 'RU.recyclingConcession',
+      params: { hp: '150', coefficient: '0.17', base: '20000' } });
     expect(method('recycling', {}, 36).params.coefficient).toBe('0.26');
-    expect(method('recycling', { powertrain: 'bev', displacementCc: '' }, 36)).toEqual({
-      key: 'RU.recyclingElectricAged',
-      params: { ageMonths: 36, hp: '150', coefficient: '111.36', base: '20000' },
+    expect(method('recycling', { powertrain: 'bev', displacementCc: '' }, 36)).toMatchObject({
+      key: 'RU.recyclingTable', params: { hp: '150', coefficient: '111.36', base: '20000' },
     });
     expect(method('recycling', { powerHp: '160.01' }, 36)).toMatchObject({
-      key: 'RU.recyclingStandardAged',
-      params: { hp: '160.01', cc: '1998', coefficient: '74.64' },
+      key: 'RU.recyclingTable', params: { hp: '160.01', coefficient: '74.64' },
     });
   });
 
@@ -103,6 +79,7 @@ describe('RU fee explanations', () => {
       quote({ price: '200000', transactionRate: '1', euroRate: '1' }, 24),
       quote({ displacementCc: '4000', powerHp: '161' }, 36),
       quote({ displacementCc: '4000', powerHp: '161' }),
+      quote({ displacementCc: '2500', powerHp: '510' }, 24),
       quote({ price: '10000001', transactionRate: '1' }),
     ];
     const keys = new Set<string>();

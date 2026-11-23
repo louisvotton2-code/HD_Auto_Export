@@ -20,7 +20,7 @@ const BASE: CalculationInput = {
   euroRate: '94.7',
 };
 
-/** Frozen independent examples recorded in docs/research, not live FX or today's age. */
+/** Fixed ordinary-car examples using the audited schedules, not live FX or today's age. */
 const FIXTURES: Record<Exclude<CountryCode, 'TJ' | 'TM'>, CalculationInput> = {
   RU: BASE,
   KZ: { ...BASE, country: 'KZ', transactionRate: '468.321957', euroRate: '541.1' },
@@ -65,12 +65,12 @@ const POWERTRAINS: Powertrain[] = ['petrol', 'diesel', 'hev', 'phev', 'erev', 'b
 
 describe('seven-country public core reference integration', () => {
   it.each([
-    ['RU', 'RUB', '926952'],
-    ['KZ', 'KZT', '7277481'],
-    ['UZ', 'UZS', '355921427'],
-    ['GE', 'GEL', '3605'],
-    ['AM', 'AMD', '1626867'],
-    ['KG', 'KGS', '547138.77'],
+    ['RU', 'RUB', '529610'],
+    ['KZ', 'KZT', '5881859'],
+    ['UZ', 'UZS', '350548947'],
+    ['GE', 'GEL', '2272.88'],
+    ['AM', 'AMD', '2412086'],
+    ['KG', 'KGS', '546754.84'],
     ['AL', 'ALL', '171688'],
   ] as const)(
     'returns the frozen %s example through the same public core used by the API',
@@ -87,11 +87,11 @@ describe('seven-country public core reference integration', () => {
         missingFields: [],
         fieldErrors: {},
       });
-      expect(result.ruleVersion).toMatch(/reference-2026\.10\.\d{2}-v\d+$/);
+      expect(result.ruleVersion).toContain('2026.11.23');
       expect(
         result.lines
           .reduce((sum, line) => sum.add(line.amount), new Amount(0))
-          .toFixed(country === 'KG' ? 2 : 0),
+          .toFixed(country === 'KG' || country === 'GE' ? 2 : 0),
       ).toBe(total);
       expect(result.excludedCosts).toEqual(
         expect.arrayContaining(['vehicle_price', 'freight', 'insurance', 'china_export_costs']),
@@ -103,7 +103,7 @@ describe('seven-country public core reference integration', () => {
   it.each(
     COUNTRIES.flatMap((country) => POWERTRAINS.map((powertrain) => [country, powertrain] as const)),
   )(
-    'connects the %s / %s reference branch without an artificial unsupported gate',
+    'connects %s / %s to its classification or verified tariff',
     (country, powertrain) => {
       const result = calculateImportEstimate({
         ...FIXTURES[country],
@@ -111,13 +111,18 @@ describe('seven-country public core reference integration', () => {
         displacementCc:
           powertrain === 'bev' || (country === 'KG' && powertrain === 'erev') ? '' : '1998',
       });
+      if (powertrain === 'erev' && ['RU', 'UZ', 'GE', 'KZ', 'AM'].includes(country)) {
+        expect(result).toMatchObject({ status: 'needs_review', total: null });
+        expect(result.reason).toBeTruthy();
+        return;
+      }
       expect(result.status).toBe('reference');
       expect(result.total).not.toBeNull();
       expect(result.lines.length).toBeGreaterThan(0);
       expect(result.lines.every((line) => /^\d+(?:\.\d+)?$/.test(line.amount))).toBe(true);
       if (country === 'AM' && powertrain === 'bev') {
-        expect(result.total).toBe('0');
-        expect(result.assumptions).toContain('am_electric_relief_assumed');
+        expect(result.total).toBe('625999');
+        expect(result.assumptions).toContain('am_electric_standard_duty');
       }
       if (country === 'KG' && ['bev', 'erev'].includes(powertrain)) {
         expect(result.assumptions).toContain('kg_electric_standard_duty');
@@ -125,7 +130,7 @@ describe('seven-country public core reference integration', () => {
     },
   );
 
-  it.each(COUNTRIES.filter((country) => country !== 'KG'))(
+  it.each(COUNTRIES.filter((country) => country !== 'KG' && country !== 'KZ'))(
     'does not advertise an unimplemented company policy for %s just because the UI hides the switch',
     (country) => {
       const result = calculateImportEstimate({ ...FIXTURES[country], importerType: 'company' });
@@ -142,16 +147,16 @@ describe('seven-country public core reference integration', () => {
   it('keeps KG company totals and personal first-registration estimates separate', () => {
     const personal = calculateImportEstimate(FIXTURES.KG);
     const company = calculateImportEstimate({ ...FIXTURES.KG, importerType: 'company' });
-    expect(personal.total).toBe('547138.77');
+    expect(personal.total).toBe('546754.84');
     expect(personal.additionalCosts).toMatchObject([
-      { id: 'registrationEstimate', amount: '44066.72', kind: 'one_time_estimate' },
+      { id: 'registrationEstimate', amount: '39267.05', kind: 'one_time_estimate' },
     ]);
-    expect(company).toMatchObject({ status: 'reference', total: '306703.56', additionalCosts: [] });
+    expect(company).toMatchObject({ status: 'reference', total: '306703.96', additionalCosts: [] });
     expect(personal.lines.some(({ id }) => id === 'registrationEstimate')).toBe(false);
   });
 
   it('includes AL one-time luxury tax but excludes its annual charge from the import total', () => {
-    const result = calculateImportEstimate({ ...FIXTURES.AL, displacementCc: '3000' });
+    const result = calculateImportEstimate({ ...FIXTURES.AL, displacementCc: '3000', seatCount: '7' });
     expect(result).toMatchObject({ status: 'reference', total: '241688' });
     expect(result.lines.find(({ id }) => id === 'luxuryOnce')?.amount).toBe('70000');
     expect(result.additionalCosts).toMatchObject([
@@ -161,7 +166,7 @@ describe('seven-country public core reference integration', () => {
   });
 
   it.each(
-    (['UZ', 'AM', 'KG', 'AL'] as const).flatMap((country) =>
+    (['UZ', 'AL'] as const).flatMap((country) =>
       ['', '   '].map((empty) => [country, empty] as const),
     ),
   )('handles unknown %s transport (%s) without converting it into known zero', (country, empty) => {
@@ -178,7 +183,7 @@ describe('seven-country public core reference integration', () => {
   });
 
   it.each(
-    (['UZ', 'AM', 'KG', 'AL'] as const).flatMap((country) =>
+    (['UZ', 'AL'] as const).flatMap((country) =>
       [null, undefined].map((empty) => [country, empty] as const),
     ),
   )(
@@ -199,6 +204,13 @@ describe('seven-country public core reference integration', () => {
     },
   );
 
+  it.each(['AM', 'KG'] as const)('excludes freight and insurance on the personal declaration for %s', (country) => {
+    const zero = calculateImportEstimate({ ...FIXTURES[country], freight: '0', insurance: '0' });
+    const shipping = calculateImportEstimate({ ...FIXTURES[country], freight: '1000', insurance: '500' });
+    expect(zero.status).toBe('reference');
+    expect(shipping.lines).toEqual(zero.lines);
+  });
+
   it.each(['UZ', 'AM', 'KG', 'AL'] as const)(
     'recognizes explicit zero %s transport without the unknown-transport assumption',
     (country) => {
@@ -218,7 +230,7 @@ describe('seven-country public core reference integration', () => {
     delete legacyInput.condition;
     expect(calculateImportEstimate(legacyInput)).toMatchObject({
       status: 'reference',
-      total: '355921427',
+      total: '350548947',
     });
   });
 
@@ -239,8 +251,8 @@ describe('seven-country public core reference integration', () => {
       transactionRate: '1600',
       usdRate: '12000',
     });
-    expect(usd).toMatchObject({ status: 'reference', total: '248727440' });
-    expect(cny).toMatchObject({ status: 'reference', total: '248727440' });
+    expect(usd).toMatchObject({ status: 'reference', total: '243354960' });
+    expect(cny).toMatchObject({ status: 'reference', total: '243354960' });
     expect(cny.lines.map(({ id, amount }) => [id, amount])).toEqual(
       usd.lines.map(({ id, amount }) => [id, amount]),
     );
@@ -318,7 +330,7 @@ describe('seven-country public core reference integration', () => {
       displacementCc: '',
       powerHp: '150',
     });
-    expect(calculated).toMatchObject({ status: 'reference', total: '2548125' });
+    expect(calculated).toMatchObject({ status: 'reference', total: '3078292' });
     expect(calculated.lines.find(({ id }) => id === 'recycling')?.amount).toBe('2227200');
   });
 });

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { resetPublicFixture } from './helpers/public-fixture';
+import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 const storageKey = 'hd-auto:vehicle-favorites:v1';
 test.describe('persistent vehicle identities and aligned cards', () => {
@@ -118,37 +118,15 @@ test.describe('persistent vehicle identities and aligned cards', () => {
   });
 
   test('long Russian titles, missing state and long prices keep the rail footers aligned at desktop and phone widths', async ({
-    page,
+    page, request,
   }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     const title =
       'Очень длинное название автомобиля с подробным описанием комплектации и оборудования';
-    await page.route(
-      (url) => url.pathname.replace(/\/$/, '') === '/api/v1/home/vehicles',
-      async (route) => {
-        const response = await route.fetch(),
-          body = await response.json();
-        const cars = body.data.sections[0].vehicles.filter(
-          (vehicle: { source: { kind: string } }) => vehicle.source.kind === 'manual',
-        );
-        expect(cars.length).toBeGreaterThanOrEqual(2);
-        body.data.sections[0].vehicles = cars;
-        cars[0].content.title.text = title;
-        cars[0].availability = 'sold';
-        cars[0].price = {
-          kind: 'reference',
-          money: { amount: '99999999999999.99', currency: 'KGS' },
-          includes: [],
-        };
-        cars[1].availability = 'unknown';
-        cars[1].availabilityCheckedAt = null;
-        await route.fulfill({ response, json: body });
-      },
-    );
+    // Real document navigation uses server-rendered home data, including after Back.
+    await setPublicFixtureState(request, { homeCardLayoutSample: true });
     await page.goto('/ru/');
     await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
-    // A real client navigation lets the public-resource lifecycle mount before
-    // Back triggers its explicit recheck. A synthetic hash jump could run first.
     await page
       .locator('[data-home-section^="vehicles-"] [data-vehicle-contacts] a[href*="/cars/"]')
       .first()
@@ -159,6 +137,7 @@ test.describe('persistent vehicle identities and aligned cards', () => {
     const rail = page.locator('[data-home-section^="vehicles-"]').first();
     await expect(rail.locator('h3').first()).toHaveText(title);
     await expect(rail.locator('h3').first()).toHaveAttribute('title', title);
+    await expect(rail.locator('article')).toHaveCount(2);
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       const geometry = await rail.locator('article').evaluateAll((cards) =>

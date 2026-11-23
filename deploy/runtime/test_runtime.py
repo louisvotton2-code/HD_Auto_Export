@@ -103,6 +103,15 @@ class RuntimeFailureTests(unittest.TestCase):
         r.validate_domains(v)
         for change in [{'ADMIN_ORIGIN':'http://admin.hongdingauto.com'},{'WEB_SITE_ORIGIN':'https://cars.hongdingauto.com.evil.example'},{'SITE_ORIGIN':'https://localhost:3410'}]:
             with self.assertRaises(ValueError):r.validate_domains({**v,**change})
+    def test_apex_profile_requires_explicit_matching_analytics_origin(self):
+        apex='https://hongdingauto.com'
+        values={'WEB_SITE_ORIGIN':apex, 'SITE_ORIGIN':apex, 'ADMIN_ORIGIN':'https://admin.hongdingauto.com',
+                'ANALYTICS_ORIGINS':apex}
+        r.validate_domains(values)
+        for overrides in ({'ANALYTICS_ORIGINS':''}, {'ANALYTICS_ORIGINS':apex+',https://cars.hongdingauto.com'},
+                          {'WEB_SITE_ORIGIN':'https://www.hongdingauto.com','SITE_ORIGIN':'https://www.hongdingauto.com'}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                r.validate_domains({**values, **overrides})
     def test_partial_collision_never_stops_api(self):
         self.backup.with_name('backup.partial').mkdir()
         with patch.object(r,'run',side_effect=self.fake),self.assertRaises(FileExistsError): self.invoke()

@@ -21,14 +21,17 @@ const base: CalculationInput = {
   insurance: '100',
   steering: 'left',
 };
-const quote = (changes: Partial<CalculationInput> = {}, ageMonths = 60) =>
-  calculateUzReference({
-    input: { ...base, ...changes },
-    ageMonths,
-    ageYears: Math.floor(ageMonths / 12),
+const quote = (changes: Partial<CalculationInput> = {}, ageMonths = 60) => {
+  const produced = new Date(Date.UTC(2026, -ageMonths, 1)).toISOString().slice(0, 10);
+  return calculateUzReference({
+    input: { ...base, manufactureDate: produced.slice(0, 7), manufactureDay: produced, ...changes },
+    ageMonths, ageYears: Math.floor(ageMonths / 12),
   });
-const method = (id: string, changes: Partial<CalculationInput> = {}, ageMonths = 60) =>
-  quote(changes, ageMonths).lines.find((line) => line.id === id)!.method!;
+};
+const method = (id: string, changes: Partial<CalculationInput> = {}, ageMonths = 60) => {
+  const { lines, additionalCosts } = quote(changes, ageMonths);
+  return [...lines, ...additionalCosts].find(line => line.id === id)!.method!;
+};
 const placeholders = (message: string) =>
   [...new Set([...message.matchAll(/\{(\w+)\}/g)].map((match) => match[1]))].sort();
 
@@ -78,20 +81,18 @@ describe('UZ fee explanations', () => {
       },
     });
     expect(method('duty', changes, 13)).toMatchObject({
-      key: 'UZ.dutyHybridNewOld',
+      key: 'UZ.dutyHybridOther',
       params: { percentage: '30' },
     });
     expect(method('duty', { ...changes, condition: 'used' }, 36)).toMatchObject({
-      key: 'UZ.dutyHybridUsedYoung',
-      params: { percentage: '30', cc: '1998', perCc: '1' },
+      key: 'UZ.dutyHybridOther',
+      params: { percentage: '30' },
     });
     expect(method('duty', { ...changes, condition: 'used' }, 37)).toMatchObject({
-      key: 'UZ.dutyHybridUsedOld',
-      params: { percentage: '40', perCc: '3' },
+      key: 'UZ.dutyHybridOther',
+      params: { percentage: '30' },
     });
-    expect(method('duty', { ...changes, powertrain: 'erev' }, 12)).toEqual(
-      method('duty', changes, 12),
-    );
+    expect(quote({ ...changes, powertrain: 'erev' }, 12).reason).toBe('uz_classification_review');
   });
 
   it('explains the BEV duty exemption separately from its age-based recycling and registration', () => {
@@ -106,8 +107,8 @@ describe('UZ fee explanations', () => {
       params: { ageMonths: 37, brv: '412000', coefficient: '210' },
     });
     expect(method('registration', changes)).toEqual({
-      key: 'UZ.registrationElectric',
-      params: { brv: '412000', coefficient: '7.7' },
+      key: 'UZ.registrationCore',
+      params: { brv: '412000', coefficient: '1.5' },
     });
   });
 
@@ -127,7 +128,7 @@ describe('UZ fee explanations', () => {
     ];
     const keys = new Set<string>();
     for (const result of cases)
-      for (const line of result.lines) {
+      for (const line of [...result.lines, ...result.additionalCosts]) {
         const details = line.method!;
         expect(details).toBeDefined();
         const key = details.key.replace('UZ.', '') as keyof typeof uzMethodMessages.zh;

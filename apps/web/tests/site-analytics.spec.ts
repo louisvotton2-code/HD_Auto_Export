@@ -129,6 +129,7 @@ test('history restore applies a stored consent change before sending a view', as
 });
 
 test('only a successful empty search and an intentional completed calculation are counted', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-11-23T04:00:00Z'));
   const { events, invalid } = await capture(page);
   await page.goto('/zh/cars/');
   await expect.poll(() => events.length).toBe(1);

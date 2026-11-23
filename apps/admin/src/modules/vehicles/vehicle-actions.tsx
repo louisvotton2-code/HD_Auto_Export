@@ -24,6 +24,7 @@ type Props = {
 
 type Operation = 'availability' | 'publish' | 'archive';
 const operationLabels = { availability: '库存核验', publish: '发布', archive: '下架' };
+const stockBrowseDelay = '首页和列表可能在 10 分钟内显示旧库存。';
 
 function proposedAvailability(vehicle: AdminVehicle): Availability {
   return vehicle.publicationState === 'draft' && vehicle.availability === 'unknown' && vehicle.availabilityCheckedAt === null ? 'available' : vehicle.availability;
@@ -155,8 +156,13 @@ export function VehicleActions({ publicationTabActive, vehicle, hasUnsavedChange
         }
       }
     } else if (operation === 'archive') {
-      if (!await confirmAction('下架这辆车？', '下架后公开详情返回不存在，车辆退出公开列表；后台草稿和历史记录保留。', true)) return;
-    } else if (!await confirmAction('确认库存核验结果', `你已实际核验库存为“${availabilityLabels[availability]}”，将记录当前核验时间。已售车辆会退出在售列表，符合公开条件的首页精选可继续展示实际库存状态。`, availability === 'sold')) return;
+      if (!await confirmAction('下架这辆车？', '下架后访客将无法打开此详情。官网首页和列表的后续访问会读取更新后的结果。后台草稿和历史记录保留。', true)) return;
+    } else {
+      const publicNotice = vehicle.publicationState === 'published'
+        ? `已售车辆会退出在售列表，符合公开条件的首页精选仍可展示。${stockBrowseDelay}`
+        : '';
+      if (!await confirmAction('确认库存核验结果', `你已实际核验库存为“${availabilityLabels[availability]}”，将记录当前核验时间。${publicNotice}`, availability === 'sold')) return;
+    }
 
     if (!mounted.current) return;
     const body = operation === 'publish' ? publishIntent.current!.body
@@ -174,8 +180,7 @@ export function VehicleActions({ publicationTabActive, vehicle, hasUnsavedChange
       if (!mounted.current) return;
       accept(current);
       const inventorySuccess = current.publicationState === 'published'
-        ? current.hasUnpublishedChanges === false ? '库存状态和核验时间已更新，官网库存已同步，无需再次保存或发布。'
-          : '库存状态和核验时间已更新，官网库存已同步。资料发布请继续核对当前草稿。'
+        ? `库存状态和核验时间已更新。官网详情读取最新库存。${stockBrowseDelay}${current.hasUnpublishedChanges === false ? '无需再次保存或发布。' : '资料发布请继续核对当前草稿。'}`
         : '库存状态和核验时间已更新，可继续核对草稿并发布。';
       const feedback = operation === 'publish' ? publicationFeedback(response.data, current)
         : { tone: 'success' as const, text: operation === 'availability' ? inventorySuccess : '车辆已下架，公开详情不再可见。' };

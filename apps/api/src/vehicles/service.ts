@@ -24,7 +24,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay
 import type { LocalMediaStore } from '../media/storage.js';
 import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -399,17 +399,26 @@ async function boundFilterStatement(tx:PoolClient,budget:FilterReadBudget) {
   remainingFilterTime(budget);
   return result.rows[0]!.pid;
 }
-function proofClient(tx:PoolClient,budget:FilterReadBudget):PoolClient {
+function boundedReadClient(tx:PoolClient,budget:FilterReadBudget):PoolClient {
   const bounded=Object.create(tx) as PoolClient;
+  let reportedBackend=false;
   // SET LOCAL statement_timeout limits individual statements. Recompute it for
-  // every proof query, including nested projections, against the original deadline.
+  // every query, including nested projections, against the original deadline.
   bounded.query=(async(text:string,params?:unknown[])=>{
-    await boundFilterStatement(tx,budget);
+    const pid=await boundFilterStatement(tx,budget);
+    if(!reportedBackend&&budget.onBackend){budget.onBackend(pid);reportedBackend=true;}
     const result=await tx.query(text,params);
     remainingFilterTime(budget);
     return result;
   }) as typeof tx.query;
   return bounded;
+}
+function throwBoundedReadError(error:unknown):never {
+  if(error&&typeof error==='object'&&(('code' in error&&error.code==='57014')||
+    (error instanceof PublicCatalogUnavailableError&&error.sqlState==='57014'))) {
+    throw new PublicCatalogUnavailableError('deadline',undefined,'57014');
+  }
+  throw error;
 }
 type Cursor={v:2;epoch:string;revision:string;query:string;stream:'staff'|'external';after:CatalogAnchor;page:number;fx?:string;usdSort?:1};
 const queryBinding=(query:PublicVehicleQuery,external:boolean)=>{
@@ -817,7 +826,7 @@ export class InventoryService {
     if(id.startsWith('ext-')&&(!this.externalCatalog||view!=='localized'))throw notFound();
     return this.db.transaction(async connection=>{
       await connection.query(proofBudget?catalogReadTransaction:'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const tx=proofBudget?proofClient(connection,proofBudget):connection;
+      const tx=proofBudget?boundedReadClient(connection,proofBudget):connection;
       const revision=captureRevision?await observeCatalogRevision(tx,priceView,captureRevision):undefined;
       const quote=priceView==='usd'?await readFxQuote(tx):null;
       const includePixel=projection==='detail-inline-v1'&&pixelView==='eligible';
@@ -856,7 +865,7 @@ export class InventoryService {
           const versionedUrls=vehicle.images.map(image=>image.url);
           captureRevision(revision,(deadline,signal)=>this.db.transaction(async connection=>{
             await connection.query(catalogReadTransaction);
-            const current=proofClient(connection,{deadline,signal});
+            const current=boundedReadClient(connection,{deadline,signal});
             const checked=await readPublicCatalogRevision({pool:current},priceView==='usd','catalog');
             const {rows:[guard]}=await current.query<{detail_guard:string}>(`SELECT ${manualDetailGuard}
               ${publicFrom} ${eligibility} AND p.data#>>'{source,kind}'='manual'`,params);
@@ -877,13 +886,17 @@ export class InventoryService {
         ...(includePixel?{pixelEnabled:row.pixel_enabled===true}:{})},locale));
     });
   }
-  async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void,captureRevision?:CatalogRevisionObserver) {
+  async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void,captureRevision?:CatalogRevisionObserver,
+    budget?:FilterReadBudget,captureFxExpiry?:(expiresAt:number|undefined)=>void) {
     phase?.('database');
-    return this.db.transaction(async tx=>{
-      await tx.query(catalogReadTransaction);
+    return this.db.transaction(async connection=>{
+      if(budget)remainingFilterTime(budget);
+      await connection.query(catalogReadTransaction);
+      const tx=budget?boundedReadClient(connection,budget):connection;
       phase?.('revision');
       const observedRevision=captureRevision?await observeCatalogRevision(tx,query.priceView,captureRevision):null;
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+      captureFxExpiry?.(quote?Date.parse(quote.expiresAt):undefined);
       const fx=query.priceView==='usd'?(quote?.version??'none'):undefined;
       const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
       const version=cursorMode?(observedRevision??(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!):null;
@@ -894,11 +907,12 @@ export class InventoryService {
       const params:unknown[]=[];const where=` WHERE ${publicConditions(query,params,quote)}`;
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
       const staffTotal:number=count.rows[0].total;
-      const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query);
+      const indexedHan=Boolean(includeExternal&&await preferIndexedHanPair(tx,query));
+      const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query,indexedHan);
       let externalTotal:number|undefined;
       if(includeExternal&&!countWithSearchPage) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote);
+        externalTotal=await countExternal(tx,query,quote,indexedHan);
       }
       phase?.('staff_page');
       const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
@@ -932,13 +946,14 @@ export class InventoryService {
       const anchors:Array<{stream:'staff'|'external';after:CatalogAnchor}>=(staff?.rows??[]).map(row=>({stream:'staff',after:{id:row.id,publishedAt:row.cursor_published_at,...(numeric?{sortValue:row.cursor_sort_value??null}:{})}}));
       if(includeExternal&&items.length<limit) {
         phase?.('supplier_page');
-        const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage);
+        const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,
+          cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage,undefined,indexedHan);
         items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));
         externalTotal=external.total??externalTotal;
       }
       if(includeExternal&&externalTotal===undefined) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote);
+        externalTotal=await countExternal(tx,query,quote,indexedHan);
       }
       phase?.('result');
       const total=staffTotal+(externalTotal??0);
@@ -953,12 +968,15 @@ export class InventoryService {
         ...(fx!==undefined?{fx}: {}),...(usdPriceOrder?{usdSort:1}:{})} satisfies Cursor)).toString('base64url'):null;
       return {data:{items,page,pageSize:query.pageSize,hasMore,...(cursorMode?{nextCursor}: {})},
         meta:{requestId,catalog:'curated' as const,total,totalKind:'exact' as const,accessibleTotal:total,dataAsOf:new Date(time).toISOString(),freshness:'fresh' as const}};
+    }).catch(error=>{
+      if(budget)throwBoundedReadError(error);
+      throw error;
     });
   }
   private async verifyOffsetPage(query:PublicVehicleQuery,items:readonly (PublicVehicle|PublicVehicleCard)[],budget:FilterReadBudget) {
     return this.db.transaction(async connection=>{
       await connection.query(catalogReadTransaction);
-      const tx=proofClient(connection,budget);
+      const tx=boundedReadClient(connection,budget);
       const checked=await readPublicCatalogRevision({pool:tx},query.priceView==='usd','catalog');
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
       const staffIds=items.filter(item=>!item.id.startsWith('ext-')).map(item=>item.id);
@@ -1013,10 +1031,7 @@ export class InventoryService {
         return result;
       });
     } catch(error) {
-      if(budget&&error&&typeof error==='object'&&(('code' in error&&error.code==='57014')||
-        (error instanceof PublicCatalogUnavailableError&&error.sqlState==='57014'))) {
-        throw new PublicCatalogUnavailableError('deadline',undefined,'57014');
-      }
+      if(budget)throwBoundedReadError(error);
       throw error;
     }
   }
@@ -1044,7 +1059,8 @@ export class InventoryService {
       external=await externalFacets(tx,query,quote,scope?.pairs,phase,refresh);
     }
     phase?.('result');
-    return {value:facetData(staff,external,query,includeExternal),expiresAt:scope?.expiresAt};
+    const expiresAt=Math.min(scope?.expiresAt??Infinity,quote?Date.parse(quote.expiresAt):Infinity);
+    return {value:facetData(staff,external,query,includeExternal),expiresAt:Number.isFinite(expiresAt)?expiresAt:undefined};
   }
 
   async getHome():Promise<AdminHomeSections> {
@@ -1071,13 +1087,37 @@ export class InventoryService {
       return {version:input.version+1,sections};
     });
   }
-  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd',captureRevision?:CatalogRevisionObserver) {
-    return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd',captureRevision?:CatalogRevisionObserver,
+    budget?:FilterReadBudget,captureFxExpiry?:(expiresAt:number|undefined)=>void) {
+    return this.db.transaction(async connection=>{
+      if(budget)remainingFilterTime(budget);
+      await connection.query(budget?catalogReadTransaction:'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const tx=budget?boundedReadClient(connection,budget):connection;
       if(captureRevision)await observeCatalogRevision(tx,priceView,captureRevision);
       const quote=priceView==='usd'?await readFxQuote(tx):null;
+      captureFxExpiry?.(quote?Date.parse(quote.expiresAt):undefined);
       return this.readPublicHome(tx,locale,view,priceView,quote);
+    }).catch(error=>{
+      if(budget)throwBoundedReadError(error);
+      throw error;
     });
+  }
+
+  async preciseHomepage(locale:Locale,budget:FilterReadBudget) {
+    return this.db.transaction(async connection=>{
+      remainingFilterTime(budget);
+      await connection.query(catalogReadTransaction);
+      const tx=boundedReadClient(connection,budget);
+      const revision=await readPublicCatalogRevision({pool:tx},true,'catalog');
+      const quote=await readFxQuote(tx);
+      const home=await this.readPublicHome(tx,locale,'localized','usd',quote);
+      const query={locale,catalog:'curated',view:'localized',priceView:'usd'} as const;
+      const {value:facets}=await this.readFilters(tx,{...query,projection:'overview'});
+      const {value:models,expiresAt}=await this.readFilters(tx,{...query,projection:'home-models'});
+      // This private DTO supplies only the global facets serialized into the homepage.
+      const overview={catalog:facets.catalog,total:facets.total,makes:facets.makes,models:[],powertrains:[]};
+      return {value:{home,overview,models},revision,expiresAt};
+    }).catch(throwBoundedReadError);
   }
 
   private async readPublicHome(tx:PoolClient,locale:Locale,view?:'legacy'|'localized',priceView?:'usd',quote:FxQuote|null=null) {

@@ -13,6 +13,7 @@ import { ApiError, conflict, notFound } from '../errors.js';
 import { idempotent, type Actor } from '../vehicles/service.js';
 import { getExternalPublic, listingUuid, publicListingId } from './catalog.js';
 import { externalInquiryCode } from './inquiry-code.js';
+import { queueExpiredExternalMedia, syncExternalMedia } from './media-rows.js';
 import { buildProjection, canonicalJson, emptyOverrides, isDatabaseJson, isPublicText, jsonHash, sha256, sourceHashes, textSourceIdentity, type ExternalProjection, type TextSourceIdentities } from './normalize.js';
 import { chinaCarProfile, chinaCarSampleProfile, getPlatform, getProfile, publicLink, syntheticProfile, type ExternalSourceProfile } from './profiles.js';
 
@@ -20,6 +21,7 @@ type ListingRow = {
   id: string; inquiry_number: string; provider: string; platform_id: string; external_id: string; source_revision: string; source_hash: string;
   source_data: ExternalUpsertCandidate | null; overrides: ExternalOverrides | null; text_source_identities: TextSourceIdentities | null;
   upstream_state: 'active' | 'withdrawn'; version: number; fetched_at: Date; source_updated_at: Date | null; published_at: Date | null;
+  formal_primary: boolean;
 };
 type BatchRow = { id: string; provider: string; imported_at: Date; counts: ExternalBatch['counts']; request_hash: string };
 type RecordRow = {
@@ -58,41 +60,32 @@ async function findListing(tx: PoolClient, id: string) {
   return (await tx.query<ListingRow>(`${selectListing} WHERE l.id=$1`, [id])).rows[0];
 }
 
-async function saveProjection(tx: PoolClient, row: ListingRow, projection: ExternalProjection | null) {
-  const primary = (await tx.query('SELECT formal_primary FROM external_listings WHERE id=$1',[row.id])).rows[0]?.formal_primary;
-  if (primary === false || upstreamState(row) !== 'published' || !projection) {
+async function saveProjection(tx: PoolClient, row: ListingRow, projection: ExternalProjection | null, deferMedia = false) {
+  if (!row.formal_primary || upstreamState(row) !== 'published' || !projection) {
     return !!(await tx.query('DELETE FROM external_catalog WHERE listing_id=$1', [row.id])).rowCount;
   }
-  await tx.query(`INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
+  const written = await tx.query(`INSERT INTO external_catalog AS catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
     ON CONFLICT(listing_id) DO UPDATE SET platform_name=excluded.platform_name,listing_url=excluded.listing_url,facts=excluded.facts,
-      price_cny=excluded.price_cny,issues=excluded.issues,localized=excluded.localized,details=excluded.details`,
+      price_cny=excluded.price_cny,issues=excluded.issues,localized=excluded.localized,details=excluded.details
+    WHERE ROW(catalog.platform_name,catalog.listing_url,catalog.facts,catalog.price_cny,catalog.issues,catalog.localized,catalog.details)
+      IS DISTINCT FROM ROW(excluded.platform_name,excluded.listing_url,excluded.facts,excluded.price_cny,excluded.issues,excluded.localized,excluded.details)`,
     [row.id, row.published_at, getPlatform(getProfile(row.provider), row.platform_id)!.name, row.source_data!.listingUrl, JSON.stringify(projection.facts), projection.priceCny,
       JSON.stringify(projection.issues), JSON.stringify(projection.localized), JSON.stringify(projection.details)]);
-  await tx.query(`INSERT INTO external_media_refresh_requests(media_id,media_revision)
-    SELECT id,revision FROM external_media WHERE listing_id=$1 AND active AND expires_at<=now() ON CONFLICT DO NOTHING`, [row.id]);
-  return true;
+  if (!deferMedia) await queueExpiredExternalMedia(tx, row.id);
+  return !!written.rowCount;
 }
 
-async function syncImages(tx: PoolClient, listingId: string, images: ExternalProjection['images'], fetchedAt: string) {
-  await tx.query('UPDATE external_media SET active=false WHERE listing_id=$1 AND active AND NOT (source_media_id=ANY($2::text[]))',
-    [listingId, images.map(image => image.sourceMediaId)]);
-  for (const [position, image] of images.entries()) {
-    await tx.query(`INSERT INTO external_media(id,listing_id,source_media_id,url,width,height,alt,position,active,refreshed_at,expires_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10)
-      ON CONFLICT(listing_id,source_media_id) DO UPDATE SET url=excluded.url,width=excluded.width,height=excluded.height,
-        alt=excluded.alt,position=excluded.position,active=true,refreshed_at=excluded.refreshed_at,expires_at=excluded.expires_at,
-        revision=external_media.revision+CASE WHEN external_media.url IS DISTINCT FROM excluded.url OR
-          external_media.expires_at IS DISTINCT FROM excluded.expires_at OR NOT external_media.active THEN 1 ELSE 0 END`,
-    [randomUUID(), listingId, image.sourceMediaId, image.url, image.width, image.height, JSON.stringify(image.alt), position, fetchedAt, image.expiresAt]);
-  }
+function materialCandidate({revision:_revision,fetchedAt:_fetchedAt,...material}:ExternalUpsertCandidate) {
+  return canonicalJson(material);
 }
 
 type ApplyResult = Pick<RecordRow, 'listing_id' | 'status' | 'reason' | 'issues'> & { publicChanged: boolean };
+type FormalProjection = { canonical: {id:string;primary:boolean}; batchId: string; deferMedia?: boolean };
 const noChange = (status: RecordRow['status'], reason: RecordRow['reason'], listing_id: string | null = null): ApplyResult =>
   ({ listing_id, status, reason, issues: [], publicChanged: false });
 
-async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, candidate: ExternalCandidate): Promise<ApplyResult> {
+async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, candidate: ExternalCandidate, formal?: FormalProjection): Promise<ApplyResult> {
   const platform = getPlatform(profile, candidate.platformId);
   if (!platform) return noChange('rejected', 'identity_unconfirmed');
   const identity = [profile.id, candidate.platformId, candidate.externalId];
@@ -114,18 +107,27 @@ async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, ca
   const active = candidate.operation === 'upsert';
   const source = active ? candidate : existing?.source_data ?? null;
   const id = existing?.id ?? randomUUID();
-  const row = (await tx.query<ListingRow>(`INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,
-      upstream_state,fetched_at,source_updated_at,published_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $8='active' THEN now() END)
+  // Formal callers archive every real observation and generate the next local
+  // projection revision themselves. Do not replace a report/text binding
+  // or published collection time for the same material source projection.
+  const sameMaterial = formal && active && existing?.upstream_state === 'active' && existing.source_data &&
+    materialCandidate(existing.source_data) === materialCandidate(candidate);
+  const row = sameMaterial ? existing : (await tx.query<ListingRow>(`INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,
+      upstream_state,fetched_at,source_updated_at,published_at,formal_primary,formal_canonical_id,first_imported_at,first_import_batch_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $8='active' THEN now() END,$11,$12,
+      CASE WHEN $13::uuid IS NOT NULL THEN clock_timestamp() END,$13)
     ON CONFLICT(id) DO UPDATE SET source_revision=excluded.source_revision,source_hash=excluded.source_hash,source_data=excluded.source_data,
       upstream_state=excluded.upstream_state,fetched_at=excluded.fetched_at,source_updated_at=excluded.source_updated_at,
       published_at=coalesce(external_listings.published_at,excluded.published_at),version=external_listings.version+1 RETURNING *`,
-    [id, ...identity, candidate.revision, hash, source && JSON.stringify(source), active ? 'active' : 'withdrawn', fetchedAt, candidate.sourceUpdatedAt])).rows[0]!;
+    [id, ...identity, candidate.revision, hash, source && JSON.stringify(source), active ? 'active' : 'withdrawn', fetchedAt, candidate.sourceUpdatedAt,
+      formal?.canonical.primary??true,formal?.canonical.id??null,formal?.batchId??null])).rows[0]!;
   row.overrides = existing?.overrides ?? null;
   row.text_source_identities = existing?.text_source_identities ?? null;
   const projection = active && source ? buildProjection(source, row.overrides ?? emptyOverrides(), platform.name, profile, row.text_source_identities ?? {}) : null;
-  if (projection) await syncImages(tx, id, projection.images, fetchedAt);
-  const publicChanged = await saveProjection(tx, row, projection);
-  return { listing_id: id, status: 'applied', reason: null, issues: projection?.issues ?? [], publicChanged };
+  const mediaChanged = projection && !formal?.deferMedia ? await syncExternalMedia(tx, id, projection.images, fetchedAt) : false;
+  const projectionChanged = await saveProjection(tx, row, projection, formal?.deferMedia);
+  const publicChanged = projectionChanged || mediaChanged && row.formal_primary && upstreamState(row) === 'published';
+  return { listing_id: id, status: sameMaterial && !publicChanged ? 'unchanged' : 'applied', reason: null, issues: projection?.issues ?? [], publicChanged };
 }
 
 function validateOverrides(row: ListingRow, input: ExternalOverrides) {
@@ -168,17 +170,24 @@ async function writeOverrides(tx: PoolClient, row: ListingRow, overrides: Extern
 
 /** Only the fixed-list worker calls this inside its leased, scope-checked transaction. */
 export async function applyFormalCandidate(tx:PoolClient,candidate:ExternalCandidate,actor:Actor,batchId:string,
-  canonical:{id:string;primary:boolean}) {
+  canonical:{id:string;primary:boolean},options:{deferMedia?:boolean}={}) {
   await lockExternalWrites(tx);
   const identity=[chinaCarProfile.id,candidate.platformId,candidate.externalId];
-  const before=(await tx.query('SELECT id,formal_canonical_id FROM external_listings WHERE provider=$1 AND platform_id=$2 AND external_id=$3',identity)).rows[0];
+  const before=(await tx.query<{formal_primary:boolean;formal_canonical_id:string|null}>(
+    'SELECT formal_primary,formal_canonical_id FROM external_listings WHERE provider=$1 AND platform_id=$2 AND external_id=$3',identity)).rows[0];
   if(before?.formal_canonical_id && before.formal_canonical_id!==canonical.id)throw new ApiError(409,'VERSION_CONFLICT','A formal source association requires review before changing.');
-  const result=await applyCandidate(tx,chinaCarProfile,ExternalCandidateSchema.parse(candidate));
+  const result=await applyCandidate(tx,chinaCarProfile,ExternalCandidateSchema.parse(candidate),{canonical,batchId,...options});
   if(result.status==='rejected'||result.status==='ignored'||!result.listing_id)throw new ApiError(422,'INVALID_REQUEST','Formal source projection was rejected.');
-  await tx.query('UPDATE external_listings SET formal_primary=$2,formal_canonical_id=$3 WHERE id=$1',[result.listing_id,canonical.primary,canonical.id]);
-  if(!before)await tx.query('UPDATE external_listings SET first_imported_at=clock_timestamp(),first_import_batch_id=$2 WHERE id=$1',[result.listing_id,batchId]);
-  if(!canonical.primary)await tx.query('DELETE FROM external_catalog WHERE listing_id=$1',[result.listing_id]);
-  if(result.publicChanged)await advanceRevision(tx);
+  const bindingChanged=before&&(before.formal_primary!==canonical.primary||before.formal_canonical_id!==canonical.id);
+  if(bindingChanged)await tx.query('UPDATE external_listings SET formal_primary=$2,formal_canonical_id=$3 WHERE id=$1',
+    [result.listing_id,canonical.primary,canonical.id]);
+  const unpublish=!canonical.primary&&(bindingChanged||result.status==='unchanged')
+    ? !!(await tx.query('DELETE FROM external_catalog WHERE listing_id=$1',[result.listing_id])).rowCount : false;
+  if(bindingChanged && canonical.primary && !result.publicChanged) {
+    // A previously non-primary listing may now acquire the public association.
+    await reprojectFormalListing(tx,result.listing_id);
+  }
+  if(result.publicChanged||unpublish)await advanceRevision(tx);
   return {listingId:result.listing_id,status:result.status,systemActor:actor.id};
 }
 
@@ -325,7 +334,9 @@ export class ExternalStore {
         imported_at: Date | null; fetched_at: Date | null; source_updated_at: Date | null;
       }>(`SELECT
         greatest((SELECT max(imported_at) FROM external_import_batches WHERE provider=ANY($1::text[]) AND (counts->>'applied')::bigint>0),(SELECT max(first_imported_at) FROM external_listings WHERE provider=ANY($1::text[]))) AS imported_at,
-        (SELECT fetched_at FROM external_listings WHERE provider=ANY($1::text[]) ORDER BY fetched_at DESC LIMIT 1) AS fetched_at,
+        greatest((SELECT fetched_at FROM external_listings WHERE provider=ANY($1::text[]) ORDER BY fetched_at DESC LIMIT 1),
+          (SELECT last_detail_at FROM external_full_members WHERE state<>'withdrawn' AND last_detail_at IS NOT NULL
+            ORDER BY last_detail_at DESC LIMIT 1)) AS fetched_at,
         (SELECT source_updated_at FROM external_listings WHERE provider=ANY($1::text[])
           ORDER BY source_updated_at DESC NULLS LAST LIMIT 1) AS source_updated_at`, [providers]);
       const full=(await tx.query<{mode:'full'|'continuous'}>('SELECT mode FROM external_full_sync WHERE id=1 AND enabled')).rows[0];

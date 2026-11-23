@@ -27,6 +27,17 @@ class FirstPartyAnalytics(unittest.TestCase):
                 self.assertNotIn(f"'{table}'", data.measurement_sql())
 
 
+class FirstPartySupplierFacets(unittest.TestCase):
+    def test_rebuildable_global_facets_data_is_excluded_from_first_party_backups(self):
+        table = 'external_catalog_global_facets'
+        options = data.dump_options()
+        self.assertIn(f'--exclude-table-data=public.{table}', options)
+        self.assertNotIn(f'--exclude-table=public.{table}', options)
+        self.assertIn(f"'{table}'", data._validate_supplier_tables_sql())
+        self.assertIn(f"'{table}'", data.measurement_sql())
+        self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
+
+
 class FirstPartyPixelSettings(unittest.TestCase):
     def test_supplier_settings_are_staged_and_staff_settings_remain_in_the_dump(self):
         options = data.dump_options()
@@ -36,6 +47,16 @@ class FirstPartyPixelSettings(unittest.TestCase):
         self.assertNotIn('--exclude-table-data=public.vehicle_pixel_settings', options)
         self.assertIn("'external_listing_pixel_settings'", data._validate_supplier_tables_sql())
         self.assertNotIn("'external_listing_pixel_settings'", data.measurement_sql())
+
+    def test_supplier_replay_schema_is_retained_without_replay_data(self):
+        options = data.dump_options()
+        for table in ('external_full_admission_replays', 'external_full_admission_replay_items'):
+            with self.subTest(table=table):
+                self.assertIn(f'--exclude-table-data=public.{table}', options)
+                self.assertNotIn(f'--exclude-table=public.{table}', options)
+                self.assertIn(f"'{table}'", data._validate_supplier_tables_sql())
+                self.assertIn(f"'{table}'", data.measurement_sql())
+                self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
 
     def test_every_saved_supplier_setting_anchors_its_listing_and_keeps_false_values(self):
         supplement = data._supplement_sql(True)

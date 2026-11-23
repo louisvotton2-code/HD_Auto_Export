@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
+import { chooseCatalogBrand } from './helpers/catalog-brand';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
 
 // OPS runs this against the isolated health-marked fixture, never against published inventory.
@@ -134,35 +135,100 @@ test('catalog pagination shows immediate local busy feedback, retains its cards 
   await expect(results.locator('[aria-current="page"]')).toHaveText('2');
 });
 
-test('a detail link reserves pending space, respects reduced motion and starts the destination at its heading', async ({ page }) => {
+test('a vehicle card opens a live document with no background detail prefetch', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/en/cars/?pageSize=2');
   const link = page.locator('[data-public-vehicle] h2 a').first();
   const destination = new URL((await link.getAttribute('href'))!, page.url());
-  const hint = link.locator('[role="status"]');
-  const before = await hint.evaluate(node => node.getBoundingClientRect().width);
-  expect(before).toBeGreaterThan(0);
-  let release: () => void = () => {};
-  const held = new Promise<void>(resolve => { release = resolve; });
-  let reads = 0;
-  await page.route(url => url.pathname === destination.pathname, async route => {
-    reads++;
-    await held;
-    await route.continue();
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === destination.pathname) requests.push(request.resourceType());
   });
-  // Public vehicle links deliberately do not prefetch live inventory in the background.
   await link.hover();
-  expect(reads).toBe(0);
+  expect(requests).toEqual([]);
+  const response = page.waitForResponse(response => response.url() === destination.href && response.request().isNavigationRequest());
+  await link.click();
+  expect((await response).status()).toBe(200);
+  expect(requests).toEqual(['document']);
+  await expect(page.locator('[data-public-vehicle-detail]')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test('browser Back and the detail return link preserve a filtered and paginated catalog', async ({ page, request }) => {
+  await setPublicFixtureState(request, { catalogSampleCount: 26 });
+  await page.goto('/en/cars/?pageSize=2');
+  const form = page.locator('main form').first();
+  await chooseCatalogBrand(form, 'alpha');
+  await form.locator('select[name="sort"]').selectOption('price_asc');
+  await form.locator('[type="submit"]').last().click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('make')).toBe('alpha');
+  await page.locator('#catalog-results a[rel="next"]').click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('page')).toBe('2');
+  await expect(page.locator('#catalog-results [aria-current="page"]')).toHaveText('2');
+  const original = new URL(page.url());
+  expect(original.searchParams.get('sort')).toBe('price_asc');
+  expect(original.searchParams.get('pageSize')).toBe('2');
+  const filtered = original.pathname + original.search;
+  const cards = page.locator('[data-public-vehicle] h2 a');
+  const first = await cards.first().getAttribute('href');
+  await cards.first().click();
+  await expect(page.locator('[data-public-vehicle-detail]')).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(original.href);
+  await expect(cards.first()).toHaveAttribute('href', first!);
+  await expect(page.locator('#catalog-results [aria-current="page"]')).toHaveText('2');
+  await expect(page.locator('select[name="make"]')).toHaveValue('alpha');
+  await cards.first().click();
+  const back = page.locator('[data-public-vehicle-detail] a[href^="/en/cars/?"]').first();
+  await expect(back).toHaveAttribute('href', filtered);
+  await back.click();
+  await expect(cards.first()).toHaveAttribute('href', first!);
+  await expect(page.locator('#catalog-results [aria-current="page"]')).toHaveText('2');
+  await expect(page.locator('select[name="make"]')).toHaveValue('alpha');
+});
+
+test('an already rendered catalog card cannot open a withdrawn detail', async ({ page, request }) => {
+  await setPublicFixtureState(request, { futurePublished: true });
+  await page.goto('/en/cars/');
+  const staleCard = page.locator('[data-public-vehicle="fixture_future"] h2 a');
+  await expect(staleCard).toBeVisible();
+  await setPublicFixtureState(request, { futureArchived: true });
+  const detail = page.waitForResponse(response => response.request().isNavigationRequest() && response.url().endsWith('/en/cars/fixture_future/'));
+  await staleCard.click();
+  expect((await detail).status()).toBe(404);
+  await expect(page.locator('[data-public-vehicle-detail]')).toHaveCount(0);
+});
+
+test('a restored detail hides old facts during revalidation and keeps them hidden on failure', async ({ page }) => {
+  await page.goto('/en/cars/fixture_car_1/');
+  const detail = page.locator('[data-public-vehicle-detail]');
+  await expect(detail).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+  const isDetailApi = (url: URL) => url.pathname === '/api/v1/vehicles/fixture_car_1/';
+  let release = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(isDetailApi, async route => {
+    await held;
+    await route.fulfill({ status: 503, json: {} });
+  });
   try {
-    await link.click();
-    await expect(hint).toHaveAttribute('data-link-pending', 'true');
-    expect(await hint.evaluate(node => node.getBoundingClientRect().width)).toBe(before);
-    await expect(hint.locator(':scope > span[aria-hidden="true"]')).toHaveCSS('animation-name', 'none');
+    const requested = page.waitForRequest(request => isDetailApi(new URL(request.url())));
+    await page.evaluate(() => {
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await requested;
+    await expect(detail).not.toBeVisible();
   } finally {
     release();
   }
-  await expect(page.locator('[data-public-vehicle-detail]')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.getByTestId('public-vehicle-unavailable')).toBeVisible();
+  const status = page.getByTestId('public-resource-status');
+  await expect(status.getByRole('button')).toBeVisible();
+  await expect(detail).not.toBeVisible();
+  await page.unroute(isDetailApi);
+  await status.getByRole('button').click();
+  await expect(detail).toBeVisible();
 });
 
 test('route skeletons do not change missing vehicle or invalid catalog queries into streamed success responses', async ({ request }) => {

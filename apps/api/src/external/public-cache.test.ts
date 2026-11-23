@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { ApiError } from '../errors.js';
 import { PublicCatalogCache, readPublicCatalogRevision, type PublicCatalogRevision } from './public-cache.js';
@@ -73,7 +76,9 @@ test('an offset refresh shares the original load slot and neither stores data no
     let loads=0,proofs=0;
     const store=new Store();
     const cache=new PublicCatalogCache({namespace:'hd:offset-proof',maxConcurrentLoads:1}, {readRevision:async()=>current,store,now:()=>now});
-    const read=cache.getOffsetListSnapshot({},async()=>{
+    const sourceBudgets:Array<{deadline:number;signal:AbortSignal}>=[];
+    const read=cache.getOffsetListSnapshot({},async (deadline,signal)=>{
+      sourceBudgets.push({deadline,signal});
       assert.equal(cache.metrics().activeLoads,1);
       const observed=current;
       current={...current,revision:String(++loads+1)};
@@ -92,6 +97,9 @@ test('an offset refresh shares the original load slot and neither stores data no
       assert.equal(result.offsetSnapshot?.fx?.version,fx.version);
     }
     assert.equal(loads,2);
+    assert.ok(Number.isFinite(sourceBudgets[0]?.deadline));
+    assert.equal(sourceBudgets[0]!.deadline,sourceBudgets[1]!.deadline);
+    assert.equal(sourceBudgets[0]!.signal,sourceBudgets[1]!.signal);
     assert.equal(proofs,conflict==='fx-changed'?0:1);
     assert.equal(cache.metrics().activeLoads,0);
     assert.equal(cache.metrics().uncachedListLoads,conflict?0:1);
@@ -363,6 +371,117 @@ test('negotiated internal entries retain their absolute Redis lifetime without r
   assert.equal(replica.metrics().redisHits,1);
   now+=280_000;
   assert.equal((await read(cache,2)).value.load,4);
+});
+
+test('browse hits read only emergency generation and preserve original 600-second expiry across caches',async()=>{
+  let now=Date.parse('2026-11-23T00:00:00Z');
+  const store=new Store();
+  const checks:string[]=[];
+  let catalog=version(),generation=version(),calls=0;
+  const options={namespace:'hd:browse',maxEntries:64};
+  const dependencies={readRevision:async(_usd:boolean,scope:string)=>{
+    checks.push(scope);
+    return scope==='browse'?generation:catalog;
+  },store,now:()=>now};
+  const writer=new PublicCatalogCache(options,dependencies),reader=new PublicCatalogCache(options,dependencies);
+  const load=async()=>({value:{count:++calls}});
+  const query={locale:'zh',q:'海狮',page:2};
+  const first=await writer.getBrowseSnapshot('list',query,load);
+  assert.equal(Date.parse(first.expiresAt)-Date.parse(first.generatedAt),600_000);
+  assert.equal(store.ttls[0],600_000);
+  now+=597_000;
+  for(let i=2;i<=76;i++) {
+    catalog=version(String(i));
+    const hit=await reader.getBrowseSnapshot('list',query,load);
+    assert.deepEqual(hit,first);
+  }
+  assert.equal(reader.metrics().redisHits,1);
+  assert.deepEqual([...new Set(checks)],['browse']);
+  now+=3_000;
+  assert.equal((await reader.getBrowseSnapshot('list',query,load)).value.count,2);
+  const updated=await reader.getBrowseSnapshot('list',query,load);
+  generation=version('2');
+  const replaced=await writer.getBrowseSnapshot('list',query,load);
+  assert.notEqual(replaced.generation,updated.generation);
+  assert.equal(replaced.value.count,3);
+  assert.equal(await writer.currentBrowseGeneration(),replaced.generation);
+  assert.equal(await reader.currentBrowseGeneration(),replaced.generation);
+  assert.deepEqual([...new Set(checks)],['browse']);
+});
+
+test('browse rejects pre-hide fills, keeps signed-media and FX cutoffs, and fails closed without the generation',async()=>{
+  const now=Date.parse('2026-11-23T00:00:00Z');
+  let generation=version(),broken=false;
+  const cache=new PublicCatalogCache({namespace:'hd:browse'},{readRevision:async()=>{
+    if(broken)throw new Error('private db failure');
+    return generation;
+  },now:()=>now});
+  let loads=0;
+  const result=await cache.getBrowseSnapshot('home',{},async()=>{
+    loads++;
+    if(loads===1) {
+      generation=version('2');
+      return {value:{items:[{id:'hidden'}]},expiresAt:now+30_000};
+    }
+    return {value:{items:[{id:'visible',remote:{expiresAt:new Date(now+60_000).toISOString()}}]},expiresAt:now+45_000};
+  });
+  assert.equal(loads,2);
+  assert.deepEqual(result.value.items.map(item=>item.id),['visible']);
+  assert.equal(result.generation,await cache.currentBrowseGeneration());
+  assert.equal(Date.parse(result.expiresAt),now+45_000);
+  broken=true;
+  await assert.rejects(cache.getBrowseSnapshot('home',{},async()=>({value:{items:[]}})),{status:503,reason:'revision-read'});
+});
+
+test('browse discards an enclosed hold during a cold fill and an in-flight Redis hit',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'hd-browse-fence-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const file=join(directory,'generation');
+  const active='a'.repeat(32);
+  function write(value:string) {
+    writeFileSync(file+'.new',value+'\n',{mode:0o644});
+    renameSync(file+'.new',file);
+  }
+  write(active);
+  const store=new Store();
+  const options={namespace:'hd:browse-fence',browseGenerationFile:file};
+  const dependencies={store,readRevision:async()=>version()};
+  const writer=new PublicCatalogCache(options,dependencies);
+  const fixture={value:{items:[{id:'old'}]}};
+  const old=await writer.getBrowseSnapshot('home',{},async()=>fixture);
+  const enteredFill=deferred<void>(), finishFill=deferred<void>();
+  const pendingFill=writer.getBrowseSnapshot('list',{},async()=>{
+    enteredFill.resolve();
+    await finishFill.promise;
+    return fixture;
+  });
+  await enteredFill.promise;
+  write('hold-'+active);
+  finishFill.resolve();
+  await assert.rejects(pendingFill,{status:503,reason:'browse-fence'});
+  await assert.rejects(writer.currentBrowseGeneration(),{status:503,reason:'browse-fence'});
+  assert.equal(store.values.size,1);
+
+  const next='b'.repeat(32);
+  write(next);
+  const ready=await writer.getBrowseSnapshot('home',{},async()=>({value:{items:[]}}));
+  assert.deepEqual(ready.value.items,[]);
+  assert.notEqual(ready.generation,old.generation);
+  assert.equal(ready.generation,await writer.currentBrowseGeneration());
+  const readStarted=deferred<void>(), readDone=deferred<void>();
+  const get=store.get.bind(store);
+  store.get=async key=>{
+    const hit=await get(key);
+    readStarted.resolve();
+    await readDone.promise;
+    return hit;
+  };
+  const replica=new PublicCatalogCache(options,dependencies);
+  const pendingHit=replica.getBrowseSnapshot('home',{},async()=>assert.fail('Expected the old Redis hit'));
+  await readStarted.promise;
+  write('hold-'+next);
+  readDone.resolve();
+  await assert.rejects(pendingHit,{status:503,reason:'browse-fence'});
 });
 
 test('internal facet lifetime incorporates an omitted cover dependency and the active FX cutoff', async () => {

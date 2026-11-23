@@ -3,6 +3,7 @@
 import Link, { useLinkStatus } from 'next/link';
 import type { ComponentProps, ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
+import { isPublicVehicleDetailPath } from '@/shared/lib/public-vehicle-detail-path';
 import { Icon } from '@/shared/ui/icon';
 import { publicVehicleMessages } from '../public-messages';
 import styles from './public-vehicles.module.css';
@@ -17,14 +18,17 @@ function PendingLabel({ locale }: { locale: Locale }) {
   );
 }
 
-/** Inventory prefetch has a zero background budget; intent navigation gets immediate inline feedback. */
+/** Vehicle links read a fresh document. Browse links keep App Router navigation without prefetch. */
 export function PublicCatalogLink({
   locale,
+  href,
+  scroll,
   children,
   ...props
-}: Omit<ComponentProps<typeof Link>, 'children'> & { locale: Locale; children: ReactNode }) {
+}: Omit<ComponentProps<'a'>, 'children' | 'href'> & { locale: Locale; href: string; scroll?: boolean; children: ReactNode }) {
+  if (isPublicVehicleDetailPath(href)) return <a {...props} href={href}>{children}</a>;
   return (
-    <Link {...props} scroll={props.scroll ?? true} prefetch={false}>
+    <Link {...props} href={href} scroll={scroll ?? true} prefetch={false}>
       {children}
       <PendingLabel locale={locale} />
     </Link>

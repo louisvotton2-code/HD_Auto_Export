@@ -14,10 +14,10 @@ function stamp(country: CountryCode, overrides: Partial<CalculationInput> = {}) 
 
 describe('reference result stamp', () => {
   it.each([
-    ['2023-11', 'under3'],
-    ['2023-10', 'ruMiddle'],
-    ['2021-11', 'ruMiddle'],
-    ['2021-10', 'fivePlus'],
+    ['2023-11', 'upTo3'],
+    ['2023-10', 'kgPersonalMiddle'],
+    ['2021-11', 'kgPersonalMiddle'],
+    ['2021-10', 'over5'],
   ])('RU follows manufacture month %s', (manufactureDate, expected) => {
     const result = stamp('RU', { manufactureDate });
     expect(result.title.key).toBe('personalTariff');
@@ -33,36 +33,27 @@ describe('reference result stamp', () => {
   it('RU EV has its own schedule and does not imply personal recycling relief', () => {
     const result = stamp('RU', { powertrain: 'bev', displacementCc: '' });
     expect(result.title.key).toBe('electricSchedule');
-    expect(result.condition?.key).toBe('electric');
+    expect(result.condition?.key).toBe('standardRecycling');
     expect(result.tone).toBe('blue');
   });
 
-  it.each([
-    ['2019-10', 'upTo7'],
-    ['2019-09', 'over7'],
-  ])('KZ uses the inclusive 84-month boundary at %s', (manufactureDate, expected) => {
-    expect(stamp('KZ', { manufactureDate }).subtitle.key).toBe(expected);
+  it('shows the actual Kazakhstan declaration and its duty schedule', () => {
+    const personal = stamp('KZ', { manufactureDate: '2022-01' });
+    expect(personal.title.key).toBe('personalTariff');
+    expect(personal.subtitle.key).toBe('kgPersonalMiddle');
+    const bev = stamp('KZ', { powertrain: 'bev', kzDeclaration: 'goods' });
+    expect(bev.title.key).toBe('commonTariff');
+    expect(bev.condition?.key).toBe('goodsDeclaration');
+  });
+
+  it('marks the Kazakhstan luxury threshold from the actual assessed goods excise', () => {
+    const vehicle = { powertrain: 'bev', kzDeclaration: 'goods', transactionRate: '1' } as const;
+    expect(stamp('KZ', { ...vehicle, price: '77849999' }).title.key).toBe('commonTariff');
+    expect(stamp('KZ', { ...vehicle, price: '77850000' }).title.key).toBe('luxurySchedule');
   });
 
   it.each([
-    ['petrol', 'fuelSchedule', 'gold'],
-    ['bev', 'electric', 'blue'],
-    ['erev', 'seriesHybrid', 'blue'],
-  ] as const)('KZ changes for %s', (powertrain, expected, tone) => {
-    const result = stamp('KZ', { powertrain });
-    expect(result.condition?.key).toBe(expected);
-    expect(result.tone).toBe(tone);
-  });
-
-  it('KZ consumes the selected luxury charge, including its strict threshold', () => {
-    expect(stamp('KZ', { price: '77850000', transactionRate: '1' }).title.key).toBe('commonTariff');
-    expect(stamp('KZ', { price: '77850001', transactionRate: '1' }).title.key).toBe(
-      'luxurySchedule',
-    );
-  });
-
-  it.each([
-    ['new', '2025-10', 'newUnder12', 'green'],
+    ['new', '2025-11', 'newUnder12', 'green'],
     ['new', '2025-09', 'newOver12', 'green'],
     ['used', '2025-10', 'used', 'gold'],
     ['used', '2025-09', 'used', 'gold'],
@@ -81,7 +72,7 @@ describe('reference result stamp', () => {
   ])(
     'UZ recycling boundary at %s remains separate from new/used status',
     (manufactureDate, expected) => {
-      const result = stamp('UZ', { manufactureDate, condition: 'new' });
+      const result = stamp('UZ', { manufactureDate, manufactureDay: manufactureDate + '-23', condition: 'new', powertrain: 'hev' });
       expect(result.title.key).toBe('newOver12');
       expect(result.subtitle.key).toBe(expected);
     },
@@ -118,46 +109,33 @@ describe('reference result stamp', () => {
   );
 
   it.each([
-    ['2024-01', 'under3'],
-    ['2023-01', 'amMiddle'],
-    ['2020-01', 'amMiddle'],
-    ['2019-01', 'sevenPlus'],
-  ])('AM tariff age at %s', (manufactureDate, expected) => {
-    expect(stamp('AM', { manufactureDate }).subtitle.key).toBe(expected);
+    ['2024-01', 'upTo3', 2],
+    ['2022-01', 'kgPersonalMiddle', 4],
+    ['2016-01', 'over5', 6],
+    ['2011-01', 'over5', 12],
+    ['2010-01', 'over5', 24],
+  ] as const)('AM follows the tax result for %s', (manufactureDate, band, rate) => {
+    const receipt = stamp('AM', { manufactureDate });
+    expect(receipt.title.key).toBe('personalTariff');
+    expect(receipt.subtitle.key).toBe(band);
+    expect(receipt.condition).toEqual({ key: 'environmentRate', params: { rate } });
+  });
+
+  it('AM EV identifies VAT independently of the environmental and duty lines', () => {
+    expect(stamp('AM', { powertrain: 'bev', manufactureDate: '2021-01' }).subtitle.key).toBe('vat20');
+    const newer = stamp('AM', { powertrain: 'bev', manufactureDate: '2024-01' });
+    expect(newer.title.key).toBe('electricSchedule');
+    expect(newer.subtitle.key).toBe('vatExempt');
   });
 
   it.each([
-    ['2021-01', 'environmentNone'],
-    ['2020-01', 'environment2'],
-    ['2016-01', 'environment2'],
-    ['2015-01', 'environment10'],
-    ['2011-01', 'environment10'],
-    ['2010-01', 'environment20'],
-  ])('AM environmental age at %s', (manufactureDate, expected) => {
-    expect(stamp('AM', { manufactureDate }).condition?.key).toBe(expected);
-  });
-
-  it('AM hybrid suppresses the fuel-only environmental tier', () => {
-    expect(stamp('AM', { powertrain: 'hev', manufactureDate: '2010-01' }).condition?.key).toBe(
-      'environmentNone',
-    );
-  });
-
-  it('AM EV is explicitly an assumed relief scenario', () => {
-    const result = stamp('AM', { powertrain: 'bev' });
-    expect(result.title.key).toBe('electricReliefAssumed');
-    expect(result.condition?.key).toBe('environmentNone');
-    expect(result.tone).toBe('blue');
-  });
-
-  it.each([
-    ['individual', '2023-01', 'upTo3'],
+    ['individual', '2023-11', 'upTo3'],
     ['individual', '2022-01', 'kgPersonalMiddle'],
-    ['individual', '2021-01', 'kgPersonalMiddle'],
+    ['individual', '2021-11', 'kgPersonalMiddle'],
     ['individual', '2020-01', 'over5'],
-    ['company', '2023-01', 'upTo3'],
+    ['company', '2023-11', 'companyUnder3'],
     ['company', '2022-01', 'kgCompanyMiddle'],
-    ['company', '2019-01', 'kgCompanyMiddle'],
+    ['company', '2019-11', 'kgCompanyMiddle'],
     ['company', '2018-01', 'over7'],
   ] as const)('KG %s tariff age at %s', (importerType, manufactureDate, expected) => {
     const result = stamp('KG', { importerType, manufactureDate });
@@ -168,9 +146,9 @@ describe('reference result stamp', () => {
   });
 
   it.each([
-    ['bev', 'individual', '2020-01', 'electricStandard'],
-    ['erev', 'individual', '2020-01', 'electricStandard'],
-    ['bev', 'company', '2021-01', 'electricStandard'],
+    ['bev', 'individual', '2020-01', 'electricWithVat'],
+    ['erev', 'individual', '2020-01', 'electricWithVat'],
+    ['bev', 'company', '2021-11', 'electricStandard'],
     ['bev', 'company', '2020-01', 'electricWithVat'],
     ['erev', 'company', '2020-01', 'electricWithVat'],
   ] as const)(
@@ -190,9 +168,9 @@ describe('reference result stamp', () => {
       transactionRate: '1',
     });
     expect(regular.title.key).toBe('vat20');
-    expect(regular.subtitle.key).toBe('minimumValue');
+    expect(regular.subtitle.key).toBe('acceptedValue');
     expect(regular.condition?.key).toBe('registrationIncluded');
-    const luxury = stamp('AL', { displacementCc: '3000', price: '1000', transactionRate: '1' });
+    const luxury = stamp('AL', { seatCount: '7', displacementCc: '3000', price: '1000', transactionRate: '1' });
     expect(luxury.title.key).toBe('luxurySchedule');
     expect(luxury.condition?.key).toBe('annualTaxExtra');
   });
@@ -201,9 +179,14 @@ describe('reference result stamp', () => {
     expect(
       stamp('AL', { powertrain: 'bev', price: '4999999', transactionRate: '1' }).title.key,
     ).toBe('vat20');
-    const result = stamp('AL', { powertrain: 'bev', price: '5000000', transactionRate: '1' });
+    const result = stamp('AL', { powertrain: 'bev', price: '5000000', transactionRate: '1', alRegistrationValueAll: '5000000', seatCount: '7' });
     expect(result.title.key).toBe('luxurySchedule');
-    expect(result.subtitle.key).toBe('electricValue');
+    expect(result.subtitle.key).toBe('acceptedValue');
+  });
+
+  it('AL shows zero VAT only for a qualifying new, zero-km EV', () => {
+    expect(stamp('AL', { powertrain: 'bev', condition: 'new', mileageKm: '0' }).title.key).toBe('vatExempt');
+    expect(stamp('AL', { powertrain: 'bev', condition: 'new' }).title.key).toBe('vat20');
   });
 
   it.each(['RU', 'KZ', 'UZ', 'GE', 'AM', 'KG', 'AL'] as const)(

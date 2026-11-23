@@ -10,6 +10,14 @@ BE-I18N-01 已实现员工触发的中文源→英俄译文建议，保持已保
 
 架构见[后端架构](../../docs/开发/后端架构.md)，接口唯一说明见[车辆接口](../../docs/开发/车辆接口.md)，公共 schema 与样例见 [contracts](../../packages/contracts/README.md)。
 
+生产新官网与同源公开 API 使用 `https://hongdingauto.com`，`www` 跳到根域，`cars` 属于旧官网。正式发布按根域生成官网配置和 API 的 `ANALYTICS_ORIGINS`，并核对后台原域及可信 Origin。当前运行版本与切换证据见后端进度。
+
+### 供应商准入对账
+
+先独立核验完整供应商快照的隔离还原收据。将该隔离数据库通过 `ADMISSION_AUDIT_DATABASE_URL` 传给 `node dist/external/full-sync/admission-audit-cli.js`。参数为 `--database <还原库名>`、`--snapshot-id <CSV 快照 UUID>`、`--restore-as-of <收据 UTC 时间>`、`--restore-receipt <收据 SHA-256>` 和 `--checkpoint <私有绝对目录>`。可用 `--chunk-rows` 和 `--max-chunks` 限制单次扫描。退出码 2 表示未完成，按同一还原和检查点重复运行。检查点覆盖全部行后才产生精确 CSV 差集。结果另列还原时点前一小时的触顶拒绝，及同一时点改价、撤回待应用和此前公开挂牌待投影的数量与最老年龄。CLI 只读取回环隔离库，输出聚合证据。补准入和回放由 OPS 依据当前目标的容量裁决与正式清单执行。
+
+`apps/api/test/isolated/supplier-admission-audit.test.ts` 使用专用临时 PostgreSQL 实例单独运行。恢复对账需要数据库实例的 MVCC 视图保持静止，同一实例上的其他库并发写入也会使续扫保护生效。
+
 ## 本地启动
 
 日常由 BE 自行启动 `pnpm dev:api`，源码变化自动重启，不交 OPS 逐次构建部署。按 [统一本地开发分工](../../docs/README.md#本地开发与部署分工) 复用已准备的开发库／媒体；下面是首次配置示例，已有环境不要重复复制 `.env`、创建库或初始化。仅新迁移需要在开发库执行，不能指向生产数据。
@@ -214,6 +222,20 @@ node dist/external/full-sync/cli.js run --max-ticks 1
 node dist/external/full-sync/cli.js serve
 node dist/external/full-sync/cli.js control --action pause --version CURRENT_VERSION --actor EXISTING_ADMIN_ID --key IDEMPOTENCY_UUID
 ```
+
+### 正式清单外补录
+
+先应用签版迁移 0053 和已验证的并发预建索引。生产由 OPS 使用签版 Compose 的 `compose.replay-ops.yaml` 一次性服务 `full-replay-ops` 调用。它用原部署库凭据与非 root 身份，只连接现有数据库内网。保持 profile 默认关闭。按所用正式组合加上该 overlay，用 `run --rm -T --no-deps --pull never`，保留服务定义的入口和权限。
+
+| 操作 | 服务名后的参数 | 只读挂载 |
+| --- | --- | --- |
+| 核对范围 | `full-sync replay-check --plan /private/replay/plan.json` | 原计划 |
+| 创建计划 | `full-sync replay-prepare --actor STAFF_ID --plan /private/replay/plan.json` | 原计划、`/private/replay/capacity.json`、`/private/replay/checked.json` |
+| 状态核对 | `full-sync replay-status --replay-id PLAN_UUID` | 仅服务自带的 DB secret |
+
+计划和回执由 OPS 从宿主私有目录以应用 UID 可读的 0600 单行文件只读挂载。`capacity.json` 使用 OPS 计算的原始 `replay-prospective-capacity-v1` 字节，计划的 `capacityReceipt` 保存其 SHA-256。`checked.json` 使用 OPS `check-basis` 生成的 `replay-prewrite-checked-v1`，与同版 `replay-check`、事件集合及原容量证明匹配。实际准备在现行观察与原生回执同时有效时执行，首批最多 25 个精确事件。入口复核已购账号余额覆盖三语与核准重试、预测磁盘占用、同代目标、管理员、worker 围栏和备份门禁。仍由恢复后的唯一 worker 根据新目标的原生容量裁决调度，保留两个同步游标与历史拒绝。
+
+准备操作中断时，先通过原计划 UUID、实际数据库上限和清单目标核对事务结果，再恢复同一版 worker。仅回退官网或 API 时可保留兼容的新版 worker。若要退回旧 worker，按运维回退文件持有发布与备份锁、停止 worker，并验证无活动计划、残留补录工作或未准入占位成员。保留补录表和收据。互斥条件未满足时，保持使用能识别补录代际的 worker。
 
 `configure --mode full` 执行一次全量；`continuous` 在首次全量后继续5分钟增量、每日完整CSV对账、每日账户/字典和7天详情轮巡。`run`有界执行后退出，`serve`持续调度，单进程持有数据库锁78291333；冲突退出75，命令失败1，run未完成2，成功/状态读取0。退出0不是全量完成的证明：须核状态、失败和待补齐计数。管理接口的暂停仅暂停重任务；读取和明确撤回继续工作，恢复不创建任意来源任务。
 

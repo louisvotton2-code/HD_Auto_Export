@@ -1,3 +1,5 @@
+import { usesAssessedPrice } from './page-input';
+import { powerBasis } from './power-basis';
 import type { CountryRecord } from '../config/countries';
 import { needsTajikTariffInputs, TAJIK_TARIFF_FIELDS } from '../core/tajik-input';
 import type { CalculationInput, CalculationResult } from '../core/types';
@@ -40,12 +42,13 @@ export function getCopyQuoteFacts(
       value: { namespace: valueNamespace, key: value },
     });
   const electric = input.powertrain === 'bev';
-  if (country.needsPrice) literal(country.code === 'TJ' ? 'tjCustomsValue' : 'price', `${input.price} ${input.currency}`);
+  if (country.needsPrice) literal(usesAssessedPrice(country.code, input.powertrain) ? 'tjCustomsValue' : 'price', `${input.price} ${input.currency}`);
   translated('powertrain', input.powertrain);
   if (!electric && !(country.code === 'KG' && input.powertrain === 'erev'))
     literal('displacement', input.displacementCc);
-  if (country.needsPower) literal(electric ? 'electricPower' : 'power', input.powerHp);
-  if (country.needsManufactureDate) literal('manufactureDate', input.manufactureDate);
+  if (country.needsPower) literal(powerBasis(input.powertrain), input.powerHp);
+  if (country.needsManufactureDate) literal('manufactureDate', input.manufactureYear ?? input.manufactureDay ?? input.manufactureDate);
+  literal('customsDate', input.customsDate);
   if (country.code === 'UZ')
     translated('condition', input.condition === 'new' ? 'newVehicle' : 'usedVehicle');
   if (country.needsSteering) translated('steering', input.steering);

@@ -94,6 +94,8 @@ export async function verifiedSnapshotTarget(tx:PoolClient,snapshotId:string) {
       AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state i
        WHERE i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id
          AND i.withdrawn AND i.business_at>=snapshot.generated_at)
+      AND NOT EXISTS(SELECT 1 FROM external_full_members m WHERE m.source=s.source AND m.external_id=s.external_id
+        AND m.state='withdrawn' AND m.business_at>=snapshot.generated_at)
     ORDER BY s.row_number LIMIT greatest(0,a.admission_limit-a.admitted_count)
    ) eligible
   ) END AS target_rows FROM external_formal_admission_state a

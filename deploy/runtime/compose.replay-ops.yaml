@@ -1,0 +1,37 @@
+# Apply after the production overlay. Invoke the one-shot service with an
+# explicitly validated release and the private files required by the command.
+services:
+  full-replay-ops:
+    image: hd-auto-api:${RELEASE_ID:?use the verified main release}
+    pull_policy: never
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    profiles: [full-replay-ops]
+    user: '${APP_UID:?use the non-root worker UID}:${APP_GID:?use the non-root worker GID}'
+    init: true
+    entrypoint: [node, /app/production/worker-entrypoint.mjs]
+    command: [full-sync, replay-status]
+    restart: 'no'
+    read_only: true
+    tmpfs: ['/tmp:mode=1777,size=16777216']
+    cpus: 0.5
+    mem_limit: 384m
+    pids_limit: 48
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+      HD_DATABASE_NAME: ${HD_DATABASE_NAME:?use the active production database}
+      HD_DEPLOYMENT_ENV: production
+      HD_RELEASE_ID: ${RELEASE_ID}
+      HD_FULL_REPLAY_OPS: 'true'
+      DB_POOL_MAX: '2'
+      EXTERNAL_SYNC_MODE: 'off'
+      TRANSLATION_PROVIDER: disabled
+    secrets:
+      - {source: release_app_db_password, target: app_db_password}
+    networks:
+      default: {}
+    logging:
+      driver: local
+      options: {max-size: '1m', max-file: '2'}

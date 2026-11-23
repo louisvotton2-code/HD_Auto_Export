@@ -38,8 +38,14 @@ def validate_operator(values):
     return uid,gid
 
 def validate_domains(values):
-    if values.get('WEB_SITE_ORIGIN') != 'https://cars.hongdingauto.com' or values.get('ADMIN_ORIGIN') != 'https://admin.hongdingauto.com' or values.get('SITE_ORIGIN') != values.get('WEB_SITE_ORIGIN'):
+    apex_origin = 'https://hongdingauto.com'
+    website_origin = values.get('WEB_SITE_ORIGIN')
+    if (website_origin not in ('https://cars.hongdingauto.com', apex_origin)
+            or values.get('ADMIN_ORIGIN') != 'https://admin.hongdingauto.com'
+            or values.get('SITE_ORIGIN') != website_origin):
         raise ValueError('Two-domain origins must match the configured HTTPS hosts')
+    if website_origin == apex_origin and values.get('ANALYTICS_ORIGINS') != website_origin:
+        raise ValueError('Apex analytics requires the exact canonical website origin')
 
 def scale_database(values, project):
     name=values.get('OPS_EXT_SCALE_DATABASE','')

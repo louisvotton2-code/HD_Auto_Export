@@ -33,7 +33,7 @@ MEDIA_VERSION=base64.urlsafe_b64encode(hashlib.sha256(b''.join(
     hashlib.sha256(body).digest() for _,body in MEDIA_REPRESENTATIONS.values())).digest()).decode().rstrip('=')
 VERSIONED_MEDIA_PATH=MEDIA_PATH+'_'+MEDIA_VERSION
 CACHE_CONTROL_HEADERS=['X-HD-Cache-Protocol', 'X-HD-Catalog-Scope', 'X-HD-HTML-Key', 'X-HD-HTML-Nonce', 'X-HD-HTML-Proof',
-                       'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket']
+                       'X-HD-Render-Target', 'X-HD-Public-HTML-Render-Ticket', 'X-HD-Browse-Generation']
 class Origin(http.server.BaseHTTPRequestHandler):
     calls=[]
     media_visible=True
@@ -196,6 +196,15 @@ class DomainCacheHeaders(unittest.TestCase):
             asset.write_bytes(body)
         subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=cars.hongdingauto.com','-addext','subjectAltName=DNS:cars.hongdingauto.com,DNS:admin.hongdingauto.com','-keyout',str(r/'key.pem'),'-out',str(r/'cert.pem')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         (r/'key.pem').chmod(0o600)
+        for name, hosts in (('apex', ('hongdingauto.com', 'www.hongdingauto.com')),
+                            ('admin', ('admin.hongdingauto.com',))):
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                            '-subj', f'/CN={hosts[0]}', '-addext', 'subjectAltName=' + ','.join(f'DNS:{host}' for host in hosts),
+                            '-keyout', str(r/f'{name}-key.pem'), '-out', str(r/f'{name}-cert.pem')],
+                           check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        challenge = r/'acme/.well-known/acme-challenge'
+        challenge.mkdir(parents=True)
+        (challenge/'fixture').write_text('fixture-acme-token')
         cls.backend=UnixHttp(str(r/'origin.sock'),Origin);cls.thread=threading.Thread(target=cls.backend.serve_forever,daemon=True);cls.thread.start();cls.addClassCleanup(cls.backend.server_close);cls.addClassCleanup(cls.backend.shutdown)
         cls.cache=UnixHttp(str(r/'cache.sock'),CacheOrigin)
         threading.Thread(target=cls.cache.serve_forever,daemon=True).start()
@@ -220,15 +229,22 @@ class DomainCacheHeaders(unittest.TestCase):
         def fixture_config(source, http_socket, tls_socket):
             return (source.replace('/etc/nginx/hd-domains',str(includes))
                     .replace('/run/tls/current/server.crt',str(r/'cert.pem')).replace('/run/tls/current/server.key',str(r/'key.pem'))
+                    .replace('/run/tls/apex/current/server.crt',str(r/'apex-cert.pem')).replace('/run/tls/apex/current/server.key',str(r/'apex-key.pem'))
+                    .replace('/run/tls/admin/current/server.crt',str(r/'admin-cert.pem')).replace('/run/tls/admin/current/server.key',str(r/'admin-key.pem'))
                     .replace('http://api:3320','http://hd_test_origin').replace('http://web:3000','http://hd_test_origin')
                     .replace('http://html-cache-blue:3010','http://hd_test_cache')
                     .replace('root /srv;',f'root {r};').replace('root /srv/hd-assets;',f'root {r}/retained;')
+                    .replace('root /srv/acme;',f'root {r}/acme;')
                     .replace('listen 8080',f'listen unix:{r}/{http_socket}').replace('listen 8443',f'listen unix:{r}/{tls_socket}'))
         config=fixture_config((HERE/'nginx-domains.conf').read_text().replace(marker,route),'http.sock','tls.sock')
         # The second pair of listeners shares the same HTTP-scope maps and log formats.
         generated=active[active.index('\nserver {')+1:]
         generated=generated.replace('http://api-blue:3320','http://api:3320').replace('http://web-blue:3000','http://web:3000')
         generated=fixture_config(generated,'slot-http.sock','slot-tls.sock')
+        apex=slots.gateway_files(HERE,**args,website_origin='https://hongdingauto.com',
+                                 html_cache_host='html-cache-blue',browse_documents=True)['default.conf']
+        apex=apex[apex.index('\nserver {')+1:].replace('http://api-blue:3320','http://api:3320').replace('http://web-blue:3000','http://web:3000')
+        apex=fixture_config(apex,'apex-http.sock','apex-tls.sock')
         # Keep the production edge protections; only fixture paths and transport differ.
         edge=(HERE/'nginx-edge.conf').read_text().replace('/etc/nginx/hd-analytics-geo/country.conf',
                                                          str(HERE/'production/analytics-geo-disabled.conf'))
@@ -243,7 +259,7 @@ class DomainCacheHeaders(unittest.TestCase):
         subprocess.run([NGINX,'-t','-e',str(r/'single.log'),'-p',str(r)+'/', '-c',str(single_config)],
                        check=True,capture_output=True,text=True)
         types='types { application/javascript js; text/css css; font/woff2 woff2; image/svg+xml svg; image/webp webp; }'
-        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\n'+types+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n'+generated+'\n}\n'
+        full=rootuser+f'worker_processes 1;\npid {r}/nginx.pid;\nevents {{ worker_connections 256; }}\nhttp {{ client_body_temp_path {r}/body; proxy_temp_path {r}/proxy; upstream hd_test_origin {{ server unix:{r}/origin.sock; }} upstream hd_test_cache {{ server unix:{r}/cache.sock; }}\n'+edge+'\n'+types+'\nadd_header X-HD-Test-Family $hd_edge_family always;\nadd_header X-HD-Test-Limit $limit_req_status always;\n'+config+'\n'+generated+'\n'+apex+'\n}\n'
         (r/'nginx.conf').write_text(full);cls.log=(r/'nginx.log').open('wb');cls.addClassCleanup(cls.log.close);cls.process=subprocess.Popen([NGINX,'-e',str(r/'bootstrap.log'),'-p',str(r)+'/', '-c',str(r/'nginx.conf'),'-g','daemon off;'],stdout=cls.log,stderr=cls.log)
         def stop():
             if cls.process.poll() is None:cls.process.terminate();cls.process.wait(timeout=8)
@@ -251,16 +267,19 @@ class DomainCacheHeaders(unittest.TestCase):
         for _ in range(80):
             if cls.process.poll() is not None:
                 raise RuntimeError((r/'nginx.log').read_text()+(r/'bootstrap.log').read_text())
-            if (r/'tls.sock').is_socket() and (r/'slot-tls.sock').is_socket():break
+            if all((r/name).is_socket() for name in ('tls.sock','slot-tls.sock','apex-tls.sock')):break
             time.sleep(.05)
         else:raise RuntimeError('Isolated nginx socket did not start')
-    def request(self,host,path,headers=None,tls=True,method='GET',paced=True,body=None,slot=False):
+    def request(self,host,path,headers=None,tls=True,method='GET',paced=True,body=None,slot=False,apex=False):
         # Exercise routing without overrunning the unchanged 8r/s production
         # SSR limiter as the independent boundary cases share one Unix peer.
         if paced:time.sleep(.14)
         r=self.root;s=socket.socket(socket.AF_UNIX);s.settimeout(5)
-        s.connect(str(r/(('slot-' if slot else '')+('tls.sock' if tls else 'http.sock'))))
-        if tls:s=ssl.create_default_context(cafile=str(r/'cert.pem')).wrap_socket(s,server_hostname=host)
+        prefix = 'apex-' if apex else ('slot-' if slot else '')
+        s.connect(str(r/(prefix+('tls.sock' if tls else 'http.sock'))))
+        if tls:
+            cert = 'admin-cert.pem' if apex and host=='admin.hongdingauto.com' else ('apex-cert.pem' if apex else 'cert.pem')
+            s=ssl.create_default_context(cafile=str(r/cert)).wrap_socket(s,server_hostname=host)
         with s:
             values={'Host':host,'Connection':'close',**(headers or {})}
             if body is not None:
@@ -273,6 +292,52 @@ class DomainCacheHeaders(unittest.TestCase):
                 if values:=res.headers.get_all(name):
                     headers[name.lower()]=', '.join(values)
             return res.status,headers,res.read()
+
+    def test_apex_browse_sidecar_routes_directory_but_keeps_live_detail_and_public_json(self):
+        host = 'hongdingauto.com'
+        directory = '/ru/cars/?make=byd&page=2'
+        detail = '/ru/cars/vehicle-for-live-detail/'
+        data = '/api/v1/vehicles?locale=ru&page=2'
+        Origin.calls.clear()
+        CacheOrigin.calls.clear()
+        incoming = {'Accept': 'text/html', 'X-HD-Browse-Generation': 'forged'}
+        status, headers, body = self.request(host, directory, incoming, apex=True)
+        self.assertEqual((status, headers['cache-control']), (200, 'no-store'))
+        self.assertNotIn('x-hd-browse-generation', headers)
+        self.assertNotIn('X-HD-Browse-Generation', json.loads(body)['headers'])
+        self.assertEqual(self.request(host, detail, incoming, apex=True)[0], 200)
+        self.assertEqual(self.request(host, data, apex=True)[0], 200)
+        self.assertEqual(self.request(host, '/internal/public-html/browse/', incoming, apex=True)[0], 404)
+        self.assertEqual(CacheOrigin.calls, [directory])
+        self.assertEqual(Origin.calls, [detail, data])
+
+    def test_apex_profile_uses_independent_tls_redirects_and_preserves_public_boundaries(self):
+        apex, www, admin = 'hongdingauto.com', 'www.hongdingauto.com', 'admin.hongdingauto.com'
+        path = '/zh/cars/?q=%2Fcars&year=2020'
+        for host in (apex, www):
+            status, headers, _ = self.request(host, path, tls=False, apex=True)
+            self.assertEqual((status, headers['location']), (308, 'https://'+apex+path))
+            status, _, token = self.request(host, '/.well-known/acme-challenge/fixture', tls=False, apex=True)
+            self.assertEqual((status, token), (200, b'fixture-acme-token'))
+        status, headers, _ = self.request(www, path, apex=True)
+        self.assertEqual((status, headers['location'], headers['strict-transport-security']),
+                         (308, 'https://'+apex+path, 'max-age=300'))
+        for sni, host in ((apex, www), (www, apex), (apex, admin)):
+            status, headers, _ = self.request(sni, path, {'Host':host}, apex=True)
+            self.assertEqual(status, 421)
+            self.assertNotIn('strict-transport-security', headers)
+        self.assertEqual(self.request(admin, '/admin/', apex=True)[0], 200)
+        self.assertEqual(self.request(apex, '/api/v1/admin/staff', apex=True)[0], 404)
+        analytics = '/api/v1/analytics/events'
+        for host in (apex, 'cars.hongdingauto.com', www):
+            status, headers, body = self.request(apex, analytics, {'Content-Type':'application/json', 'Origin':'https://'+host},
+                                                 method='POST', body=b'{}', apex=True)
+            self.assertEqual(status, 200 if host==apex else 403)
+            if host==apex:
+                self.assertEqual(headers['cache-control'], 'no-store')
+                forwarded = json.loads(body)['headers']
+                self.assertEqual(forwarded['Origin'], 'https://'+apex)
+                self.assertEqual(forwarded['Host'], apex)
     def test_hsts_is_scoped_to_matching_tls_hosts_and_preserves_response_policy(self):
         public='cars.hongdingauto.com'
         admin='admin.hongdingauto.com'

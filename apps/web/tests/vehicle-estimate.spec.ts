@@ -62,7 +62,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`/${locale}/cars/fixture_car_1/`);
     const budget = page.getByTestId('vehicle-import-estimate');
-    await expect(budget.locator('[name^="customsDate"]')).toHaveCount(0);
+    await expect(budget.locator('[name="customsDateDay"]')).toBeVisible();
     const manufacture = budget.locator('[name="manufactureDate"]');
     await expect(manufacture).toHaveValue('');
     await expect(manufacture).not.toHaveAttribute('aria-describedby');
@@ -95,27 +95,35 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
   });
 }
 
-test('verified 265 kW engine power prefills the inline and full calculators', async ({ page, request }) => {
+test('a PHEV engine rating stays visible while the Russian calculator requires documented hybrid power', async ({ page, request }) => {
   await setPublicFixtureState(request, { estimateEnginePower: true });
   await page.goto('/zh/cars/fixture_car_1/');
-  const budget = page.getByTestId('vehicle-import-estimate');
-  const power = budget.locator('[name="powerHp"]');
+  const inline = page.getByTestId('vehicle-import-estimate');
+  await chooseVehicleDestination(inline, 'RU');
   await expect(page.locator('[data-vehicle-fact="engineKw"] dd')).toHaveText('265 kW');
   await expect(page.locator('[data-vehicle-fact="systemKw"] dd')).toHaveText('395 kW');
-  await expect(power).toHaveValue('360.2993');
-  await budget.getByTestId('vehicle-full-calculator').click();
+  const power = inline.locator('[name="powerHp"]');
+  await expect(power).toHaveValue('');
+  await power.fill('160');
+  await inline.getByTestId('vehicle-full-calculator').click();
+  const fullPower = page.locator('[name="powerHp"]');
+  await expect(fullPower).toHaveValue('160');
+  await page.reload();
+  await expect(fullPower).toHaveValue('160');
+  await page.locator('#powertrainDetail').selectOption('bev');
+  await expect(fullPower).toHaveValue('');
+});
+
+test('a combustion 265 kW engine prefills 360.2993 hp through detail, standalone and refresh', async ({ page, request }) => {
+  await setPublicFixtureState(request, { estimateEnginePower: 'petrol' });
+  await page.goto('/zh/cars/fixture_car_1/');
+  const inline = page.getByTestId('vehicle-import-estimate');
+  await chooseVehicleDestination(inline, 'RU');
+  await expect(inline.locator('[name="powerHp"]')).toHaveValue('360.2993');
+  await inline.getByTestId('vehicle-full-calculator').click();
   await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
   await page.reload();
   await expect(page.locator('[name="powerHp"]')).toHaveValue('360.2993');
-  await page.locator('#powertrainDetail').selectOption('bev');
-  await expect(page.locator('[name="powerHp"]')).toHaveValue('');
-  await page.locator('[name="powerHp"]').fill('160');
-  await page.locator('#powertrainDetail').selectOption('phev');
-  await page.locator('#powertrainDetail').selectOption('bev');
-  await expect(page.locator('[name="powerHp"]')).toHaveValue('160');
-  await page.goto('/zh/cars/fixture_car_1/');
-  await budget.locator('[name="powertrain"]').selectOption('bev');
-  await expect(power).toHaveValue('');
 });
 
 test('the estimate prefers an authoritative displacement and does not prefill machine-only evidence', async ({ page, request }) => {
@@ -159,7 +167,7 @@ for (const [code, slug] of Object.entries({
     await expect(page).toHaveURL(new RegExp(`/en/calculator/${slug}/$`));
     await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
     expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
-    await expect(page.locator('#customsDate')).toHaveCount(0);
+    await expect(page.locator('#customsDate-day')).toBeVisible();
     await page.reload();
     await expect.poll(async () => compact(await page.getByTestId('total').innerText())).toBe(total);
     expect(compact(await page.getByTestId('total-usd').innerText())).toBe(usd);
@@ -186,16 +194,19 @@ test('unknown choices stay empty through the explicit seed, storage and reload',
 });
 
 test('a quote link opened after Shanghai midnight keeps vehicle facts and uses the new visit date', async ({ page }) => {
-  await page.clock.setFixedTime(new Date('2026-12-31T15:59:59Z'));
+  // December 17/18 Shanghai maps to December 31/January 1 for the unedited default.
+  await page.clock.setFixedTime(new Date('2026-12-17T15:59:59Z'));
   await page.goto('/en/cars/fixture_car_1/');
   const budget = page.getByTestId('vehicle-import-estimate');
   await complete(budget, 'RU');
+  await expect(budget.locator('[name="customsDate"]')).toHaveValue('2026-12-31');
   const href = await budget.getByTestId('vehicle-full-calculator').getAttribute('href');
   expect(href).toContain('#hd-estimate=');
-  await page.clock.setFixedTime(new Date('2026-12-31T16:00:00Z'));
+  await page.clock.setFixedTime(new Date('2026-12-17T16:00:00Z'));
   await page.goto(href!);
   await expect(page.locator('#manufactureDate')).toHaveValue('2021-01');
-  await expect(page.locator('[name^="customsDate"]')).toHaveCount(0);
+  await expect(page.locator('[name="customsDateDay"]')).toBeVisible();
+  await expect(page.locator('[name="customsDate"]')).toHaveValue('2027-01-01');
   await expect(page.getByTestId('result-status')).toContainText('2026');
   await expect(page.getByTestId('total')).toHaveCount(0);
 });

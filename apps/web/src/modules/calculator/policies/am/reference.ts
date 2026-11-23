@@ -1,146 +1,46 @@
 import { Amount, roundedAmount } from '../../core/decimal';
-import type {
-  CalculationLine,
-  ReferencePolicyFacts,
-  ReferencePolicyResult,
-} from '../../core/types';
+import type { CalculationLine, ReferencePolicyFacts, ReferencePolicyResult } from '../../core/types';
+import { personalCombustionDuty } from '../eaeu-personal';
 
-/** 2026 reference snapshot; the common core gates the provisional EV exemption. */
-export const AM_REFERENCE_VERSION = 'am-personal-reference-2026.10.22-v1';
-export const AM_REFERENCE_SOURCE = 'https://www.kmotors.shop/en/calculator/armenia';
+export const AM_REFERENCE_VERSION = 'am-personal-2026.11.23';
+export const AM_REFERENCE_SOURCE = 'https://exim.src.am/ru/transport';
 
-const PETROL_CCT = [
-  { limit: '1000', middle: '0.36', old: '1.4' },
-  { limit: '1500', middle: '0.4', old: '1.5' },
-  { limit: '1800', middle: '0.36', old: '1.6' },
-  { limit: '3000', middle: '0.44', old: '2.2' },
-  { limit: null, middle: '0.8', old: '3.2' },
-] as const;
-const DIESEL_CCT = [
-  { limit: '1500', middle: '0.32', old: '1.5' },
-  { limit: '2500', middle: '0.4', old: '2.2' },
-  { limit: null, middle: '0.8', old: '3.2' },
-] as const;
+// RA Tax Code, Article 171: tax on imported vehicles, classified by production year.
+const ENVIRONMENTAL_BANDS = [[3, 2], [5, 4], [10, 6], [15, 12], [Infinity, 24]] as const;
 
-export function calculateAmReference({
-  input,
-  ageYears,
-}: ReferencePolicyFacts): ReferencePolicyResult {
-  const electric = input.powertrain === 'bev';
-  const hybrid = ['hev', 'phev', 'erev'].includes(input.powertrain);
-  const cc = electric ? new Amount(0) : new Amount(input.displacementCc);
-  const value = new Amount(
-    roundedAmount(
-      new Amount(input.price)
-        .add(input.freight || '0')
-        .add(input.insurance || '0')
-        .mul(input.transactionRate),
-    ),
-  );
-  const euroRate = new Amount(input.euroRate);
-  let duty: InstanceType<typeof Amount>;
-  let dutyFormula: string;
-  let dutyMethod: NonNullable<CalculationLine['method']>;
-  if (electric) {
-    // Provisional quota/VAT eligibility is an explicit common-core assumption, not a fact.
-    duty = new Amount(0);
-    dutyFormula = '0';
-    dutyMethod = { key: 'AM.dutyElectric', params: {} };
-  } else if (ageYears < 3) {
-    const rate = input.powertrain === 'petrol' && cc.gt('2800') ? '0.125' : '0.15';
-    duty = value.mul(rate);
-    dutyFormula = `${value.toString()} × ${rate}`;
-    dutyMethod = {
-      key: rate === '0.125' ? 'AM.dutyYoungLargePetrol' : 'AM.dutyYoung',
-      params: {
-        age: ageYears,
-        value: value.toString(),
-        cc: cc.toString(),
-        rate: new Amount(rate).mul(100).toString(),
-      },
-    };
-  } else {
-    const bands = input.powertrain === 'diesel' ? DIESEL_CCT : PETROL_CCT;
-    const band = bands.find((item) => item.limit === null || cc.lte(item.limit))!;
-    if (ageYears < 7) {
-      duty = Amount.max(value.mul('0.2'), cc.mul(band.middle).mul(euroRate));
-      dutyFormula = `max(${value.toString()} × 0.2, ${cc.toString()} × ${band.middle} × ${euroRate.toString()})`;
-      dutyMethod = {
-        key: 'AM.dutyMiddle',
-        params: {
-          age: ageYears,
-          value: value.toString(),
-          cc: cc.toString(),
-          rate: 20,
-          perCc: band.middle,
-          euroRate: euroRate.toString(),
-          percentage: value.mul('0.2').toString(),
-          minimum: cc.mul(band.middle).mul(euroRate).toString(),
-          selected: duty.toString(),
-        },
-      };
-    } else {
-      duty = cc.mul(band.old).mul(euroRate);
-      dutyFormula = `${cc.toString()} × ${band.old} × ${euroRate.toString()}`;
-      dutyMethod = {
-        key: 'AM.dutyOld',
-        params: {
-          age: ageYears,
-          cc: cc.toString(),
-          perCc: band.old,
-          euroRate: euroRate.toString(),
-        },
-      };
-    }
+export function calculateAmReference(facts: ReferencePolicyFacts): ReferencePolicyResult {
+  const { input, ageYears } = facts;
+  if (input.powertrain === 'erev') {
+    return { reason: 'powertrain_rules_pending', lines: [], additionalCosts: [] };
   }
-  const roundedDuty = roundedAmount(duty);
-  const environmentalRate =
-    electric || hybrid || ageYears <= 5
-      ? '0'
-      : ageYears <= 10
-        ? '0.02'
-        : ageYears <= 15
-          ? '0.1'
-          : '0.2';
+  const value = new Amount(input.price).mul(input.transactionRate);
+  const electric = input.powertrain === 'bev';
+  const duty: CalculationLine = electric
+    ? { id: 'duty', amount: roundedAmount(value.mul('0.15')), formula: `round(${value} × 0.15)`,
+        method: { key: 'AM.electricStandardDuty', params: { value: value.toFixed() } } }
+    : personalCombustionDuty('AM', facts);
+
+  // Tax Code Article 64(58.1, 58.2); VAT relief has its own dates, independent of tariff quota.
+  const evVatRelief = electric && (input.customsDate < '2026-02-01' || input.manufactureDate >= '2024-01');
+  const vat: CalculationLine = {
+    id: 'vat', amount: '0', formula: '0',
+    method: { key: evVatRelief ? 'AM.electricVatRelief' : 'AM.unifiedVat', params: {} },
+  };
+  if (electric && !evVatRelief) {
+    const vatBase = value.add(duty.amount);
+    vat.amount = roundedAmount(vatBase.mul('0.2'));
+    vat.formula = `round((${value} + ${duty.amount}) × 0.20)`;
+    vat.method = { key: 'AM.vat', params: { value: value.toFixed(), duty: duty.amount, taxableBase: vatBase.toFixed(), rate: 20 } };
+  }
+  const [, rate] = ENVIRONMENTAL_BANDS.find(([limit]) => ageYears <= limit)!;
   return {
+    assumptions: electric ? ['am_electric_standard_duty', 'am_environmental_value_assumed'] : ['am_environmental_value_assumed'],
     lines: [
-      { id: 'duty', amount: roundedDuty, formula: `round(${dutyFormula})`, method: dutyMethod },
+      duty,
       { id: 'excise', amount: '0', formula: '0', method: { key: 'AM.excise', params: {} } },
-      {
-        id: 'vat',
-        amount: electric ? '0' : roundedAmount(value.add(roundedDuty).mul('0.2')),
-        formula: electric ? '0' : `round((${value.toString()} + ${roundedDuty}) × 0.2)`,
-        method: electric
-          ? { key: 'AM.vatElectric', params: {} }
-          : {
-              key: 'AM.vat',
-              params: {
-                value: value.toString(),
-                duty: roundedDuty,
-                taxableBase: value.add(roundedDuty).toString(),
-                rate: 20,
-              },
-            },
-      },
-      {
-        id: 'environmental',
-        amount: roundedAmount(value.mul(environmentalRate)),
-        formula: `round(${value.toString()} × ${environmentalRate})`,
-        method: {
-          key: electric
-            ? 'AM.environmentalElectric'
-            : hybrid
-              ? 'AM.environmentalHybrid'
-              : ageYears <= 5
-                ? 'AM.environmentalYoung'
-                : 'AM.environmental',
-          params: {
-            age: ageYears,
-            value: value.toString(),
-            rate: new Amount(environmentalRate).mul(100).toString(),
-          },
-        },
-      },
+      vat,
+      { id: 'environmental', amount: roundedAmount(value.mul(rate).div(100)), formula: `round(${value} × ${rate} / 100)`,
+        method: { key: 'AM.importEnvironment', params: { age: ageYears, value: value.toFixed(), rate } } },
     ],
     additionalCosts: [],
   };

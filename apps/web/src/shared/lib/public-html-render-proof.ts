@@ -1,9 +1,19 @@
-const maxLifetimeMs = 300_000;
+import {
+  INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS,
+} from '@hd/contracts/public';
+import type { PublicBrowseStamp } from './public-browse-stamp';
+
+const maxLifetimeMs = {
+  2: INTERNAL_PUBLIC_CATALOG_CACHE_MAX_TTL_MS,
+  3: INTERNAL_PUBLIC_HOMEPAGE_CACHE_MAX_TTL_MS,
+};
 const maxDocumentBytes = 512 * 1024;
 const maxPendingRenders = 4;
 
 export const publicHtmlRenderTicketHeader = 'x-hd-public-html-render-ticket';
 
+export type PublicHtmlCacheProtocol = 2 | 3;
 export type PublicHtmlCacheScope = 'catalog' | 'filters';
 export type PublicHtmlCacheStamp = Readonly<{
   version: string;
@@ -16,6 +26,9 @@ export type PublicHtmlCacheData = Readonly<Record<PublicHtmlCacheScope, PublicHt
 export type PublicHtmlRenderProof = { healthy: true; data: PublicHtmlCacheData };
 type PendingRender = {
   observed: Partial<Record<PublicHtmlCacheScope, PublicHtmlCacheStamp>>;
+  protocol: PublicHtmlCacheProtocol | 4;
+  browse?: PublicBrowseStamp;
+  retryAfter?: number;
   now: () => number;
   complete: boolean;
   failed: boolean;
@@ -31,14 +44,16 @@ function timestamp(value: unknown) {
     ? Date.parse(value) : NaN;
 }
 
-export function parsePublicHtmlCacheStamp(value: unknown, now = Date.now()): PublicHtmlCacheStamp | null {
+export function parsePublicHtmlCacheStamp(
+  value: unknown, now = Date.now(), protocol: PublicHtmlCacheProtocol = 2,
+): PublicHtmlCacheStamp | null {
   if (!value || typeof value !== 'object') return null;
   const { version, priceView, fx, checkedAt, validUntil } = value as Partial<PublicHtmlCacheStamp>;
   const checked = timestamp(checkedAt);
   const deadline = timestamp(validUntil);
   if (
     typeof version !== 'string' || !/^[a-f0-9]{64}$/.test(version) || priceView !== 'usd'
-    || !(checked <= now + 5_000 && deadline > Math.max(checked, now) && deadline - checked <= maxLifetimeMs)
+    || !(checked <= now + 5_000 && deadline > Math.max(checked, now) && deadline - checked <= maxLifetimeMs[protocol])
   ) return null;
   if (fx === null) {
     return { version, priceView, fx, checkedAt: new Date(checked).toISOString(), validUntil: new Date(deadline).toISOString() };
@@ -66,14 +81,42 @@ export function matchPublicHtmlCacheScopes(
   return { catalog: { ...catalog, validUntil }, filters: { ...filters, validUntil } };
 }
 
+export function publicHtmlRenderProtocol(ticket: string | null): PublicHtmlCacheProtocol | undefined {
+  const protocol = ticket ? pendingRenders().get(ticket)?.protocol : undefined;
+  return protocol === 4 ? undefined : protocol;
+}
+
+export function isPublicBrowseRender(ticket: string | null) {
+  return Boolean(ticket && pendingRenders().get(ticket)?.protocol === 4);
+}
+
+export function recordPublicBrowseStamp(ticket: string | null, stamp: PublicBrowseStamp) {
+  const render = ticket ? pendingRenders().get(ticket) : undefined;
+  if (!render || render.failed) return;
+  const previous = render.browse;
+  if (render.protocol !== 4 || previous && previous.generation !== stamp.generation) {
+    render.failed = true;
+    return;
+  }
+  render.browse = previous ? { generation: stamp.generation, observedAt: Math.min(previous.observedAt, stamp.observedAt),
+    expiresAt: Math.min(previous.expiresAt, stamp.expiresAt) } : stamp;
+}
+
+export function recordPublicBrowseThrottle(ticket: string | null, seconds: number) {
+  const render = ticket ? pendingRenders().get(ticket) : undefined;
+  if (render?.protocol === 4 && Number.isSafeInteger(seconds) && seconds > 0)
+    render.retryAfter = Math.max(render.retryAfter ?? 0, seconds);
+}
+
 /** Copy only the actual version and deadline accepted for a rendered dependency. */
 export function recordPublicHtmlRenderStamp(
   ticket: string | null, scope: PublicHtmlCacheScope, value: unknown, acceptedDeadline?: number,
+  protocol: PublicHtmlCacheProtocol = 2,
 ) {
   const render = ticket ? pendingRenders().get(ticket) : undefined;
   if (!render || render.failed) return;
   const now = render.now();
-  const actual = parsePublicHtmlCacheStamp(value, now);
+  const actual = protocol === render.protocol ? parsePublicHtmlCacheStamp(value, now, protocol) : null;
   const previous = render.observed[scope];
   const deadline = Math.min(Date.parse(actual?.validUntil ?? ''), acceptedDeadline ?? Infinity);
   if (
@@ -157,8 +200,22 @@ async function captureDocument(response: Response, body: ReadableStream<Uint8Arr
  */
 export async function capturePublicHtmlRender(
   render: (ticket: string | null) => Promise<Response>,
-  { now = Date.now }: { now?: () => number } = {},
+  { now = Date.now, protocol = 2 }: { now?: () => number; protocol?: PublicHtmlCacheProtocol } = {},
 ): Promise<{ response: Response; proof: PublicHtmlRenderProof | null }> {
+  return captureRender(render, protocol, now, record => {
+    const { catalog, filters } = record.observed;
+    if (!catalog || !filters) return null;
+    const data = matchPublicHtmlCacheScopes(catalog, filters);
+    return data && Date.parse(data.catalog.validUntil) > now() ? { healthy: true as const, data } : null;
+  });
+}
+
+export function capturePublicBrowseRender(render: (ticket: string | null) => Promise<Response>, now = Date.now) {
+  return captureRender(render, 4, now, ({ browse }) => browse && browse.expiresAt > now() ? browse : null);
+}
+
+async function captureRender<P>(render: (ticket: string | null) => Promise<Response>, protocol: PendingRender['protocol'],
+  now: () => number, finish: (record: PendingRender) => P | null): Promise<{ response: Response; proof: P | null; retryAfter?: number }> {
   const pending = pendingRenders();
   if (pending.size >= maxPendingRenders)
     return { response: await render(null), proof: null };
@@ -166,6 +223,7 @@ export async function capturePublicHtmlRender(
   const ticket = crypto.randomUUID();
   const record: PendingRender = {
     observed: {},
+    protocol,
     now,
     complete: false,
     failed: false,
@@ -185,12 +243,8 @@ export async function capturePublicHtmlRender(
 
     const captured = await captureDocument(response, response.body, release);
     replaying = captured.replaying;
-    const { catalog, filters } = record.observed;
-    if (!captured.complete || !record.complete || record.failed || !catalog || !filters)
-      return { response: captured.response, proof: null };
-    const data = matchPublicHtmlCacheScopes(catalog, filters);
-    const proof = data && Date.parse(data.catalog.validUntil) > now() ? { healthy: true as const, data } : null;
-    return { response: captured.response, proof };
+    const proof = captured.complete && record.complete && !record.failed ? finish(record) : null;
+    return { response: captured.response, proof, retryAfter: record.retryAfter };
   } finally {
     if (!replaying) release();
   }
