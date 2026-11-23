@@ -62,16 +62,16 @@ export function ExternalCatalogPage() {
     <header className={styles.heading}>
       <div>
         <Typography.Title level={2}>三方车源管理</Typography.Title>
-        <Typography.Text type="secondary">按入库资料和人工修订筛选，进入详情核对公开展示。</Typography.Text>
+        <Typography.Text type="secondary">概览按来源挂牌计数，同一辆车可能有多条挂牌。官网公开数量见「公开车源核验」。</Typography.Text>
       </div>
       <Link to="/public-catalog/verification">公开车源核验</Link>
     </header>
     <section aria-label="车源概览" className={styles.stats}>
       {([
         ['入库挂牌', stats?.total],
-        ['已展示', stats?.published],
-        ['人工隐藏', stats?.hidden],
-        ['来源撤回', stats?.withdrawn],
+        [listingLabels.published, stats?.published],
+        [listingLabels.hidden, stats?.hidden],
+        [listingLabels.withdrawn, stats?.withdrawn],
       ] as const).map(([title, count]) => <Card key={title} size="small">
         <Statistic title={title} value={count ?? '—'} loading={overview.loading} />
       </Card>)}
