@@ -9,15 +9,26 @@ import {reserveBulkQuota} from './quota.js';
 import {FullSyncClient} from './client.js';
 import {FullSyncWorker,configureFullSync} from './engine.js';
 import {fullSyncStatus,setFullSyncPaused} from './status.js';
+import {AdmissionReplayRequest,admissionReplayStatus,inspectAdmissionReplay,prepareAdmissionReplay} from './admission-replay.js';
 async function main(){
  const [command,...args]=process.argv.slice(2),flags=new Map<string,string>();
- if(!['configure','run','serve','status','control','archive-pin','archive-release'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
- for(let i=0;i<args.length;i+=2){const key=args[i]!,value=args[i+1]!;if(!['--mode','--actor','--max-ticks','--action','--version','--key','--reference'].includes(key)||flags.has(key))throw new FullSyncError('SYNC_USAGE');flags.set(key,value);}
+ if(!['configure','run','serve','status','control','archive-pin','archive-release','replay-check','replay-prepare','replay-status'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
+ for(let i=0;i<args.length;i+=2){const key=args[i]!,value=args[i+1]!;if(!['--mode','--actor','--max-ticks','--action','--version','--key','--reference','--plan','--replay-id'].includes(key)||flags.has(key))throw new FullSyncError('SYNC_USAGE');flags.set(key,value);}
  const need=(key:string)=>{const value=flags.get(key);if(!value)throw new FullSyncError('SYNC_USAGE');return value;};
  const env=readDatabaseEnvironment();if(!env.DATABASE_URL)throw new FullSyncError('SYNC_DATABASE_REQUIRED');
  const db=createDatabase(env.DATABASE_URL,2);let worker:FullSyncWorker|undefined;
  try{
-  if(command==='archive-pin'||command==='archive-release'){const reference=need('--reference');if(!/^[a-zA-Z0-9._:-]{1,160}$/.test(reference))throw new FullSyncError('SYNC_REFERENCE_INVALID');
+  if(command==='replay-check'||command==='replay-prepare'){
+   const plan=need('--plan');
+   if(!path.isAbsolute(plan))throw new FullSyncError('SYNC_USAGE');
+   const request=AdmissionReplayRequest.safeParse(JSON.parse(readLocalSecret(plan,32*1024)));
+   if(!request.success)throw new FullSyncError('SYNC_REPLAY_PLAN_INVALID');
+   const result=command==='replay-check'?await inspectAdmissionReplay(db,request.data):
+    await prepareAdmissionReplay(db,{id:need('--actor'),requestId:'full-sync:replay-prepare'},request.data);
+   console.log(JSON.stringify(result));
+   return;
+  }else if(command==='replay-status'){console.log(JSON.stringify(await admissionReplayStatus(db,need('--replay-id'))));return;
+  }else if(command==='archive-pin'||command==='archive-release'){const reference=need('--reference');if(!/^[a-zA-Z0-9._:-]{1,160}$/.test(reference))throw new FullSyncError('SYNC_REFERENCE_INVALID');
    const result=await db.transaction(async tx=>{
     await tx.query('SELECT pg_advisory_xact_lock(78291334)');
     // Backup protection covers the full source archive, which exceeds the online query budget.

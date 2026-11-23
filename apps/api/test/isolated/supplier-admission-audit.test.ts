@@ -59,7 +59,7 @@ test('supplier gap audit resumes ranges, distinguishes current omissions and ref
         (13,'fixture','che168','1011','withdraw',now()-interval '2 min','[]',now()-interval '2 min',now(),null,'removed','not_public'),
         (14,'fixture','che168','1012','upsert',now()-interval '4 min','[]',now()-interval '4 min',now(),'SYNC_LISTING_LIMIT','new','not_public'),
         (15,'fixture','che168','1013','relist',now()-interval '2 min','[]',now()-interval '2 min',now(),'SYNC_LISTING_LIMIT','relisted','not_public'),
-        (16,'fixture','che168','101','upsert',now()-interval '2 min','[]',now()-interval '2 min',now(),'SYNC_LISTING_LIMIT','new','not_public'),
+        (16,'fixture','che168','103','upsert',now()-interval '2 min','[]',now()-interval '2 min',now(),'SYNC_LISTING_LIMIT','new','not_public'),
         (17,'fixture','che168','1014','upsert',now()-interval '3 hours','[]',now()-interval '3 hours',now(),'SYNC_LISTING_LIMIT','new','not_public'),
         (18,'fixture','che168','1','upsert',now()-interval '2 min','[]',now()-interval '2 min',null,null,'price','pending'),
         (19,'fixture','che168','202','withdraw',now()-interval '3 min','[]',now()-interval '3 min',null,null,'removed','pending'),
@@ -97,7 +97,7 @@ test('supplier gap audit resumes ranges, distinguishes current omissions and ref
   assert.equal(complete.complete,true);
   assert.equal(complete.asOf,input.restoreAsOf);
   assert.deepEqual(complete.csv,{admitted:3,withdrawnSinceExport:3,missingThroughCursor:97,missingAfterCursor:100,eligibleMissing:197});
-  assert.deepEqual(complete.deltas.lastHour,{received:10,coverage:'complete-recorded-window',distinctIdentities:9,stillMissingAfterLimit:2});
+  assert.deepEqual(complete.deltas.lastHour,{received:10,coverage:'complete-recorded-window',distinctIdentities:9,stillMissingAfterLimit:3,outsideSelectedCsv:2});
   assert.equal(complete.deltas.unappliedPrice.n,1);
   assert.ok(complete.deltas.unappliedPrice.oldestAgeMs!>=120_000);
   assert.equal(complete.deltas.unappliedWithdrawal.n,1);

@@ -7,7 +7,7 @@ import {mkdir,statfs,stat,unlink,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
-import {verifyCatalogCsv,persistSourceResponse,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
+import {verifyCatalogCsv,persistSourceResponse,persistSourceDocument,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {jsonHash} from '../normalize.js';
 import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formalWithdrawal,isFormalListingAdmitted,permitFullSyncAdmission,rememberFormalWithdrawal,DEFAULT_FORMAL_LISTING_LIMIT,FORMAL_LISTING_LIMIT_CODE} from '../formal-admission.js';
@@ -17,6 +17,7 @@ import {advanceCapacitySampleLifecycle,capacitySample,capacityBinding,capacityTa
 import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,supersedeTiming} from './timing.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,parseAlias} from './apply.js';
+import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapshot, eligibleReplayEvents} from './admission-replay.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
@@ -29,7 +30,7 @@ function completeCapacitySample(snapshot:CapacitySnapshot|undefined,sample:Capac
   &&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
 }
 type TickPhase='startup'|'withdrawals'|'delta_receive'|'delta_apply'|'space'|'source_maintenance'|
- 'daily'|'snapshot'|'details'|'reports'|'capacity'|'rotation'|'archive_cleanup'|'finalize';
+ 'daily'|'snapshot'|'details'|'admission_replay'|'reports'|'capacity'|'rotation'|'archive_cleanup'|'finalize';
 export async function configureFullSync(db:Database,actor:Actor,mode:'full'|'continuous'){
  if(!await formalAdmissionInstalled(db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
  return db.transaction(async tx=>{
@@ -52,6 +53,22 @@ async function queue(tx:PoolClient,source:Source,id:string,kind:'detail'|'report
  attempts=CASE WHEN external_full_work.generation=excluded.generation THEN external_full_work.attempts ELSE 0 END,
  due_at=CASE WHEN external_full_work.generation=excluded.generation THEN external_full_work.due_at ELSE now() END,generation=excluded.generation`,[source,id,kind,generation,priority]);
 }
+async function finishReplayPlan(tx:PoolClient,replayId:string){
+ await tx.query(`UPDATE external_full_admission_replays r SET state='finished' WHERE id=$1 AND state IN ('pending','scheduled')
+  AND NOT EXISTS (SELECT 1 FROM external_full_admission_replay_items i WHERE i.replay_id=r.id AND i.state IN ('pending','scheduled'))`,[replayId]);
+}
+async function retireReplayDetail(tx:PoolClient,replay:{replay_id:string;event_id:string;placeholder_created:boolean},
+ source:Source,id:string,generation:string,state:'superseded'|'verified_withdrawn'|'unresolved_not_found'|'unresolved_unverified'|'retry_limit'|'unresolved_no_work'='superseded'){
+ await tx.query("UPDATE external_full_admission_replay_items SET state=$3,processed_at=clock_timestamp() WHERE replay_id=$1 AND event_id=$2",
+  [replay.replay_id,replay.event_id,state]);
+ const deleted=await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' AND generation=$3",[source,id,generation]);
+ if(deleted.rowCount)await releaseSourceReferences(tx,'pending',workRef(source,id,'detail'));
+ if(replay.placeholder_created)await tx.query(`DELETE FROM external_full_members m WHERE m.source=$1 AND m.external_id=$2
+  AND m.desired_generation=$3 AND m.applied_generation=0
+  AND NOT EXISTS (SELECT 1 FROM external_formal_admissions a WHERE a.source=m.source AND a.external_id=m.external_id)
+  AND NOT EXISTS (SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id)`,[source,id,generation]);
+ await finishReplayPlan(tx,replay.replay_id);
+}
 export class FullSyncWorker{
  private lock:PoolClient|null=null;private lost=false;private fence:string|null=null;
  private phase:TickPhase='startup';
@@ -60,6 +77,9 @@ export class FullSyncWorker{
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
  async acquire(){
   if(!await formalAdmissionInstalled(this.db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
+  if(!(await this.db.pool.query(`SELECT to_regclass('external_full_admission_replays') IS NOT NULL
+    AND to_regclass('external_full_admission_replay_items') IS NOT NULL AS installed`)).rows[0]?.installed)
+   throw new FullSyncError('SYNC_REPLAY_MIGRATION_REQUIRED');
   const c=await this.db.pool.connect();if(!(await c.query('SELECT pg_try_advisory_lock(78291333) AS ok')).rows[0].ok){c.release();return false;}
   this.lock=c;c.on('error',()=>{this.lost=true;});this.fence=String((await this.db.pool.query('UPDATE external_full_sync SET worker_fence=worker_fence+1 WHERE id=1 RETURNING worker_fence')).rows[0]!.worker_fence);return true;}
  async close(){if(this.lock){try{await this.lock.query('SELECT pg_advisory_unlock(78291333)');}finally{this.lock.release();this.lock=null;}}}
@@ -201,6 +221,91 @@ export class FullSyncWorker{
   }
   return completed;
  }
+ /** Recovered denials request fresh details from the ordinary work lane. */
+ async replayAdmissions(){
+  await this.alive();
+  const prepared=(await this.db.pool.query<{id:string;state:string}>("SELECT id,state FROM external_full_admission_replays WHERE state IN ('pending','scheduled') LIMIT 1")).rows[0];
+  if(!prepared)return 0;
+  const pending=await this.transaction(async tx=>{
+   await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+   const snapshot=await currentReplaySnapshot(tx);
+   const plan=(await tx.query(`SELECT r.*,a.admission_limit=r.target_rows AS ceiling_matches FROM external_full_admission_replays r
+    CROSS JOIN external_formal_admission_state a WHERE r.id=$1 AND a.id=1 FOR UPDATE OF r`,[prepared.id])).rows[0]!;
+   const scopeCurrent=snapshot?.active&&snapshot.id===plan.snapshot_id&&snapshot.sha256===plan.csv_sha256
+    &&snapshot.target===Number(plan.target_rows)&&plan.ceiling_matches;
+   const stopped=(await tx.query(`SELECT i.*,i.detail_generation::text AS generation,
+     CASE WHEN w.attempts>=5 AND w.last_error_code='SYNC_DETAIL_NOT_FOUND' THEN 'unresolved_not_found'
+          WHEN w.attempts>=5 AND w.last_error_code='SYNC_REPLAY_STATUS_UNVERIFIED' THEN 'unresolved_unverified'
+          WHEN w.attempts>=5 THEN 'retry_limit'
+          WHEN w.source IS NULL THEN 'unresolved_no_work' ELSE 'superseded' END AS outcome
+     FROM external_full_admission_replay_items i
+     LEFT JOIN external_full_work w ON w.source=i.source AND w.external_id=i.external_id
+       AND w.kind='detail' AND w.generation=i.detail_generation
+     WHERE i.replay_id=$1 AND i.state='scheduled'
+       AND ($2=false OR NOT EXISTS (SELECT 1 FROM external_full_admission_replay_reservations r
+         WHERE r.replay_id=i.replay_id AND r.event_id=i.event_id))
+     ORDER BY i.event_id LIMIT $3`,[prepared.id,Boolean(scopeCurrent),ADMISSION_REPLAY_BATCH])).rows;
+   for(const item of stopped)await retireReplayDetail(tx,item,item.source,item.external_id,item.generation,scopeCurrent?item.outcome:'superseded');
+   if(!scopeCurrent){
+    await tx.query("UPDATE external_full_admission_replay_items SET state='superseded',processed_at=clock_timestamp() WHERE replay_id=$1 AND state='pending'",[prepared.id]);
+    await tx.query(`UPDATE external_full_admission_replays r SET state='superseded' WHERE id=$1 AND NOT EXISTS (
+     SELECT 1 FROM external_full_admission_replay_items i WHERE i.replay_id=r.id AND i.state='scheduled')`,[prepared.id]);
+    return false;
+   }
+   return prepared.state==='pending';
+  });
+  if(!pending)return 0;
+  await this.heavy();
+  return this.transaction(async tx=>{
+   await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+   const plan=(await tx.query<{id:string;snapshot_id:string;csv_sha256:string;target_rows:number}>(
+    "SELECT id,snapshot_id,csv_sha256,target_rows::int FROM external_full_admission_replays WHERE id=$1 AND state='pending' FOR UPDATE",[prepared.id])).rows[0];
+   if(!plan)return 0;
+   const snapshot=await currentReplaySnapshot(tx);
+   const {ceiling,canAdmit}=(await tx.query<{ceiling:number;canAdmit:boolean}>(`SELECT admission_limit::int AS ceiling,
+    enabled AND NOT paused AND NOT disk_paused AND NOT capacity_pending AND last_capacity_sample>0 AS "canAdmit"
+    FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`)).rows[0]!;
+   if(!snapshot?.active||snapshot.id!==plan.snapshot_id||snapshot.sha256!==plan.csv_sha256||
+      snapshot.target!==plan.target_rows||ceiling!==plan.target_rows){
+    await tx.query("UPDATE external_full_admission_replay_items SET state='superseded',processed_at=clock_timestamp() WHERE replay_id=$1 AND state='pending'",[plan.id]);
+    await tx.query("UPDATE external_full_admission_replays SET state='superseded' WHERE id=$1",[plan.id]);
+    return 0;
+   }
+   if(!canAdmit||!await physicalCleanupAllowed(tx))return 0;
+   const requested=(await tx.query<{event_id:string;source:Source;external_id:string}>(`SELECT event_id::text,source,external_id
+     FROM external_full_admission_replay_items WHERE replay_id=$1 AND state='pending' ORDER BY event_id LIMIT $2`,
+    [plan.id,ADMISSION_REPLAY_BATCH])).rows;
+   const events=new Map((await eligibleReplayEvents(tx,snapshot.id,requested.map(row=>row.event_id))).map(event=>[event.event_id,event]));
+   let scheduled=0;
+   // Serialize temporary work and permanent allocations under the same ledger lock.
+   await tx.query('SELECT 1 FROM external_formal_admission_state WHERE id=1 FOR UPDATE');
+   await tx.query("SELECT set_config('hd.external_full_admission_replay',$1,true)",[plan.id]);
+   for(const item of requested){
+    const event=events.get(item.event_id);
+    if(!event){
+     const state=await isFormalListingAdmitted(tx,item.source,item.external_id)?'already_admitted':'superseded';
+     await tx.query('UPDATE external_full_admission_replay_items SET state=$3,processed_at=clock_timestamp() WHERE replay_id=$1 AND event_id=$2',
+      [plan.id,item.event_id,state]);
+     continue;
+    }
+    const prior=(await tx.query<{desired_generation:string}>(`SELECT desired_generation FROM external_full_members
+      WHERE source=$1 AND external_id=$2 FOR UPDATE`,[item.source,item.external_id])).rows[0];
+    const generation=prior?String(BigInt(prior.desired_generation)+1n):'1';
+    await tx.query(`UPDATE external_full_admission_replay_items SET state='scheduled',
+      detail_generation=$3,placeholder_created=$4,processed_at=clock_timestamp() WHERE replay_id=$1 AND event_id=$2`,[plan.id,item.event_id,generation,!prior]);
+    if(prior)await tx.query('UPDATE external_full_members SET desired_generation=$3 WHERE source=$1 AND external_id=$2',
+     [item.source,item.external_id,generation]);
+    else await tx.query(`INSERT INTO external_full_members(source,external_id,canonical_id,desired_generation) VALUES($1,$2,$3,$4)`,
+     [item.source,item.external_id,`chinacarapi:${item.source}:${item.external_id}`,generation]);
+    await queue(tx,item.source,item.external_id,'detail',generation,45);
+    scheduled++;
+   }
+   await tx.query(`UPDATE external_full_admission_replays r SET state='scheduled' WHERE id=$1 AND NOT EXISTS(
+    SELECT 1 FROM external_full_admission_replay_items item WHERE item.replay_id=r.id AND item.state='pending')`,[plan.id]);
+   await finishReplayPlan(tx,plan.id);
+   return scheduled;
+  });
+ }
  async snapshot(){
   // Freeze CSV expansion while the first detail sample waits for reports/capacity approval.
   if(await this.sampleSaturated())return 0;
@@ -300,21 +405,28 @@ export class FullSyncWorker{
    // When full, jump over unadmitted rows but still refresh every admitted
    // member in the export, including those after the initial CSV rows.
    const eligible=atLimit?'AND EXISTS(SELECT 1 FROM external_formal_admissions a WHERE a.source=s.source AND a.external_id=s.external_id)':'';
-   const rows=(await tx.query(`SELECT s.*,i.business_at AS withdrawn_at FROM external_full_stage s
+   const rows=(await tx.query(`SELECT s.*,i.business_at AS withdrawn_at,m.business_at AS member_withdrawn_at FROM external_full_stage s
      LEFT JOIN external_ingestion_identity_state i ON i.provider='chinacarapi' AND i.source=s.source AND i.external_id=s.external_id AND i.withdrawn
+     LEFT JOIN external_full_members m ON m.source=s.source AND m.external_id=s.external_id AND m.state='withdrawn'
      WHERE snapshot_id=$1 AND row_number>$2 ${eligible}
      ORDER BY row_number LIMIT 100`,[id,snap.apply_cursor])).rows;
    if(!atLimit&&rows.length)await permitFullSyncAdmission(tx);
    let last=snap.apply_cursor,processed=0,ceilingReached=atLimit;
    for(const entry of rows){
-    const withdrawn=entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at);
+    const memberWithdrawn=entry.member_withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.member_withdrawn_at);
+    const withdrawn=memberWithdrawn||(entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at));
     const admitted=!withdrawn&&await admitFormalListing(tx,entry.source,entry.external_id);
     if(!withdrawn&&!admitted&&!ceilingReached){
      ceilingReached=(await tx.query<{reached:boolean}>('SELECT admitted_count >= admission_limit AS reached FROM external_formal_admission_state WHERE id=1')).rows[0]!.reached;
      if(!ceilingReached)break; // Retry this row when the temporary capacity gate reopens.
     }
     last=entry.row_number;processed++;
-    if(!admitted)continue;
+    if(!admitted){
+     if(memberWithdrawn)await tx.query(`UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2
+       AND last_snapshot IS DISTINCT FROM $3::uuid AND EXISTS(SELECT 1 FROM external_formal_admissions
+        WHERE source=$1 AND external_id=$2)`,[entry.source,entry.external_id,id]);
+     continue;
+    }
     let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
     if(m.state==='withdrawn'&&new Date(snap.generated_at)<=new Date(m.business_at)){
      await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
@@ -361,12 +473,33 @@ export class FullSyncWorker{
   // At the boundary only refresh existing sample members invalidated by newer events; never fetch a new identity.
   const turn=await this.transaction(async tx=>Number((await tx.query('UPDATE external_full_sync SET detail_turn=detail_turn+1 WHERE id=1 RETURNING detail_turn')).rows[0]!.detail_turn));
   const oldest=turn%4===0;
-  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id) WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($1=false OR m.sampled) ORDER BY CASE WHEN $2 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample,oldest])).rows[0];
-  if(!selected)return 0;const jobs=(await this.db.pool.query(`SELECT w.* FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn' AND ($2=false OR m.sampled) ORDER BY CASE WHEN $4 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source,oldest])).rows;
+  const selected=(await this.db.pool.query(`SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+   LEFT JOIN external_full_admission_replay_items item ON item.source=w.source AND item.external_id=w.external_id
+     AND item.detail_generation=w.generation AND item.state='scheduled'
+   WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
+     AND ($1=false OR m.sampled) ORDER BY CASE WHEN $2 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample,oldest])).rows[0];
+  if(!selected)return 0;const candidates=(await this.db.pool.query(`SELECT w.*,item.replay_id FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+   LEFT JOIN external_full_admission_replay_items item ON item.source=w.source AND item.external_id=w.external_id
+     AND item.detail_generation=w.generation AND item.state='scheduled'
+   WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
+     AND ($2=false OR m.sampled) ORDER BY CASE WHEN $4 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source,oldest])).rows;
+  const jobs=[];
+  for(const job of candidates){
+   if(!job.replay_id){jobs.push(job);continue;}
+   const usable=await this.transaction(async tx=>{
+    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+    const item=await checkScheduledReplayDetail(tx,job.source,job.external_id,String(job.generation));
+    if(item&&!item.stillCurrent)await retireReplayDetail(tx,item,job.source,job.external_id,String(job.generation));
+    return item?.stillCurrent&&item.canApply;
+   });
+   if(usable)jobs.push(job);
+  }
   if(!jobs.length)return 0;
+  const stoppedReplay=new Set<string>();
+  const replayKey=(job:{source:Source;external_id:string})=>`${job.source}:${job.external_id}`;
   for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
-   const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale));if(!wanted.length)continue;
+   const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale)&&!stoppedReplay.has(replayKey(j)));if(!wanted.length)continue;
+   if(wanted.some(job=>job.replay_id))await this.heavy();
    try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale)){
     await this.heavy(sampleOnly);await this.applyEvents(true);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
     for(const payload of response.results){const job=wanted.find(j=>j.external_id===payload.id)!;
@@ -378,21 +511,55 @@ export class FullSyncWorker{
       await tx.query(`UPDATE external_full_work SET document_refs=document_refs||$3::jsonb,locales=ARRAY(SELECT DISTINCT unnest(locales||$4::text[])) WHERE source=$1 AND external_id=$2 AND kind='detail'`,[source,payload.id,JSON.stringify(refs),[locale]]);
      });
     }
-    for(const id of response.notFound)await this.failWork(source,id,'detail','SYNC_DETAIL_NOT_FOUND');
-   }}catch(error){if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'))throw error;for(const job of wanted.filter(j=>!(error instanceof FullSyncError)||!error.affectedIds||error.affectedIds.includes(j.external_id)))await this.failWork(source,job.external_id,'detail',errorCode(error));throw error;}
+    for(const id of response.notFound){
+     const job=wanted.find(entry=>entry.external_id===id);
+     if(job&&await this.failDetail(job,'SYNC_DETAIL_NOT_FOUND'))stoppedReplay.add(replayKey(job));
+    }
+   }}catch(error){if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'))throw error;for(const job of wanted.filter(j=>!(error instanceof FullSyncError)||!error.affectedIds||error.affectedIds.includes(j.external_id)))await this.failDetail(job,errorCode(error));throw error;}
   }
-  let applied=0;
-  for(const job of jobs){try{await this.transaction(async tx=>{
+  let applied=0,replayFlush=0;
+  for(const job of jobs){
+   if(stoppedReplay.has(replayKey(job)))continue;
+   if(job.replay_id&&replayFlush++%ADMISSION_REPLAY_BATCH===0)await this.heavy();
+   try{await this.transaction(async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    const current=(await tx.query("SELECT * FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' FOR UPDATE",[job.source,job.external_id])).rows[0];
-   const member=await ensureMember(tx,job.source,job.external_id);
-   if(!current||current.locales.length!==3)return;
-   if(String(current.generation)!==String(member.desired_generation)||member.state==='withdrawn'){
+   if(!current||String(current.generation)!==String(job.generation)||current.attempts>=5||current.locales.length!==3)return;
+   const member=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2 FOR UPDATE',[job.source,job.external_id])).rows[0]!;
+   if(String(current.generation)!==String(member.desired_generation)||member.state==='withdrawn'&&!job.replay_id){
     await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'detail'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail'",[job.source,job.external_id]);return;}
+   const replay=job.replay_id?await checkScheduledReplayDetail(tx,job.source,job.external_id,String(current.generation)):undefined;
+   if(replay&&!replay.stillCurrent){
+    await retireReplayDetail(tx,replay,job.source,job.external_id,String(current.generation));
+    return;
+   }
+   if(job.replay_id&&(!replay?.canApply||!await physicalCleanupAllowed(tx)))return;
    const docs=await loadSourceDocumentRefs(tx,current.document_refs),detail=docs.find(d=>d.kind==='detail'&&d.locale==='en')?.payload as Record<string,unknown>|undefined;
    // Explicit active/removed evidence is different from HTTP notFound, which remains unresolved.
-   const withdrawn=detail?.status==='removed'||detail?.status==='withdrawn';
-   if(Array.isArray(detail?.alsoListedOn))for(const entry of detail.alsoListedOn){if(entry&&typeof entry==='object'&&'source' in entry&&'id' in entry&&['che168','dongchedi'].includes(String(entry.source))&&/^\d{1,100}$/.test(String(entry.id)))await bindAlias(tx,job.source,job.external_id,{source:entry.source as Source,id:String(entry.id)},new Date().toISOString(),!restrictToSample);}
+   const removed=(status:unknown)=>status==='removed'||status==='withdrawn';
+   const replayDetails=replay?docs.filter(d=>d.kind==='detail'):[];
+   const replayStatuses=replayDetails.map(d=>(d.payload as Record<string,unknown>)?.status);
+   const withdrawn=replay?replayStatuses.every(removed):removed(detail?.status);
+   if(replay){
+    const sourceTimes=replayDetails.map(doc=>new Date(doc.sourceUpdatedAt??doc.observedAt));
+    if(replayStatuses.length!==3||(!withdrawn&&replayStatuses.some(status=>status!=='active'))||
+       sourceTimes.some((at,index)=>!(at>=replay.business_at&&at<=new Date(replayDetails[index]!.observedAt))))
+     throw new FullSyncError('SYNC_REPLAY_STATUS_UNVERIFIED');
+    if(withdrawn){
+     const removedAt=new Date(Math.max(...sourceTimes.map(at=>at.getTime())));
+     for(const doc of replayDetails)await persistSourceDocument(tx,doc);
+     await rememberFormalWithdrawal(tx,job.source,job.external_id,replay.event_id,removedAt);
+     await retireReplayDetail(tx,replay,job.source,job.external_id,String(current.generation),'verified_withdrawn');
+     return;
+    }
+    await permitFullSyncAdmission(tx);
+    await tx.query("SELECT set_config('hd.external_full_admission_replay',$1,true)",[replay.replay_id]);
+    if(!await admitFormalListing(tx,job.source,job.external_id))return;
+    if(replay.operation==='relist')await clearFormalWithdrawal(tx,job.source,job.external_id,replay.business_at,replay.event_id);
+    await tx.query('UPDATE external_full_members SET event_order=$3,business_at=$4 WHERE source=$1 AND external_id=$2',
+     [job.source,job.external_id,replay.event_id,replay.business_at]);
+   }
+   if(Array.isArray(detail?.alsoListedOn))for(const entry of detail.alsoListedOn){if(entry&&typeof entry==='object'&&'source' in entry&&'id' in entry&&['che168','dongchedi'].includes(String(entry.source))&&/^\d{1,100}$/.test(String(entry.id)))await bindAlias(tx,job.source,job.external_id,{source:entry.source as Source,id:String(entry.id)},new Date().toISOString(),!restrictToSample&&!replay);}
    const canonical=(await tx.query('SELECT canonical_id FROM external_full_members WHERE source=$1 AND external_id=$2',[job.source,job.external_id])).rows[0]!.canonical_id;
    const at=new Date().toISOString();
    const hasReport=detail?.hasInspectionReport===true||detail?.inspectionAvailable===true;
@@ -405,16 +572,40 @@ export class FullSyncWorker{
     sampled=sampled OR (SELECT last_capacity_sample=0 FROM external_full_sync WHERE id=1),has_report=$6,report_state=$7 WHERE source=$1 AND external_id=$2`,[job.source,job.external_id,withdrawn?'withdrawn':'active',current.locales,at,hasReport,reportState]);
    if(member.sampled&&withdrawn)await advanceCapacitySampleLifecycle(tx);
    await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:canonical,operation:withdrawn?'withdraw':'upsert',documents:docs,at,batchId:member.last_snapshot??randomUUID()});
+   if(replay){
+    await tx.query("UPDATE external_full_admission_replay_items SET state='verified_active',processed_at=clock_timestamp() WHERE replay_id=$1 AND event_id=$2",
+     [replay.replay_id,replay.event_id]);
+    await finishReplayPlan(tx,replay.replay_id);
+   }
    await recordDetailTiming(tx,job.source,job.external_id,String(member.desired_generation));
    await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'detail'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail'",[job.source,job.external_id]);
    await tx.query("UPDATE external_full_members SET photo_expires_at=(SELECT min(e.expires_at) FROM external_media e JOIN external_listings l ON l.id=e.listing_id WHERE l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id=$2 AND e.active) WHERE source=$1 AND external_id=$2",[job.source,job.external_id]);
    if(!withdrawn&&!noReport)await queue(tx,job.source,job.external_id,'report',member.desired_generation,10);
    applied++;
-  });}catch(error){await this.failWork(job.source,job.external_id,'detail',errorCode(error));}}return applied;
+  });}catch(error){await this.failDetail(job,errorCode(error));}}return applied;
+ }
+ private async failDetail(job:{source:Source;external_id:string;generation:string;replay_id?:string|null},code:string){
+  if(!job.replay_id){await this.failWork(job.source,job.external_id,'detail',code);return false;}
+  return this.transaction(async tx=>{
+   await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+   const replay=await checkScheduledReplayDetail(tx,job.source,job.external_id,String(job.generation));
+   if(!replay)return true;
+   if(!replay.stillCurrent){
+    await retireReplayDetail(tx,replay,job.source,job.external_id,String(job.generation));
+    return true;
+   }
+   const attempts=await this.failWork(job.source,job.external_id,'detail',code,{tx,generation:String(job.generation)});
+   if(attempts!==undefined&&attempts>=5){
+    const state=code==='SYNC_DETAIL_NOT_FOUND'?'unresolved_not_found':code==='SYNC_REPLAY_STATUS_UNVERIFIED'?'unresolved_unverified':'retry_limit';
+    await retireReplayDetail(tx,replay,job.source,job.external_id,String(job.generation),state);
+    return true;
+   }
+   return false;
+  });
  }
  private async failWork(source:Source,id:string,kind:string,code:string,target?:{tx:PoolClient;generation:string}){
-  await (target?.tx??this.db.pool).query(`UPDATE external_full_work SET attempts=attempts+1,last_error_code=$4,due_at=now()+least(3600,power(2,attempts+1)*30)*interval '1 second'
-   WHERE source=$1 AND external_id=$2 AND kind=$3 AND ($5::bigint IS NULL OR generation=$5)`,[source,id,kind,code,target?.generation??null]);
+  return (await (target?.tx??this.db.pool).query<{attempts:number}>(`UPDATE external_full_work SET attempts=attempts+1,last_error_code=$4,due_at=now()+least(3600,power(2,attempts+1)*30)*interval '1 second'
+   WHERE source=$1 AND external_id=$2 AND kind=$3 AND ($5::bigint IS NULL OR generation=$5) RETURNING attempts`,[source,id,kind,code,target?.generation??null])).rows[0]?.attempts;
  }
  async report(sampleOnly=false){
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
@@ -465,6 +656,8 @@ export class FullSyncWorker{
     CROSS JOIN LATERAL (SELECT $1::uuid IS NOT NULL AND m.last_snapshot IS DISTINCT FROM $1
      AND ($2::uuid IS NULL OR m.last_snapshot IS DISTINCT FROM $2) AS missing_from_export) e
     WHERE m.state<>'withdrawn' AND NOT EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND kind='detail') AND
+    NOT EXISTS(SELECT 1 FROM external_full_admission_replay_items item WHERE item.source=m.source AND item.external_id=m.external_id
+      AND item.detail_generation=m.desired_generation AND item.state='scheduled') AND
     (last_detail_at IS NULL OR last_detail_at<now()-interval '7 days' OR last_accessed_at>last_detail_at OR photo_expires_at<now()+interval '1 day' OR (e.missing_from_export AND NOT verification_pending))
     ORDER BY (last_accessed_at>last_detail_at) DESC NULLS LAST,(photo_expires_at<now()+interval '1 day') DESC NULLS LAST,last_detail_at NULLS FIRST,source,external_id LIMIT 100`,[exports.completed,exports.applying])).rows;
    for(const m of rows){const next=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,verification_pending=verification_pending OR $3::boolean WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[m.source,m.external_id,m.missing_from_export])).rows[0]!;
@@ -591,6 +784,7 @@ export class FullSyncWorker{
    // Complete a bounded current-detail batch before CSV admission work.
    this.phase='details';const refreshed=await this.scheduledDetails();
    this.phase='withdrawals';await this.applyEvents(true);
+   this.phase='admission_replay';await this.replayAdmissions();
    this.phase='snapshot';
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();

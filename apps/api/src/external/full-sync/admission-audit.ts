@@ -35,6 +35,7 @@ const eventEvidence = z.strictObject({
     coverage: z.enum(['complete-recorded-window', 'sample-limit']),
     distinctIdentities: count.nullable(),
     stillMissingAfterLimit: count.nullable(),
+    outsideSelectedCsv: count.nullable().optional(), // Older verified manifests lacked this classification.
   }),
   unappliedPrice: pending,
   unappliedWithdrawal: pending,
@@ -159,7 +160,7 @@ async function readOnlyView<T>(db: Database, database: string, work: (tx: PoolCl
   return result.value;
 }
 
-async function readDeltas(tx: PoolClient,asOf: string) {
+async function readDeltas(tx: PoolClient,asOf: string,snapshotId:string) {
   const recent=await tx.query(`WITH bounded AS MATERIALIZED (
     SELECT source,external_id,event_id,operation,applied_at,error_code,business_at
     FROM public.external_full_events
@@ -167,11 +168,8 @@ async function readDeltas(tx: PoolClient,asOf: string) {
     ORDER BY received_at DESC LIMIT 20001
   ), latest AS MATERIALIZED (
     SELECT DISTINCT ON (source,external_id) * FROM bounded ORDER BY source,external_id,event_id DESC
-  ), denominator AS (SELECT count(*)::int AS n FROM bounded)
-  SELECT denominator.n AS received,CASE WHEN denominator.n<=20000 THEN 'complete-recorded-window' ELSE 'sample-limit' END AS coverage,
-    CASE WHEN denominator.n<=20000 THEN (SELECT count(*)::int FROM latest) END AS "distinctIdentities",
-    CASE WHEN denominator.n<=20000 THEN (
-      SELECT count(*)::int FROM latest e
+  ), denominator AS (SELECT count(*)::int AS n FROM bounded), denied AS MATERIALIZED (
+      SELECT e.source,e.external_id FROM latest e
       LEFT JOIN public.external_formal_admissions a USING (source,external_id)
       LEFT JOIN public.external_ingestion_identity_state w
         ON w.provider='chinacarapi' AND w.source=e.source AND w.external_id=e.external_id AND w.withdrawn
@@ -179,7 +177,16 @@ async function readDeltas(tx: PoolClient,asOf: string) {
       WHERE e.operation IN ('upsert','relist') AND e.error_code='SYNC_LISTING_LIMIT' AND e.applied_at IS NOT NULL AND a.source IS NULL
         AND (w.source IS NULL OR (e.operation='relist' AND e.event_id>w.business_order AND e.business_at>=w.business_at))
         AND (m.source IS NULL OR (e.operation='relist' AND e.event_id>m.event_order AND e.business_at>=m.business_at))
-    ) END AS "stillMissingAfterLimit" FROM denominator`,[asOf]);
+        AND (SELECT n FROM denominator)<=20000
+  )
+  SELECT denominator.n AS received,CASE WHEN denominator.n<=20000 THEN 'complete-recorded-window' ELSE 'sample-limit' END AS coverage,
+    CASE WHEN denominator.n<=20000 THEN (SELECT count(*)::int FROM latest) END AS "distinctIdentities",
+    CASE WHEN denominator.n<=20000 THEN (SELECT count(*)::int FROM denied) END AS "stillMissingAfterLimit",
+    CASE WHEN denominator.n<=20000 THEN (
+      SELECT count(*)::int FROM denied d
+      WHERE NOT EXISTS(SELECT 1 FROM public.external_full_stage s WHERE s.snapshot_id=$2::uuid
+        AND s.source=d.source AND s.external_id=d.external_id)
+    ) END AS "outsideSelectedCsv" FROM denominator`,[asOf,snapshotId]);
   const backlog=await tx.query(`WITH pending AS MATERIALIZED (
     SELECT CASE WHEN e.operation='withdraw' THEN 'Withdrawal' ELSE 'Price' END AS kind,
       e.applied_at IS NULL AS unapplied,e.received_at FROM public.external_full_events e
@@ -219,7 +226,7 @@ async function readManifest(db: Database, options: z.output<typeof AdmissionAudi
     const {admitted,admissionLimit,...snapshot}=result.rows[0];
     const asOf=options.restoreAsOf;
     return manifestSchema.parse({format:1,restoreReceipt:options.restoreReceipt,asOf,source,snapshot,
-      chunkRows:options.chunkRows,admitted,admissionLimit,deltas:await readDeltas(tx,asOf)});
+      chunkRows:options.chunkRows,admitted,admissionLimit,deltas:await readDeltas(tx,asOf,snapshot.id)});
   });
 }
 

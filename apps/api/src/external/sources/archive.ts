@@ -13,8 +13,8 @@ export function decodeSourceBlob(row:BlobRow){
 export async function persistSourceBlob(tx:PoolClient,hash:string,payload:unknown,rawText?:string){
  const raw=rawText??canonicalJson(payload);if(Buffer.byteLength(raw)>maximum||sha256(raw)!==hash||!isDatabaseJson(payload))throw new Error('Invalid source archive.');
  // Conflict avoids duplicate compression/storage; canonical bytes and exact raw bytes share one content hash.
- const old=(await tx.query<{compressed:boolean}>('SELECT compressed IS NOT NULL AS compressed FROM external_source_blobs WHERE hash=$1',[hash])).rows[0];
- if(old?.compressed){if(rawText!==undefined)await tx.query('UPDATE external_source_blobs SET raw_exact=true WHERE hash=$1',[hash]);return;}
+ const old=(await tx.query<{compressed:boolean;raw_exact:boolean}>('SELECT compressed IS NOT NULL AS compressed,raw_exact FROM external_source_blobs WHERE hash=$1',[hash])).rows[0];
+ if(old?.compressed){if(rawText!==undefined&&!old.raw_exact)await tx.query('UPDATE external_source_blobs SET raw_exact=true WHERE hash=$1 AND NOT raw_exact',[hash]);return;}
  await tx.query(`INSERT INTO external_source_blobs(hash,compressed,raw_exact) VALUES($1,$2,$3)
  ON CONFLICT(hash) DO UPDATE SET compressed=coalesce(external_source_blobs.compressed,excluded.compressed),raw_exact=external_source_blobs.raw_exact OR excluded.raw_exact OR external_source_blobs.raw_text IS NOT NULL,payload=NULL,raw_text=NULL`,[hash,gzipSync(raw),rawText!==undefined]);
 }

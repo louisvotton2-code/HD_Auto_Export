@@ -36,7 +36,7 @@ import { trimHttpWhitespace } from './media/conditional.js';
 import { ApiError, notFound } from './errors.js';
 import { createVehicleTranslator, type VehicleTranslator } from './vehicles/translation.js';
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
-import { createPublicCatalogCache, PublicCatalogUnavailableError, type CacheProtocol, type CatalogRevisionProof, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
+import { createPublicCatalogCache, PublicCatalogUnavailableError, type CacheProtocol, type CatalogRevisionProof, type PublicBrowseRoute, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
@@ -102,6 +102,10 @@ function sendInternalMedia(reply:FastifyReply,file:{filename:string},etag?:strin
 }
 
 const capacityRoutes = new Set<string>(['/api/v1/vehicles','/api/v1/vehicle-filters','/api/v1/vehicles/:id','/api/v1/home/vehicles']);
+const browseGenerationPath=`${SSR_CATALOG_PREFIX}/browse-generation`;
+const browseBypassHeaders=['cookie','authorization','proxy-authorization','range','if-range','if-match','if-none-match',
+  'if-modified-since','if-unmodified-since','rsc','next-router-state-tree','next-router-prefetch',
+  'next-router-segment-prefetch','next-action','x-middleware-prefetch'];
 const isCatalogTextSearch=(query:{q?:string})=>Boolean(query.q&&!externalInquiryNumber(query.q));
 
 export async function buildApp(config:Config=readConfig(), options:{
@@ -188,7 +192,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         longCacheRequests.add(request);
         reply.header(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER,'2');
       }
-      if(request.routeOptions.url!==SSR_CATALOG_VERSION_PATH && !ssrOriginLimiter.take()) {
+      if(request.routeOptions.url!==SSR_CATALOG_VERSION_PATH && request.routeOptions.url!==browseGenerationPath && !ssrOriginLimiter.take()) {
         reply.header('Retry-After','1');
         throw new ApiError(429,'RATE_LIMITED','SSR origin capacity is busy.',undefined,true);
       }
@@ -310,6 +314,20 @@ export async function buildApp(config:Config=readConfig(), options:{
   }
   const preciseHomepageRequested=(request:FastifyRequest,protocol:CacheProtocol)=>protocol===3&&
     request.headers[pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE_HEADER]===pub.INTERNAL_PUBLIC_HOMEPAGE_SCOPE;
+  function browseAllowed(request:FastifyRequest,internal:boolean) {
+    return config.publicBrowseCacheEnabled&&request.method==='GET'&&browseBypassHeaders.every(name=>request.headers[name]===undefined)&&(!internal||
+        request.headers[pub.PUBLIC_BROWSE_CACHE_POLICY_HEADER]===pub.PUBLIC_BROWSE_CACHE_POLICY);
+  }
+  async function browse<T>(route:PublicBrowseRoute,query:object,request:FastifyRequest,reply:FastifyReply,
+    load:(deadline:number,signal:AbortSignal)=>Promise<{value:T;expiresAt?:number}>,observe?:(phase:PublicCacheReadPhase)=>void) {
+    const result=await catalogCache.getBrowseSnapshot(route,{...query,mediaUrlPolicy:mediaRecipeRevision},load,requestSignals.get(request),observe);
+    reply.removeHeader(pub.INTERNAL_PUBLIC_CATALOG_CACHE_PROTOCOL_HEADER)
+      .header(pub.PUBLIC_BROWSE_CACHE_POLICY_HEADER,pub.PUBLIC_BROWSE_CACHE_POLICY)
+      .header(pub.PUBLIC_BROWSE_GENERATION_HEADER,result.generation)
+      .header(pub.PUBLIC_BROWSE_GENERATED_AT_HEADER,result.generatedAt)
+      .header(pub.PUBLIC_BROWSE_EXPIRES_AT_HEADER,result.expiresAt);
+    return result.value;
+  }
   type CatalogResourceRoute=Exclude<PublicCacheRoute,'filters'>;
   type CaptureRevision=(revision:PublicCatalogRevision,verifyAfterAdvance?:CatalogRevisionProof)=>void;
   type CatalogLoad<T>=(capture:CaptureRevision,deadline:number,signal:AbortSignal)=>Promise<T>;
@@ -356,6 +374,11 @@ export async function buildApp(config:Config=readConfig(), options:{
     }
     return response(await catalogCache.currentVersion(query.priceView==='usd',requestSignals.get(request),query.scope,cacheProtocol(request)),request);
   });
+  if(config.publicBrowseCacheEnabled) app.get(browseGenerationPath,{config:{rateLimit:{max:120}},
+    schema:{hide:true,response:{200:pub.InternalPublicBrowseGenerationResponseSchema,...errorResponses}}},async request=>{
+    const generation=await catalogCache.currentBrowseGeneration(requestSignals.get(request));
+    return response({policy:pub.PUBLIC_BROWSE_CACHE_POLICY,generation},request);
+  });
 
   app.get('/health/live',{schema:schema('health','liveness',{response:{200:z.object({status:z.literal('ok')})}})},async()=>({status:'ok' as const}));
   if(config.externalScale) app.get('/health/catalog-cache',{schema:{hide:true}},async()=>({enabled:config.publicCache.enabled,metrics:catalogCache.metrics()}));
@@ -375,6 +398,7 @@ export async function buildApp(config:Config=readConfig(), options:{
         LEFT JOIN external_report_evidence re ON false LEFT JOIN external_inspection_enrichment ie ON false
         LEFT JOIN external_listings el ON false WHERE h.id=1`);
       if(ready.rowCount!==1) throw new Error('Required initial data is unavailable');
+      if(config.publicBrowseCacheEnabled) await db.pool.query('SELECT browse_generation FROM public_catalog_state LIMIT 0');
       if(config.publicSeoEnabled) await db.pool.query('SELECT 1 FROM seo_external_selection LIMIT 0');
       if(config.externalCatalog) {
         const externalReady=await db.pool.query(`SELECT el.formal_primary,el.first_imported_at,j.received_seq,sb.hash,sb.compressed,ss.revision,state.revision,state.locale_counts,f.locale_mask,o.text_source_identities,fs.version,fs.detail_turn,fs.timing_started_at,obs.slot_at,ve.export_status,ev.source_revision,ev.overview,overview.row_count,overview.make_winner_labels,global_facets.row_count FROM external_catalog_state state
@@ -449,6 +473,18 @@ export async function buildApp(config:Config=readConfig(), options:{
       const keyword=isCatalogTextSearch(query);
       const advance=keyword?beginCatalogTiming(request,'list')
         :query.projection==='card'?beginCatalogTiming(request,'catalog-page'):undefined;
+      if(!query.cursor&&!query.pagination&&browseAllowed(request,internal)) {
+        const loaded=await browse('list',query,request,reply,async(deadline,signal)=>{
+          let expiresAt:number|undefined;
+          const {data,meta:{requestId:_,...meta}}=await inventory.listPublic(query,request.id,advance,undefined,{deadline,signal,
+            onBackend:pid=>{const timing=catalogReadTimings.get(request);if(timing)timing.backendPid=pid;}},
+            value=>{expiresAt=value;});
+          advance?.('cache_validate');
+          return {value:{data,meta},expiresAt};
+        },advance);
+        advance?.('response');
+        return {...loaded,meta:{...loaded.meta,requestId:request.id}};
+      }
       const {value:loaded,stamp,offsetSnapshot:oneOff}=await cached('list',query,async (capture,deadline,signal)=>{
         const budget=keyword?{deadline,signal,onBackend:(pid:number)=>{
           const timing=catalogReadTimings.get(request);
@@ -480,6 +516,20 @@ export async function buildApp(config:Config=readConfig(), options:{
     const legacy=internal&&request.headers['x-hd-catalog-scope']!=='filters';
     const {projection,locale:_locale,view,priceView,catalog:_catalog,...selection}=query;
     const usd=priceView==='usd', signal=requestSignals.get(request);
+    const trackProjection=projection==='home-models'||projection==='overview'||projection==='overview-models';
+    const advance=trackProjection?beginCatalogTiming(request,projection)
+      :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
+    const timing=catalogReadTimings.get(request);
+    const onBackend=timing?(pid:number)=>{timing.backendPid=pid;}:undefined;
+    if(browseAllowed(request,internal)) {
+      const data=await browse('filters',query,request,reply,async(deadline,flightSignal)=>{
+        const result=await inventory.filterResult(query,advance,{deadline,signal:flightSignal,onBackend});
+        advance?.('cache_validate');
+        return result;
+      },advance);
+      advance?.('response');
+      return response(data,request);
+    }
     const homepageFilters=!legacy&&usd&&view==='localized'&&(projection==='overview'||projection==='home-models')
       && Object.values(selection).every(value=>value===undefined);
     const protocol=homepageProtocol(request,reply,homepageFilters);
@@ -488,11 +538,6 @@ export async function buildApp(config:Config=readConfig(), options:{
       const data=projection==='home-models'?result.value.models:result.value.overview;
       return {data,meta:{requestId:request.id,catalogCache:result.versions.filters}};
     }
-    const trackProjection=projection==='home-models'||projection==='overview'||projection==='overview-models';
-    const advance=trackProjection?beginCatalogTiming(request,projection)
-      :isCatalogTextSearch(query)?beginCatalogTiming(request,'filters'):undefined;
-    const timing=catalogReadTimings.get(request);
-    const onBackend=timing?(pid:number)=>{timing.backendPid=pid;}:undefined;
     const {value,stamp}=legacy
       ? await catalogCache.getBoundedVersioned('filters',query,async(deadline,flightSignal)=>{
         const result=await inventory.filterResult(query,advance,{deadline,signal:flightSignal,onBackend});
@@ -509,6 +554,15 @@ export async function buildApp(config:Config=readConfig(), options:{
   });
   app.get(`${prefix}/home/vehicles`,{config:routeConfig,schema:publicSchema('homeVehicles',{querystring:pub.PublicLocaleQuerySchema,response:{200:home,...errorResponses}})},async(request,reply)=>{
     const query=request.query as pub.PublicLocaleQuery;
+    if(browseAllowed(request,internal)) {
+      const data=await browse('home',query,request,reply,async(deadline,signal)=>{
+        let expiresAt:number|undefined;
+        const value=await inventory.publicHome(query.locale,query.view,query.priceView,undefined,{deadline,signal},
+          expiry=>{expiresAt=expiry;});
+        return {value,expiresAt};
+      });
+      return response(data,request);
+    }
     const protocol=homepageProtocol(request,reply,query.priceView==='usd'&&query.view==='localized');
     if(preciseHomepageRequested(request,protocol)) {
       const result=await preciseHomepage(query.locale,request,reply);

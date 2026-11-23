@@ -28,13 +28,21 @@ export async function persistSourceDocument(tx:PoolClient,document:SourceDocumen
   await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[identity.join(':')]);
   await persistSourceBlob(tx,hash,document.payload,document.rawText);
   if(document.rawResponse){if(!/^[a-f0-9]{64}$/.test(document.rawResponse.hash))throw new Error('Invalid raw response hash.');if(document.rawResponse.body!==undefined)await persistSourceResponse(tx,{hash:document.rawResponse.hash,body:document.rawResponse.body});}
-  const result=await tx.query<{id:string}>(`INSERT INTO external_source_documents(id,provider,source,external_id,kind,locale,hash,presence,first_observed_at,last_observed_at,source_updated_at,event_sequence,response_hash)
+  const result=await tx.query<{id:string}>(`WITH saved AS (
+    INSERT INTO external_source_documents AS d(id,provider,source,external_id,kind,locale,hash,presence,first_observed_at,last_observed_at,source_updated_at,event_sequence,response_hash)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12) ON CONFLICT(provider,source,external_id,kind,locale,hash)
-    DO UPDATE SET response_hash=coalesce(excluded.response_hash,external_source_documents.response_hash),last_observed_at=greatest(external_source_documents.last_observed_at,excluded.last_observed_at) RETURNING id`,
+    DO UPDATE SET response_hash=coalesce(excluded.response_hash,d.response_hash),last_observed_at=greatest(d.last_observed_at,excluded.last_observed_at)
+    WHERE d.last_observed_at<excluded.last_observed_at OR (excluded.response_hash IS NOT NULL AND d.response_hash IS DISTINCT FROM excluded.response_hash)
+    RETURNING id
+  ) SELECT id FROM saved
+    UNION ALL SELECT id FROM external_source_documents
+    WHERE (provider,source,external_id,kind,locale,hash)=($2,$3,$4,$5,$6,$7) AND NOT EXISTS(SELECT 1 FROM saved)`,
     [randomUUID(),...identity,document.kind,document.locale,hash,sourcePresence(document.payload),document.observedAt,document.sourceUpdatedAt,document.eventSequence??null,document.rawResponse?.hash??null]);
   const id=result.rows[0]!.id;
   if(document.rawResponse){
-    await tx.query('INSERT INTO external_source_responses(document_id,response_hash,observed_at) VALUES($1,$2,$3) ON CONFLICT(document_id,response_hash) DO UPDATE SET observed_at=greatest(external_source_responses.observed_at,excluded.observed_at)',[id,document.rawResponse.hash,document.observedAt]);
+    await tx.query(`INSERT INTO external_source_responses AS r(document_id,response_hash,observed_at) VALUES($1,$2,$3)
+      ON CONFLICT(document_id,response_hash) DO UPDATE SET observed_at=excluded.observed_at WHERE r.observed_at<excluded.observed_at`,
+    [id,document.rawResponse.hash,document.observedAt]);
     if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_source_responses r WHERE r.document_id=$1
       AND r.response_hash<>(SELECT response_hash FROM external_source_documents WHERE id=$1)
       AND (r.observed_at<now()-interval '7 days' OR r.response_hash NOT IN(SELECT response_hash FROM external_source_responses WHERE document_id=$1 AND response_hash<>(SELECT response_hash FROM external_source_documents WHERE id=$1) ORDER BY observed_at DESC,response_hash DESC LIMIT 1))
@@ -45,9 +53,11 @@ export async function persistSourceDocument(tx:PoolClient,document:SourceDocumen
   if(!advanceHead)return {id,hash,headChanged:false};
   const previous=(await tx.query<{merged_payload:unknown}>(`SELECT merged_payload FROM external_source_heads WHERE provider=$1 AND source=$2 AND external_id=$3 AND kind=$4 AND locale=$5 FOR UPDATE`,[...identity,document.kind,document.locale])).rows[0];
   const merged=mergePresent(previous?.merged_payload,document.payload);
-  const head=await tx.query(`INSERT INTO external_source_heads(provider,source,external_id,kind,locale,document_id,observed_at,merged_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-    ON CONFLICT(provider,source,external_id,kind,locale) DO UPDATE SET document_id=excluded.document_id,observed_at=excluded.observed_at,merged_payload=excluded.merged_payload
-    WHERE external_source_heads.observed_at<excluded.observed_at RETURNING document_id`,[...identity,document.kind,document.locale,id,document.observedAt,JSON.stringify(merged)]);
+  const head=await tx.query(`INSERT INTO external_source_heads AS h(provider,source,external_id,kind,locale,document_id,observed_at,merged_payload)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT(provider,source,external_id,kind,locale) DO UPDATE SET document_id=excluded.document_id,observed_at=excluded.observed_at,
+      merged_payload=CASE WHEN h.merged_payload IS NOT DISTINCT FROM excluded.merged_payload THEN h.merged_payload ELSE excluded.merged_payload END
+    WHERE h.observed_at<excluded.observed_at RETURNING document_id`,[...identity,document.kind,document.locale,id,document.observedAt,JSON.stringify(merged)]);
   // Current plus one recent historical version; pending work, backup and staff-audit pins are exempt.
   if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_source_documents d WHERE d.provider=$1 AND d.source=$2 AND d.external_id=$3 AND d.kind=$4 AND d.locale=$5
     AND NOT EXISTS(SELECT 1 FROM external_source_heads h WHERE h.document_id=d.id)
@@ -68,7 +78,9 @@ export async function persistTrimDocument(tx:PoolClient,trimId:string,locale:Sou
   if(!/^[\w.-]{1,200}$/.test(trimId)||!timestamp(observedAt)||!isDatabaseJson(payload)||Buffer.byteLength(canonicalJson(payload))>16*1024*1024)throw new Error('Invalid shared trim document.');
   const hash=jsonHash(payload);
   await persistSourceBlob(tx,hash,payload);
-  await tx.query(`INSERT INTO external_trim_documents(provider,trim_id,locale,hash,last_observed_at) VALUES('chinacarapi',$1,$2,$3,$4) ON CONFLICT(provider,trim_id,locale,hash) DO UPDATE SET last_observed_at=greatest(external_trim_documents.last_observed_at,excluded.last_observed_at)`,[trimId,locale,hash,observedAt]);
+  await tx.query(`INSERT INTO external_trim_documents AS d(provider,trim_id,locale,hash,last_observed_at) VALUES('chinacarapi',$1,$2,$3,$4)
+    ON CONFLICT(provider,trim_id,locale,hash) DO UPDATE SET last_observed_at=excluded.last_observed_at
+    WHERE d.last_observed_at<excluded.last_observed_at`,[trimId,locale,hash,observedAt]);
   if(await physicalCleanupAllowed(tx))await tx.query(`DELETE FROM external_trim_documents d WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2
     AND hash<>(SELECT hash FROM external_trim_documents WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2 ORDER BY last_observed_at DESC,hash DESC LIMIT 1)
     AND (last_observed_at<now()-interval '7 days' OR hash NOT IN(SELECT hash FROM external_trim_documents WHERE provider='chinacarapi' AND trim_id=$1 AND locale=$2 ORDER BY last_observed_at DESC,hash DESC LIMIT 2))

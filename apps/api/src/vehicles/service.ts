@@ -887,7 +887,7 @@ export class InventoryService {
     });
   }
   async listPublic(query:PublicVehicleQuery,requestId:string,phase?: (phase:PublicListReadPhase)=>void,captureRevision?:CatalogRevisionObserver,
-    budget?:FilterReadBudget) {
+    budget?:FilterReadBudget,captureFxExpiry?:(expiresAt:number|undefined)=>void) {
     phase?.('database');
     return this.db.transaction(async connection=>{
       if(budget)remainingFilterTime(budget);
@@ -896,6 +896,7 @@ export class InventoryService {
       phase?.('revision');
       const observedRevision=captureRevision?await observeCatalogRevision(tx,query.priceView,captureRevision):null;
       const quote=query.priceView==='usd'?await readFxQuote(tx):null;
+      captureFxExpiry?.(quote?Date.parse(quote.expiresAt):undefined);
       const fx=query.priceView==='usd'?(quote?.version??'none'):undefined;
       const localized=query.view==='localized',includeExternal=this.externalCatalog&&localized,cursorMode=!!(query.cursor||query.pagination);
       const version=cursorMode?(observedRevision??(await tx.query<CatalogVersion>('SELECT epoch::text,revision::text FROM public_catalog_state WHERE id=1')).rows[0]!):null;
@@ -1058,7 +1059,8 @@ export class InventoryService {
       external=await externalFacets(tx,query,quote,scope?.pairs,phase,refresh);
     }
     phase?.('result');
-    return {value:facetData(staff,external,query,includeExternal),expiresAt:scope?.expiresAt};
+    const expiresAt=Math.min(scope?.expiresAt??Infinity,quote?Date.parse(quote.expiresAt):Infinity);
+    return {value:facetData(staff,external,query,includeExternal),expiresAt:Number.isFinite(expiresAt)?expiresAt:undefined};
   }
 
   async getHome():Promise<AdminHomeSections> {
@@ -1085,12 +1087,19 @@ export class InventoryService {
       return {version:input.version+1,sections};
     });
   }
-  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd',captureRevision?:CatalogRevisionObserver) {
-    return this.db.transaction(async tx=>{
-      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  async publicHome(locale:Locale,view?:'legacy'|'localized',priceView?:'usd',captureRevision?:CatalogRevisionObserver,
+    budget?:FilterReadBudget,captureFxExpiry?:(expiresAt:number|undefined)=>void) {
+    return this.db.transaction(async connection=>{
+      if(budget)remainingFilterTime(budget);
+      await connection.query(budget?catalogReadTransaction:'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const tx=budget?boundedReadClient(connection,budget):connection;
       if(captureRevision)await observeCatalogRevision(tx,priceView,captureRevision);
       const quote=priceView==='usd'?await readFxQuote(tx):null;
+      captureFxExpiry?.(quote?Date.parse(quote.expiresAt):undefined);
       return this.readPublicHome(tx,locale,view,priceView,quote);
+    }).catch(error=>{
+      if(budget)throwBoundedReadError(error);
+      throw error;
     });
   }
 

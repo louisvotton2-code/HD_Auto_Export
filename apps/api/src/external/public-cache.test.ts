@@ -370,6 +370,66 @@ test('negotiated internal entries retain their absolute Redis lifetime without r
   assert.equal((await read(cache,2)).value.load,4);
 });
 
+test('browse hits read only emergency generation and preserve original 600-second expiry across caches',async()=>{
+  let now=Date.parse('2026-11-23T00:00:00Z');
+  const store=new Store();
+  const checks:string[]=[];
+  let catalog=version(),generation=version(),calls=0;
+  const options={namespace:'hd:browse',maxEntries:64};
+  const dependencies={readRevision:async(_usd:boolean,scope:string)=>{
+    checks.push(scope);
+    return scope==='browse'?generation:catalog;
+  },store,now:()=>now};
+  const writer=new PublicCatalogCache(options,dependencies),reader=new PublicCatalogCache(options,dependencies);
+  const load=async()=>({value:{count:++calls}});
+  const query={locale:'zh',q:'海狮',page:2};
+  const first=await writer.getBrowseSnapshot('list',query,load);
+  assert.equal(Date.parse(first.expiresAt)-Date.parse(first.generatedAt),600_000);
+  assert.equal(store.ttls[0],600_000);
+  now+=597_000;
+  for(let i=2;i<=76;i++) {
+    catalog=version(String(i));
+    const hit=await reader.getBrowseSnapshot('list',query,load);
+    assert.deepEqual(hit,first);
+  }
+  assert.equal(reader.metrics().redisHits,1);
+  assert.deepEqual([...new Set(checks)],['browse']);
+  now+=3_000;
+  assert.equal((await reader.getBrowseSnapshot('list',query,load)).value.count,2);
+  const updated=await reader.getBrowseSnapshot('list',query,load);
+  generation=version('2');
+  const replaced=await writer.getBrowseSnapshot('list',query,load);
+  assert.notEqual(replaced.generation,updated.generation);
+  assert.equal(replaced.value.count,3);
+  assert.equal(await writer.currentBrowseGeneration(),replaced.generation);
+  assert.equal(await reader.currentBrowseGeneration(),replaced.generation);
+  assert.deepEqual([...new Set(checks)],['browse']);
+});
+
+test('browse rejects pre-hide fills, keeps signed-media and FX cutoffs, and fails closed without the generation',async()=>{
+  const now=Date.parse('2026-11-23T00:00:00Z');
+  let generation=version(),broken=false;
+  const cache=new PublicCatalogCache({namespace:'hd:browse'},{readRevision:async()=>{
+    if(broken)throw new Error('private db failure');
+    return generation;
+  },now:()=>now});
+  let loads=0;
+  const result=await cache.getBrowseSnapshot('home',{},async()=>{
+    loads++;
+    if(loads===1) {
+      generation=version('2');
+      return {value:{items:[{id:'hidden'}]},expiresAt:now+30_000};
+    }
+    return {value:{items:[{id:'visible',remote:{expiresAt:new Date(now+60_000).toISOString()}}]},expiresAt:now+45_000};
+  });
+  assert.equal(loads,2);
+  assert.deepEqual(result.value.items.map(item=>item.id),['visible']);
+  assert.equal(result.generation,await cache.currentBrowseGeneration());
+  assert.equal(Date.parse(result.expiresAt),now+45_000);
+  broken=true;
+  await assert.rejects(cache.getBrowseSnapshot('home',{},async()=>({value:{items:[]}})),{status:503,reason:'revision-read'});
+});
+
 test('internal facet lifetime incorporates an omitted cover dependency and the active FX cutoff', async () => {
   const now=Date.parse('2026-11-18T00:00:00Z');
   const revision={...version(),fx:{version:'rate',expiresAt:now+70_000}};
