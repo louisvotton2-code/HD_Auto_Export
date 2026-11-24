@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import type { PublicVehicleFilters, PublicVehicleQuery } from '@hd/contracts/public';
+import { publicCatalogSearchIssue, type PublicVehicleFilters, type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleMessages } from '../public-messages';
 import { liveVehicleCopy } from '../live-copy';
@@ -20,6 +20,7 @@ export function PublicVehicleFiltersForm({
   locale,
   filters,
   filtersPending = false,
+  shortKeyword = false,
   brandModels,
   brandPending,
   modelFilters,
@@ -39,6 +40,7 @@ export function PublicVehicleFiltersForm({
   locale: Locale;
   filters: PublicVehicleFilters['data'] | null;
   filtersPending?: boolean;
+  shortKeyword?: boolean;
   brandModels: PublicVehicleFilters['data']['models'];
   brandPending: boolean;
   modelFilters: Pick<PublicVehicleFilters['data'], 'trims' | 'generations'> | null;
@@ -85,7 +87,7 @@ export function PublicVehicleFiltersForm({
     }
     setError(false);
     const href = publicCatalogHref(locale, parsed, 1);
-    if (event.nativeEvent.isTrusted) onSubmitFilters?.(href);
+    if (event.nativeEvent.isTrusted && !publicCatalogSearchIssue(parsed)) onSubmitFilters?.(href);
     navigate(`${href}${href.includes('?') ? '&' : '?'}page=1`);
   }
   function options(items: { id: string; name: string; count: number }[], value: string) {
@@ -172,12 +174,25 @@ export function PublicVehicleFiltersForm({
           type="search"
           maxLength={100}
           defaultValue={query.q ?? ''}
+          aria-describedby={shortKeyword ? 'catalog-keyword-help' : undefined}
           placeholder={live.search}
         />
       </label>
       <button className={styles.searchButton} type="submit">
         {c.search}
       </button>
+      {shortKeyword && c.shortSearch && (
+        <div className={styles.filterNotice} role="status" data-testid="catalog-short-keyword">
+          <div id="catalog-keyword-help">{c.shortSearch.message}</div>
+          {!filters?.makes.length && (
+            <a href={publicCatalogHref(locale, { ...query, q: undefined }, 1)} onClick={(event) => {
+              if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              navigate(event.currentTarget.href);
+            }}>{c.shortSearch.browseBrands}</a>
+          )}
+        </div>
+      )}
       <label>
         <span>{c.sort}</span>
         <select name="sort" defaultValue={query.sort ?? 'newest'}>
@@ -323,7 +338,7 @@ export function PublicVehicleFiltersForm({
           {c.optionsLoading}
         </p>
       )}
-      {!filters && !filtersPending && (
+      {!shortKeyword && !filters && !filtersPending && (
         <p className={styles.filterNotice} data-testid="public-filter-unavailable">
           {t.filterUnavailable}{' '}
           <a

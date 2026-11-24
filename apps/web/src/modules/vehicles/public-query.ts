@@ -2,6 +2,7 @@ import {
   PublicFilterQuerySchema,
   PublicVehicleQuerySchema,
   isPublicCatalogOffsetAllowed,
+  publicCatalogSearchIssue,
   type PublicVehicleQuery,
 } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
@@ -118,11 +119,11 @@ export function parseCatalogPageQuery(
 }
 
 export type CatalogPageRequest = {
-  kind: 'query' | 'offset_limit';
+  kind: 'query' | 'offset_limit' | 'short_query';
   query: PublicVehicleQuery;
 };
 
-/** Only a valid offset beyond the public browsing window gets a readable recovery page. */
+/** Keep valid filters available on the short-keyword and offset recovery pages. */
 export function parseCatalogPageRequest(
   params: Record<string, string | string[] | undefined>,
   locale: Locale,
@@ -135,13 +136,13 @@ export function parseCatalogPageRequest(
     if (!PublicVehicleQuerySchema.shape[key].safeParse(value).success) return null;
   }
   const query = parseCatalogPageQuery(params, locale);
-  if (query) return { kind: 'query', query };
+  if (query) return { kind: publicCatalogSearchIssue(query) ? 'short_query' : 'query', query };
   if (typeof params.page !== 'string' || !/^[1-9]\d*$/.test(params.page)) return null;
   const page = PublicVehicleQuerySchema.shape.page.safeParse(Number(params.page));
   if (!page.success) return null;
   const firstPage = parseCatalogPageQuery({ ...params, page: '1' }, locale);
   if (!firstPage || isPublicCatalogOffsetAllowed(page.data, firstPage.pageSize)) return null;
-  return { kind: 'offset_limit', query: firstPage };
+  return { kind: publicCatalogSearchIssue(firstPage) ? 'short_query' : 'offset_limit', query: firstPage };
 }
 
 export function parseFilterQuery(

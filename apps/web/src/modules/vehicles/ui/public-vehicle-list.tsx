@@ -6,6 +6,7 @@ import {
 } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import {
+  publicCatalogSearchIssue,
   PublicVehicleFiltersSchema,
   type PublicVehicleFilters,
   type PublicVehicleCardList as CatalogResult,
@@ -18,11 +19,11 @@ import { usePointerTilt } from '@/shared/ui/use-pointer-tilt';
 import { publicVehicleMessages } from '../public-messages';
 import { publicCatalogHref, publicVehicleCover } from '../public-presentation';
 import {
-  parseCatalogPageQuery,
+  parseCatalogPageRequest,
   publicQueryString,
   publicUsdCatalogQuery,
 } from '../public-query';
-import { catalogFacetOverviewSchema, catalogFacetUrl, type CatalogFacetOverview } from '../catalog-facets';
+import { catalogFacetOverviewSchema, catalogFacetOverviewScope, catalogFacetUrl, type CatalogFacetOverview } from '../catalog-facets';
 import { localizedCardListSchema } from '../localized-projection';
 import { PublicFreshnessBoundary, usePublicResource, type PublicFreshness } from '../application/use-public-resource';
 import { PublicVehicleCard } from './public-vehicle-card';
@@ -106,40 +107,43 @@ export function PublicVehicleList({
       const all = search.getAll(key);
       input[key] = all.length > 1 ? all : all[0]!;
     }
-    return parseCatalogPageQuery(input, locale);
+    const request = parseCatalogPageRequest(input, locale);
+    return request && request.kind !== 'offset_limit' ? request.query : null;
   }, [search, locale]);
   const selected = query ?? initialQuery;
+  const shortSearch = Boolean(publicCatalogSearchIssue(selected));
   const appliedKey = publicCatalogHref(locale, selected);
   const [draftParents, setDraftParents] = useState<{ appliedKey: string; make: string; model: string } | null>(null);
   const parents = draftParents?.appliedKey === appliedKey ? draftParents : null;
   if (draftParents && !parents) setDraftParents(null);
   const make = parents?.make ?? selected.make ?? '';
   const model = parents?.model ?? selected.model ?? '';
-  const url = `/api/v1/vehicles/?${publicQueryString(publicUsdCatalogQuery(selected))}`;
+  const url = shortSearch ? null : `/api/v1/vehicles/?${publicQueryString(publicUsdCatalogQuery(selected))}`;
   const cooldown = useRef(initialRetryAfter > 0 ? Date.now() + initialRetryAfter * 1000 : 0);
+  const navigationOptions = { navigationPath: `/${locale}/cars/`, navigationSearch: search.toString(), cooldown };
   const resource = usePublicResource(url, result, localizedCardListSchema(locale, 'usd'), {
-    navigationPath: `/${locale}/cars/`,
+    ...navigationOptions,
     initialRetryAfter,
-    cooldown,
   });
-  const filterUrl = catalogFacetUrl(locale, selected, {
+  const filterUrl = shortSearch ? null : catalogFacetUrl(locale, catalogFacetOverviewScope(selected), {
     selectedModel: selected.make ? undefined : selected.model,
   });
-  const facetOptions = { navigationPath: `/${locale}/cars/`, cooldown, loadOnMount: deferFilters };
+  const facetOptions = { ...navigationOptions, loadOnMount: deferFilters };
   const facets = usePublicResource(filterUrl, filters, catalogFacetOverviewSchema, facetOptions);
   const brand = usePublicResource(
-    make ? catalogFacetUrl(locale, selected, { make }) : null,
+    !shortSearch && make ? catalogFacetUrl(locale, selected, { make }) : null,
     initialBrandFilters, PublicVehicleFiltersSchema, facetOptions,
   );
   const modelOptions = usePublicResource(
-    make && model ? catalogFacetUrl(locale, selected, { make, model }) : null,
+    !shortSearch && make && model ? catalogFacetUrl(locale, selected, { make, model }) : null,
     initialModelFilters, PublicVehicleFiltersSchema, facetOptions,
   );
-  const facetOverview = facets.dataCurrent ? facets.data : null;
+  // Previously loaded options let a shopper add a brand to a short keyword without fetching an unscoped search.
+  const facetOverview = shortSearch || facets.dataCurrent ? facets.data : null;
   const brandFilters = brand.dataCurrent ? brand.data?.data : null;
   const modelFilters = modelOptions.dataCurrent ? modelOptions.data?.data ?? null : null;
-  const brandPhase = make && !brandFilters ? brand.phase : undefined;
-  const modelPhase = make && model && !modelFilters ? modelOptions.phase : undefined;
+  const brandPhase = !shortSearch && make && !brandFilters ? brand.phase : undefined;
+  const modelPhase = !shortSearch && make && model && !modelFilters ? modelOptions.phase : undefined;
   const scopedPhase = brandPhase === 'checking' || modelPhase === 'checking' ? 'checking'
     : brandPhase === 'error' || modelPhase === 'error' ? 'error'
       : undefined;
@@ -147,8 +151,8 @@ export function PublicVehicleList({
     if (brandPhase === 'error') void brand.reload();
     if (modelPhase === 'error') void modelOptions.reload();
   }
-  const data = resource.data;
-  const phase = navigationFrom !== null ? 'checking' : resource.phase;
+  const data = shortSearch ? null : resource.data;
+  const phase = shortSearch ? 'fresh' : navigationFrom !== null ? 'checking' : resource.phase;
   const submittedFilter = useRef<{ target: string; from: typeof data; grant: number } | null>(null);
   function recordFilterSubmit(target: string) {
     const grant = currentAnalyticsGrant();
@@ -223,7 +227,8 @@ export function PublicVehicleList({
                 key={appliedKey}
                 locale={locale}
                 filters={facetOverview?.data ?? null}
-                filtersPending={facets.phase === 'checking'}
+                filtersPending={!shortSearch && facets.phase === 'checking'}
+                shortKeyword={shortSearch}
                 brandModels={make ? brandFilters?.models ?? [] : facetOverview?.data.models ?? []}
                 brandPending={brandPhase === 'checking'}
                 modelFilters={modelFilters}
@@ -250,7 +255,7 @@ export function PublicVehicleList({
               ref={results}
               aria-busy={phase === 'checking'}
             >
-              <div className={styles.catalogStatus}>
+              {!shortSearch && <div className={styles.catalogStatus}>
                 <PublicResourceStatus
                   locale={locale}
                   phase={phase}
@@ -258,8 +263,8 @@ export function PublicVehicleList({
                   retryAfter={resource.retryAfter}
                   fallbackHref={publicCatalogHref(locale, selected)}
                 />
-              </div>
-              {!query || !data ? (
+              </div>}
+              {shortSearch ? null : !query || !data ? (
                 <div className={styles.state} role="alert" data-testid="public-catalog-error">
                   <p>{t.unavailable}</p>
                   <a

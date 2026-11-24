@@ -1,8 +1,14 @@
-import { PublicVehicleFiltersSchema, type PublicVehicleFilters } from '@hd/contracts/public';
+import { publicCatalogSearchIssue, PublicVehicleFiltersSchema, type PublicVehicleFilters, type PublicVehicleQuery } from '@hd/contracts/public';
 import type { Locale } from '@/i18n/routing';
 import { publicQueryString, publicUsdFilterQuery, type UsdFilterScope } from './public-query';
 
 type FacetSelection = { make?: string; model?: string; selectedModel?: string };
+
+/** The overview supplies brand choices across the catalog. Scoped lists and model options keep the keyword. */
+export function catalogFacetOverviewScope(query: PublicVehicleQuery): UsdFilterScope {
+  const { locale, q } = query;
+  return publicCatalogSearchIssue({ locale, q }) ? { ...query, q: undefined } : query;
+}
 
 export function catalogFacetUrl(
   locale: Locale,
