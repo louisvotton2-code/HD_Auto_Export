@@ -58,7 +58,8 @@ async function main(){
     beforeBulk:(count,source)=>reserveBulkQuota(db,count,source),
     onBulkAttempt:observation=>console.info(JSON.stringify({event:'external.full_sync.bulk_attempt',...observation}))
    });
-   worker=new FullSyncWorker(db,client,directory);if(!await worker.acquire()){process.exitCode=75;return;}
+   worker=new FullSyncWorker(db,client,directory,undefined,observation=>console.info(JSON.stringify(observation)));
+   if(!await worker.acquire()){process.exitCode=75;return;}
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});
    const max=Number(flags.get('--max-ticks')??1);if(!Number.isInteger(max)||max<1||max>10000)throw new FullSyncError('SYNC_USAGE');
    for(let i=0;!stopped&&(command==='serve'||i<max);i++){

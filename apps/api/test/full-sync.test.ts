@@ -459,15 +459,24 @@ test('formal full synchronization has durable independent receipt/application an
    const records=Array.from({length:10000},(_,i)=>catalogColumns.map(c=>c==='source'?'che168':c==='id'?String(300000+i):'').join(','));
    const csv=Buffer.from(catalogColumns.join(',')+'\n'+records.join('\n')+'\n');await writeFile(file,csv);
    await database.pool.query("INSERT INTO external_full_snapshots(id,generated_at,state,path,sha256,bytes) VALUES($1,$2,'staging',$3,$4,$5)",[id,at,file,createHash('sha256').update(csv).digest('hex'),csv.length]);
+   try{
    await worker!.snapshot();const state=(await database.pool.query('SELECT state,rows,staged FROM external_full_snapshots WHERE id=$1',[id])).rows[0];
    assert.equal(state.rows,'10000');assert.equal(state.staged,'10000');assert.equal(state.state,'applying');
    assert.equal((await database.pool.query('SELECT apply_cursor FROM external_full_snapshots WHERE id=$1',[id])).rows[0].apply_cursor,'500');
    const calls:number[]=[];
    (client as unknown as {bulk:Function}).bulk=async function*(source:string,ids:string[]){calls.push(ids.length);const payload={results:ids.map(id=>({source,id,status:'active',hasInspectionReport:false})),notFound:[]};yield {...payload,rawResponse:raw(payload)};};
-   assert.equal(await worker!.details(),500);assert.deepEqual(calls,[500,500,500]);
+   let committed=0;
+   while(committed<500){
+    const processed=await worker!.details();
+    assert.ok(processed>0,'each slice must make progress on the persisted detail jobs');
+    committed+=processed;
+   }
+   assert.equal(committed,500);assert.deepEqual(calls,[500,500,500],'prepared language results are reused across slices');
+   assert.equal((await database.pool.query(`SELECT count(*)::int AS applied FROM external_full_members
+    WHERE last_snapshot=$1 AND state='active' AND applied_generation=desired_generation AND cardinality(locales)=3`,[id])).rows[0].applied,500);
 
    assert.equal((await database.pool.query('SELECT capacity_pending FROM external_full_sync')).rows[0].capacity_pending,false);
-   await database.pool.query("UPDATE external_full_snapshots SET state='failed' WHERE id=$1",[id]);
+   }finally{await database.pool.query("UPDATE external_full_snapshots SET state='failed' WHERE id=$1",[id]);}
   });
   await t.test('archive cleanup advances past a pruned generation and respects backup pins',async()=>{
    const ids=[randomUUID(),randomUUID(),randomUUID()];

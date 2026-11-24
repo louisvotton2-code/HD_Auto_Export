@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {performance} from 'node:perf_hooks';
 import path from 'node:path';
 import {createDatabase,type Database} from '../src/db/index.js';
 import {migrateDatabase} from '../src/db/migrate.js';
 import {FullSyncWorker,configureFullSync} from '../src/external/full-sync/engine.js';
+import type {DetailMaterializationObservation} from '../src/external/full-sync/materialization-log.js';
 import type {FullSyncClient} from '../src/external/full-sync/client.js';
 import {FullSyncError} from '../src/external/full-sync/types.js';
 import type {Change,Source} from '../src/external/full-sync/types.js';
@@ -217,6 +219,165 @@ test('sync priority, fairness and five-stage observations persist without confus
    await worker!.tick();assert.ok(calls.includes('snapshot'));assert.equal(calls.filter(c=>c==='report').length,1);
    calls.length=0;ctx.mock.method(worker!,'details',async()=>{throw new FullSyncError('SYNC_RATE_LIMITED');});
    await assert.rejects(worker!.tick(),/SYNC_RATE_LIMITED/);assert.equal(calls.includes('snapshot'),false);assert.equal(calls.includes('report'),false);
+  });
+  await t.test('detail materialization yields at transaction boundaries and charges only the timed-out generation',async ctx=>{
+   const ids=['93001','93002','93003','93004'];
+   await worker!.close();
+   await database.pool.query('DELETE FROM external_full_work');
+   await database.pool.query(`UPDATE external_full_sync SET capacity_pending=false,last_capacity_sample=0,
+    next_delta_at=now()+interval '1 hour',next_maintenance_at=now()+interval '1 hour',
+    next_snapshot_at=now()+interval '1 hour' WHERE id=1`);
+   await database.pool.query(`INSERT INTO external_formal_admissions(source,external_id) SELECT 'che168',unnest($1::text[])`,[ids]);
+   await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,business_at)
+    SELECT 'che168',id,'budget:'||id,$2 FROM unnest($1::text[]) id`,[ids,at]);
+   await database.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,queued_at)
+    SELECT 'che168',id,'detail',1,$2 FROM unnest($1::text[]) id`,[ids,at]);
+   const requested:string[]=[];
+   const detailClient={...client,bulk:async function*(source:Source,vehicleIds:string[],locale:string){
+    requested.push(locale);assert.deepEqual(vehicleIds,ids);
+    const results=vehicleIds.map(id=>({source,id,status:'active',title:locale,hasInspectionReport:true}));
+    const body=JSON.stringify({results,notFound:[]});
+    yield {results,notFound:[],rawResponse:{body,hash:createHash('sha256').update(body).digest('hex')}};
+   }} as unknown as FullSyncClient;
+   let monotonicMs=0,timeoutId:string|undefined,replacement:Change|undefined;
+   const applied:string[]=[],phases:string[]=[],observations:DetailMaterializationObservation[]=[];
+   const budgetWorker=new FullSyncWorker(database,detailClient,directory,async(tx,input)=>{
+    applied.push(`${input.operation}:${input.externalId}`);
+    if(input.operation==='withdraw')return;
+    input.observe?.('listing_upsert');
+    if(input.externalId===timeoutId){
+     await tx.query("UPDATE external_full_members SET verification_pending=true WHERE source='che168' AND external_id=$1",[input.externalId]);
+     await tx.query("SET LOCAL statement_timeout='25ms'");
+     await tx.query('SELECT pg_sleep(1)');
+    }
+    if(input.externalId===ids[0])monotonicMs=5000;
+   },value=>observations.push(value));
+   worker=budgetWorker;
+   assert.equal(await budgetWorker.acquire(),true);budgetWorker.space=async()=>({used:0,total:1e12,available:1e12});
+   ctx.mock.method(budgetWorker,'sampleRemaining',async()=>500);
+   ctx.mock.method(performance,'now',()=>monotonicMs);
+   const work=async()=>(await database.pool.query(`SELECT external_id,kind,generation::text,attempts,locales,document_refs,last_error_code,
+    due_at>clock_timestamp() AS backed_off FROM external_full_work WHERE source='che168' AND external_id=ANY($1::text[]) ORDER BY external_id,kind`,[ids])).rows;
+   const refs=async()=>(await database.pool.query(`SELECT reference,count(*)::int AS documents FROM external_source_document_refs
+    WHERE kind='pending' AND reference=ANY($1::text[]) GROUP BY reference ORDER BY reference`,[ids.map(id=>`full:che168:${id}:detail`)])).rows;
+   assert.equal(await budgetWorker.details(),1);
+   assert.deepEqual(applied,['upsert:93001']);assert.deepEqual(requested,['zh','en','ru']);
+   const slice=observations.find(value=>value.event==='external.full_sync.materialization_slice');
+   assert.deepEqual(slice&&[slice.stop,slice.prepared,slice.attempted,slice.applied,slice.failed],['budget',4,1,1,0]);
+   const prepared=await work(),protectedRefs=await refs();
+   assert.deepEqual(prepared.map(row=>[row.external_id,row.kind,row.document_refs.length]),[['93001','report',0],['93002','detail',3],['93003','detail',3],['93004','detail',3]]);
+   assert.deepEqual(protectedRefs,ids.slice(1).map(id=>({reference:`full:che168:${id}:detail`,documents:3})));
+
+   const applyEvents=budgetWorker.applyEvents.bind(budgetWorker),receiveDelta=budgetWorker.receiveDelta.bind(budgetWorker);
+   ctx.mock.method(budgetWorker,'applyEvents',async(withdrawOnly=false)=>{phases.push(withdrawOnly?'withdrawals':'delta_apply');return applyEvents(withdrawOnly);});
+   ctx.mock.method(budgetWorker,'receiveDelta',async()=>{phases.push('delta_receive');return receiveDelta();});
+   for(const method of ['snapshot','report','rotate','pruneStaging'] as const)ctx.mock.method(budgetWorker,method,async()=>{phases.push(method);return 0;});
+   const transaction=database.transaction.bind(database);
+   ctx.mock.method(database,'transaction',async(work:Parameters<Database['transaction']>[0])=>{
+    try{return await transaction(work);}catch(error){
+     if(error&&typeof error==='object'&&'code' in error&&error.code==='57014'){
+      phases.push('57014');
+      if(replacement){const change=replacement;replacement=undefined;feed=[change];await receiveDelta();await applyEvents();}
+     }
+     throw error;
+    }
+   });
+   monotonicMs=0;timeoutId=ids[1];
+   await budgetWorker.tick();
+   assert.deepEqual(phases,['withdrawals','delta_apply','57014']);
+   assert.deepEqual(applied,['upsert:93001','upsert:93002']);
+   assert.deepEqual(await refs(),protectedRefs);
+   assert.deepEqual(await work(),[prepared[0],{...prepared[1],attempts:1,last_error_code:'SYNC_DETAIL_SQL_TIMEOUT',backed_off:true},...prepared.slice(2)]);
+   assert.equal((await budgetWorker.state()).last_error_code,'SYNC_DETAIL_SQL_TIMEOUT');
+   const timeout=observations.find(value=>value.event==='external.full_sync.materialization_attempt'&&value.result==='failed');
+   assert.ok(timeout&&timeout.event==='external.full_sync.materialization_attempt');
+   assert.deepEqual([timeout.generation,timeout.databaseCode,timeout.stage,timeout.path],['1','SQL_STATEMENT_CANCELLED','listing_upsert','listing_upsert']);
+   assert.match(timeout.listingToken,/^[a-f0-9]{24}$/);
+   assert.ok(timeout.backendPid&&timeout.backendPid>0);
+   assert.equal(Object.prototype.hasOwnProperty.call(timeout,'externalId'),false);
+   assert.equal(Object.prototype.hasOwnProperty.call(timeout,'documents'),false);
+   assert.equal((await database.pool.query("SELECT verification_pending FROM external_full_members WHERE source='che168' AND external_id='93002'")).rows[0].verification_pending,false);
+
+   phases.length=0;timeoutId=ids[2];
+   await database.pool.query("UPDATE external_full_sync SET next_delta_at=now()-interval '1 second' WHERE id=1");
+   feed=[{id:930040,source:'che168',vehicleId:ids[3]!,type:'removed',at}];
+   replacement={id:930041,source:'che168',vehicleId:ids[2]!,type:'price',at};
+   await budgetWorker.tick();
+   assert.deepEqual(phases,['withdrawals','delta_receive','delta_apply','withdrawals','report','57014']);
+   assert.deepEqual(applied,['upsert:93001','upsert:93002','withdraw:93004','upsert:93003']);
+   assert.deepEqual(requested,['zh','en','ru'],'complete archived jobs resume without refetching');
+   const resumed=await work();
+   assert.deepEqual(resumed.map(row=>[row.external_id,row.kind,row.generation,row.attempts,row.document_refs.length]),
+    [['93001','report','1',0,0],['93002','detail','1',1,3],['93003','detail','2',0,0]]);
+   assert.deepEqual(await refs(),protectedRefs.slice(0,1));
+  });
+  await t.test('multiple language misses charge once and a retry requests only missing languages',async ctx=>{
+   const id='93005';
+   await database.pool.query('DELETE FROM external_full_work');
+   await database.pool.query("INSERT INTO external_formal_admissions(source,external_id) VALUES('che168',$1)",[id]);
+   await database.pool.query("INSERT INTO external_full_members(source,external_id,canonical_id,business_at) VALUES('che168',$1,'budget:'||$1,$2)",[id,at]);
+   await database.pool.query("INSERT INTO external_full_work(source,external_id,kind,generation) VALUES('che168',$1,'detail',1)",[id]);
+   const seen:string[]=[];
+   let recover=false;
+   ctx.mock.method(worker!,'sampleRemaining',async()=>500);
+   ctx.mock.method(worker!.client,'bulk',async function*(source:Source,ids:string[],locale:string){
+    assert.deepEqual(ids,[id]);seen.push(locale);
+    const found=recover||locale==='en';
+    const results=found?[{source,id,status:'active',title:locale,hasInspectionReport:false}]:[];
+    const notFound=found?[]:[id];
+    const body=JSON.stringify({results,notFound});
+    yield {results,notFound,rawResponse:{body,hash:createHash('sha256').update(body).digest('hex')}};
+   });
+   assert.equal(await worker!.details(),0);
+   const work=(await database.pool.query("SELECT attempts,last_error_code,locales,document_refs FROM external_full_work WHERE source='che168' AND external_id=$1",[id])).rows[0];
+   assert.deepEqual([work.attempts,work.last_error_code,work.locales,work.document_refs.length],[1,'SYNC_DETAIL_NOT_FOUND',['en'],1]);
+   await database.pool.query("UPDATE external_full_work SET due_at=clock_timestamp()-interval '1 second' WHERE source='che168' AND external_id=$1",[id]);
+   const resumed=new FullSyncWorker(database,worker!.client,directory,async()=>{});
+   await worker!.close();worker=resumed;
+   assert.equal(await resumed.acquire(),true);
+   resumed.space=async()=>({used:0,total:1e12,available:1e12});
+   ctx.mock.method(resumed,'sampleRemaining',async()=>500);
+   recover=true;
+   assert.equal(await worker!.details(),1);
+   assert.deepEqual(seen,['zh','en','ru','zh','ru']);
+   assert.equal((await database.pool.query("SELECT 1 FROM external_full_work WHERE source='che168' AND external_id=$1",[id])).rowCount,0);
+  });
+  await t.test('a malformed later bulk split does not charge an already archived vehicle or a later unattempted split',async ctx=>{
+   const ids=['93006','93007','93008'];
+   await database.pool.query(`INSERT INTO external_formal_admissions(source,external_id) SELECT 'che168',unnest($1::text[])`,[ids]);
+   await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,business_at)
+    SELECT 'che168',id,'budget:'||id,$2 FROM unnest($1::text[]) id`,[ids,at]);
+   await database.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,queued_at)
+    SELECT 'che168',id,'detail',1,$2 FROM unnest($1::text[]) id`,[ids,at]);
+   ctx.mock.method(worker!,'sampleRemaining',async()=>500);
+   ctx.mock.method(worker!.client,'bulk',async function*(source:Source,vehicleIds:string[],locale:string){
+    assert.deepEqual(vehicleIds,ids);assert.equal(locale,'zh');
+    const results=[{source,id:ids[0]!,status:'active'}];
+    const body=JSON.stringify({results,notFound:[]});
+    yield {results,notFound:[],rawResponse:{body,hash:createHash('sha256').update(body).digest('hex')}};
+    const error=new FullSyncError('SYNC_RESPONSE_INVALID');error.affectedIds=[ids[1]!];throw error;
+   });
+   await assert.rejects(worker!.details(),/SYNC_RESPONSE_INVALID/);
+   const work=(await database.pool.query("SELECT external_id,attempts,locales FROM external_full_work WHERE external_id=ANY($1::text[]) ORDER BY external_id",[ids])).rows;
+   assert.deepEqual(work.map(row=>[row.external_id,row.attempts,row.locales]),[[ids[0],0,['zh']],[ids[1],1,[]],[ids[2],0,[]]]);
+  });
+  await t.test('capacity or lease loss after a provider response does not charge attempted or unattempted vehicles',async ctx=>{
+   const selected=async()=>(await database.pool.query(`SELECT external_id,generation,attempts,locales,document_refs
+    FROM external_full_work WHERE source='che168' AND kind='detail' ORDER BY external_id`)).rows;
+   const before=await selected();assert.ok(before.some(row=>row.document_refs.length));
+   let returned=false, guard='SYNC_CAPACITY_PENDING';
+   ctx.mock.method(worker!,'sampleRemaining',async()=>500);
+   ctx.mock.method(worker!,'heavy',async()=>{if(returned)throw new FullSyncError(guard);});
+   ctx.mock.method(worker!.client,'bulk',async function*(source:Source,ids:string[]){
+    const results=ids.map(id=>({source,id,status:'active'}));
+    const body=JSON.stringify({results,notFound:[]});returned=true;
+    yield {results,notFound:[],rawResponse:{body,hash:createHash('sha256').update(body).digest('hex')}};
+   });
+   for(const code of ['SYNC_CAPACITY_PENDING','SYNC_HEAVY_PAUSED','SYNC_LEASE_LOST']){
+    returned=false;guard=code;
+    await assert.rejects(worker!.details(),{code});
+    assert.equal(returned,true);assert.deepEqual(await selected(),before);
+   }
   });
   await t.test('old instrumentation without actual successful receive coverage is explicitly incomplete',async ctx=>{
    await database.pool.query("UPDATE external_full_sync SET timing_started_at=now()-interval '2 days' WHERE id=1");
