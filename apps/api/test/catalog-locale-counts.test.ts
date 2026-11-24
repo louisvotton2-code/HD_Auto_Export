@@ -234,6 +234,62 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
       { status: 503, reason: 'deadline', sqlState: '57014' });
   });
 
+  await t.test('unscoped brand words reuse exact English and Russian text matches without restricting makes', async () => {
+    const brand = fixtures[6]!, other = fixtures[7]!;
+    const originalFacts = (await db.pool.query('SELECT facts FROM external_catalog WHERE listing_id=$1', [other])).rows[0]!.facts;
+    await db.pool.query("UPDATE external_catalog SET facts=jsonb_set(facts,'{make}','{\"id\":\"honda\",\"name\":\"Honda\"}') WHERE listing_id=$1", [other]);
+    try {
+      // Other fixture vehicles share Toyota as their original brand. Set the
+      // searchable fields explicitly for this membership check.
+      await db.pool.query(`UPDATE external_catalog_search SET stock_text='',make_text='',model_text='',title_text=''
+        WHERE listing_id=ANY($1::uuid[]) AND locale IN ('en','ru')`, [fixtures]);
+      await db.pool.query(`UPDATE external_catalog_search
+        SET stock_text='',model_text='RAV4',make_text='Toyota',title_text='Fixture'
+        WHERE listing_id=$1 AND locale IN ('en','ru')`, [brand]);
+      await db.pool.query(`UPDATE external_catalog_search
+        SET stock_text='',model_text='Civic',make_text='Honda',title_text='Compared with TOYOTA'
+        WHERE listing_id=$1 AND locale IN ('en','ru')`, [other]);
+      await db.pool.query(`UPDATE external_catalog_search
+        SET stock_text='',make_text='Toy',model_text='ota',title_text='No match'
+        WHERE (listing_id=$1 AND locale='en') OR (listing_id=$2 AND locale='ru')`, [fixtures[2], fixtures[4]]);
+      const withdrawn = await db.pool.query(`UPDATE external_catalog_search s SET title_text='Withdrawn Toyota'
+        FROM external_listings l WHERE s.listing_id=l.id AND s.locale IN ('en','ru')
+          AND l.provider='chinacarapi' AND l.platform_id='che168' AND l.external_id='995008'`);
+      assert.equal(withdrawn.rowCount, 2);
+
+      const combined: string[] = [];
+      const observed = { ...db, transaction: async <T>(work: (tx: PoolClient) => Promise<T>) => db.transaction(tx => work({
+        query: (sql: string, params?: unknown[]) => {
+          if (sql.startsWith('WITH matching AS MATERIALIZED')) combined.push(sql);
+          return tx.query(sql, params);
+        },
+      } as PoolClient)) } as Database;
+      const service = new InventoryService(observed, true);
+      for (const locale of ['en', 'ru'] as const) {
+        const query = listingQuery(locale, { q: 'Toyota', pageSize: 1 });
+        const page = await service.listPublic(query, 'unscoped-brand');
+        const next = await service.listPublic({ ...query, page: 2 }, 'unscoped-brand-next');
+        assert.match(combined.at(-1)!, /LIMIT 49153/);
+        assert.equal(page.meta.total, 2);
+        assert.equal(next.meta.total, 2);
+        assert.equal(page.data.hasMore, true);
+        assert.equal(next.data.hasMore, false);
+        assert.deepEqual(new Set([...page.data.items, ...next.data.items].map(item => item.id)), new Set([`ext-${brand}`, `ext-${other}`]));
+        const filters = PublicFilterQuerySchema.parse({ locale, view: 'localized', q: 'Toyota', projection: 'overview' });
+        assert.equal((await service.filters(filters)).total, 2);
+        const scoped = await service.listPublic({ ...query, q: 'RAV4', make: 'toyota', yearMin: 2020 }, 'scoped-model');
+        assert.match(combined.at(-1)!, /LIMIT 8193/);
+        assert.equal(scoped.meta.total, 1);
+        assert.deepEqual(scoped.data.items.map(item => item.id), [`ext-${brand}`]);
+        const sorted = await service.listPublic({ ...query, pageSize: 2, sort: 'price_asc' }, 'unscoped-brand-price');
+        assert.deepEqual(sorted.data.items.map(item => item.id), [`ext-${brand}`, `ext-${other}`]);
+        assert.equal(sorted.meta.total, 2);
+      }
+    } finally {
+      await db.pool.query('UPDATE external_catalog SET facts=$2 WHERE listing_id=$1', [other, JSON.stringify(originalFacts)]);
+    }
+  });
+
   await t.test('bulk changes are atomic and restoring only the first-party singleton ID starts at zero', async () => {
     const abort = new Error('Rollback isolated catalog test');
     await assert.rejects(db.transaction(async tx => {

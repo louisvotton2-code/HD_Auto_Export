@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import {
-  IdSchema, PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
+  findBrand, IdSchema, PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
 } from '@hd/contracts/public';
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
@@ -483,7 +483,11 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const includeTotal=countMatches&&!selectedIds&&!after&&canCountExternalSearchPage(query,indexedHan);
   // A newest search can reuse exact matches for both the total and the page.
   // Keep the wide public projection out of the match set.
-  const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${maxCombinedSearchMatches}`:matched;
+  // Known unscoped brand words often exceed the small probe. Use a larger
+  // bound for their narrow ID/time rows, but keep the same literal predicate.
+  const matchLimit=includeTotal&&query.locale!=='zh'&&!match.structured&&query.q&&findBrand({id:query.q,name:query.q})
+    ? 49_152 : maxCombinedSearchMatches;
+  const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${matchLimit}`:matched;
   const order=numeric?`ORDER BY ${catalogOrder(column,'f.listing_id',sort)}`:filterOrdered;
   let picked:string;
   if(after && !numeric) {
@@ -506,7 +510,7 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
     JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text ${extrasJoin}
     ${visible}`;
   const result=await tx.query<CatalogRow & {cursor_published_at:string;cursor_sort_value?:string|null;total?:number}>(includeTotal
-    ? `WITH matching AS MATERIALIZED (${matched} LIMIT ${maxCombinedSearchMatches+1}),
+    ? `WITH matching AS MATERIALIZED (${matched} LIMIT ${matchLimit+1}),
       totals AS MATERIALIZED (SELECT count(*)::int AS total FROM matching), picked AS MATERIALIZED (${picked})
       SELECT page.*, totals.total FROM totals
       LEFT JOIN (${page}) page ON true ORDER BY page.published_at DESC,page.listing_id`
@@ -515,7 +519,7 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const total=result.rows[0]?.total;
   // Common terms may match most of the catalog. In that case keep the usual
   // ordered page plan and let the caller compute the exact total separately.
-  if(total!==undefined&&total>maxCombinedSearchMatches) return listExternalPage(tx,query,limit,offset,time,after,quote,false,undefined,indexedHan);
+  if(total!==undefined&&total>matchLimit) return listExternalPage(tx,query,limit,offset,time,after,quote,false,undefined,indexedHan);
   // An out-of-range offset still returns the exact total, with no vehicle row.
   const rows=result.rows.filter(row=>row.listing_id!==null);
   return {items:await materialize(tx,rows,query.locale,time,query.priceView,quote,query.projection==='card'),
