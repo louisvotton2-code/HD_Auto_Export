@@ -163,7 +163,13 @@ export async function preferIndexedHanPair(tx:Queryable,query:CatalogMatchQuery)
     WHERE entry.term=$1 AND entry.frequency>=0.04
   ) AS selective FROM pg_catalog.pg_stats
   WHERE schemaname='public' AND tablename='external_catalog_search_zh_han_pairs_idx'
-    AND attname='external_catalog_han_pairs' AND most_common_elems IS NOT NULL`,[query.q]);
+    AND attname='external_catalog_han_pairs' AND most_common_elems IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_index
+      WHERE indexrelid=to_regclass('public.external_catalog_search_zh_han_pairs_idx')
+        AND indrelid='public.external_catalog_search'::regclass
+        AND indisvalid AND indisready AND indislive
+    )`,[query.q]);
   return result.rows[0]?.selective===true;
 }
 function matches(query: CatalogMatchQuery,quote:FxQuote|null=null,indexedHan=false) {
