@@ -107,6 +107,10 @@ const browseBypassHeaders=['cookie','authorization','proxy-authorization','range
   'if-modified-since','if-unmodified-since','rsc','next-router-state-tree','next-router-prefetch',
   'next-router-segment-prefetch','next-action','x-middleware-prefetch'];
 const isCatalogTextSearch=(query:{q?:string})=>Boolean(query.q&&!externalInquiryNumber(query.q));
+function requireCatalogSearch(query:pub.PublicVehicleQuery|pub.PublicFilterQuery) {
+  const issue=pub.publicCatalogSearchIssue(query);
+  if(issue) throw new ApiError(400,issue,'Enter at least three consecutive letters or digits, or select a make or model.');
+}
 
 export async function buildApp(config:Config=readConfig(), options:{
   logger?:boolean;translator?:VehicleTranslator;onPublicFailure?:(event:PublicFailureDiagnostic)=>void;
@@ -478,6 +482,7 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.get(`${prefix}/vehicles`,{config:routeConfig,schema:publicSchema('listVehicles',{querystring:pub.PublicVehicleQuerySchema,response:{200:z.union([cardList,list]),...errorResponses}})},
     async(request,reply)=>{
       const query=request.query as pub.PublicVehicleQuery;
+      requireCatalogSearch(query);
       const offsetSnapshot = !query.cursor&&!query.pagination&&(!internal||request.headers['x-hd-catalog-offset-snapshot']==='1');
       const keyword=isCatalogTextSearch(query);
       const advance=keyword?beginCatalogTiming(request,'list')
@@ -523,6 +528,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     });
   app.get(`${prefix}/vehicle-filters`,{config:routeConfig,schema:publicSchema('vehicleFilters',{querystring:pub.PublicFilterQuerySchema,response:{200:filters,...errorResponses}})},async(request,reply)=>{
     const query=request.query as pub.PublicFilterQuery;
+    requireCatalogSearch(query);
     // Previous Web releases still compare the filter response with the global version.
     const legacy=internal&&request.headers['x-hd-catalog-scope']!=='filters';
     const {projection,locale:_locale,view,priceView,catalog:_catalog,...selection}=query;

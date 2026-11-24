@@ -11,8 +11,8 @@ export * from './configuration-semantics.js';
 export * from './vehicle-technical.js';
 import { VehicleTechnicalDetailsSchema } from './vehicle-technical.js';
 import {
-  AvailabilitySchema, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
-  PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema,
+  AvailabilitySchema, CATALOG_SEARCH_TERM_TOO_SHORT, DemoVehicleFactsSchema, ExternalPlatformSchema, IdSchema, LocaleSchema, PowertrainSchema,
+  PublicPriceSchema, SafeHttpUrlSchema, SearchTextSchema, TimestampSchema, type Locale,
   VehicleFactsSchema, CurrencySchema, MoneySchema, NamedValueSchema, responseSchema,
 } from './common.js';
 import {DrivetrainSchema,VehicleDisplaySchema,DisplayTextSchema} from './localization.js';
@@ -23,6 +23,20 @@ export {DrivetrainSchema,VehicleExtraFactsSchema,DisplayTextSchema,VehicleDispla
 export type {Drivetrain,VehicleExtraFacts,DisplayText,VehicleDisplay} from './localization.js';
 export * from './catalog.js';
 export * from './external-public.js';
+
+export function externalInquiryNumber(value: string): string | undefined {
+  const number = /^HX([1-9][0-9]{0,18})$/i.exec(value)?.[1];
+  if (number && (number.length < 19 || number <= '9223372036854775807')) return number;
+}
+
+/** Scope uses a syntactically valid catalog ID, with no catalog lookup. */
+export function publicCatalogSearchIssue(query: { locale: Locale; q?: string; make?: string; model?: string }) {
+  if (query.locale !== 'en' && query.locale !== 'ru') return;
+  const q = query.q?.trim();
+  if (!q || externalInquiryNumber(q) || /[\p{L}\p{N}]{3}/u.test(q)) return;
+  if (IdSchema.safeParse(query.make).success || IdSchema.safeParse(query.model).success) return;
+  return CATALOG_SEARCH_TERM_TOO_SHORT;
+}
 
 export const MediaUrlSchema = z.string().max(2048).refine((value) => {
   if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+(?:\?variant=(?:thumb|card))?$/.test(value)) return true;

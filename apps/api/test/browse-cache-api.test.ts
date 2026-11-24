@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { makeExternalCandidateFixture, makePublicVehicleFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
-import { InternalPublicBrowseGenerationResponseSchema } from '@hd/contracts/public';
+import { CATALOG_SEARCH_TERM_TOO_SHORT, InternalPublicBrowseGenerationResponseSchema } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/index.js';
@@ -75,6 +75,32 @@ async function createBrowseFixture(t:TestContext,useFence=false) {
   return {app,db,manual,supplier,source,fixture,call,generation,internalPrefix,fence,writeFence,
     async restart(){ await runtime!.app.close(); runtime=undefined; runtime=await start(); }};
 }
+
+test('short unscoped English and Russian catalog searches return 400 before any database or browse access', async t => {
+  const {db, call, fixture}=await createBrowseFixture(t);
+  for (const path of ['/vehicles', '/vehicle-filters']) {
+    for (const internal of [false, true]) {
+      const headers:Record<string,string>=internal?{'x-hd-browse-policy':'browse-600-v1'}:{};
+      const request=(locale:string,q:string,filters='')=>call(`${path}?locale=${locale}&view=localized&q=${encodeURIComponent(q)}${filters}`,headers,internal);
+      const connect=t.mock.method(db.pool,'connect',()=>{throw new Error('unexpected database access');});
+      try {
+        for (const [locale,q] of [['en','  EV  '], ['ru','Ю-В'], ['ru','__']] as const) {
+          const result=await request(locale,q);
+          assert.equal(result.statusCode,400,result.body);
+          assert.equal(result.json().error.code,CATALOG_SEARCH_TERM_TOO_SHORT);
+          assert.equal(result.headers['x-hd-browse-policy'],undefined);
+          assert.equal(result.headers['cache-control'],'no-store');
+        }
+        assert.equal(connect.mock.callCount(),0);
+      } finally {connect.mock.restore();}
+      const make=encodeURIComponent(fixture.facts.make!.id);
+      for (const [locale,q,filters] of [['en','EV',`&make=${make}`], ['zh','海狮',''], ['ru','HX1',''], ['en','   ','']] as const) {
+        const result=await request(locale,q,filters);
+        assert.equal(result.statusCode,200,result.body);
+      }
+    }
+  }
+});
 
 test('anonymous browse API shares a fenced snapshot and direct detail still follows supplier updates', async t => {
   const {app,db,manual,supplier,source,fixture,call,generation,internalPrefix}=await createBrowseFixture(t);

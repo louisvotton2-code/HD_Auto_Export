@@ -71,7 +71,9 @@ export class FullSyncClient{
   try{
    await this.options.beforeBulk?.(ids.length,source);
    raw=await this.json(`/api/vehicle/bulk?${q}`,{ids},()=>{started=performance.now();});
-   result=bulk.parse(raw.payload);const returned=[...result.results.map(r=>r.id),...result.notFound];
+   const parsed=bulk.safeParse(raw.payload);
+   if(!parsed.success)throw new FullSyncError('SYNC_RESPONSE_INVALID');
+   result=parsed.data;const returned=[...result.results.map(r=>r.id),...result.notFound];
    if(returned.length!==ids.length||new Set(returned).size!==ids.length||returned.some(id=>!ids.includes(id))||result.results.some(r=>r.source!==source))throw new FullSyncError('SYNC_BULK_IDENTITY');
   }catch(e){
    const code=e instanceof FullSyncError?e.code:null;

@@ -1,9 +1,6 @@
 export const externalInquiryCode = (number: string) => `HX${number}`;
 
-export function externalInquiryNumber(value: string): string | undefined {
-  const number = /^HX([1-9][0-9]{0,18})$/i.exec(value)?.[1];
-  if (number && (number.length < 19 || number <= '9223372036854775807')) return number;
-}
+export { externalInquiryNumber } from '@hd/contracts/public';
 
 // Previously issued codes remain usable in staff search. Bounds use the UUID index.
 export function legacyInquiryBounds(value: string) {
