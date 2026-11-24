@@ -1,5 +1,7 @@
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 import unittest
 import sys
 import tempfile
@@ -204,6 +206,28 @@ class DumpBoundary(unittest.TestCase):
         self.assertNotIn('-p',args)
 
 class MeasurementRoots(unittest.TestCase):
+    def test_individual_files_match_du_without_a_subprocess(self):
+        with tempfile.TemporaryDirectory() as temp:
+            site = Path(temp).resolve()
+            empty = site / 'empty'
+            empty.touch()
+            regular = site / 'regular'
+            regular.write_bytes(b'x' * 8192)
+            linked = site / 'linked'
+            os.link(regular, linked)
+            sparse = site / 'sparse'
+            with sparse.open('wb') as f:
+                f.seek(8 * 1024 * 1024)
+                f.write(b'x')
+            files = [empty, regular, linked, sparse]
+            expected = [
+                int(subprocess.check_output(['du', '-s', '-B1', '--', str(path)]).split()[0])
+                for path in files
+            ]
+            with patch.object(m, 'ROOT', site), patch.object(m.subprocess, 'check_output') as du:
+                self.assertEqual([m.allocated(path) for path in files], expected)
+                du.assert_not_called()
+
     def test_exact_controls_and_site_paths_count_real_bytes(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve(); site=root/'site'; site.mkdir()

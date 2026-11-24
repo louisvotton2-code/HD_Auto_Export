@@ -77,6 +77,10 @@ def allocated(path, *, backup_control=False):
             path == Path('/etc/systemd/system/hd-auto-ext07-backup.service.d/20-card-media.conf'))
     if not path.is_absolute() or '..' in path.parts or not trusted or not path.exists() or path.resolve() != path:
         raise ValueError('Invalid measurement root')
+    info = path.lstat()
+    if stat.S_ISREG(info.st_mode):
+        # An individual regular file uses Linux's 512-byte allocation blocks.
+        return info.st_blocks * 512
     # du's default physical traversal counts links themselves, never targets.
     return int(subprocess.check_output(['du','-s','-B1','--',str(path)],text=True,timeout=30).split()[0])
 
