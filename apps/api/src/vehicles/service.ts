@@ -24,7 +24,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay
 import type { LocalMediaStore } from '../media/storage.js';
 import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchReady, getExternalPublic, isScopedShortKeywordSearch, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchMode, getExternalPublic, isScopedShortKeywordSearch, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -909,13 +909,13 @@ export class InventoryService {
       const staffTotal:number=count.rows[0].total;
       const indexedHan=Boolean(includeExternal&&await preferIndexedHanPair(tx,query));
       const sort=query.sort??'newest',numeric=numericSort(sort);
-      const keywordMatch=includeExternal&&(isScopedShortKeywordSearch(query)||query.projection==='card'&&query.page===1&&!cursorMode&&sort==='newest')
-        &&await externalKeywordMatchReady(tx,query);
+      const keywordMode=includeExternal&&(isScopedShortKeywordSearch(query)||query.projection==='card'&&query.page===1&&!cursorMode&&sort==='newest')
+        ? await externalKeywordMatchMode(tx,query) : 'legacy';
       const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query,indexedHan);
       let externalTotal:number|undefined;
       if(includeExternal&&!countWithSearchPage) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMatch);
+        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMode);
       }
       phase?.('staff_page');
       const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
@@ -949,13 +949,13 @@ export class InventoryService {
       if(includeExternal&&items.length<limit) {
         phase?.('supplier_page');
         const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,
-          cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage,undefined,indexedHan,keywordMatch);
+          cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage,undefined,indexedHan,keywordMode);
         items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));
         externalTotal=external.total??externalTotal;
       }
       if(includeExternal&&externalTotal===undefined) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMatch);
+        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMode);
       }
       phase?.('result');
       const total=staffTotal+(externalTotal??0);

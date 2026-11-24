@@ -13,6 +13,7 @@ import { migrateDatabase } from '../src/db/migrate.js';
 import { countExternal, preferIndexedHanPair } from '../src/external/catalog.js';
 import { seedSyntheticFx } from '../src/external/fx.js';
 import { advanceKeywordMatch } from '../src/external/keyword-match-maintenance.js';
+import { scopedKeywordIndexDefinitions, scopedKeywordIndexesReady } from '../src/external/keyword-scope-indexes.js';
 import { applyFormalCandidate } from '../src/external/store.js';
 import { InventoryService } from '../src/vehicles/service.js';
 
@@ -292,7 +293,7 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
     }
   });
 
-  await t.test('verified keyword matches preserve literal results, current visibility and no-op sync', async () => {
+  await t.test('verified keyword matches preserve literal results, current visibility and no-op sync', async t => {
     const ids = [fixtures[6]!, fixtures[7]!];
     await db.pool.query(`UPDATE external_catalog SET facts=jsonb_set(facts,'{model}','{"id":"corolla","name":"Corolla"}')
       WHERE listing_id=$1`, [ids[1]]);
@@ -383,6 +384,99 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
       assert.equal(underscore.meta.total, 1);
       assert.equal(underscore.data.items[0]?.id, `ext-${ids[1]}`);
     }
+    const covered = (locale:'en'|'ru') => statements.some(sql =>
+      new RegExp(`FROM (?:public\\.)?external_catalog_keyword_match_${locale}\\b`).test(sql));
+    const shortList = async (locale:'en'|'ru', options:Partial<typeof scoped> = {}) => {
+      statements.length = 0;
+      const result = await service.listPublic({ ...scoped, locale, ...options }, 'scoped-cover');
+      return { ids: result.data.items.map(item => item.id), total: result.meta.total, covered: covered(locale) };
+    };
+    await t.test('optional scoped indexes preserve page, facet and exact overflow results in both locales', async () => {
+      const [enCover, enOverflow] = scopedKeywordIndexDefinitions('en');
+      assert.ok(enCover && enOverflow);
+      const fallback = await shortList('en');
+      assert.deepEqual(fallback, { ids:first.data.items.map(item=>item.id), total:2, covered:false });
+      const full = PublicFilterQuerySchema.parse({ ...scopedFilters, projection:undefined, mileageMin:0 });
+      const overviewFallback = { en:await service.filters(scopedFilters), ru:await service.filters({ ...scopedFilters, locale:'ru' }) };
+      const fullFallback = { en:await service.filters(full), ru:await service.filters({ ...full, locale:'ru' }) };
+
+      // An incomplete or same-name different index cannot select the new read path.
+      await db.pool.query(enOverflow.concurrent);
+      assert.equal(await scopedKeywordIndexesReady(db.pool, 'en'), false);
+      await db.pool.query(`CREATE INDEX CONCURRENTLY ${enCover.name} ON public.${enCover.child} (make_id)`);
+      assert.equal(await scopedKeywordIndexesReady(db.pool, 'en'), false);
+      assert.deepEqual(await shortList('en'), fallback);
+      await db.pool.query(`DROP INDEX CONCURRENTLY public.${enCover.name}`);
+      await db.pool.query(enCover.concurrent);
+      assert.equal(await scopedKeywordIndexesReady(db.pool, 'en'), true);
+      assert.equal((await shortList('en')).covered, true);
+      assert.equal(await scopedKeywordIndexesReady(db.pool, 'ru'), false);
+      assert.equal((await shortList('ru')).covered, false);
+
+      for (const index of scopedKeywordIndexDefinitions('ru')) await db.pool.query(index.concurrent);
+      assert.equal(await scopedKeywordIndexesReady(db.pool, 'ru'), true);
+
+      const originalTitle = await db.pool.query<{ title_text:string }>(`SELECT title_text FROM external_catalog_search
+        WHERE listing_id=$1 AND locale='en'`, [ids[0]]);
+      try {
+        // Keep a genuine literal match in the tail beyond the index payload limit.
+        await db.pool.query(`UPDATE external_catalog_search SET title_text=$2
+          WHERE listing_id=$1 AND locale IN ('en','ru')`, [ids[0], `${'z'.repeat(1050)} keyword fixture 100% RA`]);
+        for (const locale of ['en', 'ru'] as const) {
+          assert.deepEqual(await shortList(locale), { ...fallback, covered:true });
+          assert.deepEqual(await shortList(locale, { page:2 }), {
+            ids:second.data.items.map(item=>item.id), total:2, covered:true,
+          });
+          statements.length = 0;
+          assert.deepEqual(await service.filters({ ...scopedFilters, locale }), overviewFallback[locale]);
+          assert.equal(covered(locale), true);
+          assert.deepEqual(await service.filters({ ...full, locale }), fullFallback[locale]);
+          assert.deepEqual(await shortList(locale, { make:undefined, model:'corolla' }),
+            { ids:[`ext-${ids[1]}`], total:1, covered:true });
+          assert.deepEqual(await shortList(locale, { model:'corolla' }),
+            { ids:[`ext-${ids[1]}`], total:1, covered:true });
+          assert.deepEqual(await shortList(locale, { q:'R\nA' }),
+            { ids:[`ext-${ids[1]}`], total:1, covered:false });
+          assert.deepEqual(await shortList(locale, { q:'_' }),
+            { ids:[`ext-${ids[1]}`], total:1, covered:true });
+        }
+      } finally {
+        await db.pool.query(`UPDATE external_catalog_search SET title_text=$2
+          WHERE listing_id=$1 AND locale IN ('en','ru')`, [ids[0],originalTitle.rows[0]!.title_text]);
+      }
+
+      const key = await db.pool.query<{make_id:string;model_id:string}>('SELECT make_id,model_id FROM external_catalog_filter WHERE listing_id=$1', [ids[1]]);
+      try {
+        for (const make of [null, 'm'.repeat(101)]) {
+          await db.pool.query('UPDATE external_catalog_filter SET make_id=$2 WHERE listing_id=$1', [ids[1],make]);
+          assert.deepEqual(await shortList('en', { make:undefined, model:'corolla' }),
+            { ids:[`ext-${ids[1]}`], total:1, covered:true });
+        }
+        await db.pool.query('UPDATE external_catalog_filter SET make_id=$2,model_id=$3 WHERE listing_id=$1', [ids[1],key.rows[0]!.make_id,'m'.repeat(101)]);
+        assert.deepEqual(await shortList('en'), { ...fallback, covered:true });
+        assert.deepEqual(await shortList('en', { model:'corolla' }), { ids:[], total:0, covered:true });
+      } finally {
+        await db.pool.query('UPDATE external_catalog_filter SET make_id=$2,model_id=$3 WHERE listing_id=$1',
+          [ids[1],key.rows[0]!.make_id,key.rows[0]!.model_id]);
+      }
+
+      assert.deepEqual(await shortList('en', { sort:'price_asc', pageSize:2, mileageMin:0 }),
+        { ids:ids.map(id=>`ext-${id}`), total:2, covered:true });
+      assert.deepEqual(await shortList('en', { sort:'mileage_asc', mileageMin:1002 }), { ids:[], total:0, covered:true });
+      assert.deepEqual(await shortList('en', { exportStatus:'unknown' }), { ...fallback, covered:true });
+      assert.deepEqual(await shortList('en', { exportStatus:'eligible' }), { ids:[], total:0, covered:true });
+      const priced = await service.listPublic({ ...scoped, sort:'price_desc' }, 'scope-usd-price');
+      assert.equal(priced.data.items[0]?.id, `ext-${ids[1]}`);
+      const price = priced.data.items[0]!.displayPrice;
+      assert.equal(price?.status, 'ready');
+      assert.deepEqual(await shortList('en', { priceMin:price.money.amount, priceMax:price.money.amount, priceCurrency:'USD' }),
+        { ids:[`ext-${ids[1]}`], total:1, covered:true });
+      const cursorPage = await service.listPublic({ ...scoped, pagination:'cursor' }, 'short-scope-cursor');
+      assert.ok(cursorPage.data.nextCursor);
+      assert.deepEqual(await shortList('en', { cursor:cursorPage.data.nextCursor }), {
+        ids:second.data.items.map(item=>item.id), total:2, covered:true,
+      });
+    });
     const version = async () => (await db.pool.query<{xmin:string}>(
       "SELECT xmin::text FROM external_catalog_keyword_match WHERE listing_id=$1 AND locale='en'", [ids[0]])).rows[0]?.xmin;
     const beforePrice = await version();
@@ -396,6 +490,7 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
     try {
       assert.equal((await service.listPublic(query, 'keyword-after-withdrawal')).meta.total, 0);
       assert.equal((await service.filters(filters)).total, 0);
+      assert.deepEqual(await shortList('en'), { ids:[], total:0, covered:true });
     } finally {
       await db.pool.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1", [ids[1]]);
       await advanceKeywordMatch(db, 'disable', 2);
