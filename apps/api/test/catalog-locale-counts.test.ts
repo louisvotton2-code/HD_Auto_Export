@@ -294,8 +294,14 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
 
   await t.test('verified keyword matches preserve literal results, current visibility and no-op sync', async () => {
     const ids = [fixtures[6]!, fixtures[7]!];
-    await db.pool.query(`UPDATE external_catalog_search SET title_text='Special keyword fixture 100%'
-      WHERE listing_id=ANY($1::uuid[]) AND locale IN ('en','ru')`, [ids]);
+    await db.pool.query(`UPDATE external_catalog SET facts=jsonb_set(facts,'{model}','{"id":"corolla","name":"Corolla"}')
+      WHERE listing_id=$1`, [ids[1]]);
+    await db.pool.query(`UPDATE external_catalog_search SET title_text=$2
+      WHERE listing_id=ANY($1::uuid[]) AND locale IN ('en','ru')`, [ids, 'Special keyword fixture 100% RA']);
+    await db.pool.query(`UPDATE external_catalog_search SET make_text='R',model_text='A'
+      WHERE listing_id=$1 AND locale IN ('en','ru')`, [ids[0]]);
+    await db.pool.query(`UPDATE external_catalog_search SET title_text=title_text||$2
+      WHERE listing_id=$1 AND locale IN ('en','ru')`, [ids[1], ' R\nA _']);
     await db.pool.query('TRUNCATE external_catalog_keyword_match');
     await assert.rejects(advanceKeywordMatch(db, 'activate', 2), /Complete and verify/);
     assert.deepEqual(await advanceKeywordMatch(db, 'start', 2), { status: 'maintaining' });
@@ -333,6 +339,17 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
     const baseline = await service.listPublic(query, 'keyword-before');
     const baselineFacets = await service.filters(filters);
     assert.equal(baseline.meta.total, 2);
+    const scoped = listingQuery('en', { q: 'RA', make: 'toyota', priceView: 'usd', pageSize: 1 });
+    const scopedFilters = PublicFilterQuerySchema.parse({ locale: 'en', view: 'localized', priceView: 'usd',
+      make: scoped.make, q: scoped.q, projection: 'overview-models' });
+    const first = await service.listPublic(scoped, 'scoped-before');
+    const second = await service.listPublic({ ...scoped, page: 2 }, 'scoped-before-page2');
+    const scopedBefore = await service.filters(scopedFilters);
+    assert.equal(first.meta.total, 2);
+    assert.equal(second.meta.total, 2);
+    assert.equal(scopedBefore.total, 2);
+    assert.deepEqual(new Set([...first.data.items, ...second.data.items].map(item => item.id)), new Set(ids.map(id => `ext-${id}`)));
+    assert.ok(statements.some(sql => sql.includes('FROM external_catalog_search\n    WHERE locale=') && sql.includes('OFFSET 0')));
     assert.deepEqual(await advanceKeywordMatch(db, 'activate', 2), { status: 'active' });
     await assert.rejects(db.pool.query('TRUNCATE external_catalog_keyword_match_en'), { code: '55000' });
     for (const locale of ['en', 'ru'] as const) {
@@ -343,6 +360,28 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
       assert.equal(facets.total, baselineFacets.total);
       assert.deepEqual(current.data.items.map(item => item.id), baseline.data.items.map(item => item.id));
       assert.ok(statements.filter(sql => sql.includes('FROM external_catalog_keyword_match f')).length >= 2);
+      statements.length = 0;
+      const currentFirst = await service.listPublic({ ...scoped, locale }, 'scoped-active');
+      const currentSecond = await service.listPublic({ ...scoped, locale, page: 2 }, 'scoped-next');
+      assert.equal(currentFirst.meta.total, 2);
+      assert.equal(currentSecond.meta.total, 2);
+      assert.deepEqual(currentFirst.data.items.map(item => item.id), first.data.items.map(item => item.id));
+      assert.deepEqual(currentSecond.data.items.map(item => item.id), second.data.items.map(item => item.id));
+      const currentScoped = await service.filters({ ...scopedFilters, locale });
+      assert.equal(currentScoped.total, 2);
+      assert.deepEqual(currentScoped.models.map(({id,count})=>[id,count]), scopedBefore.models.map(({id,count})=>[id,count]));
+      assert.ok(statements.filter(sql => sql.includes('FROM external_catalog_keyword_match\n    WHERE locale=') && sql.includes('OFFSET 0')).length >= 3);
+      const modelOnly = await service.listPublic({ ...scoped, locale, make: undefined, model: 'corolla', sort: 'price_asc' }, 'short-model');
+      assert.equal(modelOnly.meta.total, 1);
+      assert.equal(modelOnly.data.items[0]?.id, `ext-${ids[1]}`);
+      const fullQuery = PublicFilterQuerySchema.parse({ locale, view: 'localized', make: 'toyota', q: '%', mileageMin: 0 });
+      assert.equal((await service.filters(fullQuery)).total, 2);
+      const newline = await service.listPublic({ ...scoped, locale, q: 'R\nA' }, 'short-literal-newline');
+      assert.equal(newline.meta.total, 1);
+      assert.equal(newline.data.items[0]?.id, `ext-${ids[1]}`);
+      const underscore = await service.listPublic({ ...scoped, locale, q: '_' }, 'short-literal-underscore');
+      assert.equal(underscore.meta.total, 1);
+      assert.equal(underscore.data.items[0]?.id, `ext-${ids[1]}`);
     }
     const version = async () => (await db.pool.query<{xmin:string}>(
       "SELECT xmin::text FROM external_catalog_keyword_match WHERE listing_id=$1 AND locale='en'", [ids[0]])).rows[0]?.xmin;

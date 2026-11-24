@@ -152,11 +152,18 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
 /** Escape LIKE metacharacters; query text always means a literal substring. */
 export const literalPattern = (text: string) => `%${text.replace(/[\\%_]/g, value => `\\${value}`)}%`;
 type CatalogMatchQuery = Omit<PublicFilterQuery,'projection'>;
+const hasThreeSearchCharacters=(q:string)=>/[\p{L}\p{N}]{3}/u.test(q);
+
+export function isScopedShortKeywordSearch(query:CatalogMatchQuery) {
+  return query.locale!=='zh'&&!!query.q&&!!(query.make||query.model)
+    &&!hasThreeSearchCharacters(query.q)&&!externalInquiryNumber(query.q);
+}
 
 export async function externalKeywordMatchReady(tx:Queryable,query:CatalogMatchQuery):Promise<boolean> {
-  if(query.locale==='zh'||!query.q||!/[\p{L}\p{N}]{3}/u.test(query.q)||query.q.includes('\n')||externalInquiryNumber(query.q)
+  if(query.locale==='zh'||!query.q||query.q.includes('\n')||externalInquiryNumber(query.q))return false;
+  if(!isScopedShortKeywordSearch(query)&&(!hasThreeSearchCharacters(query.q)
     ||query.mileageMin!==undefined||query.mileageMax!==undefined||query.priceMin!==undefined||query.priceMax!==undefined
-    ||(query.exportStatus&&query.exportStatus!=='all')) return false;
+    ||(query.exportStatus&&query.exportStatus!=='all')))return false;
   const result=await tx.query<{ready:boolean}>('SELECT ready FROM external_catalog_keyword_match_state WHERE id=1');
   return result.rows[0]?.ready===true;
 }
@@ -410,7 +417,19 @@ const filterFrom = (query: CatalogMatchQuery, table:'external_catalog_filter'|'s
 const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
   WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[]`;
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(${visibleLocaleMasks})`;
+function scopedSearchJoin(query:CatalogMatchQuery,keywordMatch:boolean) {
+  const table=keywordMatch?'external_catalog_keyword_match':'external_catalog_search';
+  const fields=query.q?.includes('\n')?',stock_text,make_text,model_text,title_text':'';
+  // Apply the literal predicate after each point lookup. An unanchored short
+  // term cannot narrow the trigram index, and must not drive a language scan.
+  return ` JOIN LATERAL (SELECT search_document${fields} FROM ${table}
+    WHERE locale=$1::text AND listing_id=f.listing_id OFFSET 0) s ON true`;
+}
 function matchSource(query:CatalogMatchQuery,match:ReturnType<typeof matches>,scope='',selected=false,keywordMatch=false) {
+  if(isScopedShortKeywordSearch(query)) {
+    return `${filterFrom(query,selected?'selected_filter':'external_catalog_filter',false)}${scopedSearchJoin(query,keywordMatch)}
+      ${filterVisible}${match.where}${scope}`;
+  }
   if(keywordMatch) {
     const search=match.search.replace('s.search_document','f.search_document');
     return `FROM external_catalog_keyword_match f WHERE f.locale=$1::text${match.structured}${search}${scope}`;
@@ -682,7 +701,8 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;
   const dimensions=projection?projectedFacetDimensions[projection]:fullFacetDimensions;
   const overview=isFacetOverview(projection);
-  const keywordMatch=overview&&!pairs&&await externalKeywordMatchReady(tx,query);
+  const shortScoped=isScopedShortKeywordSearch(query);
+  const keywordMatch=(shortScoped||overview&&!pairs)&&await externalKeywordMatchReady(tx,query);
   const full=projection===undefined;
   const currency=query.priceView==='usd'?'USD':'CNY';
   let priceAvailable='f.price_cny IS NOT NULL';
@@ -756,7 +776,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     const fallback=await tx.query<Pick<CatalogFacetRow,'kind'|'id'|'name'|'make_id'|'model_id'>>(`SELECT missing.*,selected.name
       FROM jsonb_to_recordset($${matchingValues.length+1}::jsonb) AS missing(kind text,id text,make_id text,model_id text)
       CROSS JOIN LATERAL (
-        SELECT ${name} AS name ${filterFrom(query)}
+        SELECT ${name} AS name ${filterFrom(query,'external_catalog_filter',!shortScoped)}${shortScoped?scopedSearchJoin(query,keywordMatch):''}
         JOIN external_catalog_search label ON label.listing_id=f.listing_id AND label.locale=$1::text
         JOIN external_catalog labels ON labels.listing_id=f.listing_id
         LEFT JOIN external_listing_overrides overrides ON overrides.listing_id=f.listing_id

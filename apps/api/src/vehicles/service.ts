@@ -24,7 +24,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay
 import type { LocalMediaStore } from '../media/storage.js';
 import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchReady, getExternalPublic, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchReady, getExternalPublic, isScopedShortKeywordSearch, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -909,7 +909,7 @@ export class InventoryService {
       const staffTotal:number=count.rows[0].total;
       const indexedHan=Boolean(includeExternal&&await preferIndexedHanPair(tx,query));
       const sort=query.sort??'newest',numeric=numericSort(sort);
-      const keywordMatch=includeExternal&&query.projection==='card'&&query.page===1&&!cursorMode&&sort==='newest'
+      const keywordMatch=includeExternal&&(isScopedShortKeywordSearch(query)||query.projection==='card'&&query.page===1&&!cursorMode&&sort==='newest')
         &&await externalKeywordMatchReady(tx,query);
       const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query,indexedHan);
       let externalTotal:number|undefined;
