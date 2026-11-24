@@ -25,12 +25,12 @@ export function PublicFreshnessBoundary({
   children,
 }: {
   phase: PublicFreshness;
-  url: string;
+  url: string | null;
   children: ReactNode;
 }) {
   return (
     <FreshnessContext value={phase}>
-      <div style={{ display: 'contents' }} data-freshness={phase} data-resource-url={url}>
+      <div style={{ display: 'contents' }} data-freshness={phase} data-resource-url={url ?? undefined}>
         {children}
       </div>
     </FreshnessContext>
@@ -44,12 +44,14 @@ export function usePublicResource<T>(
   schema: { parse(value: unknown): T },
   {
     navigationPath,
+    navigationSearch,
     initialRetryAfter = 0,
     cooldown,
     loadOnMount = false,
     compatibilityUrl,
   }: {
     navigationPath?: string;
+    navigationSearch?: string;
     initialRetryAfter?: number;
     cooldown?: { current: number };
     loadOnMount?: boolean;
@@ -69,8 +71,8 @@ export function usePublicResource<T>(
     navigation: number;
   }>({ url: loadOnMount && !initial ? null : url, data: initial, phase: initial ? 'fresh' : 'error', missing: false, navigation: 0 });
   const [loadingUrl, setLoadingUrl] = useState<string | null>(null);
-  const active = useRef({ url, schema, navigationPath, compatibilityUrl });
-  active.current = { url, schema, navigationPath, compatibilityUrl };
+  const active = useRef({ url, schema, navigationPath, navigationSearch, compatibilityUrl });
+  active.current = { url, schema, navigationPath, navigationSearch, compatibilityUrl };
   const request = useRef<{
     id: number;
     controller?: AbortController;
@@ -206,7 +208,10 @@ export function usePublicResource<T>(
       request.current = { id: request.current.id + 1 };
       setLoadingUrl(null);
     }
-    if (url !== null && state.url !== url) void load();
+    if (state.url === url) return;
+    // Keep the last payload for local options, but revalidate if the same URL is enabled again.
+    if (url === null) setState(previous => ({ ...previous, url: null }));
+    else void load();
   }, [url, load, state.url]);
   useEffect(() => {
     if (initial !== initialRef.current || initialRetryAfter !== initialRateRef.current || loadOnMount !== initialLoadRef.current) {
@@ -234,9 +239,13 @@ export function usePublicResource<T>(
   useEffect(
     () =>
       subscribePublicNavigation((signal) => {
-        if (active.current.navigationPath === signal.path && signal.ready) void load();
+        if (!signal.ready || active.current.navigationPath !== signal.path) return;
+        // popstate can arrive before Next commits the new search params. The URL-change effect loads that entry.
+        const search = active.current.navigationSearch;
+        if (search === undefined || (search === signal.search && search === new URLSearchParams(location.search).toString()))
+          void load();
       }),
-    [load],
+    [load, navigationSearch],
   );
   useEffect(
     () => () => {
@@ -258,7 +267,7 @@ export function usePublicResource<T>(
     ...state,
     missing: state.url === url && !checking && state.missing,
     // A rate limit on another request does not invalidate an already loaded dictionary.
-    dataCurrent: state.url === url && !checking && state.phase === 'fresh',
+    dataCurrent: url !== null && state.url === url && !checking && state.phase === 'fresh',
     retryAfter,
     phase: waiting
       ? ('error' as PublicFreshness)

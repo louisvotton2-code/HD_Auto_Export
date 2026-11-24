@@ -5,6 +5,7 @@ type Copy = {
   sort: string;
   sorts: Record<'newest' | 'price_asc' | 'price_desc' | 'mileage_asc' | 'year_desc', string>;
   search: string;
+  shortSearch?: { message: string; browseBrands: string };
   brandSearch: string;
   noBrands: string;
   generation: string;
@@ -20,7 +21,7 @@ type Copy = {
   optionsLoading: string;
   drives: Record<Drivetrain, string>;
 };
-export const catalogFilterCopy = {
+export const catalogFilterCopy: Record<Locale, Copy> = {
   zh: {
     sort: '排序', sorts: { newest: '最新发布', price_asc: '价格从低到高', price_desc: '价格从高到低', mileage_asc: '里程从少到多', year_desc: '年款从新到旧' },
     search: '搜索',
@@ -42,6 +43,10 @@ export const catalogFilterCopy = {
   en: {
     sort: 'Sort', sorts: { newest: 'Newest', price_asc: 'Price: low to high', price_desc: 'Price: high to low', mileage_asc: 'Mileage: low to high', year_desc: 'Model year: newest' },
     search: 'Search',
+    shortSearch: {
+      message: 'Choose a make or model, or enter at least 3 consecutive letters or numbers.',
+      browseBrands: 'Clear keyword and browse by make',
+    },
     brandSearch: 'Search brands',
     noBrands: 'No matching brands',
     generation: 'Generation',
@@ -66,6 +71,10 @@ export const catalogFilterCopy = {
   ru: {
     sort: 'Сортировка', sorts: { newest: 'Сначала новые', price_asc: 'Цена по возрастанию', price_desc: 'Цена по убыванию', mileage_asc: 'Пробег по возрастанию', year_desc: 'Сначала новые годы' },
     search: 'Найти',
+    shortSearch: {
+      message: 'Выберите марку или модель либо введите не менее трёх букв или цифр подряд.',
+      browseBrands: 'Очистить запрос и выбрать марку',
+    },
     brandSearch: 'Поиск по маркам',
     noBrands: 'Подходящих марок нет',
     generation: 'Поколение',
@@ -87,4 +96,4 @@ export const catalogFilterCopy = {
       four_wd: 'Полный привод (4WD)',
     },
   },
-} satisfies Record<Locale, Copy>;
+};

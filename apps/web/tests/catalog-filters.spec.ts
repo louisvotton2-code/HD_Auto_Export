@@ -11,6 +11,148 @@ test.afterEach(async ({ request }) => {
   await resetPublicFixture(request);
 });
 
+test('unscoped English and Russian short bookmarks render help without any catalog or version read', async ({ browser, baseURL, request }) => {
+  const fixtureRequests = `${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`;
+  for (const [locale, q, help] of [
+    ['en', 'X5', 'at least 3 consecutive letters or numbers'],
+    ['ru', 'БМ', 'не менее трёх букв или цифр подряд'],
+  ] as const) {
+    const target = `/${locale}/cars/?q=${encodeURIComponent(q)}&yearMin=2020${locale === 'ru' ? '&page=9000' : ''}`;
+    const response = await request.get(target);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain(help);
+    const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+    try {
+      const page = await context.newPage();
+      await page.goto(target);
+      await expect(page.getByTestId('catalog-short-keyword')).toContainText(help);
+      await expect(page.getByTestId('catalog-short-keyword')).toBeInViewport();
+      await expect(page.locator('input[name=q]')).toHaveValue(q);
+      await expect(page.locator('select[name=yearMin]')).toHaveValue('2020');
+      await expect(page.getByTestId('public-catalog-error')).toHaveCount(0);
+      await expect(page.getByTestId('public-catalog-empty')).toHaveCount(0);
+      await expect(page.getByTestId('public-filter-unavailable')).toHaveCount(0);
+      const recover = new URL((await page.getByTestId('catalog-short-keyword').locator('a').getAttribute('href'))!, baseURL);
+      expect(Object.fromEntries(recover.searchParams)).toEqual({ yearMin: '2020' });
+      await page.getByRole('button', { name: locale === 'en' ? 'Search' : 'Найти', exact: true }).click();
+      await expect(page.getByTestId('catalog-short-keyword')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+    for (const path of ['/api/v1/vehicles/', '/api/v1/vehicle-filters/', '/catalog-facets.json']) {
+      const invalid = await request.get(`${path}?locale=${locale}&q=${encodeURIComponent(q)}`);
+      expect(invalid.status()).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: { code: 'CATALOG_SEARCH_TERM_TOO_SHORT', retryable: false } });
+    }
+  }
+  const upstream = await request.get(fixtureRequests);
+  expect(upstream.ok()).toBe(true);
+  expect((await upstream.json()).requests).toEqual([]);
+});
+
+test('short keyword, brand selection and browser history avoid a broad fallback or RSC request', async ({ page }) => {
+  const reads: URL[] = [];
+  const rsc: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (/^\/(?:api\/v1\/(?:vehicles|vehicle-filters)\/?|catalog-facets\.json)$/.test(url.pathname)) reads.push(url);
+    if (request.headers().rsc === '1' && url.pathname === '/en/cars/') rsc.push(url.href);
+  });
+  const form = page.locator('main form').first();
+  const keyword = form.locator('input[name=q]');
+  const search = form.getByRole('button', { name: 'Search', exact: true });
+  const guide = page.getByTestId('catalog-short-keyword');
+  const cards = page.locator('main [data-public-vehicle]');
+  await page.goto('/en/cars/?pageSize=2');
+  await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+  await expect(cards).toHaveCount(2);
+  const noReads = async (from: number) => {
+    await expect(guide).toBeVisible();
+    await expect(cards).toHaveCount(0);
+    await expect(page.getByTestId('public-catalog-error')).toHaveCount(0);
+    await expect(page.getByTestId('public-catalog-empty')).toHaveCount(0);
+    await page.waitForTimeout(200);
+    expect(reads.slice(from)).toEqual([]);
+    expect(rsc).toEqual([]);
+  };
+  await keyword.fill('Al');
+  await search.click();
+  await noReads(0);
+  await chooseCatalogBrand(form, 'alpha');
+  await noReads(0);
+  await search.click();
+  await expect(guide).toHaveCount(0);
+  await expect(cards).toHaveCount(2);
+  expect(reads.some(url => url.pathname.startsWith('/api/v1/vehicles') && url.searchParams.get('q') === 'Al' && url.searchParams.get('make') === 'alpha')).toBe(true);
+  await expect(form.locator('select[name=model] option[value=alpha_model]')).toHaveCount(1);
+  await expect(form.locator('select[name=make] option[value=beta]')).toHaveCount(1);
+  const afterScoped = reads.length;
+  await chooseCatalogBrand(form, '');
+  await search.click();
+  await noReads(afterScoped);
+  await page.goBack();
+  await expect(form.locator('select[name=make]')).toHaveValue('alpha');
+  await expect(cards).toHaveCount(2);
+  await expect(page.getByTestId('public-vehicle-catalog').locator('form')).toHaveAttribute('aria-busy', 'false');
+  const afterBack = reads.length;
+  await page.goForward();
+  await noReads(afterBack);
+  await chooseCatalogBrand(form, 'beta');
+  await expect(form.locator('select[name=model] option[value=alpha_model]')).toHaveCount(0);
+  await noReads(afterBack);
+  await chooseCatalogBrand(form, '');
+  await keyword.clear();
+  await search.click();
+  await expect(guide).toHaveCount(0);
+  await expect(cards).toHaveCount(2);
+  expect(reads.slice(afterBack).some(url => url.pathname.startsWith('/api/v1/vehicles') && !url.searchParams.get('q'))).toBe(true);
+  expect(rsc).toEqual([]);
+});
+
+test('clearing a short keyword revalidates the previous catalog URL', async ({ page, request }) => {
+  const listRequest = (url: URL) => /^\/api\/v1\/vehicles\/?$/.test(url.pathname) && !url.searchParams.get('q');
+  await page.goto('/en/cars/?sort=newest&page=1');
+  const form = page.locator('main form').first();
+  const keyword = form.locator('input[name=q]');
+  const search = form.getByRole('button', { name: 'Search', exact: true });
+  const guide = page.getByTestId('catalog-short-keyword');
+  await expect(page.locator('main [data-public-vehicle]').first()).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+  await keyword.fill('X5');
+  await search.click();
+  await expect(guide).toBeVisible();
+  await setPublicFixtureState(request, { mode: 'empty' });
+  const refreshed = page.waitForResponse(response => listRequest(new URL(response.url())));
+  await keyword.clear();
+  await search.click();
+  expect((await refreshed).status()).toBe(200);
+  await expect(guide).toHaveCount(0);
+  await expect(page.getByTestId('public-catalog-empty')).toBeVisible();
+});
+
+test('model-only scope, full inquiry code and Chinese short search retain the query', async ({ request }) => {
+  await setPublicFixtureState(request, { externalPublished: true });
+  for (const [target, expected] of [
+    ['/en/cars/?model=alpha_model&q=Al', 'value="alpha_model"'],
+    ['/ru/cars/?q=HX100001', 'data-public-vehicle'],
+    ['/zh/cars/?q=Al', 'data-public-vehicle'],
+  ] as const) {
+    const response = await request.get(target);
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(expected);
+    expect(html).not.toContain('data-testid="catalog-short-keyword"');
+  }
+  const fixture = await request.get(`${process.env.PUBLIC_FIXTURE_API_URL}/__fixtures/requests`);
+  const listReads = ((await fixture.json()).requests as { path: string; query: Record<string, string> }[])
+    .filter(row => /\/vehicles$/.test(row.path)).map(row => row.query);
+  expect(listReads).toEqual(expect.arrayContaining([
+    expect.objectContaining({ locale: 'en', q: 'Al', model: 'alpha_model' }),
+    expect.objectContaining({ locale: 'ru', q: 'HX100001' }),
+    expect.objectContaining({ locale: 'zh', q: 'Al' }),
+  ]));
+});
+
 test('SSR and browser facet requests use scoped API projections', async ({ request }) => {
   await setPublicFixtureState(request, { largeFacetDictionary: true });
   const read = async (path: string) => {

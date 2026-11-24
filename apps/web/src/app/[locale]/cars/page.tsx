@@ -9,6 +9,7 @@ import { routing, type Locale } from '@/i18n/routing';
 import { CatalogOffsetLimitNotice, parseCatalogPageRequest, PublicVehicleList, publicVehicleMessages } from '@/modules/vehicles';
 import {
   catalogFacetProjection,
+  catalogFacetOverviewScope,
   createCatalogVersionScope,
   getPublicCatalog,
   getPublicFilters,
@@ -35,7 +36,7 @@ const catalogRender = cache(async () => {
 
 const readBaseCatalog = cache(async (locale: Locale) => {
   const request = parseCatalogPageRequest({}, locale);
-  if (!request || request.kind === 'offset_limit') notFound();
+  if (!request || request.kind !== 'query') notFound();
   const { versions } = await catalogRender();
   return getPublicCatalog(request.query, versions?.catalog);
 });
@@ -62,11 +63,15 @@ export default async function CarsPage({ params, searchParams }: Props) {
   if (!request) notFound();
   if (request.kind === 'offset_limit') return <CatalogOffsetLimitNotice locale={locale} query={request.query} />;
   const { query } = request;
+  if (request.kind === 'short_query') return <PublicVehicleList
+    key={locale} locale={locale} query={query} result={null} filters={null}
+    initialBrandFilters={null} initialModelFilters={null}
+  />;
   const { make, model } = query;
   const { deferFilters, versions, ticket } = await catalogRender();
   const [result, filters, brandFilters, modelFilters] = await Promise.allSettled([
     base ? readBaseCatalog(locale) : getPublicCatalog(query, versions?.catalog),
-    deferFilters ? null : getPublicFilters(locale, query, catalogFacetProjection({ selectedModel: make ? undefined : model }), versions?.filters),
+    deferFilters ? null : getPublicFilters(locale, catalogFacetOverviewScope(query), catalogFacetProjection({ selectedModel: make ? undefined : model }), versions?.filters),
     !deferFilters && make ? getPublicFilters(locale, query, catalogFacetProjection({ make }), versions?.filters) : null,
     !deferFilters && make && model ? getPublicFilters(locale, query, catalogFacetProjection({ make, model }), versions?.filters) : null,
   ]);

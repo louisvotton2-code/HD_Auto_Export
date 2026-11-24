@@ -273,7 +273,7 @@ test.describe('explicit public queries, stable activation and media regression',
     expect((await filters.json()).data.makes).toEqual([
       { id: 'alpha', name: 'Alpha Motors', count: 14 },
     ]);
-    for (const q of ['%', 'fixture_car_2.*', 'HTTP fixture only']) {
+    for (const q of ['Alpha%Model', 'fixture_car_2.*', 'HTTP fixture only']) {
       const response = await request.get(`/api/v1/vehicles?locale=en&q=${encodeURIComponent(q)}`);
       expect(response.status()).toBe(200);
       expect((await response.json()).meta.total).toBe(0);

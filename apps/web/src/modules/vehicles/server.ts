@@ -25,5 +25,5 @@ export { getPublicHtmlCacheVersions } from './infrastructure/public-html-cache-v
 export { readSsrBrowseGeneration } from './infrastructure/ssr-service-http';
 export { isPublicApiError } from './infrastructure/public-http';
 export { proxyExternalPhotoFailure } from './infrastructure/public-media-report';
-export { catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';
+export { catalogFacetOverviewScope, catalogFacetProjection, projectCatalogFacetOverview, projectCatalogFacetScope } from './catalog-facets';
 export { vehicleSeoPresentation, vehicleStructuredData } from './vehicle-seo';
