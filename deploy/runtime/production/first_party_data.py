@@ -21,6 +21,8 @@ def scope(value):
 
 _SUPPLIER_TABLES = tuple('''
     external_canonical_bindings external_catalog external_catalog_filter external_catalog_search external_catalog_overview_groups
+    external_catalog_keyword_match external_catalog_keyword_match_en external_catalog_keyword_match_ru
+    external_catalog_keyword_match_state
     external_catalog_global_facets external_catalog_state external_formal_admission_state external_formal_admissions
     external_full_admission_replays external_full_admission_replay_items
     external_full_aliases external_full_archive_pins external_full_controls external_full_daily
