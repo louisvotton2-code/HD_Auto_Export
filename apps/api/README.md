@@ -81,6 +81,18 @@ pnpm --filter @hd/api start
 
 迁移位于 `migrations/`，SQL 是数据库结构的维护入口；Better Auth 的 Drizzle 映射在 `src/db/schema.ts`。通过 Drizzle migrator 和 advisory lock 显式应用已审 SQL，不在应用启动或构建时改库。不要对已有环境使用 schema push，也不要修改已发布迁移；下一变更追加 SQL 与 journal。生产应分别配置迁移身份和最小权限运行身份，本地 Compose 不代表生产权限验证。
 
+#### 英俄范围内短词的可选索引
+
+使用候选 API 构建产物生成单个索引的 PostgreSQL 安装 SQL。以下命令输出 SQL，运维可按同一版本审核后在独立的维护连接执行。
+
+```sh
+node dist/external/keyword-scope-indexes.js en cover
+```
+
+参数支持 `en`、`ru` 及 `cover`、`overflow`。生成脚本通过 `psql` 自动提交执行，按语言及索引逐个使用 `CREATE INDEX CONCURRENTLY`。脚本先核对目标叶分区，拒绝同名但定义或状态不同的索引，构建后检查定义及可用状态。生产运行采用运维既有的磁盘、备份租约和同步窗口保护。脚本独立于迁移账本，应用启动只读。
+
+每种语言在 0054 紧凑投影与该语言的两项索引同时就绪时采用索引路径。超长文档和超宽键走互斥分支，仍按原字符串精确匹配。部分完成、旧定义或 0054 未就绪时，应用使用已有查询。已安装索引可以保留供回滚后再次启用。
+
 v2.0.18 的发布工具在核对签版后，只给该版的迁移容器显式传入 `dist/db/migrate.js --defer-han-pair-index`。此模式只接受准确的 0049 账本或已延期的账本，要求 0050 索引缺席及 0051、0053 的在线预建，实际运行并逐项登记 0051–0053。待 OPS 受保护预建 0050 后，`--complete-han-pair-index` 执行原 0050 并登记原哈希。核查逻辑顺序按 `created_at, id`，执行顺序仍按 `id` 保留。普通迁移遇到未补的 0050 会停止。中文短词保持精确子串匹配，索引有效且有统计时才考虑走快速路径。
 
 BE-ADUX10 增加迁移 0014：员工车辆公开草稿版本与按员工保存的十分钟预览确认。先备份并显式应用迁移，再切换 API；新版就绪检查要求该列／表存在。草稿 asking 金额和采购成本可空，发布时仍须完整业务资料、三语就绪及当前预览确认。BE-UX11 已用当前三语完整／非 stale 替代旧逐字段 approved 门槛，真实 machine/pending 不变。GET `publish-readiness`／`publication-preview` 与 POST `publication-preview/confirm` 的精确 schema、iframe 协议及 source 区别见[车辆接口第17节](../../docs/开发/车辆接口.md#17-be-adux10-发布检查与私有预览)。API 与 AD／FE 必须配套升级；旧成功发布回执可重放，新发布请求不能绕过确认。旧公开快照不会被迁移改写。
