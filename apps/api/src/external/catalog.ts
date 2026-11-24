@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import {
-  IdSchema, PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
+  findBrand, IdSchema, PublicVehicleSchema, PublicVehicleCardSchema, PublicInspectionSummarySchema,type PublicInspectionSummary,type PublicVehicleCard, type PublicVehicleQuery, type ExternalIssue, type Locale, type PublicFilterQuery, type PublicMedia, type PublicVehicle, type VehicleDisplay,
 } from '@hd/contracts/public';
 import type {FxQuote} from './fx.js';
 import {projectUsdPrice,usdSourceRange} from '../vehicles/usd-price.js';
@@ -152,6 +152,14 @@ function toCard(row: CatalogRow, photos: ImageRow[], locale: Locale, priceView?:
 /** Escape LIKE metacharacters; query text always means a literal substring. */
 export const literalPattern = (text: string) => `%${text.replace(/[\\%_]/g, value => `\\${value}`)}%`;
 type CatalogMatchQuery = Omit<PublicFilterQuery,'projection'>;
+
+export async function externalKeywordMatchReady(tx:Queryable,query:CatalogMatchQuery):Promise<boolean> {
+  if(query.locale==='zh'||!query.q||!/[\p{L}\p{N}]{3}/u.test(query.q)||query.q.includes('\n')||externalInquiryNumber(query.q)
+    ||query.mileageMin!==undefined||query.mileageMax!==undefined||query.priceMin!==undefined||query.priceMax!==undefined
+    ||(query.exportStatus&&query.exportStatus!=='all')) return false;
+  const result=await tx.query<{ready:boolean}>('SELECT ready FROM external_catalog_keyword_match_state WHERE id=1');
+  return result.rows[0]?.ready===true;
+}
 // Keep this range the same as external_catalog_han_pairs in migration 0050.
 const isChineseHanPair = (query:CatalogMatchQuery) => query.locale==='zh' && /^[\u3400-\u4dbf\u4e00-\u9fff]{2}$/u.test(query.q??'');
 // Estimate fanout before choosing an access path. Missing/stale estimates can
@@ -402,7 +410,11 @@ const filterFrom = (query: CatalogMatchQuery, table:'external_catalog_filter'|'s
 const visibleLocaleMasks = `(CASE $1::text WHEN 'zh' THEN ARRAY[1,3,5,7] WHEN 'en' THEN ARRAY[2,3,6,7]
   WHEN 'ru' THEN ARRAY[4,5,6,7] ELSE ARRAY[]::integer[] END)::smallint[]`;
 const filterVisible = `WHERE f.active AND f.locale_mask<>0 AND f.locale_mask=ANY(${visibleLocaleMasks})`;
-function matchSource(query:CatalogMatchQuery,match:ReturnType<typeof matches>,scope='', selected=false) {
+function matchSource(query:CatalogMatchQuery,match:ReturnType<typeof matches>,scope='',selected=false,keywordMatch=false) {
+  if(keywordMatch) {
+    const search=match.search.replace('s.search_document','f.search_document');
+    return `FROM external_catalog_keyword_match f WHERE f.locale=$1::text${match.structured}${search}${scope}`;
+  }
   if(match.indexedHan&&query.make&&!selected) {
     // Intersect two narrow ID sets before reading the matching filter rows.
     return `FROM (${indexedBrandMatches(query,match,scope)}) ids
@@ -437,7 +449,7 @@ export function canCountExternalSearchPage(query:PublicVehicleQuery,indexedHan=f
     && Boolean(query.q && !externalInquiryNumber(query.q) && (indexedHan||/[\p{L}\p{N}]{3}/u.test(query.q)));
 }
 
-export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null,indexedHan=false): Promise<number> {
+export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quote:FxQuote|null=null,indexedHan=false,keywordMatch=false): Promise<number> {
   const match=matches(query,quote,indexedHan),{where,values}=match;
   if (!where) {
     // Count the same active locale masks in the caller's catalog snapshot.
@@ -452,7 +464,7 @@ export async function countExternal(tx: Queryable, query: CatalogMatchQuery,quot
       FROM external_catalog_overview_groups f ${groupVisible}${where}`,values);
     return result.rows[0]!.total;
   }
-  const source=indexedHan&&query.make?`FROM (${indexedBrandMatches(query,match)}) ids`:matchSource(query,match);
+  const source=indexedHan&&query.make?`FROM (${indexedBrandMatches(query,match)}) ids`:matchSource(query,match,'',false,keywordMatch);
   const result = await tx.query<{ total: number }>(`SELECT count(*)::int AS total ${source}`, values);
   return result.rows[0]!.total;
 }
@@ -467,7 +479,7 @@ function externalUsdSort(quote:FxQuote|null, values:unknown[]) {
 }
 
 export async function listExternalPage(tx: Queryable, query: PublicVehicleQuery, limit: number, offset: number, time: number, after?: CatalogAnchor,quote:FxQuote|null=null, countMatches=false,
-  selectedIds?:readonly string[],indexedHan=false):
+  selectedIds?:readonly string[],indexedHan=false,keywordMatch=false):
 Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];total?:number}> {
   const match=matches(query,quote,indexedHan),{values}=match;
   const sort=query.sort??'newest',numeric=numericSort(sort);
@@ -479,11 +491,15 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const selected=selectedIds?`selected_filter AS MATERIALIZED (
     SELECT * FROM external_catalog_filter WHERE listing_id=ANY($${values.push(selectedIds)}::uuid[])
   ), `:'';
-  const matched=`SELECT f.listing_id${sortSelect} ${matchSource(query,match,'',Boolean(selectedIds))}`;
+  const matched=`SELECT f.listing_id${sortSelect} ${matchSource(query,match,'',Boolean(selectedIds),keywordMatch)}`;
   const includeTotal=countMatches&&!selectedIds&&!after&&canCountExternalSearchPage(query,indexedHan);
   // A newest search can reuse exact matches for both the total and the page.
   // Keep the wide public projection out of the match set.
-  const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${maxCombinedSearchMatches}`:matched;
+  // Known unscoped brand words often exceed the small probe. Use a larger
+  // bound for their narrow ID/time rows, but keep the same literal predicate.
+  const matchLimit=includeTotal&&query.locale!=='zh'&&!match.structured&&query.q&&findBrand({id:query.q,name:query.q})
+    ? 49_152 : maxCombinedSearchMatches;
+  const selection=includeTotal?`SELECT f.* FROM matching f WHERE (SELECT total FROM totals)<=${matchLimit}`:matched;
   const order=numeric?`ORDER BY ${catalogOrder(column,'f.listing_id',sort)}`:filterOrdered;
   let picked:string;
   if(after && !numeric) {
@@ -499,14 +515,17 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
     picked=`${selection}${seek} ${order} LIMIT $${values.length+1} OFFSET $${values.length+2}`;
     values.push(limit,after?0:offset);
   }
+  // Literal matches already prove that each picked listing has this locale in
+  // the same snapshot. Avoid reopening its search row during result hydration.
+  const localeJoin=query.locale!=='zh'&&match.search?''
+    :' JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text';
   const page=`SELECT ${query.projection==='card'?cardColumns:columns},to_char(c.published_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_published_at
       ${numeric?',picked.sort_value::text AS cursor_sort_value':''}
     FROM picked JOIN external_catalog c ON c.listing_id=picked.listing_id
-    JOIN external_listings l ON l.id=c.listing_id
-    JOIN external_catalog_search s ON s.listing_id=c.listing_id AND s.locale=$1::text ${extrasJoin}
+    JOIN external_listings l ON l.id=c.listing_id${localeJoin}${extrasJoin}
     ${visible}`;
   const result=await tx.query<CatalogRow & {cursor_published_at:string;cursor_sort_value?:string|null;total?:number}>(includeTotal
-    ? `WITH matching AS MATERIALIZED (${matched} LIMIT ${maxCombinedSearchMatches+1}),
+    ? `WITH matching AS MATERIALIZED (${matched} LIMIT ${matchLimit+1}),
       totals AS MATERIALIZED (SELECT count(*)::int AS total FROM matching), picked AS MATERIALIZED (${picked})
       SELECT page.*, totals.total FROM totals
       LEFT JOIN (${page}) page ON true ORDER BY page.published_at DESC,page.listing_id`
@@ -515,7 +534,7 @@ Promise<{items:Array<PublicVehicle|PublicVehicleCard>;anchors:CatalogAnchor[];to
   const total=result.rows[0]?.total;
   // Common terms may match most of the catalog. In that case keep the usual
   // ordered page plan and let the caller compute the exact total separately.
-  if(total!==undefined&&total>maxCombinedSearchMatches) return listExternalPage(tx,query,limit,offset,time,after,quote,false,undefined,indexedHan);
+  if(total!==undefined&&total>matchLimit) return listExternalPage(tx,query,limit,offset,time,after,quote,false,undefined,indexedHan);
   // An out-of-range offset still returns the exact total, with no vehicle row.
   const rows=result.rows.filter(row=>row.listing_id!==null);
   return {items:await materialize(tx,rows,query.locale,time,query.priceView,quote,query.projection==='card'),
@@ -663,6 +682,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
   const kinds=projection?projectedFacetKinds[projection]:fullFacetKinds;
   const dimensions=projection?projectedFacetDimensions[projection]:fullFacetDimensions;
   const overview=isFacetOverview(projection);
+  const keywordMatch=overview&&!pairs&&await externalKeywordMatchReady(tx,query);
   const full=projection===undefined;
   const currency=query.priceView==='usd'?'USD':'CNY';
   let priceAvailable='f.price_cny IS NOT NULL';
@@ -696,7 +716,7 @@ export async function externalFacets(tx: Queryable, query: PublicFilterQuery,quo
     FROM external_catalog_overview_groups f ${groupVisible}${where}
   )`:`matched AS NOT MATERIALIZED (
     SELECT ${matchedDimensions.join(',')},f.label_order
-    ${matchSource(query,match,scope)}
+    ${matchSource(query,match,scope,false,keywordMatch)}
   ), atoms AS MATERIALIZED (
     SELECT ${groupBy},${overview?`${facetAvailability},`:''}
       min(label_order COLLATE "C") FILTER (WHERE make_id IS NOT NULL) AS label_order,count(*)::int AS row_count

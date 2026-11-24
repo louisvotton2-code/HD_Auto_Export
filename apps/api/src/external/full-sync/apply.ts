@@ -4,12 +4,15 @@ import {applyFormalCandidate,reprojectFormalListing} from '../store.js';
 import {adaptSourceDocuments,loadSourceDocuments,persistSourceDocument,refreshSourceSegments} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {FullSyncError,type FullApply,type Source} from './types.js';
+export async function lockMember(tx:PoolClient,source:Source,id:string){
+ return (await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2 FOR UPDATE',[source,id])).rows[0];
+}
 export async function ensureMember(tx:PoolClient,source:Source,id:string){
  const legacy=(await tx.query("SELECT l.formal_canonical_id,l.upstream_state,l.fetched_at,i.business_order,i.business_at FROM external_listings l LEFT JOIN external_ingestion_identity_state i ON i.provider=l.provider AND i.source=l.platform_id AND i.external_id=l.external_id WHERE l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id=$2",[source,id])).rows[0];
  const canonical=legacy?.formal_canonical_id??`chinacarapi:${source}:${id}`;
  await tx.query('INSERT INTO external_full_members(source,external_id,canonical_id,state,event_order,business_at,locales,last_detail_at,applied_generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING',
   [source,id,canonical,legacy?legacy.upstream_state:'pending',legacy?.business_order??'0',legacy?.business_at??legacy?.fetched_at??new Date(0),legacy?.upstream_state==='active'?['zh','en','ru']:[],legacy?.fetched_at??null,legacy?1:0]);
- return (await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2 FOR UPDATE',[source,id])).rows[0]!;
+ return (await lockMember(tx,source,id))!;
 }
 export function parseAlias(value:unknown):{source:Source;id:string}|null{
  if(typeof value!=='string')return null;const match=/^(che168|dongchedi)[:/](\d{1,100})$/.exec(value);return match?{source:match[1] as Source,id:match[2]!}:null;

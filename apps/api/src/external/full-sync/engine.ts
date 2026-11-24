@@ -16,7 +16,7 @@ import {syncAccount} from './quota.js';
 import {advanceCapacitySampleLifecycle,capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk,type CapacitySample} from './capacity.js';
 import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,supersedeTiming} from './timing.js';
 import {FullSyncClient} from './client.js';
-import {applyFullSource,ensureMember,bindAlias,parseAlias} from './apply.js';
+import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './apply.js';
 import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapshot, eligibleReplayEvents} from './admission-replay.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
@@ -92,7 +92,7 @@ export class FullSyncWorker{
  }
  async state(){return (await this.db.pool.query('SELECT * FROM external_full_sync WHERE id=1')).rows[0]!;}
  async space(){const disk=await statfs(this.directory);const used=1-disk.bavail/disk.blocks;if(!Number.isFinite(used))throw new FullSyncError('SYNC_SPACE_UNKNOWN');
-  await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1',[used>=.70]);return {used,available:disk.bavail*disk.bsize,total:disk.blocks*disk.bsize};}
+  await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1 AND disk_paused IS DISTINCT FROM $1',[used>=.70]);return {used,available:disk.bavail*disk.bsize,total:disk.blocks*disk.bsize};}
  // Only work restricted to existing sampled members (and its required account refresh) may request sampleRepair.
  async heavy(sampleRepair=false){
   await this.alive();const s=await this.state(),disk=await this.space();
@@ -415,7 +415,8 @@ export class FullSyncWorker{
    for(const entry of rows){
     const memberWithdrawn=entry.member_withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.member_withdrawn_at);
     const withdrawn=memberWithdrawn||(entry.withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.withdrawn_at));
-    const admitted=!withdrawn&&await admitFormalListing(tx,entry.source,entry.external_id);
+    // At the ceiling the SELECT has already checked the retained admission ledger.
+    const admitted=!withdrawn&&(atLimit||await admitFormalListing(tx,entry.source,entry.external_id));
     if(!withdrawn&&!admitted&&!ceilingReached){
      ceilingReached=(await tx.query<{reached:boolean}>('SELECT admitted_count >= admission_limit AS reached FROM external_formal_admission_state WHERE id=1')).rows[0]!.reached;
      if(!ceilingReached)break; // Retry this row when the temporary capacity gate reopens.
@@ -427,7 +428,10 @@ export class FullSyncWorker{
         WHERE source=$1 AND external_id=$2)`,[entry.source,entry.external_id,id]);
      continue;
     }
-    let m=await ensureMember(tx,entry.source,entry.external_id);const row=entry.payload as CatalogCsvRow;
+    // For an admitted identity, an existing member already holds the authority
+    // the legacy bootstrap would try to insert. Keep its row locked.
+    let m=await lockMember(tx,entry.source,entry.external_id)??await ensureMember(tx,entry.source,entry.external_id);
+    const row=entry.payload as CatalogCsvRow;
     if(m.state==='withdrawn'&&new Date(snap.generated_at)<=new Date(m.business_at)){
      await tx.query('UPDATE external_full_members SET last_snapshot=$3 WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);
      continue;
@@ -437,8 +441,8 @@ export class FullSyncWorker{
      const stagedAlias=!expanded||(await tx.query(`SELECT 1 FROM external_full_stage
       WHERE snapshot_id=$1 AND source=$2 AND external_id=$3`,[id,alias.source,alias.id])).rowCount===1;
      await bindAlias(tx,entry.source,entry.external_id,alias,new Date(snap.generated_at).toISOString(),stagedAlias);
+     m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
     }
-    m=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id])).rows[0]!;
     // Export image URLs are retained as evidence but detail photos are refreshed separately.
     const stableRow=Object.fromEntries(Object.entries(row).filter(([key])=>!['first_seen_at','last_seen_at','detail_fetched_at','export_price_usd','image'].includes(key)));const rowHash=jsonHash(stableRow);
     if(m.csv_hash===rowHash&&m.last_detail_at){await tx.query('UPDATE external_full_members SET last_snapshot=$3,verification_pending=false WHERE source=$1 AND external_id=$2',[entry.source,entry.external_id,id]);continue;}

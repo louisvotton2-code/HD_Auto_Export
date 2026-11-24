@@ -38,6 +38,23 @@ class FirstPartySupplierFacets(unittest.TestCase):
         self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
 
 
+class FirstPartySupplierKeywordMatch(unittest.TestCase):
+    def test_rebuildable_keyword_matches_and_readiness_are_excluded(self):
+        tables = ('external_catalog_keyword_match', 'external_catalog_keyword_match_en',
+                  'external_catalog_keyword_match_ru', 'external_catalog_keyword_match_state')
+        options = data.dump_options()
+        schema_gate = data._validate_supplier_tables_sql()
+        measurement = data.measurement_sql()
+        supplement = data._supplement_sql(True, seo_selection=True)
+        for table in tables:
+            with self.subTest(table=table):
+                self.assertIn(f'--exclude-table-data=public.{table}', options)
+                self.assertNotIn(f'--exclude-table=public.{table}', options)
+                self.assertIn(f"'{table}'", schema_gate)
+                self.assertIn(f"'{table}'", measurement)
+                self.assertNotIn(table, supplement)
+
+
 class FirstPartyPixelSettings(unittest.TestCase):
     def test_supplier_settings_are_staged_and_staff_settings_remain_in_the_dump(self):
         options = data.dump_options()

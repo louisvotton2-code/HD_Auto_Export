@@ -14,6 +14,7 @@
     "test:integration": "node --import tsx --test test/*.test.ts",
     "check": "pnpm typecheck && pnpm test",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/db/migrate.ts",
+    "db:keyword-match": "node --import tsx src/external/keyword-match-maintenance.ts",
     "staff": "node --env-file-if-exists=.env --import tsx src/staff-cli.ts",
     "media:cleanup": "node --env-file-if-exists=.env --import tsx src/cleanup.ts",
     "media:backfill-versions": "node --env-file-if-exists=.env --import tsx src/media-version-cli.ts",

@@ -58,6 +58,12 @@ test('formal supplier replay keeps the material projection, gallery and represen
     [listingId,canonicalId])).rows[0]!;
     const original=await footprint();
     assert.equal(original.media.length,45);
+    const segmentRows=async(kind:'photos'|'configuration')=>(await database.pool.query<{
+      locale:string;position:number;tuple:string;data:{id:string};
+    }>(`SELECT locale,position,xmin::text||'/'||xmax::text||'/'||ctid::text AS tuple,data
+      FROM external_source_segments WHERE listing_id=$1 AND kind=$2 ORDER BY locale,position`,[listingId,kind])).rows;
+    const originalPhotos=await segmentRows('photos');
+    assert.equal(originalPhotos.length,135);
     const gallery=await readSourceSegment(database.pool,listingId,'zh','photos',30,20);
     assert.equal(gallery?.total,45);
     assert.equal(gallery?.items.length,15);
@@ -99,6 +105,16 @@ test('formal supplier replay keeps the material projection, gallery and represen
     await applyLocalizedSpecs(at(-2.8));
     assert.deepEqual(await footprint(),localized);
 
+    const beforeConfigEdit=await segmentRows('configuration');
+    await applyLocalizedSpecs(at(-2.7),'选配');
+    const afterConfigEdit=await segmentRows('configuration');
+    assert.equal(afterConfigEdit.length,beforeConfigEdit.length);
+    assert.deepEqual(afterConfigEdit.filter((row,index)=>row.tuple!==beforeConfigEdit[index]!.tuple)
+      .map(row=>[row.locale,row.data.id]),[['zh','sheet.0.0']]);
+    const zhEdited=await readSourceSegment(database.pool,listingId,'zh','configuration',0,20);
+    assert.equal(zhEdited?.total,zhAfter?.total);
+    assert.notEqual(zhEdited?.revision,zhAfter?.revision);
+
     const extendedExpiry=originalExpiry+3600;
     const refreshed={...raw,photos:[...raw.photos.slice(0,-1),signed(extendedExpiry,'refreshedSignature')]};
     await apply(at(-2),refreshed);
@@ -108,6 +124,10 @@ test('formal supplier replay keeps the material projection, gallery and represen
     assert.deepEqual(refreshedRows.media.slice(0,-1),original.media.slice(0,-1));
     assert.equal(refreshedRows.media.at(-1)[0],original.media.at(-1)[0]);
     assert.equal(refreshedRows.media.at(-1)[2],original.media.at(-1)[2]+1);
+    const refreshedPhotos=await segmentRows('photos');
+    assert.equal(refreshedPhotos.length,originalPhotos.length);
+    assert.deepEqual(refreshedPhotos.filter((row,index)=>row.tuple!==originalPhotos[index]!.tuple)
+      .map(row=>[row.locale,row.position]),[['en',44],['ru',44],['zh',44]]);
     const rechecked=await readSourceSegment(database.pool,listingId,'zh','photos',30,20);
     assert.notEqual(rechecked?.revision,gallery?.revision);
     assert.match((rechecked?.items.at(-1) as {url:string}).url,/refreshedSignature/);
@@ -123,8 +143,20 @@ test('formal supplier replay keeps the material projection, gallery and represen
     const reportAndMediaExpiry={...priced,photos:[...priced.photos.slice(0,-1),signed(Math.floor((now-30*60_000)/1000),'expiredSignature')]};
     await apply(at(0),reportAndMediaExpiry);
     assert.equal((await readSourceSegment(database.pool,listingId,'zh','photos',30,20))?.total,44);
+    const unexpiredPhotos=await segmentRows('photos');
+    assert.deepEqual(unexpiredPhotos,refreshedPhotos.filter(row=>row.position<44));
     assert.equal((await database.pool.query(`SELECT count(*)::int AS n FROM external_media_refresh_requests r
       JOIN external_media m ON m.id=r.media_id AND m.revision=r.media_revision WHERE m.listing_id=$1`,[listingId])).rows[0]?.n,1);
+
+    const reorderedPhotos=[...reportAndMediaExpiry.photos];
+    [reorderedPhotos[40],reorderedPhotos[41]]=[reorderedPhotos[41]!,reorderedPhotos[40]!];
+    await apply(at(.5),{...reportAndMediaExpiry,photos:reorderedPhotos});
+    const reordered=await segmentRows('photos');
+    assert.equal(reordered.length,unexpiredPhotos.length);
+    assert.deepEqual(reordered.filter((row,index)=>row.tuple!==unexpiredPhotos[index]!.tuple)
+      .map(row=>[row.locale,row.position]),[['en',40],['en',41],['ru',40],['ru',41],['zh',40],['zh',41]]);
+    const reorderedPage=await readSourceSegment(database.pool,listingId,'zh','photos',30,20);
+    assert.deepEqual(reorderedPage?.items.map(item=>'url' in item?item.url:null),reorderedPhotos.slice(30,44));
 
     const secondaryId='90102',secondaryCanonical=`chinacarapi:${source}:${secondaryId}`;
     const successor={...primary,externalId:secondaryId,canonicalId:secondaryCanonical};
