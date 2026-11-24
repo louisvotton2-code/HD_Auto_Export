@@ -24,7 +24,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay
 import type { LocalMediaStore } from '../media/storage.js';
 import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, getExternalPublic, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchReady, getExternalPublic, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -908,16 +908,18 @@ export class InventoryService {
       const count=await tx.query(`SELECT count(*)::int AS total ${publicFrom}${where}`,params);
       const staffTotal:number=count.rows[0].total;
       const indexedHan=Boolean(includeExternal&&await preferIndexedHanPair(tx,query));
+      const sort=query.sort??'newest',numeric=numericSort(sort);
+      const keywordMatch=includeExternal&&query.projection==='card'&&query.page===1&&!cursorMode&&sort==='newest'
+        &&await externalKeywordMatchReady(tx,query);
       const countWithSearchPage=includeExternal&&canCountExternalSearchPage(query,indexedHan);
       let externalTotal:number|undefined;
       if(includeExternal&&!countWithSearchPage) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote,indexedHan);
+        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMatch);
       }
       phase?.('staff_page');
       const offset=cursor?0:(query.page-1)*query.pageSize,time=Date.now();
       const limit=query.pageSize+(cursorMode?1:0);
-      const sort=query.sort??'newest',numeric=numericSort(sort);
       const usdPriceOrder=fx!==undefined&&sort.startsWith('price_');
       let column=sort==='mileage_asc'?"(p.data->'facts'->>'mileageKm')::numeric":sort==='year_desc'?"(p.data->'facts'->>'modelYear')::numeric":staffPriceAmountSql;
       if(usdPriceOrder)column=usdSortAmount(column,"p.data->'price'->'money'->>'currency'",quote,params);
@@ -947,13 +949,13 @@ export class InventoryService {
       if(includeExternal&&items.length<limit) {
         phase?.('supplier_page');
         const external=await listExternalPage(tx,query,limit-items.length,cursor?0:Math.max(0,offset-staffTotal),time,
-          cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage,undefined,indexedHan);
+          cursor?.stream==='external'?cursor.after:undefined,quote,countWithSearchPage,undefined,indexedHan,keywordMatch);
         items.push(...external.items);anchors.push(...external.anchors.map(after=>({stream:'external' as const,after})));
         externalTotal=external.total??externalTotal;
       }
       if(includeExternal&&externalTotal===undefined) {
         phase?.('supplier_count');
-        externalTotal=await countExternal(tx,query,quote,indexedHan);
+        externalTotal=await countExternal(tx,query,quote,indexedHan,keywordMatch);
       }
       phase?.('result');
       const total=staffTotal+(externalTotal??0);

@@ -12,6 +12,7 @@ import { createDatabase, type Database } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { countExternal, preferIndexedHanPair } from '../src/external/catalog.js';
 import { seedSyntheticFx } from '../src/external/fx.js';
+import { advanceKeywordMatch } from '../src/external/keyword-match-maintenance.js';
 import { applyFormalCandidate } from '../src/external/store.js';
 import { InventoryService } from '../src/vehicles/service.js';
 
@@ -270,6 +271,7 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
         const page = await service.listPublic(query, 'unscoped-brand');
         const next = await service.listPublic({ ...query, page: 2 }, 'unscoped-brand-next');
         assert.match(combined.at(-1)!, /LIMIT 49153/);
+        assert.equal(combined.at(-1)!.match(/JOIN external_catalog_search\b/g)?.length, 1);
         assert.equal(page.meta.total, 2);
         assert.equal(next.meta.total, 2);
         assert.equal(page.data.hasMore, true);
@@ -288,6 +290,83 @@ test('exact supplier locale counts backfill and track the same snapshot as the s
     } finally {
       await db.pool.query('UPDATE external_catalog SET facts=$2 WHERE listing_id=$1', [other, JSON.stringify(originalFacts)]);
     }
+  });
+
+  await t.test('verified keyword matches preserve literal results, current visibility and no-op sync', async () => {
+    const ids = [fixtures[6]!, fixtures[7]!];
+    await db.pool.query(`UPDATE external_catalog_search SET title_text='Special keyword fixture 100%'
+      WHERE listing_id=ANY($1::uuid[]) AND locale IN ('en','ru')`, [ids]);
+    await db.pool.query('TRUNCATE external_catalog_keyword_match');
+    await assert.rejects(advanceKeywordMatch(db, 'activate', 2), /Complete and verify/);
+    assert.deepEqual(await advanceKeywordMatch(db, 'start', 2), { status: 'maintaining' });
+    await assert.rejects(db.transaction(async tx => {
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      await tx.query("UPDATE external_catalog_search SET title_text='Old snapshot edit' WHERE listing_id=$1 AND locale='en'", [ids[0]]);
+    }), { code: '0A000' });
+    await db.transaction(async tx => {
+      await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+      assert.deepEqual(await advanceKeywordMatch(db, 'backfill', 2), { status: 'busy' });
+    });
+    const finish = async (action: 'backfill' | 'verify') => {
+      for (let n = 0; n < 10; n++) {
+        if ((await advanceKeywordMatch(db, action, 2)).status === 'complete') return;
+      }
+      assert.fail(`Keyword match ${action} did not finish`);
+    };
+    await finish('backfill');
+    await db.pool.query('UPDATE external_catalog_keyword_match SET search_document=$2 WHERE listing_id=$1', [ids[0], 'bad projection']);
+    await assert.rejects(finish('verify'), /verification found a difference/);
+    await db.transaction(async tx => {
+      await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+      await tx.query('SELECT refresh_external_catalog_keyword_match($1::uuid[])', [ids]);
+    });
+    await finish('verify');
+
+    const statements: string[] = [];
+    const observed = { ...db, transaction: async <T>(work: (tx: PoolClient) => Promise<T>) => db.transaction(tx => work({
+      query: (sql: string, params?: unknown[]) => { statements.push(sql); return tx.query(sql, params); },
+    } as PoolClient)) } as Database;
+    const service = new InventoryService(observed, true);
+    const query = listingQuery('en', { q: 'keyword fixture 100%' });
+    const filters = PublicFilterQuerySchema.parse({ locale: 'en', catalog: 'curated', view: 'localized',
+      q: query.q, projection: 'overview-models' });
+    const baseline = await service.listPublic(query, 'keyword-before');
+    const baselineFacets = await service.filters(filters);
+    assert.equal(baseline.meta.total, 2);
+    assert.deepEqual(await advanceKeywordMatch(db, 'activate', 2), { status: 'active' });
+    await assert.rejects(db.pool.query('TRUNCATE external_catalog_keyword_match_en'), { code: '55000' });
+    for (const locale of ['en', 'ru'] as const) {
+      statements.length = 0;
+      const current = await service.listPublic({ ...query, locale }, 'keyword-active');
+      const facets = await service.filters({ ...filters, locale });
+      assert.equal(current.meta.total, 2);
+      assert.equal(facets.total, baselineFacets.total);
+      assert.deepEqual(current.data.items.map(item => item.id), baseline.data.items.map(item => item.id));
+      assert.ok(statements.filter(sql => sql.includes('FROM external_catalog_keyword_match f')).length >= 2);
+    }
+    const version = async () => (await db.pool.query<{xmin:string}>(
+      "SELECT xmin::text FROM external_catalog_keyword_match WHERE listing_id=$1 AND locale='en'", [ids[0]])).rows[0]?.xmin;
+    const beforePrice = await version();
+    await db.pool.query('UPDATE external_catalog_filter SET price_cny=price_cny+1 WHERE listing_id=$1', [ids[0]]);
+    assert.equal(await version(), beforePrice);
+    await db.pool.query("UPDATE external_catalog_search SET title_text='Another topic' WHERE listing_id=$1 AND locale='en'", [ids[0]]);
+    assert.notEqual(await version(), beforePrice);
+    assert.equal((await service.listPublic(query, 'keyword-after-edit')).meta.total, 1);
+    assert.equal((await service.filters(filters)).total, 1);
+    await db.pool.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1", [ids[1]]);
+    try {
+      assert.equal((await service.listPublic(query, 'keyword-after-withdrawal')).meta.total, 0);
+      assert.equal((await service.filters(filters)).total, 0);
+    } finally {
+      await db.pool.query("UPDATE external_listings SET upstream_state='active' WHERE id=$1", [ids[1]]);
+      await advanceKeywordMatch(db, 'disable', 2);
+    }
+    assert.equal((await service.listPublic(query, 'keyword-disabled')).meta.total, 1);
+    assert.deepEqual(await advanceKeywordMatch(db, 'pause', 2), { status: 'paused' });
+    const pausedVersion = await version();
+    await db.pool.query("UPDATE external_catalog_search SET title_text='Paused source edit' WHERE listing_id=$1 AND locale='en'", [ids[0]]);
+    assert.equal(await version(), pausedVersion);
+    await assert.rejects(advanceKeywordMatch(db, 'start', 2), /clear the paused projection/);
   });
 
   await t.test('bulk changes are atomic and restoring only the first-party singleton ID starts at zero', async () => {
