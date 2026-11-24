@@ -5,6 +5,8 @@ import {
   PublicMediaQuerySchema,
   PublicVehicleSegmentQuerySchema,
   PublicVehicleInspectionQuerySchema,
+  publicCatalogSearchIssue,
+  CATALOG_SEARCH_TERM_TOO_SHORT,
 } from '@hd/contracts/public';
 import {
   PublicApiError,
@@ -28,11 +30,11 @@ import {
 } from '../localized-projection';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
-function failure(status: number, retryAfter?: string) {
+function failure(status: number, retryAfter?: string, searchIssue?: typeof CATALOG_SEARCH_TERM_TOO_SHORT) {
   return Response.json(
     {
       error: {
-        code:
+        code: searchIssue ?? (
           status === 404
             ? 'NOT_FOUND'
             : status === 400
@@ -41,12 +43,12 @@ function failure(status: number, retryAfter?: string) {
                 ? 'RATE_LIMITED'
                 : status === 409
                   ? 'VERSION_CONFLICT'
-                : 'SERVICE_UNAVAILABLE',
+                  : 'SERVICE_UNAVAILABLE'),
         message:
           status === 404
             ? 'Not found'
             : status === 400
-              ? 'Invalid public query'
+              ? searchIssue ? 'Enter at least three consecutive letters or digits, or select a make or model.' : 'Invalid public query'
               : status === 429
                 ? 'Too many requests. Please try again later.'
                 : status === 409
@@ -108,11 +110,15 @@ export async function proxyPublicRequest(
         const locale = PublicLocaleQuerySchema.parse({ locale: raw.locale }).locale;
         const parsed = parseCatalogQuery(raw, locale);
         if (!parsed || (raw.catalog && raw.catalog !== 'curated')) return failure(400);
+        const issue = publicCatalogSearchIssue(parsed);
+        if (issue) return failure(400, undefined, issue);
         query = parsed;
       } else if (path === 'vehicle-filters') {
         const locale = PublicLocaleQuerySchema.parse({ locale: raw.locale }).locale;
         const parsed = parseFilterQuery(raw, locale);
         if (!parsed || (raw.catalog && raw.catalog !== 'curated')) return failure(400);
+        const issue = publicCatalogSearchIssue(parsed);
+        if (issue) return failure(400, undefined, issue);
         query = parsed;
       } else query = (isDetail ? PublicVehicleDetailQuerySchema : PublicLocaleQuerySchema).parse(raw);
     }

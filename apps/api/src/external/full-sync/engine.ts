@@ -4,9 +4,10 @@ import {createReadStream,createWriteStream} from 'node:fs';
 import {createGzip} from 'node:zlib';
 import {pipeline} from 'node:stream/promises';
 import {mkdir,statfs,stat,unlink,readdir} from 'node:fs/promises';
+import {performance} from 'node:perf_hooks';
 import path from 'node:path';
 import type {PoolClient} from 'pg';
-import type {Database} from '../../db/index.js';
+import {classifyCapacityFailure,type Database} from '../../db/index.js';
 import {verifyCatalogCsv,persistSourceResponse,persistSourceDocument,archiveSourceDocuments,loadSourceDocumentRefs,releaseSourceReferences,protectSourceBlob,type SourceDocument,type CatalogCsvRow} from '../sources/index.js';
 import {SERVICE_ACTOR} from '../ingestion/worker.js';
 import {jsonHash} from '../normalize.js';
@@ -18,13 +19,17 @@ import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,super
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './apply.js';
 import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapshot, eligibleReplayEvents} from './admission-replay.js';
+import {observeMaterialization,type DetailMaterializationObserver} from './materialization-log.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
 const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC_OPERATION_FAILED';
 const capacityMeasurementMaxAgeMs=30_000;
+const detailMaterializationBudgetMs=5_000;
+const detailMaterializationTimeout='SYNC_DETAIL_SQL_TIMEOUT';
 type CapacitySnapshot=Parameters<typeof capacityTarget>[0]&{id:string;bytes:string};
 type CapacityMeasurement={state:Record<string,any>;disk:CapacityDisk;sample:CapacitySample;snapshot:CapacitySnapshot|undefined};
+type DetailJobKey={source:Source;external_id:string;generation:string;replay_id?:string|null};
 function completeCapacitySample(snapshot:CapacitySnapshot|undefined,sample:CapacitySample) {
  return !!snapshot&&capacityTarget(snapshot)>0&&sample.details>0&&sample.details<=10000&&sample.details>=capacitySampleTarget(snapshot)
   &&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
@@ -72,7 +77,9 @@ async function retireReplayDetail(tx:PoolClient,replay:{replay_id:string;event_i
 export class FullSyncWorker{
  private lock:PoolClient|null=null;private lost=false;private fence:string|null=null;
  private phase:TickPhase='startup';
- constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource){}
+ private reportOwed=false;
+ constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource,
+  private materializationObserver?:DetailMaterializationObserver){}
  get tickPhase(){return this.phase;}
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
  async acquire(){
@@ -81,13 +88,18 @@ export class FullSyncWorker{
     AND to_regclass('external_full_admission_replay_items') IS NOT NULL AS installed`)).rows[0]?.installed)
    throw new FullSyncError('SYNC_REPLAY_MIGRATION_REQUIRED');
   const c=await this.db.pool.connect();if(!(await c.query('SELECT pg_try_advisory_lock(78291333) AS ok')).rows[0].ok){c.release();return false;}
-  this.lock=c;c.on('error',()=>{this.lost=true;});this.fence=String((await this.db.pool.query('UPDATE external_full_sync SET worker_fence=worker_fence+1 WHERE id=1 RETURNING worker_fence')).rows[0]!.worker_fence);return true;}
+  this.lock=c;c.on('error',()=>{this.lost=true;});
+  const state=(await this.db.pool.query('UPDATE external_full_sync SET worker_fence=worker_fence+1 WHERE id=1 RETURNING worker_fence,last_error_code')).rows[0]!;
+  this.fence=String(state.worker_fence);this.reportOwed=state.last_error_code===detailMaterializationTimeout;return true;}
  async close(){if(this.lock){try{await this.lock.query('SELECT pg_advisory_unlock(78291333)');}finally{this.lock.release();this.lock=null;}}}
  private async alive(){if(!this.lock||this.lost)throw new FullSyncError('SYNC_LEASE_LOST');await this.lock.query('SELECT 1');}
- private async transaction<T>(work:(tx:PoolClient)=>Promise<T>):Promise<T>{
+ private async transaction<T>(work:(tx:PoolClient)=>Promise<T>,onBackend?:(pid:number)=>void):Promise<T>{
   await this.alive();return this.db.transaction(async tx=>{
-   const fence=(await tx.query('SELECT worker_fence FROM external_full_sync WHERE id=1 FOR UPDATE')).rows[0]!.worker_fence;
-   if(String(fence)!==this.fence)throw new FullSyncError('SYNC_LEASE_LOST');return work(tx);
+   const {worker_fence, pid}=(await tx.query<{worker_fence:string;pid?:number}>(
+    `SELECT worker_fence${onBackend?',pg_backend_pid() AS pid':''} FROM external_full_sync WHERE id=1 FOR UPDATE`)).rows[0]!;
+   if(String(worker_fence)!==this.fence)throw new FullSyncError('SYNC_LEASE_LOST');
+   if(pid!==undefined)onBackend?.(pid);
+   return work(tx);
   });
  }
  async state(){return (await this.db.pool.query('SELECT * FROM external_full_sync WHERE id=1')).rows[0]!;}
@@ -499,14 +511,24 @@ export class FullSyncWorker{
    if(usable)jobs.push(job);
   }
   if(!jobs.length)return 0;
-  const stoppedReplay=new Set<string>();
-  const replayKey=(job:{source:Source;external_id:string})=>`${job.source}:${job.external_id}`;
+  const failed=new Set<string>(),stoppedReplay=new Set<string>();
+  const jobKey=(job:DetailJobKey)=>`${job.source}:${job.external_id}:${job.generation}`;
+  const failOnce=async(job:DetailJobKey,code:string)=>{
+   const key=jobKey(job);
+   if(failed.has(key))return;
+   failed.add(key);
+   if(await this.failDetail(job,code))stoppedReplay.add(key);
+  };
   for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
-   const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale)&&!stoppedReplay.has(replayKey(j)));if(!wanted.length)continue;
+   const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale)&&!stoppedReplay.has(jobKey(j)));if(!wanted.length)continue;
    if(wanted.some(job=>job.replay_id))await this.heavy();
+   const outstanding=new Map<string,DetailJobKey>(wanted.map(job=>[job.external_id,job]));
+   let receiving=true,archiveJob:DetailJobKey|undefined;
    try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale)){
+    receiving=false;
     await this.heavy(sampleOnly);await this.applyEvents(true);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
-    for(const payload of response.results){const job=wanted.find(j=>j.external_id===payload.id)!;
+    for(const payload of response.results){
+     const job=outstanding.get(payload.id)!;archiveJob=job;
      await this.transaction(async tx=>{
       const current=(await tx.query("SELECT * FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' FOR UPDATE",[source,payload.id])).rows[0];
       if(!current||String(current.generation)!==String(job.generation))return;
@@ -514,18 +536,49 @@ export class FullSyncWorker{
       const refs=await archiveSourceDocuments(tx,[doc],workRef(source,payload.id,'detail'));
       await tx.query(`UPDATE external_full_work SET document_refs=document_refs||$3::jsonb,locales=ARRAY(SELECT DISTINCT unnest(locales||$4::text[])) WHERE source=$1 AND external_id=$2 AND kind='detail'`,[source,payload.id,JSON.stringify(refs),[locale]]);
      });
+     outstanding.delete(payload.id);
+     archiveJob=undefined;
     }
     for(const id of response.notFound){
-     const job=wanted.find(entry=>entry.external_id===id);
-     if(job&&await this.failDetail(job,'SYNC_DETAIL_NOT_FOUND'))stoppedReplay.add(replayKey(job));
+     const job=outstanding.get(id);
+     if(job)await failOnce(job,'SYNC_DETAIL_NOT_FOUND');
+     outstanding.delete(id);
     }
-   }}catch(error){if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'))throw error;for(const job of wanted.filter(j=>!(error instanceof FullSyncError)||!error.affectedIds||error.affectedIds.includes(j.external_id)))await this.failDetail(job,errorCode(error));throw error;}
+    receiving=true;
+   }}catch(error){
+    if(error instanceof FullSyncError&&(error.code==='SYNC_LEASE_LOST'||error.code==='SYNC_HEAVY_PAUSED'||error.code.startsWith('SYNC_CAPACITY_')))throw error;
+    if(classifyCapacityFailure(error).code==='SQL_STATEMENT_CANCELLED'){
+     if(archiveJob)await failOnce(archiveJob,detailMaterializationTimeout);
+     throw new FullSyncError(detailMaterializationTimeout);
+    }
+    if(!receiving){
+     if(archiveJob)await failOnce(archiveJob,errorCode(error));
+     throw error;
+    }
+    if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'||error.code==='SYNC_RATE_LIMITED'))throw error;
+    const affected=error instanceof FullSyncError?error.affectedIds:undefined;
+    for(const id of affected??outstanding.keys()){
+     const job=outstanding.get(id);if(job)await failOnce(job,errorCode(error));
+    }
+    throw error;
+   }
   }
+  // Archived responses survive the tick. Check the elapsed budget only between
+  // vehicle transactions; a transaction already started can finish normally.
+  const materializationDeadline=performance.now()+detailMaterializationBudgetMs;
+  const observation=this.materializationObserver&&observeMaterialization(this.materializationObserver,this.fence,jobs.length);
   let applied=0,replayFlush=0;
+  let stop:'complete'|'budget'|'statement_timeout'|'error'='error';
+  try{
   for(const job of jobs){
-   if(stoppedReplay.has(replayKey(job)))continue;
-   if(job.replay_id&&replayFlush++%ADMISSION_REPLAY_BATCH===0)await this.heavy();
-   try{await this.transaction(async tx=>{
+   if(failed.has(jobKey(job)))continue;
+   if(job.replay_id&&replayFlush++%ADMISSION_REPLAY_BATCH===0){
+    if(performance.now()>=materializationDeadline){stop='budget';return applied;}
+    await this.heavy();
+   }
+   if(performance.now()>=materializationDeadline){stop='budget';return applied;}
+   const attempt=observation?.begin(job.source,job.external_id,String(job.generation));
+   try{const committed=await this.transaction(async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    const current=(await tx.query("SELECT * FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail' FOR UPDATE",[job.source,job.external_id])).rows[0];
    if(!current||String(current.generation)!==String(job.generation)||current.attempts>=5||current.locales.length!==3)return;
@@ -538,7 +591,9 @@ export class FullSyncWorker{
     return;
    }
    if(job.replay_id&&(!replay?.canApply||!await physicalCleanupAllowed(tx)))return;
+   attempt?.enter('load_pending_refs');
    const docs=await loadSourceDocumentRefs(tx,current.document_refs),detail=docs.find(d=>d.kind==='detail'&&d.locale==='en')?.payload as Record<string,unknown>|undefined;
+   attempt?.enter('prepare_member');
    // Explicit active/removed evidence is different from HTTP notFound, which remains unresolved.
    const removed=(status:unknown)=>status==='removed'||status==='withdrawn';
    const replayDetails=replay?docs.filter(d=>d.kind==='detail'):[];
@@ -575,7 +630,8 @@ export class FullSyncWorker{
    await tx.query(`UPDATE external_full_members SET state=$3,locales=$4,applied_generation=desired_generation,last_detail_at=$5,verification_pending=false,
     sampled=sampled OR (SELECT last_capacity_sample=0 FROM external_full_sync WHERE id=1),has_report=$6,report_state=$7 WHERE source=$1 AND external_id=$2`,[job.source,job.external_id,withdrawn?'withdrawn':'active',current.locales,at,hasReport,reportState]);
    if(member.sampled&&withdrawn)await advanceCapacitySampleLifecycle(tx);
-   await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:canonical,operation:withdrawn?'withdraw':'upsert',documents:docs,at,batchId:member.last_snapshot??randomUUID()});
+   await this.apply(tx,{source:job.source,externalId:job.external_id,canonicalId:canonical,operation:withdrawn?'withdraw':'upsert',documents:docs,at,batchId:member.last_snapshot??randomUUID(),observe:attempt?.enter});
+   attempt?.enter('finish_job');
    if(replay){
     await tx.query("UPDATE external_full_admission_replay_items SET state='verified_active',processed_at=clock_timestamp() WHERE replay_id=$1 AND event_id=$2",
      [replay.replay_id,replay.event_id]);
@@ -585,11 +641,34 @@ export class FullSyncWorker{
    await releaseSourceReferences(tx,'pending',workRef(job.source,job.external_id,'detail'));await tx.query("DELETE FROM external_full_work WHERE source=$1 AND external_id=$2 AND kind='detail'",[job.source,job.external_id]);
    await tx.query("UPDATE external_full_members SET photo_expires_at=(SELECT min(e.expires_at) FROM external_media e JOIN external_listings l ON l.id=e.listing_id WHERE l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id=$2 AND e.active) WHERE source=$1 AND external_id=$2",[job.source,job.external_id]);
    if(!withdrawn&&!noReport)await queue(tx,job.source,job.external_id,'report',member.desired_generation,10);
-   applied++;
-  });}catch(error){await this.failDetail(job,errorCode(error));}}return applied;
+   attempt?.enter('commit');
+   return true;
+   },attempt?pid=>{attempt.backendPid=pid;}:undefined);
+   if(committed)applied++;
+   attempt?.finish(committed?'applied':'skipped');
+   }catch(error){
+    const {code}=classifyCapacityFailure(error);
+    attempt?.finish('failed',code);
+    if(error instanceof FullSyncError&&error.code==='SYNC_LEASE_LOST')throw error;
+    if(code==='SQL_STATEMENT_CANCELLED'){
+     // The failed transaction has rolled back. Attribute the retry only to
+     // this generation and leave all other prepared jobs for a later tick.
+     stop='statement_timeout';
+     await failOnce(job,detailMaterializationTimeout);
+     throw new FullSyncError(detailMaterializationTimeout);
+    }
+    await failOnce(job,errorCode(error));
+   }
+  }
+  stop='complete';
+  return applied;
+  }finally{observation?.finish(stop);}
  }
- private async failDetail(job:{source:Source;external_id:string;generation:string;replay_id?:string|null},code:string){
-  if(!job.replay_id){await this.failWork(job.source,job.external_id,'detail',code);return false;}
+ private async failDetail(job:DetailJobKey,code:string){
+  if(!job.replay_id){
+   await this.transaction(tx=>this.failWork(job.source,job.external_id,'detail',code,{tx,generation:String(job.generation)}));
+   return false;
+  }
   return this.transaction(async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
    const replay=await checkScheduledReplayDetail(tx,job.source,job.external_id,String(job.generation));
@@ -755,10 +834,21 @@ export class FullSyncWorker{
  }
  private async scheduledDetails(sampleOnly=false){
   try{return await this.details(sampleOnly);}catch(error){
-   if(!(error instanceof FullSyncError)||!['SYNC_TIMEOUT','SYNC_RESPONSE_INVALID','SYNC_TOO_LARGE','SYNC_HTTP_500','SYNC_HTTP_502','SYNC_HTTP_503','SYNC_HTTP_504'].includes(error.code))throw error;
-   await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=clock_timestamp() WHERE id=1',[error.code]);
+   const code=classifyCapacityFailure(error).code==='SQL_STATEMENT_CANCELLED'?detailMaterializationTimeout:errorCode(error);
+   if(![detailMaterializationTimeout,'SYNC_TIMEOUT','SYNC_RESPONSE_INVALID','SYNC_TOO_LARGE','SYNC_HTTP_500','SYNC_HTTP_502','SYNC_HTTP_503','SYNC_HTTP_504'].includes(code))throw error;
+   if(code===detailMaterializationTimeout)this.reportOwed=true;
+   await this.transaction(tx=>tx.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=clock_timestamp() WHERE id=1',[code]));
+   if(code===detailMaterializationTimeout)return null;
    return 1; // A failed attempted batch still limits report quota; there is no immediate detail retry.
   }
+ }
+ private async reportAfterInterruptedDetails(sampleOnly=false){
+  if(!this.reportOwed)return 0;
+  // Repay one report slot after urgent work and only when the current capacity gate permits it.
+  this.phase='withdrawals';await this.applyEvents(true);
+  this.phase='reports';await this.report(sampleOnly);
+  this.reportOwed=false;
+  return 1;
  }
  async tick(){
   this.phase='startup';
@@ -778,15 +868,19 @@ export class FullSyncWorker{
     // New events may invalidate the sample after a failed estimate. Repair only that sample before rechecking.
     this.phase='daily';
     if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily(true);
+    const deferredReports=await this.reportAfterInterruptedDetails(true);
     this.phase='details';const repaired=await this.scheduledDetails(true);
+    if(repaired===null)return;
     this.phase='withdrawals';await this.applyEvents(true);
-    this.phase='reports';for(let n=0;n<(repaired?1:20);n++){await this.applyEvents(true);if(!await this.report(true))break;}
+    this.phase='reports';for(let n=deferredReports;n<(repaired?1:20);n++){await this.applyEvents(true);if(!await this.report(true))break;}
     this.phase='capacity';await this.capacityGate();return; // New identities/snapshots resume on a later tick only after the gate passes.
    }
    this.phase='daily';
    if(new Date(s.next_maintenance_at).getTime()<=Date.now())await this.daily();
+   const deferredReports=await this.reportAfterInterruptedDetails();
    // Complete a bounded current-detail batch before CSV admission work.
    this.phase='details';const refreshed=await this.scheduledDetails();
+   if(refreshed===null)return;
    this.phase='withdrawals';await this.applyEvents(true);
    this.phase='admission_replay';await this.replayAdmissions();
    this.phase='snapshot';
@@ -800,7 +894,7 @@ export class FullSyncWorker{
    }
    // Reserve one report per tick: progress survives a continuous stream of high-priority updates.
    this.phase='withdrawals';await this.applyEvents(true);
-   this.phase='reports';for(let n=0;n<(refreshed?1:20);n++){await this.applyEvents(true);if(!await this.report())break;}
+   this.phase='reports';for(let n=deferredReports;n<(refreshed?1:20);n++){await this.applyEvents(true);if(!await this.report())break;}
    this.phase='capacity';await this.capacityGate();
    this.phase='rotation';await this.rotate();
    this.phase='archive_cleanup';await this.pruneStaging();
@@ -808,7 +902,7 @@ export class FullSyncWorker{
    const pending=(await this.db.pool.query("SELECT 1 FROM external_full_work UNION ALL SELECT 1 FROM external_full_events WHERE applied_at IS NULL UNION ALL SELECT 1 FROM external_full_members WHERE state<>'withdrawn' AND (applied_generation<desired_generation OR cardinality(locales)<3 OR verification_pending) LIMIT 1")).rowCount;
    const building=(await this.db.pool.query("SELECT 1 FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rowCount;
    if(!pending&&!building)await this.db.pool.query('UPDATE external_full_sync SET last_success_at=now(),last_error_code=NULL,last_error_at=NULL WHERE id=1');
-  }catch(error){const code=errorCode(error);if(code==='SYNC_CURSOR_EXPIRED')await this.recover();await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=now() WHERE id=1',[code]);if(code!=='SYNC_HEAVY_PAUSED')throw error;}
+  }catch(error){const code=errorCode(error);if(code==='SYNC_LEASE_LOST')throw error;if(code==='SYNC_CURSOR_EXPIRED')await this.recover();await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=now() WHERE id=1',[code]);if(code!=='SYNC_HEAVY_PAUSED')throw error;}
  }
 }
 

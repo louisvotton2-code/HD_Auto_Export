@@ -9,6 +9,7 @@ import {
 } from '@hd/contracts/admin';
 import type { Locale } from '@hd/contracts/public';
 import type { Database } from '../db/index.js';
+import type { FormalWriteStage } from './full-sync/materialization-log.js';
 import { ApiError, conflict, notFound } from '../errors.js';
 import { idempotent, type Actor } from '../vehicles/service.js';
 import { getExternalPublic, listingUuid, publicListingId } from './catalog.js';
@@ -81,7 +82,8 @@ function materialCandidate({revision:_revision,fetchedAt:_fetchedAt,...material}
 }
 
 type ApplyResult = Pick<RecordRow, 'listing_id' | 'status' | 'reason' | 'issues'> & { publicChanged: boolean };
-type FormalProjection = { canonical: {id:string;primary:boolean}; batchId: string; deferMedia?: boolean };
+type FormalWriteOptions = { deferMedia?: boolean; observe?:(stage:FormalWriteStage)=>void };
+type FormalProjection = FormalWriteOptions & { canonical: {id:string;primary:boolean}; batchId: string };
 const noChange = (status: RecordRow['status'], reason: RecordRow['reason'], listing_id: string | null = null): ApplyResult =>
   ({ listing_id, status, reason, issues: [], publicChanged: false });
 
@@ -112,6 +114,7 @@ async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, ca
   // or published collection time for the same material source projection.
   const sameMaterial = formal && active && existing?.upstream_state === 'active' && existing.source_data &&
     materialCandidate(existing.source_data) === materialCandidate(candidate);
+  formal?.observe?.(sameMaterial?'listing_same_material':'listing_upsert');
   const row = sameMaterial ? existing : (await tx.query<ListingRow>(`INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,
       upstream_state,fetched_at,source_updated_at,published_at,formal_primary,formal_canonical_id,first_imported_at,first_import_batch_id)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $8='active' THEN now() END,$11,$12,
@@ -121,6 +124,7 @@ async function applyCandidate(tx: PoolClient, profile: ExternalSourceProfile, ca
       published_at=coalesce(external_listings.published_at,excluded.published_at),version=external_listings.version+1 RETURNING *`,
     [id, ...identity, candidate.revision, hash, source && JSON.stringify(source), active ? 'active' : 'withdrawn', fetchedAt, candidate.sourceUpdatedAt,
       formal?.canonical.primary??true,formal?.canonical.id??null,formal?.batchId??null])).rows[0]!;
+  formal?.observe?.('public_projection');
   row.overrides = existing?.overrides ?? null;
   row.text_source_identities = existing?.text_source_identities ?? null;
   const projection = active && source ? buildProjection(source, row.overrides ?? emptyOverrides(), platform.name, profile, row.text_source_identities ?? {}) : null;
@@ -170,13 +174,15 @@ async function writeOverrides(tx: PoolClient, row: ListingRow, overrides: Extern
 
 /** Only the fixed-list worker calls this inside its leased, scope-checked transaction. */
 export async function applyFormalCandidate(tx:PoolClient,candidate:ExternalCandidate,actor:Actor,batchId:string,
-  canonical:{id:string;primary:boolean},options:{deferMedia?:boolean}={}) {
+  canonical:{id:string;primary:boolean},options:FormalWriteOptions={}) {
+  options.observe?.('listing_lookup');
   await lockExternalWrites(tx);
   const identity=[chinaCarProfile.id,candidate.platformId,candidate.externalId];
   const before=(await tx.query<{formal_primary:boolean;formal_canonical_id:string|null}>(
     'SELECT formal_primary,formal_canonical_id FROM external_listings WHERE provider=$1 AND platform_id=$2 AND external_id=$3',identity)).rows[0];
   if(before?.formal_canonical_id && before.formal_canonical_id!==canonical.id)throw new ApiError(409,'VERSION_CONFLICT','A formal source association requires review before changing.');
   const result=await applyCandidate(tx,chinaCarProfile,ExternalCandidateSchema.parse(candidate),{canonical,batchId,...options});
+  options.observe?.('listing_binding');
   if(result.status==='rejected'||result.status==='ignored'||!result.listing_id)throw new ApiError(422,'INVALID_REQUEST','Formal source projection was rejected.');
   const bindingChanged=before&&(before.formal_primary!==canonical.primary||before.formal_canonical_id!==canonical.id);
   if(bindingChanged)await tx.query('UPDATE external_listings SET formal_primary=$2,formal_canonical_id=$3 WHERE id=$1',

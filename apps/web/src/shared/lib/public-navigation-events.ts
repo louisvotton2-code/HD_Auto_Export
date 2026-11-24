@@ -1,11 +1,11 @@
 'use client';
 
-type NavigationSignal = { id: number; path: string; ready: boolean };
+type NavigationSignal = { id: number; path: string; search: string; ready: boolean };
 let last: NavigationSignal | null = null;
 let sequence = 0;
 const listeners = new Set<(signal: NavigationSignal) => void>();
 export function startPublicNavigation() {
-  last = { id: ++sequence, path: location.pathname, ready: false };
+  last = { id: ++sequence, path: location.pathname, search: new URLSearchParams(location.search).toString(), ready: false };
   for (const listener of listeners) listener(last);
 }
 export function finishPublicNavigation() {

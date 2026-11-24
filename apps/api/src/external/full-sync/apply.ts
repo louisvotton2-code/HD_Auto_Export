@@ -56,18 +56,22 @@ export async function chooseRepresentative(tx:PoolClient,canonicalId:string){
  if(!next.formal_primary||!next.projected)await reprojectFormalListing(tx,next.id);
 }
 export const applyFullSource:FullApply=async(tx,input)=>{
+ input.observe?.('source_heads');
  await tx.query('SELECT pg_advisory_xact_lock(78291332)');
  for(const doc of input.documents)await persistSourceDocument(tx,doc);
  const existing=(await tx.query("SELECT source_revision,formal_primary FROM external_listings WHERE provider='chinacarapi' AND platform_id=$1 AND external_id=$2",[input.source,input.externalId])).rows[0];
  const revision=Number(existing?.source_revision??0)+1;if(!Number.isSafeInteger(revision))throw new FullSyncError('SYNC_REVISION_LIMIT');
  const actor={id:SERVICE_ACTOR,requestId:`full:${input.batchId}`};
  if(input.operation==='withdraw'){
-  if(existing)await applyFormalCandidate(tx,{platformId:input.source,externalId:input.externalId,operation:'withdraw',revision,fetchedAt:input.at,sourceUpdatedAt:input.at},actor,input.batchId,{id:input.canonicalId,primary:existing.formal_primary});
+  if(existing)await applyFormalCandidate(tx,{platformId:input.source,externalId:input.externalId,operation:'withdraw',revision,fetchedAt:input.at,sourceUpdatedAt:input.at},actor,input.batchId,{id:input.canonicalId,primary:existing.formal_primary},{observe:input.observe});
  }else{
+  input.observe?.('load_source_documents');
   const projection=adaptSourceDocuments(await loadSourceDocuments(tx,{provider:'chinacarapi',source:input.source,externalId:input.externalId}),revision,input.at);
   if(!projection)throw new FullSyncError('SYNC_DETAILS_INCOMPLETE');
-  const result=await applyFormalCandidate(tx,projection.candidate,actor,input.batchId,{id:input.canonicalId,primary:existing?.formal_primary??false},{deferMedia:true});
+  const result=await applyFormalCandidate(tx,projection.candidate,actor,input.batchId,{id:input.canonicalId,primary:existing?.formal_primary??false},{deferMedia:true,observe:input.observe});
+  input.observe?.('media_and_segments');
   const segments=await refreshSourceSegments(tx,result.listingId,projection,input.at);if(segments.changed)await tx.query('UPDATE external_catalog_state SET revision=revision+1 WHERE id=1');
  }
+ input.observe?.('representative');
  await chooseRepresentative(tx,input.canonicalId);
 };
