@@ -34,9 +34,22 @@ export async function refreshSourceSegments(tx:PoolClient,listingId:string,proje
     if(!result.rowCount)continue;
     changed=true;
     if(kind==='configuration')configurationChanged=true;
-    await tx.query('DELETE FROM external_source_segments WHERE listing_id=$1 AND locale=$2 AND kind=$3',[listingId,locale,kind]);
-    for(let offset=0;offset<items.length;offset+=200){const chunk=items.slice(offset,offset+200);await tx.query(`INSERT INTO external_source_segments(listing_id,locale,kind,position,data)
-      SELECT $1,$2,$3,$4+ordinality-1,value FROM jsonb_array_elements($5::jsonb) WITH ORDINALITY AS entry(value,ordinality)`,[listingId,locale,kind,offset,JSON.stringify(chunk)]);}
+    await tx.query('DELETE FROM external_source_segments WHERE listing_id=$1 AND locale=$2 AND kind=$3 AND position>=$4',
+      [listingId,locale,kind,items.length]);
+    for(let offset=0;offset<items.length;offset+=200){
+      const chunk=items.slice(offset,offset+200);
+      // Filter equal positions before conflict handling so their rows do not
+      // need locks even when another item changed the parent revision.
+      await tx.query(`INSERT INTO external_source_segments AS current(listing_id,locale,kind,position,data)
+        SELECT $1,$2,$3,entry.position,entry.value
+        FROM (SELECT ($4::int+ordinality-1)::int AS position,value
+          FROM jsonb_array_elements($5::jsonb) WITH ORDINALITY AS items(value,ordinality)) entry
+        LEFT JOIN external_source_segments saved
+          ON (saved.listing_id,saved.locale,saved.kind,saved.position)=($1,$2,$3,entry.position)
+        WHERE saved.data IS DISTINCT FROM entry.value
+        ON CONFLICT(listing_id,locale,kind,position) DO UPDATE SET data=excluded.data
+        WHERE current.data IS DISTINCT FROM excluded.data`,[listingId,locale,kind,offset,JSON.stringify(chunk)]);
+    }
   }
   if(configurationChanged)await tx.query(`SELECT queue_public_catalog_metadata_change()
     WHERE EXISTS(SELECT FROM external_catalog_filter WHERE listing_id=$1 AND active AND locale_mask<>0)`,[listingId]);
