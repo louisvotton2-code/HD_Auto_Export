@@ -4,7 +4,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { AnalyticsReportResponseSchema } from '@hd/contracts/analytics';
 import { usePrivateResource } from '../../shared/api/use-private-resource';
 import { AccessDenied } from '../auth';
-import { matchesReportDates, presetDates, type DateRange, type RangePreset } from './analytics-range';
+import { matchesReportDates, presetDates, type AnalyticsPeriod, type DateRange, type RangePreset } from './analytics-range';
 import { ConversionView } from './v2-conversion-view';
 import { MarketView, type MarketDimension } from './v2-market-view';
 import { AnalyticsCollectionQuality, OverviewView, type OverviewMetric } from './v2-overview-view';
@@ -19,10 +19,10 @@ type Tab = (typeof tabs)[number]['key'];
 const coverageText = { not_collected: '所选区间的新维度尚未采集。旧版已记录的事件次数仍可显示。',
   gap: '所选区间有采集停顿。已记录的结果可能不完整。', partial: '所选区间采集不完整，合计和比例仅覆盖已记录的数据。', complete: null };
 
-export function SiteAnalyticsV2({ onUnavailable }: { onUnavailable: () => void }) {
+export function SiteAnalyticsV2({ period: { preset, days }, onPeriodChange, onUnavailable }: {
+  period: AnalyticsPeriod; onPeriodChange: (period: AnalyticsPeriod) => void; onUnavailable: () => void;
+}) {
   const [tab, setTab] = useState<Tab>('conversion');
-  const [preset, setPreset] = useState<RangePreset>('30');
-  const [days, setDays] = useState(() => presetDates('30'));
   const [custom, setCustom] = useState(days);
   const [market, setMarket] = useState<MarketDimension>('country');
   const [metric, setMetric] = useState<OverviewMetric>('pageViews');
@@ -65,17 +65,16 @@ export function SiteAnalyticsV2({ onUnavailable }: { onUnavailable: () => void }
     const timer = window.setInterval(followBeijingDate, 30_000);
     window.addEventListener('focus', followBeijingDate);
     return () => { window.clearInterval(timer); window.removeEventListener('focus', followBeijingDate); };
-  }, [preset, days]);
+  }, [preset, days, onPeriodChange]);
 
-  function setRange(range: DateRange) {
-    setDays(range);
+  function setRange(range: DateRange, nextPreset: RangePreset = preset) {
+    onPeriodChange({ preset: nextPreset, days: range });
     setRanking(current => ({ ...current, page: 1 }));
   }
 
   function selectPreset(value: RangePreset) {
-    setPreset(value);
-    if (value === 'custom') { setCustom(days); return; }
-    setRange(presetDates(value));
+    if (value === 'custom') { setCustom(days); onPeriodChange({ preset: value, days }); return; }
+    setRange(presetDates(value), value);
   }
 
   function reload() {
@@ -106,6 +105,7 @@ export function SiteAnalyticsV2({ onUnavailable }: { onUnavailable: () => void }
       {tab === 'market' && <MarketView dimension={market} dimensions={marketDimensions} onDimensionChange={setMarket} data={marketData(report, market)} />}
       {tab === 'vehicles' && <V2VehicleView metric={ranking.metric} availableMetrics={vehicleMetrics} rows={vehicleRows(report)}
         onMetricChange={next => setRanking({ metric: next, page: 1 })} page={report.ranking.page} pageSize={report.ranking.pageSize}
+        emptyText={report.coverage === 'complete' ? '所选期间暂无车辆行为记录' : '所选期间暂无可用于排行的车辆记录，统计覆盖可能不完整'}
         total={report.coverage === 'not_collected' && report.ranking.total === 0 ? null : report.ranking.total}
         onPageChange={page => setRanking(current => ({ ...current, page }))} />}
       {tab === 'conversion' && <ConversionView data={conversionData(report)} />}
@@ -119,7 +119,7 @@ export function SiteAnalyticsV2({ onUnavailable }: { onUnavailable: () => void }
       <Button loading={loading} icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
     </header>
     <V2RangeControls preset={preset} custom={custom} onPreset={selectPreset} onCustom={setCustom} onApply={setRange} />
-    <Typography.Text type="secondary">这里按一次连续浏览统计访客从看车到点联系的过程。访客点击「接受」后才计入。早期数据可在历史总览查看。</Typography.Text>
+    <Typography.Text type="secondary">当前采集需访客同意网站分析，报表也可能显示已有的历史记录。全站访问量和匿名联系点击请查看「官网流量」。</Typography.Text>
     <Tabs activeKey={tab} onChange={key => setTab(key as Tab)} style={{ minWidth: 0 }}
       items={tabs.map(item => ({ ...item, children: item.key === tab ? content : null }))} />
   </section>;

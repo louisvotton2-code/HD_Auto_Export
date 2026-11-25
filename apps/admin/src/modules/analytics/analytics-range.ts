@@ -1,5 +1,6 @@
 export type DateRange = { from: string; to: string };
 export type RangePreset = 'today' | 'yesterday' | '7' | '30' | 'custom';
+export type AnalyticsPeriod = { preset: RangePreset; days: DateRange };
 
 const millisecondsPerDay = 86_400_000;
 const beijingOffset = 8 * 3_600_000;

@@ -198,6 +198,30 @@ test('website traffic distinguishes missing observations from measured zeros', a
   ]);
 });
 
+test('website traffic keeps the selected dates across reports and marks incomplete ranking counts', async ({ page }) => {
+  const { queries } = await installTraffic(page, (route, query) => reply(route, trafficFixture(query, {
+    earlierMissing: true, vehicles: [{ ...employeeVehicle, ...counts(3, 0) }],
+  })));
+  const reportDates: string[][] = [];
+  await page.route(`**${endpoint}/report?*`, route => {
+    const { searchParams } = new URL(route.request().url());
+    reportDates.push([searchParams.get('startDate') ?? '', searchParams.get('endDate') ?? '']);
+    return reply(route, error('SERVICE_UNAVAILABLE'), 503);
+  });
+  await page.goto(analyticsPage);
+  const row = page.getByRole('row').filter({ hasText: 'SYNTH-STAFF' });
+  await expect(row.getByRole('cell').nth(3)).toHaveText('3');
+  await expect(row.getByRole('cell').last()).toHaveText('未采集');
+  await page.getByText('今日', { exact: true }).click();
+  await expect(row.getByRole('cell').last()).toHaveText('0');
+
+  await page.getByText('访客行为', { exact: true }).click();
+  await expect.poll(() => reportDates).toEqual([[trafficDate, trafficDate]]);
+  await page.getByText('官网流量', { exact: true }).click();
+  await expect(row.getByRole('cell').last()).toHaveText('0');
+  expect(queries.at(-1)).toMatchObject({ startDate: trafficDate, endDate: trafficDate, granularity: 'hour' });
+});
+
 test('website traffic loads its chunk on entry and recovers a failed load within the workspace', async ({ page }) => {
   await installTraffic(page, (route, query) => reply(route, trafficFixture({ ...query, include: undefined })));
   const pattern = /\/admin\/assets\/site-analytics-page-[^/]+\.js$/;
@@ -271,7 +295,7 @@ test('website traffic pages server-ranked vehicles by total, WhatsApp and Telegr
   await expect(channelChart).toBeInViewport();
   const trendBox = await trendChart.boundingBox();
   const channelBox = await channelChart.boundingBox();
-  const rankBox = await page.getByText('热门车辆', { exact: true }).boundingBox();
+  const rankBox = await page.getByText('车辆联系排行', { exact: true }).boundingBox();
   expect(channelBox!.x).toBeGreaterThanOrEqual(trendBox!.x + trendBox!.width);
   expect(Math.abs(trendBox!.y - channelBox!.y)).toBeLessThan(60);
   expect(Math.max(trendBox!.y + trendBox!.height, channelBox!.y + channelBox!.height)).toBeLessThanOrEqual(900);
@@ -310,8 +334,9 @@ test('website traffic loads the session report only when chosen and falls back t
     expect(route.request().method()).toBe('GET');
     const url = new URL(route.request().url());
     overviewReads.push(url.searchParams.get('days')!);
+    const days = url.searchParams.get('days') === '30' ? 30 : 7;
     return reply(route, AnalyticsOverviewResponseSchema.parse(envelope({
-      days: 30, timeZone: 'Asia/Shanghai', startDate: '2026-10-23', endDate: trafficDate,
+      days, timeZone: 'Asia/Shanghai', startDate: days === 30 ? '2026-10-23' : '2026-11-15', endDate: trafficDate,
       collectionStartedAt: null, hasData: false, trend: [], topVehicles: [],
       totals: { pageViews: 0, detailViews: 0, vehicleClicks: 0, contactClicks: 0 },
     })));
@@ -321,17 +346,23 @@ test('website traffic loads the session report only when chosen and falls back t
   expect(reads).toEqual(['traffic']);
   expect(overviewReads).toEqual([]);
 
+  await page.getByText('昨日', { exact: true }).click();
+  await expect(statistic(visits(page), '官网访问量')).toHaveText('0');
   const modes = page.getByRole('navigation', { name: '网站分析口径' });
   await modes.getByText('访客行为', { exact: true }).click();
   await expect(page).toHaveURL(`${analyticsPage}?view=sessions`);
   await expect(page.getByText('尚无采集数据', { exact: true })).toBeVisible();
+  const fallbackNotice = page.getByText('历史统计只支持近 7 天或近 30 天，当前显示近 7 天。', { exact: true });
+  await expect(fallbackNotice).toBeVisible();
+  await page.getByText('近 7 天', { exact: true }).click();
+  await expect(fallbackNotice).toHaveCount(0);
   await expect(contacts(page)).toHaveCount(0);
   await expect(visits(page)).toHaveCount(0);
-  expect(reads).toEqual(['traffic', 'report']);
-  expect(overviewReads).toEqual(['30']);
+  expect(reads).toEqual(['traffic', 'traffic', 'report']);
+  expect(overviewReads).toEqual(['7']);
   await modes.getByText('官网流量', { exact: true }).click();
   await expect(statistic(visits(page), '官网访问量')).toHaveText('6');
   await expect(page.getByText('尚无采集数据', { exact: true })).toHaveCount(0);
-  expect(reads).toEqual(['traffic', 'report', 'traffic']);
-  expect(overviewReads).toEqual(['30']);
+  expect(reads).toEqual(['traffic', 'traffic', 'report', 'traffic']);
+  expect(overviewReads).toEqual(['7']);
 });

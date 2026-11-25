@@ -4,7 +4,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { AnalyticsTrafficResponseSchema } from '@hd/contracts/analytics';
 import { usePrivateResource } from '../../shared/api/use-private-resource';
 import { AccessDenied } from '../auth';
-import { matchesReportDates, presetDates, type DateRange, type RangePreset } from './analytics-range';
+import { matchesReportDates, presetDates, type AnalyticsPeriod, type DateRange, type RangePreset } from './analytics-range';
 import { reportTime } from './v2-report-model';
 import { V2RangeControls } from './v2-range-controls';
 import { TrafficView, type TrafficMetric, type TrafficViewProps } from './traffic-view';
@@ -13,9 +13,9 @@ import styles from './site-analytics.module.css';
 
 type RankMetric = TrafficViewProps['ranking']['metric'];
 
-export function SiteTrafficPage() {
-  const [preset, setPreset] = useState<RangePreset>('7');
-  const [days, setDays] = useState(() => presetDates('7'));
+export function SiteTrafficPage({ period: { preset, days }, onPeriodChange }: {
+  period: AnalyticsPeriod; onPeriodChange: (period: AnalyticsPeriod) => void;
+}) {
   const [custom, setCustom] = useState(days);
   const [rank, setRank] = useState<{ metric: RankMetric; page: number }>({ metric: 'contactClicks', page: 1 });
   const [trendMetric, setTrendMetric] = useState<TrafficMetric>('uniqueIpVisits');
@@ -53,17 +53,16 @@ export function SiteTrafficPage() {
     const timer = window.setInterval(followBeijingDate, 30_000);
     window.addEventListener('focus', followBeijingDate);
     return () => { window.clearInterval(timer); window.removeEventListener('focus', followBeijingDate); };
-  }, [preset, days]);
+  }, [preset, days, onPeriodChange]);
 
-  function applyRange(range: DateRange) {
-    setDays(range);
+  function applyRange(range: DateRange, nextPreset: RangePreset = preset) {
+    onPeriodChange({ preset: nextPreset, days: range });
     setRank(current => ({ ...current, page: 1 }));
   }
 
   function selectPreset(value: RangePreset) {
-    setPreset(value);
-    if (value === 'custom') { setCustom(days); return; }
-    applyRange(presetDates(value));
+    if (value === 'custom') { setCustom(days); onPeriodChange({ preset: value, days }); return; }
+    applyRange(presetDates(value), value);
   }
 
   function reload() {

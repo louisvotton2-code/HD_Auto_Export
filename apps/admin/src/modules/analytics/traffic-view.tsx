@@ -9,7 +9,7 @@ type ContactMetric = 'contactClicks' | 'whatsappClicks' | 'telegramClicks';
 export type TrafficMetric = 'uniqueIpVisits' | ContactMetric;
 type TrafficCounts = Record<TrafficMetric, number | null>;
 type TrafficBucket = TrafficCounts & { bucket: string; visitCoverageLabel?: string; contactCoverageLabel?: string };
-type TrafficVehicle = Record<ContactMetric, number> & { vehicleId: string; title: string | null; stockCode: string | null };
+type TrafficVehicle = Pick<TrafficCounts, ContactMetric> & { vehicleId: string; title: string | null; stockCode: string | null };
 
 export type TrafficViewProps = {
   totals: TrafficCounts;
@@ -67,10 +67,11 @@ function TrafficRanking({ ranking, uncollected }: { ranking: TrafficViewProps['r
       width: 125,
       align: 'right',
       onHeaderCell: () => ({ 'aria-sort': value === metric ? 'descending' : undefined }),
-      render: (count: number) => <Typography.Text strong={value === metric}>{countFormat.format(count)}</Typography.Text>,
+      render: (count: number | null) => count === null ? <Typography.Text type="secondary">未采集</Typography.Text>
+        : <Typography.Text strong={value === metric}>{countFormat.format(count)}</Typography.Text>,
     })),
   ];
-  return <Card className={`${sectionStyles.section} ${styles.ranking}`} title="热门车辆" extra={
+  return <Card className={`${sectionStyles.section} ${styles.ranking}`} title="车辆联系排行" extra={
     <Select<ContactMetric> aria-label="车源排行指标" className={sectionStyles.metricSelect} size="small" value={metric}
       options={contactOptions} onChange={onMetricChange} />
   }>
@@ -127,7 +128,7 @@ export function TrafficView({ totals, trend, interval, trendMetric, onTrendMetri
       <section aria-label="官网访问量概览">
         <Card className={`${sectionStyles.count} ${styles.visits}`} size="small">
           <Statistic title={metricLabels.uniqueIpVisits} value={totals.uniqueIpVisits ?? '未采集'} />
-          <Typography.Text type="secondary">同一 IP 自上次计入起满 60 分钟后可再计一次，跨页面和语言合并。单位为访问次数。</Typography.Text>
+          <Typography.Text type="secondary">由官网网关统计访问次数，覆盖尚未同意网站分析的到访。同一 IP 自上次计入起满 60 分钟后可再计一次，跨页面和语言合并。</Typography.Text>
           {visitNotice && <Typography.Text type="secondary" className={styles.visitNotice}>{visitNotice}</Typography.Text>}
         </Card>
       </section>
@@ -138,7 +139,7 @@ export function TrafficView({ totals, trend, interval, trendMetric, onTrendMetri
       </section>
     </div>
     <Typography.Paragraph className={`${sectionStyles.hint} ${styles.channelHint}`}>
-      联系点击记录访客点击 WhatsApp 或 Telegram 入口的次数。收到的询盘由客服确认。
+      当前统计访客同意后点击公开车辆 WhatsApp 或 Telegram 入口的次数。历史数据沿用当时的采集规则。收到的询盘由客服确认。
       {contactNotice && <><br />{contactNotice}</>}
     </Typography.Paragraph>
 

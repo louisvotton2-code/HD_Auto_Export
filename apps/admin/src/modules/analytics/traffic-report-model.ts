@@ -72,7 +72,9 @@ export function trafficViewData(data: AnalyticsTraffic): ViewData {
     ranking: {
       metric: rankBy[data.ranking.rankBy], page: data.ranking.page, pageSize: data.ranking.pageSize, total: data.ranking.total,
       rows: data.ranking.items.map(row => ({ vehicleId: row.vehicleId, title: row.title, stockCode: row.stockCode,
-        contactClicks: row.totalContactClicks, whatsappClicks: row.whatsappClicks, telegramClicks: row.telegramClicks })),
+        contactClicks: observed(row.totalContactClicks, contacts.coverage === 'complete'),
+        whatsappClicks: observed(row.whatsappClicks, contacts.coverage === 'complete'),
+        telegramClicks: observed(row.telegramClicks, contacts.coverage === 'complete') })),
     },
   };
 }

@@ -92,7 +92,7 @@ export function marketData(report: AnalyticsReport, dimension: MarketDimension):
 }
 
 export function vehicleRows(report: AnalyticsReport): V2VehicleRow[] {
-  const measuredSessions = report.coverage === 'complete' || report.coverage === 'partial';
+  const measuredSessions = report.coverage === 'complete';
   return report.ranking.items.map(row => ({
     vehicleId: row.vehicleId, modelName: row.title, stockCode: row.stockCode, sourceLabel: row.source === 'supplier' ? '第三方车源' : '员工录入',
     cardImpressions: null, whatsappClicks: covered(row.whatsappClicks, report.coverage), telegramClicks: covered(row.telegramClicks, report.coverage),
