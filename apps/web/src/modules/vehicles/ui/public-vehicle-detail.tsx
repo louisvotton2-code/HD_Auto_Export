@@ -5,7 +5,9 @@ import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { hasPrivateVehicleSource, publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
+import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { Icon } from '@/shared/ui/icon';
+import { SocialIcon } from '@/shared/ui/social-icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
 import { usePublicFreshness } from '../application/use-public-resource';
@@ -72,6 +74,9 @@ export function PublicVehicleDetail({
   const manufactureDate = vehicle.manufacture?.date?.value ?? (vehicle.manufacture?.range
     ? `${vehicle.manufacture.range.earliest.value} – ${vehicle.manufacture.range.latest.value}` : vehicle.facts.manufacturedAt?.value);
   const contactId = `vehicle-contact-${vehicle.id}`;
+  const priceContactLabel = sold ? t.similar : copy.consultTitle;
+  const priceContactHref = fresh ? buildPublicVehicleContactLinks(vehicle, locale).whatsapp : undefined;
+  const analyticsVehicle = fresh && vehicle.source.kind !== 'demo' ? vehicle.id : undefined;
 
   return (
     <main
@@ -139,7 +144,19 @@ export function PublicVehicleDetail({
                 {vehicle.price.kind !== 'on_request' && <span>{t.priceLabels[vehicle.price.kind]}</span>}
                 <VehiclePriceValues vehicle={vehicle} locale={locale} />
               </div>
-              <a href={`#${contactId}`}>{sold ? t.similar : copy.consultTitle}<Icon name="arrow" size={16} /></a>
+              <a
+                href={priceContactHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`${priceContactLabel} — WhatsApp`}
+                aria-disabled={!fresh || undefined}
+                tabIndex={fresh ? undefined : -1}
+                data-testid="vehicle-price-contact"
+                data-analytics-contact={analyticsVehicle ? 'whatsapp' : undefined}
+                data-analytics-contact-vehicle={analyticsVehicle}
+              >
+                {priceContactLabel}<SocialIcon platform="whatsapp" size={16} />
+              </a>
             </div>
             <VehicleRateAttribution
               vehicles={[vehicle]}

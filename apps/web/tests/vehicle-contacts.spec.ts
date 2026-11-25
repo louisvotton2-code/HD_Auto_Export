@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { resetPublicFixture, publicFixtureLabels } from './helpers/public-fixture';
+import { externalFixtureId } from '@hd/contracts/fixtures';
+import { resetPublicFixture, publicFixtureLabels, setPublicFixtureState } from './helpers/public-fixture';
 
 test.beforeEach(async ({ request }) => {
   await resetPublicFixture(request);
@@ -146,5 +147,70 @@ test('mobile vehicle contacts remain keyboard accessible without JavaScript', as
     );
   } finally {
     await context.close();
+  }
+});
+
+test.describe('vehicle price contact', () => {
+  test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'An isolated public vehicle fixture is required.');
+  test.use({ isMobile: true, hasTouch: true });
+
+  for (const [locale, width] of [['zh', 390], ['ru', 900]] as const) {
+    test(`${locale}: the price contact opens a WhatsApp draft at ${width}px without reloading the detail`, async ({
+      page, context, request, baseURL,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await setPublicFixtureState(request, { importedPublished: true });
+      const origin = new URL(baseURL!).origin;
+      await context.route('**/*', route => {
+        const url = new URL(route.request().url());
+        if (url.origin === 'https://wa.me')
+          return route.fulfill({ contentType: 'text/plain', body: 'WhatsApp navigation intercepted locally' });
+        if (url.origin === origin && route.request().method() === 'GET') return route.continue();
+        return route.abort();
+      });
+
+      const id = externalFixtureId(1);
+      const detailPath = `/${locale}/cars/${id}/`;
+      const detail = page.locator(`main[data-public-vehicle-detail="${id}"]`);
+      const contact = detail.getByTestId('vehicle-price-contact');
+      await page.goto(`${detailPath}?utm_source=price-contact-test`);
+      await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
+      await expect(contact).toBeVisible();
+      await expect(contact).toHaveAccessibleName(/WhatsApp/);
+      await expect(contact).toHaveAttribute('data-analytics-contact', 'whatsapp');
+      await expect(contact).toHaveAttribute('data-analytics-contact-vehicle', id);
+      const initialUrl = page.url();
+      const unwantedRequests: string[] = [];
+      page.on('request', next => {
+        if (next.isNavigationRequest() || new URL(next.url()).pathname === `/api/v1/vehicles/${id}/`)
+          unwantedRequests.push(next.url());
+      });
+      await detail.evaluate(element => {
+        const boundary = element.closest('[data-freshness]')!;
+        const observer = new MutationObserver(records => {
+          if (records.some(record => record.oldValue !== 'fresh') || boundary.getAttribute('data-freshness') !== 'fresh')
+            boundary.setAttribute('data-test-freshness-changed', '');
+        });
+        observer.observe(boundary, { attributes: true, attributeOldValue: true, attributeFilter: ['data-freshness'] });
+      });
+
+      const [popup] = await Promise.all([page.waitForEvent('popup'), contact.tap()]);
+      await popup.waitForLoadState('domcontentloaded');
+      try {
+        const opened = new URL(popup.url());
+        expect(opened.origin + opened.pathname).toBe('https://wa.me/8618215932610');
+        const draft = opened.searchParams.get('text');
+        expect(draft).toContain('HX100001');
+        expect(draft).toContain(detailPath);
+        expect(draft).not.toContain('EXT-000001');
+        expect(draft).not.toContain('price-contact-test');
+      } finally {
+        await popup.close();
+      }
+      await expect(page).toHaveURL(initialUrl);
+      await expect(page.locator('[data-freshness="fresh"]').filter({ has: detail })).toHaveCount(1);
+      await expect(page.locator('[data-test-freshness-changed]')).toHaveCount(0);
+      expect(unwantedRequests).toEqual([]);
+    });
   }
 });
