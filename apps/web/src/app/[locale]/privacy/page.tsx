@@ -3,10 +3,8 @@ import { notFound } from 'next/navigation';
 import { hasLocale } from 'next-intl';
 import { setRequestLocale } from 'next-intl/server';
 import { routing, type Locale } from '@/i18n/routing';
-import { getConfiguredPixelId } from '@/modules/analytics/server';
 import { PrivacyAnalyticsWithdrawal } from '@/modules/analytics/consent-controls';
 import consentStyles from '@/modules/analytics/consent-controls.module.css';
-import { sessionAnalyticsEnabledForSite } from '@/shared/config/session-analytics';
 import { siteConfig } from '@/shared/config/site';
 import { localizedPageUrl } from '@/shared/lib/page-seo';
 import styles from './privacy.module.css';
@@ -29,7 +27,7 @@ const privacy = {
         title: '我们收集哪些信息',
         description: [
           '你向我们发送车辆咨询时，我们会收到你提供的联系方式和消息。网站启用访问汇总时，网关使用可信来源 IP，在页面和语言之间按滚动 60 分钟窗口去重。首次访问计入当时所在小时，窗口内的重复访问不延长窗口。多人共用同一网络出口时可能只计为一次访问。',
-          '启用联系计数时，主动点击公开车辆的 WhatsApp 或 Telegram 链接会提交公开车辆标识和所选渠道。在支持会话分析的范围内，只有你明确同意后，浏览和部分操作才会关联到随机会话标识。会话分析还记录设备类型、访问来源类别和已知推广活动类别。',
+          '你接受后，启用的会话分析会将浏览和部分操作关联到随机会话标识，并记录设备类型、访问来源类别和已知推广活动类别。启用的联系计数会在你主动点击公开车辆的 WhatsApp 或 Telegram 链接时提交公开车辆标识和所选渠道。',
           '网站启用 Meta Pixel（Facebook 像素）时，仅在本站选定的公开车辆详情页上使用。你允许广告衡量后，浏览器才会在这些详情页发送页面访问（PageView）、车辆详情浏览（ViewContent）或主动点击联系链接（Contact）事件。',
         ],
       },
@@ -43,7 +41,7 @@ const privacy = {
       cookies: {
         title: 'Cookie 与浏览器存储',
         description: [
-          '浏览器会记住你的隐私选择。「接受」允许横条中说明的用途。同时提供站内分析和广告衡量时，点「选择用途」可只允许其中一项。启用广告衡量后，Meta Pixel 可能设置或读取浏览器 Cookie，以便将看车和联系点击关联到广告。会话分析使用浏览器会话存储保存短期随机标识。网关按 IP 汇总访问独立于 Cookie 和这一选择。',
+          '浏览器会记住你的选择。「接受」一并允许站内统计、联系点击计数和广告衡量。「拒绝」或撤回会关闭这三种浏览器上报。Meta Pixel 可能设置或读取 Cookie，以便将看车和联系点击关联到广告。会话分析使用浏览器会话存储保存短期随机标识。网关按 IP 汇总访问独立于 Cookie 和这一选择。',
         ],
       },
       'data-flows': {
@@ -63,7 +61,7 @@ const privacy = {
       rights: {
         title: '你的权利与选择',
         description: [
-          '你可以联系我们了解曾提供的信息，或提出查阅、更正、删除请求。你可以在这里一并撤回对会话分析和广告成效衡量的同意。未同意或撤回后仍然可以浏览、查车、计算费用和联系。',
+          '你可以联系我们了解曾提供的信息，或提出查阅、更正、删除请求。你可以在这里一并撤回对站内统计、联系点击计数和广告衡量的同意。未同意或撤回后仍然可以浏览、查车、计算费用和联系。',
         ],
       },
       contacts: {
@@ -81,7 +79,7 @@ const privacy = {
         title: 'What we collect',
         description: [
           'When you send us a vehicle enquiry, we receive the contact details and message you provide. When visit counting is active, our gateway uses the IP address reported by trusted network infrastructure to count visits across all pages and languages once per address in a rolling window of 60 minutes. The first visit counts in the hour it occurs. Repeat visits within the window do not extend it. People sharing an internet connection may count as one visit.',
-          'Where contact counting is active, clicking a public vehicle’s WhatsApp or Telegram link submits the public vehicle identifier and selected channel. Browsing and some actions are associated with a random session identifier only after you explicitly accept session analytics where it is supported. Session analytics also records device type, referral category and recognized campaign category.',
+          'After you accept, enabled session analytics links browsing and some actions to a random session identifier and records device type, referral category, and recognized campaign category. Where contact counting is enabled, clicking a public vehicle’s WhatsApp or Telegram link submits the public vehicle identifier and selected channel.',
           'When Meta Pixel (Facebook Pixel) is enabled, the site uses it only on selected public vehicle detail pages. After you allow ad measurement, your browser can send a page visit (PageView), a vehicle detail view (ViewContent), or a click you make on a contact link (Contact) on one of those pages.',
         ],
       },
@@ -95,7 +93,7 @@ const privacy = {
       cookies: {
         title: 'Cookies and browser storage',
         description: [
-          'Your browser remembers your privacy choices. Accept allows the uses described in the banner. When both site analytics and ad measurement are offered, select Choose purposes to allow just one. When you allow ad measurement, Meta Pixel may set or read browser cookies to associate vehicle views and contact clicks with ads. Session analytics uses browser session storage for a short-lived random identifier. Gateway visit totals based on IP addresses are independent of cookies and this choice.',
+          'Your browser remembers your choice. Accept allows site analytics, contact click counting, and ad measurement together. Declining or withdrawing stops all three types of browser reporting. Meta Pixel may set or read cookies to associate vehicle views and contact clicks with ads. Session analytics uses browser session storage for a short-lived random identifier. Gateway visit totals based on IP addresses are independent of cookies and this choice.',
         ],
       },
       'data-flows': {
@@ -115,7 +113,7 @@ const privacy = {
       rights: {
         title: 'Your rights and choices',
         description: [
-          'You can contact us to ask about information you provided, or to request access, correction or deletion. You can withdraw consent for both session analytics and ad measurement here. Browsing, vehicle search, calculations and contacting us stay available if you leave the banner unanswered or withdraw consent.',
+          'You can contact us to ask about information you provided, or to request access, correction or deletion. You can withdraw consent for site analytics, contact click counting, and ad measurement here. Browsing, vehicle search, calculations and contacting us stay available if you leave the banner unanswered or withdraw consent.',
         ],
       },
       contacts: {
@@ -133,7 +131,7 @@ const privacy = {
         title: 'Какие данные мы собираем',
         description: [
           'Когда вы отправляете нам запрос по автомобилю, мы получаем указанные вами контактные данные и сообщение. Если включён подсчёт посещений, шлюз использует IP-адрес из доверенного источника, чтобы учитывать посещения разных страниц и языковых версий один раз за скользящий период в 60 минут. Первое посещение относится к тому часу, в котором оно произошло. Повторные посещения не продлевают этот период. Несколько человек с общим сетевым адресом могут быть учтены как одно посещение.',
-          'Если включён подсчёт нажатий на контактные ссылки, то при нажатии на ссылку WhatsApp или Telegram в объявлении передаются публичный идентификатор автомобиля и выбранный канал. Просмотры и некоторые действия связываются со случайным идентификатором сессии только после вашего явного согласия, если аналитика сессий доступна. Аналитика сессий также учитывает тип устройства, категорию источника перехода и категорию известной рекламной кампании.',
+          'После вашего согласия аналитика связывает просмотры и некоторые действия со случайным идентификатором сессии и учитывает тип устройства, категорию источника перехода и известной рекламной кампании. Если включён подсчёт нажатий, при нажатии на ссылку WhatsApp или Telegram в объявлении передаются публичный идентификатор автомобиля и выбранный канал.',
           'Если на сайте включён Meta Pixel (пиксель Facebook), мы используем его только на выбранных нами общедоступных страницах автомобилей. С вашего согласия на оценку рекламы браузер может отправлять события о посещении такой страницы (PageView), просмотре информации об автомобиле (ViewContent) и нажатии на контактную ссылку на этой странице (Contact).',
         ],
       },
@@ -147,7 +145,7 @@ const privacy = {
       cookies: {
         title: 'Cookie и хранилище браузера',
         description: [
-          'Браузер запоминает ваш выбор. Кнопка «Принять» разрешает использование данных в целях, указанных в уведомлении. Если предлагаются и аналитика сайта, и оценка рекламы, кнопка «Выбрать цели» позволяет выбрать только одну из них. С вашего согласия Meta Pixel может сохранять или считывать файлы cookie, чтобы связывать просмотры автомобилей и нажатия на кнопки связи с рекламой. Для аналитики сайт временно сохраняет случайный идентификатор сессии в браузере. Подсчёт посещений на шлюзе по IP-адресу не зависит от cookie и этого выбора.',
+          'Браузер запоминает ваш выбор. Кнопка «Принять» разрешает аналитику сайта, подсчёт нажатий на контактные ссылки и оценку рекламы. Отказ или отзыв согласия прекращает отправку этих событий из браузера. Meta Pixel может сохранять или считывать файлы cookie, чтобы связывать просмотры автомобилей и нажатия на кнопки связи с рекламой. Для аналитики сайт временно сохраняет случайный идентификатор сессии в браузере. Подсчёт посещений на шлюзе по IP-адресу не зависит от cookie и этого выбора.',
         ],
       },
       'data-flows': {
@@ -167,7 +165,7 @@ const privacy = {
       rights: {
         title: 'Ваши права и выбор',
         description: [
-          'Вы можете обратиться к нам за информацией о предоставленных вами данных и запросить их просмотр, исправление или удаление. Здесь можно отозвать согласие сразу на аналитику сессий и на оценку эффективности рекламы. Просмотр сайта, поиск, расчёты и связь с нами доступны независимо от вашего выбора.',
+          'Вы можете обратиться к нам за информацией о предоставленных вами данных и запросить их просмотр, исправление или удаление. Здесь можно отозвать согласие сразу на аналитику сайта, подсчёт нажатий на контактные ссылки и оценку рекламы. Просмотр сайта, поиск, расчёты и связь с нами доступны независимо от вашего выбора.',
         ],
       },
       contacts: {
@@ -198,8 +196,6 @@ export default async function PrivacyPage({ params }: Props) {
   setRequestLocale(locale);
   const copy = privacy[locale];
   const { telegram, whatsapp } = siteConfig.contacts;
-  const sessionAnalyticsEnabled = sessionAnalyticsEnabledForSite(siteConfig.origin, process.env.ANALYTICS_V2_ENABLED);
-  const metaEnabled = Boolean(getConfiguredPixelId());
 
   return (
     <main id="main" className={consentStyles.privacyPage} data-testid="privacy-page">
@@ -219,11 +215,7 @@ export default async function PrivacyPage({ params }: Props) {
                 </div>
               )}
               {id === 'rights' && (
-                <PrivacyAnalyticsWithdrawal
-                  locale={locale}
-                  sessionAnalyticsEnabled={sessionAnalyticsEnabled}
-                  metaEnabled={metaEnabled}
-                />
+                <PrivacyAnalyticsWithdrawal locale={locale} />
               )}
               {id === 'contacts' && (
                 <ul className={styles.contactLinks}>

@@ -104,7 +104,7 @@ for (const path of ['/en/', '/en/cars/', '/en/cars/fixture_car_2/']) {
   });
 }
 
-test('a newer same-URL history navigation replaces an older in-flight check', async ({
+test('latest Back to the same detail replaces an older in-flight check', async ({
   page,
   request,
 }) => {
@@ -128,15 +128,15 @@ test('a newer same-URL history navigation replaces an older in-flight check', as
     },
   );
   try {
-    await page.evaluate(() => history.pushState(null, '', '#first'));
-    await expect(page).toHaveURL(detailUrl + '#first');
+    await page.evaluate(() => history.pushState(null, '', '?history=first'));
+    await expect(page).toHaveURL(detailUrl + '?history=first');
     await page.evaluate(() => history.back());
     await expect(page).toHaveURL(detailUrl);
     await expect.poll(() => count).toBe(1);
     await expect(resource).toHaveAttribute('data-freshness', 'checking');
     await setPublicFixtureState(request, { futureAvailability: 'sold' });
-    await page.evaluate(() => history.pushState(null, '', '#second'));
-    await expect(page).toHaveURL(detailUrl + '#second');
+    await page.evaluate(() => history.pushState(null, '', '?history=second'));
+    await expect(page).toHaveURL(detailUrl + '?history=second');
     await page.evaluate(() => history.back());
     await expect(page).toHaveURL(detailUrl);
     await expect.poll(() => count).toBe(2);

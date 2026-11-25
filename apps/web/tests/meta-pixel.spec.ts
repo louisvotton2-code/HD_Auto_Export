@@ -161,7 +161,7 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
     if (indexable) expect(requests[0]?.query).toHaveProperty('seoView', 'eligible');
     else expect(requests[0]?.query).not.toHaveProperty('seoView');
     const banner = page.getByTestId('tracking-consent-banner');
-    await expect(banner).not.toContainText('Facebook Pixel');
+    await expect(banner.getByRole('button')).toHaveCount(2);
     await banner.getByRole('button', { name: 'Accept', exact: true }).click();
     if (sessionAnalyticsEnabled)
       await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
@@ -176,7 +176,7 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
   }
 });
 
-test('only newly accepted selected public detail views and real contacts reach Pixel until withdrawal', async ({
+test('one acceptance enables selected detail views and contact analytics until withdrawal', async ({
   page, context, request, baseURL,
 }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
@@ -196,13 +196,13 @@ test('only newly accepted selected public detail views and real contacts reach P
     await page.goto(selectedPath);
     await expect(selectedDetail).toBeVisible();
     await expect(selectedDetail).toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await expect(banner).toContainText('Facebook Pixel');
-    if (sessionAnalyticsEnabled)
-      await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
-    else {
-      await page.waitForTimeout(850);
-      expect(sessions).toEqual([]);
-    }
+    await expect(banner).toContainText('衡量广告效果');
+    const preConsentLink = selectedDetail.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
+    const [preConsentPopup] = await Promise.all([page.waitForEvent('popup'), preConsentLink.click()]);
+    await preConsentPopup.close();
+    await page.waitForTimeout(850);
+    expect(sessions).toEqual([]);
+    expect(contacts).toEqual([]);
     expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
 
@@ -239,6 +239,8 @@ test('only newly accepted selected public detail views and real contacts reach P
     // Catalog cards open a new document to read current eligibility, even after a warm browse.
     await expect(page.locator('html')).not.toHaveAttribute('data-pixel-test-document', 'catalog');
     await expect.poll(() => events().sort()).toEqual(['PageView', 'ViewContent']);
+    if (sessionAnalyticsEnabled)
+      await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
     expect(contacts).toEqual([unselectedContact, catalogContact]);
 
     await page.locator('header a[aria-haspopup="dialog"]:visible').click();
@@ -316,23 +318,45 @@ test('only newly accepted selected public detail views and real contacts reach P
     await page.reload();
     await expect(page.getByTestId('privacy-analytics-off')).toBeVisible();
     expect(await page.evaluate(() => sessionStorage.getItem('hd-auto:analytics-session:v2'))).toBeNull();
+    const sessionCountAtWithdrawal = sessions.length;
     await page.goto(selectedPath);
     await expect(selectedDetail).toBeVisible();
     await expect(banner).toHaveCount(0);
     const postWithdrawalLink = page.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
     const [postWithdrawalPopup] = await Promise.all([page.waitForEvent('popup'), postWithdrawalLink.click()]);
     await postWithdrawalPopup.close();
-    await expect.poll(() => contacts).toEqual([
+    await page.waitForTimeout(850);
+    expect(contacts).toEqual([
       unselectedContact,
       catalogContact,
       selectedContact,
       telegramContact,
-      { vehicleId: selectedId, channel: 'telegram' },
     ]);
-    await page.waitForTimeout(850);
+    expect(sessions).toHaveLength(sessionCountAtWithdrawal);
     expect(pixel).toHaveLength(4);
     expect(sdkRequests).toEqual([sdkUrl]);
     if (!sessionAnalyticsEnabled) expect(sessions).toEqual([]);
+  } finally {
+    await resetPublicFixture(request);
+  }
+});
+
+test('a returning visitor with both saved grants sends the selected detail without another prompt', async ({ page, context, request, baseURL }) => {
+  test.skip(!pixelId || !process.env.PUBLIC_FIXTURE_API_URL, 'Requires the isolated Pixel-enabled vehicle fixture.');
+  const { events, sessions } = await interceptAdvertising(context, baseURL!);
+  await context.addInitScript((siteOrigin: string) => {
+    if (location.origin !== siteOrigin) return;
+    localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
+    localStorage.setItem('hd-auto:meta-advertising:v2', 'allow-sdk');
+  }, new URL(baseURL!).origin);
+  await resetPublicFixture(request);
+  try {
+    await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await page.goto(`/en/cars/${selectedId}/`);
+    await expect.poll(events).toEqual(['PageView', 'ViewContent']);
+    await expect(page.getByTestId('tracking-consent-banner')).toHaveCount(0);
+    if (sessionAnalyticsEnabled)
+      await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
   } finally {
     await resetPublicFixture(request);
   }

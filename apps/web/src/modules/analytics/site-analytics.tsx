@@ -62,7 +62,7 @@ function pageContext(pathname: string, locale: Locale) {
 }
 
 function record(enabled: boolean, details: EventDetails, entryPage: PageType = details.pageType) {
-  if (!enabled || !getTrackingConsent().analytics || typeof globalThis.crypto?.randomUUID !== 'function') return;
+  if (!enabled || getTrackingConsent() !== 'accepted' || typeof globalThis.crypto?.randomUUID !== 'function') return;
   const now = Date.now();
   enqueueAnalytics({
     ...details,
@@ -89,16 +89,16 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const current = pageContext(pathname, locale);
       const consent = getTrackingConsent();
       const samePage = location.pathname.replace(/\/$/, '') === key;
-      if (!current?.pixelEnabled || !consent.advertising || !samePage) {
+      if (!current?.pixelEnabled || consent !== 'accepted' || !samePage) {
         stopVehiclePixel();
       }
       if (!current || !samePage || document.hidden || ('prerendering' in document && document.prerendering === true)) return false;
       const { pixelFresh, pixelEnabled, ...context } = current;
-      if (sessionAnalyticsEnabled && consent.analytics && lastAnalyticsView !== key) {
+      if (sessionAnalyticsEnabled && consent === 'accepted' && lastAnalyticsView !== key) {
         lastAnalyticsView = key;
         record(sessionAnalyticsEnabled, { ...context, type: 'page_view' });
       }
-      if (pixelId && consent.advertising && current.vehicleId && pixelEnabled) {
+      if (pixelId && consent === 'accepted' && current.vehicleId && pixelEnabled) {
         startVehiclePixel(pixelId, current.vehicleId, () => pageContext(pathname, locale)?.pixelEnabled === true);
       }
       return !pixelId || pixelFresh;
@@ -153,7 +153,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const { pageType } = context;
       const clickedVehicle = vehicleId(anchor.dataset.analyticsVehicle);
       if (clickedVehicle) {
-        if (sessionAnalyticsEnabled && getTrackingConsent().analytics) {
+        if (sessionAnalyticsEnabled && getTrackingConsent() === 'accepted') {
           record(true, { type: 'vehicle_click', pageType, locale, vehicleId: clickedVehicle });
           // A live detail link replaces the document. Start the keepalive request before unload.
           if (event.type === 'click' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey &&
@@ -170,7 +170,6 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const contactVehicle = vehicleId(taggedVehicle);
       if (!contactVehicle) return;
       countVehicleContact({ vehicleId: contactVehicle, channel });
-      // The separate funnel receives this event only with explicit session consent.
       record(sessionAnalyticsEnabled, { type: 'contact_click', locale, pageType, channel, vehicleId: contactVehicle });
     };
     const onPublicAction = ({ detail }: CustomEvent<PublicAnalyticsAction>) => {
@@ -185,7 +184,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       }
     };
     function stopWithoutConsent() {
-      if (sessionAnalyticsEnabled && getTrackingConsent().analytics) return;
+      if (sessionAnalyticsEnabled && getTrackingConsent() === 'accepted') return;
       clearAnalyticsSession();
       stopAnalyticsTransport();
     }

@@ -5,9 +5,7 @@ import type { ReactNode } from 'react';
 import type { Locale } from '@/i18n/routing';
 import { publicVehicleTitle } from '@/shared/lib/public-vehicle-title';
 import { hasPrivateVehicleSource, publicVehicleReference } from '@/shared/lib/public-vehicle-reference';
-import { buildPublicVehicleContactLinks } from '@/shared/lib/vehicle-contact';
 import { Icon } from '@/shared/ui/icon';
-import { SocialIcon } from '@/shared/ui/social-icon';
 import { publicVehicleMessages } from '../public-messages';
 import { detailContent } from '../detail-content';
 import { usePublicFreshness } from '../application/use-public-resource';
@@ -75,8 +73,6 @@ export function PublicVehicleDetail({
     ? `${vehicle.manufacture.range.earliest.value} – ${vehicle.manufacture.range.latest.value}` : vehicle.facts.manufacturedAt?.value);
   const contactId = `vehicle-contact-${vehicle.id}`;
   const priceContactLabel = sold ? t.similar : copy.consultTitle;
-  const priceContactHref = fresh ? buildPublicVehicleContactLinks(vehicle, locale).whatsapp : undefined;
-  const analyticsVehicle = fresh && vehicle.source.kind !== 'demo' ? vehicle.id : undefined;
 
   return (
     <main
@@ -144,18 +140,8 @@ export function PublicVehicleDetail({
                 {vehicle.price.kind !== 'on_request' && <span>{t.priceLabels[vehicle.price.kind]}</span>}
                 <VehiclePriceValues vehicle={vehicle} locale={locale} />
               </div>
-              <a
-                href={priceContactHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`${priceContactLabel} — WhatsApp`}
-                aria-disabled={!fresh || undefined}
-                tabIndex={fresh ? undefined : -1}
-                data-testid="vehicle-price-contact"
-                data-analytics-contact={analyticsVehicle ? 'whatsapp' : undefined}
-                data-analytics-contact-vehicle={analyticsVehicle}
-              >
-                {priceContactLabel}<SocialIcon platform="whatsapp" size={16} />
+              <a href={`#${contactId}`} data-testid="vehicle-price-contact">
+                <span>{priceContactLabel}</span><Icon name="arrow" size={16} />
               </a>
             </div>
             <VehicleRateAttribution
@@ -250,7 +236,7 @@ export function PublicVehicleDetail({
                 </details>
               )}
             </section>
-            <section className={styles.contactCard} id={contactId}>
+            <section className={styles.contactCard} id={contactId} tabIndex={-1}>
               <div className={styles.contactInner}>
                 <h2>{sold ? t.similar : copy.consultTitle}</h2>
                 <p>{copy.consultBody}</p>

@@ -3,9 +3,6 @@ import { sessionAnalyticsEnabledForSite } from '../config/session-analytics';
 
 const choiceKey = 'hd-auto:privacy-choice:v3';
 const advertisingKey = 'hd-auto:meta-advertising:v2';
-const off = { acknowledged: false, decided: false, analytics: false, advertising: false, advertisingDecided: false };
-const declined = { ...off, acknowledged: true, decided: true, advertisingDecided: true };
-
 class Browser extends EventTarget {
   parent: Browser | object = this;
   readonly values = new Map<string, string>();
@@ -21,7 +18,7 @@ class Browser extends EventTarget {
   }
 }
 
-describe('session analytics consent', () => {
+describe('unified tracking consent', () => {
   let browser: Browser;
   beforeEach(() => {
     vi.resetModules();
@@ -30,116 +27,85 @@ describe('session analytics consent', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('only grants session analytics on a current, explicit acceptance', async () => {
+  it('stores both permissions on explicit acceptance and reuses them after reload', async () => {
     browser.values.set('hd-auto:tracking-preferences:v1', '{"version":1,"analytics":true,"advertising":true}');
-    browser.values.set('hd-auto:privacy-notice:v2', 'read');
-    browser.values.set('hd-auto:privacy-analytics:v2', 'allow');
-    const { acceptPrivacyNotice, currentAnalyticsGrant, getTrackingConsent } = await import('./tracking-consent');
-    expect(getTrackingConsent()).toEqual(off);
+    const { saveTrackingConsent, currentAnalyticsGrant, getTrackingConsent } = await import('./tracking-consent');
+    expect(getTrackingConsent()).toBe('pending');
     expect(currentAnalyticsGrant()).toBeNull();
-    acceptPrivacyNotice(true);
-    expect(browser.localStorage.setItem.mock.calls).toEqual([[choiceKey, 'allow']]);
-    expect(getTrackingConsent()).toEqual({ ...off, acknowledged: true, decided: true, analytics: true });
+    saveTrackingConsent(true);
+    expect(browser.localStorage.setItem.mock.calls).toEqual([[choiceKey, 'allow'], [advertisingKey, 'allow-sdk']]);
+    expect(getTrackingConsent()).toBe('accepted');
     expect(currentAnalyticsGrant()).not.toBeNull();
+
+    vi.resetModules();
+    expect((await import('./tracking-consent')).getTrackingConsent()).toBe('accepted');
   });
 
-  it('only acknowledges when analytics is out of scope', async () => {
-    const { acceptPrivacyNotice, currentAnalyticsGrant, getTrackingConsent } = await import('./tracking-consent');
-    acceptPrivacyNotice(false);
-    expect(browser.localStorage.setItem.mock.calls).toEqual([[choiceKey, 'read']]);
-    expect(getTrackingConsent()).toEqual({ ...off, acknowledged: true });
+  it('stores a refusal for both permissions and invalidates work tied to the grant', async () => {
+    const { saveTrackingConsent, currentAnalyticsGrant, getTrackingConsent } = await import('./tracking-consent');
+    saveTrackingConsent(true);
+    const originalGrant = currentAnalyticsGrant();
+    saveTrackingConsent(false);
+    expect(getTrackingConsent()).toBe('declined');
     expect(currentAnalyticsGrant()).toBeNull();
-    acceptPrivacyNotice(true);
-    expect(browser.values.get(choiceKey)).toBe('allow');
-  });
-
-  it('keeps a refusal across acknowledgment, and revocation invalidates pending work', async () => {
-    const { acceptPrivacyNotice, declineTrackingConsent, currentAnalyticsGrant, getTrackingConsent } = await import('./tracking-consent');
-    acceptPrivacyNotice(true);
-    const firstGrant = currentAnalyticsGrant();
-    declineTrackingConsent();
-    acceptPrivacyNotice(false);
     expect(browser.values.get(choiceKey)).toBe('deny');
-    expect(getTrackingConsent()).toEqual(declined);
-    expect(currentAnalyticsGrant()).toBeNull();
-    acceptPrivacyNotice(true);
-    expect(currentAnalyticsGrant()).not.toBe(firstGrant);
+    expect(browser.values.get(advertisingKey)).toBe('deny');
+    saveTrackingConsent(true);
+    expect(currentAnalyticsGrant()).not.toBe(originalGrant);
   });
 
-  it('syncs consent between tabs and ignores invalid or framed storage', async () => {
-    const { acceptPrivacyNotice, declineTrackingConsent, getTrackingConsent, subscribeTrackingConsent } = await import('./tracking-consent');
+  it.each([
+    ['allow', null, 'pending'],
+    [null, 'allow-sdk', 'pending'],
+    ['read', null, 'pending'],
+    ['allow', 'allow', 'pending'],
+    ['allow', 'allow-sdk', 'accepted'],
+    ['deny', 'allow-sdk', 'declined'],
+    ['allow', 'deny', 'declined'],
+  ])('reads existing site and ad values %s / %s as %s', async (site, ads, expected) => {
+    if (site !== null) browser.values.set(choiceKey, site);
+    if (ads !== null) browser.values.set(advertisingKey, ads);
+    const { getTrackingConsent } = await import('./tracking-consent');
+    expect(getTrackingConsent()).toBe(expected);
+  });
+
+  it('syncs the combined choice across tab updates and clears it when stored values are removed', async () => {
+    const { getTrackingConsent, subscribeTrackingConsent } = await import('./tracking-consent');
+    expect(getTrackingConsent()).toBe('pending');
     const update = vi.fn();
     const unsubscribe = subscribeTrackingConsent(update);
     browser.replaceFromAnotherTab('allow');
-    expect(getTrackingConsent().analytics).toBe(true);
-    browser.replaceFromAnotherTab('old-or-invalid');
-    expect(getTrackingConsent()).toEqual(off);
-    expect(update).toHaveBeenCalledTimes(2);
-    browser.parent = {};
-    acceptPrivacyNotice(true, true);
-    declineTrackingConsent();
-    expect(getTrackingConsent()).toEqual(off);
-    expect(browser.localStorage.setItem).not.toHaveBeenCalled();
+    expect(getTrackingConsent()).toBe('pending');
+    expect(update).not.toHaveBeenCalled();
+    browser.replaceFromAnotherTab('allow-sdk', advertisingKey);
+    expect(getTrackingConsent()).toBe('accepted');
+    browser.replaceFromAnotherTab('deny', advertisingKey);
+    expect(getTrackingConsent()).toBe('declined');
+    browser.replaceFromAnotherTab(null, advertisingKey);
+    expect(getTrackingConsent()).toBe('pending');
+    expect(update).toHaveBeenCalledTimes(3);
     unsubscribe();
   });
 
-  it('retains consent and revocation in the current tab if browser storage is blocked', async () => {
+  it('keeps acceptance and refusal in memory if browser storage is blocked', async () => {
     browser.localStorage.getItem.mockImplementation(() => { throw new Error(); });
     browser.localStorage.setItem.mockImplementation(() => { throw new Error(); });
-    const { acceptPrivacyNotice, declineTrackingConsent, getTrackingConsent } = await import('./tracking-consent');
-    acceptPrivacyNotice(true, true);
-    expect(getTrackingConsent().analytics).toBe(true);
-    expect(getTrackingConsent().advertising).toBe(true);
-    declineTrackingConsent();
-    expect(getTrackingConsent()).toEqual(declined);
+    const { saveTrackingConsent, getTrackingConsent } = await import('./tracking-consent');
+    saveTrackingConsent(true);
+    expect(getTrackingConsent()).toBe('accepted');
+    saveTrackingConsent(false);
+    expect(getTrackingConsent()).toBe('declined');
   });
 
-  it('requires a fresh acceptance for selected pages and observes withdrawal from another tab', async () => {
+  it('does not read or change the public choice inside frames', async () => {
+    browser.parent = {};
     browser.values.set(choiceKey, 'allow');
-    browser.values.set(advertisingKey, 'allow');
-    const { acceptPrivacyNotice, currentAnalyticsGrant, getTrackingConsent, subscribeTrackingConsent } = await import('./tracking-consent');
-    expect(getTrackingConsent().analytics).toBe(true);
-    expect(getTrackingConsent().advertising).toBe(false);
-    expect(getTrackingConsent().advertisingDecided).toBe(false);
-    acceptPrivacyNotice(true, true);
-    expect(browser.values.get(advertisingKey)).toBe('allow-sdk');
-    expect(getTrackingConsent().advertising).toBe(true);
-    const update = vi.fn();
-    const unsubscribe = subscribeTrackingConsent(update);
-    browser.values.set(choiceKey, 'deny');
-    browser.replaceFromAnotherTab('deny', advertisingKey);
-    expect(getTrackingConsent()).toEqual(declined);
-    expect(currentAnalyticsGrant()).toBeNull();
-    expect(update).toHaveBeenCalledOnce();
-    unsubscribe();
-  });
-
-  it('honors each deployment scope on the single acceptance', async () => {
-    const { acceptPrivacyNotice, getTrackingConsent } = await import('./tracking-consent');
-    acceptPrivacyNotice(false, true);
-    expect(browser.values.get(choiceKey)).toBe('read');
-    expect(browser.values.get(advertisingKey)).toBe('allow-sdk');
-    expect(getTrackingConsent()).toEqual({ ...off, acknowledged: true, advertising: true, advertisingDecided: true });
-  });
-
-  it('retains a prior Pixel refusal when accepting a separate analytics offer', async () => {
-    browser.values.set(advertisingKey, 'deny');
-    const { acceptPrivacyNotice, getTrackingConsent } = await import('./tracking-consent');
-    expect(getTrackingConsent().advertisingDecided).toBe(true);
-    acceptPrivacyNotice(true, false);
-    expect(browser.values.get(advertisingKey)).toBe('deny');
-    expect(getTrackingConsent().advertising).toBe(false);
-    expect(getTrackingConsent().analytics).toBe(true);
-  });
-
-  it('preserves a prior session choice when declining only the new SDK disclosure', async () => {
-    browser.values.set(choiceKey, 'allow');
-    browser.values.set(advertisingKey, 'allow');
-    const { declineTrackingConsent, getTrackingConsent } = await import('./tracking-consent');
-    declineTrackingConsent(false, true);
-    expect(getTrackingConsent()).toMatchObject({ analytics: true, advertising: false, advertisingDecided: true });
-    expect(browser.values.get(choiceKey)).toBe('allow');
-    expect(browser.values.get(advertisingKey)).toBe('deny');
+    browser.values.set(advertisingKey, 'allow-sdk');
+    const { saveTrackingConsent, getTrackingConsent } = await import('./tracking-consent');
+    saveTrackingConsent(true);
+    saveTrackingConsent(false);
+    expect(getTrackingConsent()).toBe('pending');
+    expect(browser.localStorage.setItem).not.toHaveBeenCalled();
   });
 
   it('requires explicit public enablement and honors an explicit local disable', () => {
