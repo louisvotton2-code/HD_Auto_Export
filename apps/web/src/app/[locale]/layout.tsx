@@ -76,7 +76,7 @@ export default async function LocaleLayout({
           <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} enquiryAction={<EnquiryTrigger />} />
           {children}
           <SiteFooter privacyAction={
-            <TrackingConsentControls locale={locale} sessionAnalyticsEnabled={sessionAnalyticsEnabled} metaEnabled={Boolean(pixelId)} />
+            <TrackingConsentControls locale={locale} />
           } />
           <InteractionMotion />
           <PublicNavigationFreshness />

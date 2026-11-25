@@ -1,7 +1,9 @@
 import type { AnalyticsContactCountRequest } from '@hd/contracts/analytics';
+import { getTrackingConsent } from '@/shared/lib/tracking-consent';
 
-/** A single best-effort request, separate from consented session analytics. */
+/** A single consented request, independent of the session analytics feature switch. */
 export function countVehicleContact({ vehicleId, channel }: AnalyticsContactCountRequest) {
+  if (getTrackingConsent() !== 'accepted') return;
   void fetch('/api/v1/analytics/contact-count', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

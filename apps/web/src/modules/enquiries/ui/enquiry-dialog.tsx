@@ -89,7 +89,7 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
     // scheduling the automatic prompt; the explicitly requested dialog is separate.
     function schedule() {
       clearTimeout(timer);
-      if (getTrackingConsent().acknowledged && !shownThisSession.current)
+      if (getTrackingConsent() !== 'pending' && !shownThisSession.current)
         timer = setTimeout(prompt, enquiryDelayMs);
     }
     const stopWaiting = subscribeTrackingConsent(schedule);

@@ -8,8 +8,10 @@ test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'Isolated public and staff fixtur
 test.beforeEach(async ({ request, page }) => {
   await resetPublicFixture(request);
   await page.addInitScript(() => {
-    if (!window.localStorage.getItem('hd-auto:privacy-choice:v3'))
-      window.localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
+    if (!localStorage.getItem('hd-auto:privacy-choice:v3')) {
+      localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
+      localStorage.setItem('hd-auto:meta-advertising:v2', 'allow-sdk');
+    }
   });
 });
 test.afterEach(async ({ request }) => resetPublicFixture(request));

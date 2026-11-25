@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getPublicPixelId } from './pixel-config';
 import type * as PixelModule from './pixel';
 
-const consent = vi.hoisted(() => ({ advertising: true }));
-vi.mock('@/shared/lib/tracking-consent', () => ({ getTrackingConsent: () => consent }));
+const getTrackingConsent = vi.hoisted(() => vi.fn<() => 'accepted' | 'declined' | 'pending'>());
+vi.mock('@/shared/lib/tracking-consent', () => ({ getTrackingConsent }));
 
 const pixelId = '123456789012345';
 const vehicleId = '11111111-1111-4111-8111-111111111111';
@@ -26,7 +26,8 @@ describe('official Meta Pixel on public vehicle details', () => {
   beforeEach(async () => {
     vi.resetModules();
     pixel = await import('./pixel');
-    fresh = consent.advertising = true;
+    fresh = true;
+    getTrackingConsent.mockReturnValue('accepted');
     browser.parent = browser;
     delete browser.fbq;
     delete browser._fbq;
@@ -69,9 +70,9 @@ describe('official Meta Pixel on public vehicle details', () => {
     document.prerendering = true;
     view();
     document.prerendering = false;
-    consent.advertising = false;
+    getTrackingConsent.mockReturnValue('pending');
     view();
-    consent.advertising = true;
+    getTrackingConsent.mockReturnValue('accepted');
     for (const path of ['/staff/preview/', '/en/buy/', '/zh/cars/other/', location.pathname + 'inspection/']) {
       location.pathname = path;
       view();
@@ -104,7 +105,7 @@ describe('official Meta Pixel on public vehicle details', () => {
   it.each(['withdrawn', 'stale', 'left', 'pagehide'])('drops pending events when the SDK is late and the view is %s', reason => {
     view();
     pixel.trackVehiclePixelContact(vehicleId, 'telegram');
-    if (reason === 'withdrawn') consent.advertising = false;
+    if (reason === 'withdrawn') getTrackingConsent.mockReturnValue('declined');
     if (reason === 'stale') fresh = false;
     if (reason === 'left') location.pathname = '/en/';
     if (reason === 'pagehide') pixel.stopVehiclePixel();
@@ -129,7 +130,7 @@ describe('official Meta Pixel on public vehicle details', () => {
       view();
       const commands = load(true, false);
       pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
-      consent.advertising = false;
+      getTrackingConsent.mockReturnValue('declined');
       pixel.stopVehiclePixel();
       browser.fbq!.instance!.asyncParamPromisesAllSettled = true;
       vi.runAllTimers();

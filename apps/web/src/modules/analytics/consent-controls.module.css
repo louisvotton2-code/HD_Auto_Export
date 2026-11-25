@@ -59,32 +59,13 @@
   gap: 8px;
 }
 
-.purposes {
-  grid-column: 1 / -1;
-  color: #f2c38f;
-  font-size: 13px;
-}
-
-.purposes summary {
-  width: fit-content;
-  padding-block: 4px;
-  cursor: pointer;
-}
-
-.scopeChoices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
-}
-
 @media (max-width: 600px) {
-  .bannerInner:has(.actions button:nth-child(2)) {
+  .bannerInner {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
 
-  .actions:has(button:nth-child(2)) > button { flex: 1; }
+  .actions > button { flex: 1; }
 }
 
 .learnMore {
@@ -113,7 +94,7 @@
 
 .accept:hover { background: #423123; }
 
-:is(.banner, .footerControl, .privacyPage) :is(button, a, summary):focus-visible {
+:is(.banner, .footerControl, .privacyPage) :is(button, a):focus-visible {
   outline: 2px solid #f2b77d;
   outline-offset: 3px;
 }

@@ -39,7 +39,7 @@ let hintsChecksLeft = 0;
 let failed = false;
 
 function eligible(view: VehicleView) {
-  return current === view && getTrackingConsent().advertising && location.pathname === view.path &&
+  return current === view && getTrackingConsent() === 'accepted' && location.pathname === view.path &&
     !('prerendering' in document && document.prerendering) && view.isCurrent();
 }
 
@@ -154,7 +154,7 @@ function loadSdk() {
 
 export function startVehiclePixel(pixelId: string, vehicleId: string, isCurrent: () => boolean) {
   if (typeof window === 'undefined' || window.parent !== window || !isPixelId(pixelId) || failed ||
-      !AnalyticsVehicleIdSchema.safeParse(vehicleId).success || !getTrackingConsent().advertising ||
+      !AnalyticsVehicleIdSchema.safeParse(vehicleId).success || getTrackingConsent() !== 'accepted' ||
       vehiclePixelPath.exec(location.pathname)?.[1] !== vehicleId || !isCurrent() ||
       ('prerendering' in document && document.prerendering)) return;
   if (current?.pixelId === pixelId && current.path === location.pathname && current.vehicleId === vehicleId) return;
