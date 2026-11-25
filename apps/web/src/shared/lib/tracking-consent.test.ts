@@ -96,13 +96,13 @@ describe('session analytics consent', () => {
 
   it('requires a fresh acceptance for selected pages and observes withdrawal from another tab', async () => {
     browser.values.set(choiceKey, 'allow');
-    browser.values.set('hd-auto:meta-advertising:v1', 'allow');
+    browser.values.set(advertisingKey, 'allow');
     const { acceptPrivacyNotice, currentAnalyticsGrant, getTrackingConsent, subscribeTrackingConsent } = await import('./tracking-consent');
     expect(getTrackingConsent().analytics).toBe(true);
     expect(getTrackingConsent().advertising).toBe(false);
     expect(getTrackingConsent().advertisingDecided).toBe(false);
     acceptPrivacyNotice(true, true);
-    expect(browser.values.get(advertisingKey)).toBe('allow');
+    expect(browser.values.get(advertisingKey)).toBe('allow-sdk');
     expect(getTrackingConsent().advertising).toBe(true);
     const update = vi.fn();
     const unsubscribe = subscribeTrackingConsent(update);
@@ -118,8 +118,28 @@ describe('session analytics consent', () => {
     const { acceptPrivacyNotice, getTrackingConsent } = await import('./tracking-consent');
     acceptPrivacyNotice(false, true);
     expect(browser.values.get(choiceKey)).toBe('read');
-    expect(browser.values.get(advertisingKey)).toBe('allow');
+    expect(browser.values.get(advertisingKey)).toBe('allow-sdk');
     expect(getTrackingConsent()).toEqual({ ...off, acknowledged: true, advertising: true, advertisingDecided: true });
+  });
+
+  it('retains a prior Pixel refusal when accepting a separate analytics offer', async () => {
+    browser.values.set(advertisingKey, 'deny');
+    const { acceptPrivacyNotice, getTrackingConsent } = await import('./tracking-consent');
+    expect(getTrackingConsent().advertisingDecided).toBe(true);
+    acceptPrivacyNotice(true, false);
+    expect(browser.values.get(advertisingKey)).toBe('deny');
+    expect(getTrackingConsent().advertising).toBe(false);
+    expect(getTrackingConsent().analytics).toBe(true);
+  });
+
+  it('preserves a prior session choice when declining only the new SDK disclosure', async () => {
+    browser.values.set(choiceKey, 'allow');
+    browser.values.set(advertisingKey, 'allow');
+    const { declineTrackingConsent, getTrackingConsent } = await import('./tracking-consent');
+    declineTrackingConsent(false, true);
+    expect(getTrackingConsent()).toMatchObject({ analytics: true, advertising: false, advertisingDecided: true });
+    expect(browser.values.get(choiceKey)).toBe('allow');
+    expect(browser.values.get(advertisingKey)).toBe('deny');
   });
 
   it('requires explicit public enablement and honors an explicit local disable', () => {

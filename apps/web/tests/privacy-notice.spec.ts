@@ -2,15 +2,17 @@ import { expect, test, type Page } from '@playwright/test';
 import { getPublicPixelId } from '../src/modules/analytics/pixel-config';
 
 const choiceKey = 'hd-auto:privacy-choice:v3';
+const advertisingKey = 'hd-auto:meta-advertising:v2';
 const sessionKey = 'hd-auto:analytics-session:v2';
+const sessionAnalytics = process.env.ANALYTICS_V2_ENABLED !== 'false';
 const pixel = getPublicPixelId(
   process.env.HD_META_PIXEL_ENABLED,
   process.env.HD_META_PIXEL_ID,
 );
 const pixelNotice = {
-  zh: '我们使用 Cookie 进行分析并改善您的体验，部分车辆详情页也会使用 Facebook Pixel。',
-  en: 'We use cookies for analytics and to improve your experience. Selected vehicle pages also use Facebook Pixel.',
-  ru: 'Мы используем файлы cookie для аналитики и улучшения вашего опыта. На отдельных страницах автомобилей используется Facebook Pixel.',
+  zh: '在推广车辆页面，Facebook Pixel 会向 Meta 发送车辆浏览和联系按钮点击信息，用于衡量和优化广告。',
+  en: 'On promoted vehicle pages, Facebook Pixel shares vehicle views and contact button clicks with Meta to measure and improve our ads.',
+  ru: 'На страницах рекламируемых автомобилей Facebook Pixel передаёт Meta сведения о просмотрах и нажатиях на кнопки связи, чтобы мы могли оценивать и улучшать рекламу.',
 };
 
 test.beforeEach(async ({ context, baseURL }) => {
@@ -57,7 +59,8 @@ for (const [locale, width, height, notice, accept, learnMore, policyTitle, windo
     const copy = banner.getByRole('paragraph');
     await expect(banner).toHaveAccessibleName(/\S/);
     await expect(banner.getByRole('heading')).toHaveCount(0);
-    await expect(copy).toHaveText(`${pixel ? pixelNotice[locale] : notice} ${learnMore}`);
+    const expectedNotice = pixel ? `${sessionAnalytics ? notice + ' ' : ''}${pixelNotice[locale]}` : notice;
+    await expect(copy).toHaveText(`${expectedNotice} ${learnMore}`);
     await expect(page.locator('main h1')).toBeVisible();
     await page.evaluate(() => {
       const overlay = document.createElement('div');
@@ -71,10 +74,10 @@ for (const [locale, width, height, notice, accept, learnMore, policyTitle, windo
     expect(box.width).toBe(width);
     expect(box.y + box.height).toBeCloseTo(height, 0);
     expect((await copy.boundingBox())!.y).toBeGreaterThanOrEqual(box.y);
-    await expect(banner.getByRole('button')).toHaveCount(1);
+    await expect(banner.locator('button:visible')).toHaveCount(pixel ? 2 : 1);
     await expect(link).toHaveAttribute('href', `/${locale}/privacy/`);
     expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    for (const control of [action, link]) {
+    for (const control of [link, ...await banner.locator('button:visible').all()]) {
       await expect(control).toBeInViewport({ ratio: 0.98 });
       expect(await control.evaluate(element => {
         const rect = element.getBoundingClientRect();
@@ -89,6 +92,8 @@ for (const [locale, width, height, notice, accept, learnMore, policyTitle, windo
     await expect(policy.getByRole('heading', { level: 2 })).toHaveCount(7);
     await expect(policy).toContainText(windowText);
     await expect(policy).toContainText(/\bIP\b/);
+    await expect(policy).toContainText('Facebook Pixel');
+    await expect(policy).toContainText('WhatsApp');
     await expect(policy).not.toContainText(/Google Analytics|Microsoft Clarity/i);
     await expect(policy.locator('a[href="https://wa.me/8618215932610"]')).toBeVisible();
     await expect(policy.locator('a[href="https://t.me/HD_Auto_CN"]')).toBeVisible();
@@ -106,6 +111,7 @@ for (const [locale, width, height, notice, accept, learnMore, policyTitle, windo
 }
 
 test('accept starts a session that survives reload and can be withdrawn on the privacy page', async ({ page }) => {
+  test.skip(!sessionAnalytics, 'Session analytics is disabled in this configuration.');
   await page.setViewportSize({ width: 390, height: 844 });
   const { sessions, advertising } = capturedAnalytics(page);
   await page.goto('/en/about/');
@@ -141,6 +147,47 @@ test('accept starts a session that survives reload and can be withdrawn on the p
   expect(sessions).toHaveLength(recorded);
   expect(advertising).toEqual([]);
 });
+
+test('upgrading to the SDK asks again and preserves the visitor’s existing session choice', async ({ page }) => {
+  test.skip(!pixel, 'The new advertising choice applies only when Pixel is enabled.');
+  await page.goto('/en/about/');
+  await page.evaluate(({ choiceKey, advertisingKey }) => {
+    localStorage.setItem(choiceKey, 'allow');
+    localStorage.setItem(advertisingKey, 'allow');
+  }, { choiceKey, advertisingKey });
+  await page.reload();
+  const banner = page.getByTestId('tracking-consent-banner');
+  await expect(banner.getByRole('paragraph')).toHaveText(`${pixelNotice.en} Learn more`);
+  await expect(banner.locator('details')).toHaveCount(0);
+  await banner.getByRole('button', { name: 'Decline', exact: true }).click();
+  await expect(banner).toHaveCount(0);
+  expect(await readStorage(page, choiceKey)).toBe('allow');
+  expect(await readStorage(page, advertisingKey)).toBe('deny');
+  await page.reload();
+  await expect(banner).toHaveCount(0);
+});
+
+for (const use of ['Site analytics only', 'Ad measurement only'] as const) {
+  test(`saves the single purpose “${use}” across reload`, async ({ page }) => {
+    test.skip(!sessionAnalytics || !pixel, 'Two optional purposes are required.');
+    const { sessions, advertising } = capturedAnalytics(page);
+    await page.goto('/en/about/');
+    const banner = page.getByTestId('tracking-consent-banner');
+    await banner.locator('summary', { hasText: 'Choose purposes' }).click();
+    expect(await readStorage(page, advertisingKey)).toBeNull();
+    expect(await readStorage(page, choiceKey)).toBeNull();
+    await banner.getByRole('button', { name: use, exact: true }).click();
+    await expect(banner).toHaveCount(0);
+    await page.reload();
+    await expect(banner).toHaveCount(0);
+    const analyticsOnly = use === 'Site analytics only';
+    expect(await readStorage(page, choiceKey)).toBe(analyticsOnly ? 'allow' : 'deny');
+    expect(await readStorage(page, advertisingKey)).toBe(analyticsOnly ? 'deny' : 'allow-sdk');
+    if (analyticsOnly) await expect.poll(() => sessions.length).toBeGreaterThan(0);
+    else expect(await readSession(page)).toBeNull();
+    expect(advertising).toEqual([]);
+  });
+}
 
 test('previous acknowledgement and combined choices do not grant session analytics or load advertising', async ({ page }) => {
   await page.addInitScript(() => {
@@ -179,6 +226,7 @@ test('mobile calculator action stays accessible before acknowledgement', async (
 });
 
 test('manual contact opens before a choice and after explicit decline', async ({ page }) => {
+  test.skip(!sessionAnalytics && !pixel, 'No optional tracking is offered.');
   const { sessions, advertising } = capturedAnalytics(page);
   await page.goto('/en/parts/');
   const banner = page.getByTestId('tracking-consent-banner');
@@ -192,7 +240,8 @@ test('manual contact opens before a choice and after explicit decline', async ({
 
   await banner.getByRole('link', { name: 'Learn more' }).click();
   await page.getByTestId('privacy-analytics-withdraw').click();
-  expect(await readStorage(page, choiceKey)).toBe('deny');
+  expect(await readStorage(page, choiceKey)).toBe(sessionAnalytics ? 'deny' : 'read');
+  if (pixel) expect(await readStorage(page, advertisingKey)).toBe('deny');
   await page.goto('/en/parts/');
   await expect(banner).toHaveCount(0);
   await contact.click();

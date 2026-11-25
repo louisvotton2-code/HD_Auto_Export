@@ -10,7 +10,8 @@ import { publicAnalyticsActionEvent, type PublicAnalyticsAction } from '@/shared
 import { publicNavigationVersion } from '@/shared/lib/public-navigation-events';
 import { getTrackingConsent, refreshTrackingConsent, subscribeTrackingConsent } from '@/shared/lib/tracking-consent';
 import { countVehicleContact } from './contact-count';
-import { trackPixel } from './pixel';
+import { startVehiclePixel, stopVehiclePixel, trackVehiclePixelContact } from './pixel';
+import { vehiclePixelPath } from './pixel-config';
 import { clearAnalyticsSession, nextAnalyticsSession } from './session';
 import { enqueueAnalytics, flushAnalyticsImmediately, stopAnalyticsTransport } from './transport';
 
@@ -72,7 +73,6 @@ function record(enabled: boolean, details: EventDetails, entryPage: PageType = d
 }
 
 let lastAnalyticsView: string | null = null;
-let lastPixelView: string | null = null;
 
 /** One observer under the public locale layout. Staff preview has a separate root. */
 export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
@@ -86,44 +86,43 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
     if (frozenPixelSnapshot?.path !== pathname) frozenPixelSnapshot = undefined;
     const key = pathname.replace(/\/$/, '');
     const view = () => {
-      if (document.hidden || ('prerendering' in document && document.prerendering === true) ||
-        location.pathname.replace(/\/$/, '') !== key) return false;
       const current = pageContext(pathname, locale);
-      if (!current) return false;
-      const { pixelFresh, pixelEnabled, ...context } = current;
       const consent = getTrackingConsent();
+      const samePage = location.pathname.replace(/\/$/, '') === key;
+      if (!current?.pixelEnabled || !consent.advertising || !samePage) {
+        stopVehiclePixel();
+      }
+      if (!current || !samePage || document.hidden || ('prerendering' in document && document.prerendering === true)) return false;
+      const { pixelFresh, pixelEnabled, ...context } = current;
       if (sessionAnalyticsEnabled && consent.analytics && lastAnalyticsView !== key) {
         lastAnalyticsView = key;
         record(sessionAnalyticsEnabled, { ...context, type: 'page_view' });
       }
-      if (pixelId && consent.advertising && current.vehicleId && pixelEnabled && lastPixelView !== key) {
-        lastPixelView = key;
-        void trackPixel(pixelId, 'PageView', current.vehicleId, pixelEnabled);
-        void trackPixel(pixelId, 'ViewContent', current.vehicleId, pixelEnabled);
+      if (pixelId && consent.advertising && current.vehicleId && pixelEnabled) {
+        startVehiclePixel(pixelId, current.vehicleId, () => pageContext(pathname, locale)?.pixelEnabled === true);
       }
       return !pixelId || pixelFresh;
     };
     // Changing route (including to a missing page) permits a later return to count.
     if (lastAnalyticsView !== key) lastAnalyticsView = null;
-    if (lastPixelView !== key) lastPixelView = null;
     // The initial SSR resource can be unavailable until the user explicitly retries.
+    const watchPixel = Boolean(pixelId && vehiclePixelPath.test(pathname));
     const onResource = new MutationObserver(() => {
-      if (view()) onResource.disconnect();
+      if (view() && !watchPixel) onResource.disconnect();
     });
     const watchUntilReady = () => {
-      if (view()) return;
+      if (view() && !watchPixel) return;
       const main = document.querySelector('main');
-      const recoveryBoundary = main?.closest('[data-freshness]') ?? main?.parentElement;
+      const recoveryBoundary = main?.closest('[data-freshness]')?.parentElement ?? main?.parentElement;
       if (recoveryBoundary) onResource.observe(recoveryBoundary, {
         childList: true, subtree: true, attributes: true,
-        attributeFilter: ['data-freshness', 'data-meta-pixel-navigation', 'inert'],
+        attributeFilter: ['data-freshness', 'data-meta-pixel-navigation', 'data-meta-pixel-enabled', 'inert'],
       });
     };
     watchUntilReady();
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
       lastAnalyticsView = null;
-      lastPixelView = null;
       refreshTrackingConsent();
       watchUntilReady();
     };
@@ -133,6 +132,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
     window.addEventListener('pageshow', onPageShow);
     return () => {
       onResource.disconnect();
+      stopVehiclePixel();
       unsubscribe();
       document.removeEventListener('visibilitychange', view);
       document.removeEventListener('prerenderingchange', view);
@@ -145,7 +145,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
     const onClick = (event: MouseEvent) => {
       if (!event.isTrusted || (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0)) return;
       const anchor = event.target instanceof Element
-        ? event.target.closest<HTMLAnchorElement>('a[href][data-analytics-vehicle],a[href][data-analytics-contact-vehicle]')
+        ? event.target.closest<HTMLAnchorElement>('a[href][data-analytics-vehicle],a[href][data-analytics-contact]')
         : null;
       if (!anchor || anchor.closest('[aria-disabled="true"],[data-analytics-demo]')) return;
       const context = pageContext(location.pathname, locale);
@@ -163,10 +163,13 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       }
       const channel = anchor.dataset.analyticsContact;
       if (channel !== 'whatsapp' && channel !== 'telegram') return;
-      const contactVehicle = vehicleId(anchor.dataset.analyticsContactVehicle);
+      const taggedVehicle = anchor.dataset.analyticsContactVehicle;
+      if (context.pixelEnabled && context.vehicleId && (taggedVehicle === undefined || taggedVehicle === context.vehicleId)) {
+        trackVehiclePixelContact(context.vehicleId, channel);
+      }
+      const contactVehicle = vehicleId(taggedVehicle);
       if (!contactVehicle) return;
       countVehicleContact({ vehicleId: contactVehicle, channel });
-      if (context.vehicleId === contactVehicle) void trackPixel(pixelId, 'Contact', contactVehicle, context.pixelEnabled);
       // The separate funnel receives this event only with explicit session consent.
       record(sessionAnalyticsEnabled, { type: 'contact_click', locale, pageType, channel, vehicleId: contactVehicle });
     };
@@ -188,6 +191,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
     }
     const unsubscribe = subscribeTrackingConsent(stopWithoutConsent);
     const onPageHide = (event: PageTransitionEvent) => {
+      stopVehiclePixel();
       if (pixelId && event.persisted) {
         // The restored document needs a new confirmation of the server's vehicle switch.
         const path = location.pathname;

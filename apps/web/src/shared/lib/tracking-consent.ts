@@ -10,6 +10,8 @@ type Listener = () => void;
 
 const choiceKey = 'hd-auto:privacy-choice:v3';
 const advertisingKey = 'hd-auto:meta-advertising:v2';
+// Keep the refusal shared with older tabs. Their lightweight Pixel grant did not cover the SDK.
+const advertisingGrant = 'allow-sdk';
 const undecided: TrackingConsent = {
   acknowledged: false, decided: false, analytics: false, advertising: false, advertisingDecided: false,
 };
@@ -24,7 +26,8 @@ function readStoredChoice() {
     const decided = stored === 'allow' || stored === 'deny';
     return {
       acknowledged: decided || stored === 'read', decided, analytics: stored === 'allow',
-      advertising: advertising === 'allow', advertisingDecided: advertising === 'allow' || advertising === 'deny',
+      advertising: advertising === advertisingGrant,
+      advertisingDecided: advertising === advertisingGrant || advertising === 'deny',
     };
   }
   catch { return undefined; }
@@ -50,31 +53,32 @@ function notify(next: TrackingConsent) {
   for (const listener of listeners) listener();
 }
 
-function storeChoice(key: string, value: 'read' | 'allow' | 'deny') {
+function storeChoice(key: string, value: 'read' | 'allow' | 'deny' | typeof advertisingGrant) {
   try { window.localStorage.setItem(key, value); }
   catch { /* Keep the current tab usable when storage is blocked. */ }
 }
 
-export function acceptPrivacyNotice(sessionAnalyticsEnabled: boolean, metaEnabled = false) {
+export function saveTrackingPreferences({ analytics, advertising }: { analytics?: boolean; advertising?: boolean }) {
   if (typeof window === 'undefined' || window.parent !== window) return;
   const previous = getTrackingConsent();
-  if (sessionAnalyticsEnabled) storeChoice(choiceKey, 'allow');
+  if (analytics !== undefined) storeChoice(choiceKey, analytics ? 'allow' : 'deny');
   else if (!previous.acknowledged) storeChoice(choiceKey, 'read');
-  if (metaEnabled) storeChoice(advertisingKey, 'allow');
+  if (advertising !== undefined) storeChoice(advertisingKey, advertising ? advertisingGrant : 'deny');
   notify({
     acknowledged: true,
-    decided: sessionAnalyticsEnabled || previous.decided,
-    analytics: sessionAnalyticsEnabled || previous.analytics,
-    advertisingDecided: metaEnabled || previous.advertisingDecided,
-    advertising: metaEnabled || previous.advertising,
+    decided: analytics !== undefined || previous.decided,
+    analytics: analytics ?? previous.analytics,
+    advertisingDecided: advertising !== undefined || previous.advertisingDecided,
+    advertising: advertising ?? previous.advertising,
   });
 }
 
-export function declineTrackingConsent() {
-  if (typeof window === 'undefined' || window.parent !== window) return;
-  storeChoice(advertisingKey, 'deny');
-  storeChoice(choiceKey, 'deny');
-  notify({ ...undecided, acknowledged: true, decided: true, advertisingDecided: true });
+export function acceptPrivacyNotice(sessionAnalytics: boolean, meta = false) {
+  saveTrackingPreferences({ analytics: sessionAnalytics || undefined, advertising: meta || undefined });
+}
+
+export function declineTrackingConsent(sessionAnalytics = true, meta = true) {
+  saveTrackingPreferences({ analytics: sessionAnalytics ? false : undefined, advertising: meta ? false : undefined });
 }
 
 export function refreshTrackingConsent() {

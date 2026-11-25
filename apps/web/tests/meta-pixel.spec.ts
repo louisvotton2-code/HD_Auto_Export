@@ -21,27 +21,73 @@ const negotiatedDetailQuery = {
   ...supportedDetailQuery, pixelView: 'eligible', ...(indexable ? { seoView: 'eligible' } : {}),
 };
 const metaDomains = ['facebook.com', 'facebook.net', 'fbcdn.net'];
+const sdkUrl = 'https://connect.facebook.net/en_US/fbevents.js';
 const contactHosts = new Set(['wa.me', 'api.whatsapp.com', 't.me']);
 
-async function interceptAdvertising(context: BrowserContext, baseURL: string) {
+// The SDK script and its per-pixel configuration finish separately.
+const fixtureSdk = `
+  (() => {
+    const fbq = window.fbq;
+    const configsLoaded = {};
+    const listeners = [];
+    let locked = false;
+    fbq.instance = {
+      configsLoaded,
+      locks: {
+        isLocked: () => locked,
+        onUnlocked: callback => listeners.push(callback),
+      },
+    };
+    fbq.callMethod = (...command) => {
+      window.capturePixelCommand(command);
+      if (command[0] !== 'init') return;
+      locked = true;
+      const id = command[1];
+      window.waitForPixelConfig().then(() => {
+        configsLoaded[id] = true;
+        locked = false;
+        for (const notify of [...listeners]) notify('config:' + id);
+        window.captureReadyConfig(id);
+      });
+    };
+    for (const command of fbq.queue.splice(0)) fbq.callMethod(...command);
+  })();
+`;
+
+async function interceptAdvertising(context: BrowserContext, baseURL: string, delays: {
+  script?: Promise<void>;
+  configuration?: Promise<void>;
+} = {}) {
   const siteOrigin = new URL(baseURL).origin;
-  const pixel: Array<{ url: URL; method: string; privateHeaders: string[]; body: string | null }> = [];
+  const sdkRequests: string[] = [];
+  const commands: unknown[][] = [];
+  const pixel: unknown[][] = [];
+  const readyConfigs: string[] = [];
   const contacts: unknown[] = [];
   const sessions: AnalyticsEvent[] = [];
   const browserApiRequests: Array<{ method: string; url: URL }> = [];
 
+  await context.exposeBinding('waitForPixelConfig', () => delays.configuration);
+  await context.exposeBinding('captureReadyConfig', (_source, id: string) => { readyConfigs.push(id); });
+  await context.exposeBinding('capturePixelCommand', (_source, command: unknown[]) => {
+    commands.push(command);
+    if (command[0] === 'trackSingle') pixel.push(command);
+  });
   await context.route('**/*', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (metaDomains.some(domain => url.hostname === domain || url.hostname.endsWith('.' + domain))) {
-      const headers = await request.allHeaders();
-      pixel.push({
-        url,
-        method: request.method(),
-        privateHeaders: ['cookie', 'referer', 'authorization'].filter(name => headers[name] !== undefined),
-        body: request.postData(),
+      if (url.href !== sdkUrl || request.resourceType() !== 'script') {
+        await route.abort();
+        throw new Error('Unexpected Meta request outside the intercepted SDK loader: ' + url.pathname);
+      }
+      sdkRequests.push(url.href);
+      if (delays.script) await delays.script;
+      return route.fulfill({
+        contentType: 'application/javascript',
+        headers: { 'access-control-allow-origin': siteOrigin },
+        body: fixtureSdk,
       });
-      return route.fulfill({ status: 200, headers: { 'access-control-allow-origin': siteOrigin }, body: 'Intercepted' });
     }
     if (contactHosts.has(url.hostname)) return route.fulfill({ contentType: 'text/plain', body: 'Contact intercepted' });
     if (url.origin !== siteOrigin) return route.abort();
@@ -60,7 +106,7 @@ async function interceptAdvertising(context: BrowserContext, baseURL: string) {
     return route.continue();
   });
 
-  return { pixel, contacts, sessions, browserApiRequests, events: () => pixel.map(({ url }) => url.searchParams.get('ev')) };
+  return { sdkRequests, commands, pixel, readyConfigs, contacts, sessions, browserApiRequests, events: () => pixel.map(command => command[2]) };
 }
 
 async function readVehicleDetailRequests(request: APIRequestContext, transport: 'ssr' | 'public' = 'ssr') {
@@ -73,12 +119,13 @@ async function readVehicleDetailRequests(request: APIRequestContext, transport: 
 }
 
 test('ordinary browsing sends no Pixel before or after one-click acceptance', async ({ page, context, baseURL }) => {
-  const { pixel } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests } = await interceptAdvertising(context, baseURL!);
   await page.goto('/en/about/');
   const banner = page.getByTestId('tracking-consent-banner');
   await expect(page.locator('main h1')).toBeVisible();
   await expect(banner).toBeVisible();
   await page.waitForTimeout(850);
+  expect(sdkRequests).toEqual([]);
   expect(pixel).toEqual([]);
 
   await banner.getByRole('button', { name: 'Accept', exact: true }).click();
@@ -92,13 +139,14 @@ test('ordinary browsing sends no Pixel before or after one-click acceptance', as
   await expect(page.getByTestId('privacy-meta-opt-in')).toHaveCount(0);
   await expect(page.getByTestId('privacy-meta-withdraw')).toHaveCount(0);
   await page.waitForTimeout(850);
+  expect(sdkRequests).toEqual([]);
   expect(pixel).toEqual([]);
 });
 
 test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', async ({ page, context, request, baseURL }) => {
   test.skip(Boolean(pixelId), 'Run this branch with Meta disabled.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, sessions } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, sessions } = await interceptAdvertising(context, baseURL!);
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
@@ -121,6 +169,7 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
       await page.waitForTimeout(850);
       expect(sessions).toEqual([]);
     }
+    expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
   } finally {
     await resetPublicFixture(request);
@@ -132,21 +181,18 @@ test('only newly accepted selected public detail views and real contacts reach P
 }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, contacts, sessions, events } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, commands, contacts, sessions, events } = await interceptAdvertising(context, baseURL!);
   const selectedPath = `/zh/cars/${selectedId}/`;
   const selectedDetail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
   const banner = page.getByTestId('tracking-consent-banner');
-  await context.addInitScript(() => {
-    localStorage.setItem('hd-auto:meta-advertising:v1', 'allow');
+  await context.addInitScript((siteOrigin: string) => {
+    if (location.origin !== siteOrigin) return;
+    if (!localStorage.getItem('hd-auto:meta-advertising:v2')) localStorage.setItem('hd-auto:meta-advertising:v2', 'allow');
     if (!localStorage.getItem('hd-auto:privacy-choice:v3')) localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
-  });
+  }, new URL(baseURL!).origin);
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
-    await context.addCookies([
-      { name: 'site-private-fixture', value: 'do-not-forward', url: baseURL! },
-      { name: 'meta-private-fixture', value: 'do-not-forward', url: 'https://www.facebook.com', sameSite: 'None', secure: true },
-    ]);
     await page.goto(selectedPath);
     await expect(selectedDetail).toBeVisible();
     await expect(selectedDetail).toHaveAttribute('data-meta-pixel-enabled', 'true');
@@ -157,6 +203,7 @@ test('only newly accepted selected public detail views and real contacts reach P
       await page.waitForTimeout(850);
       expect(sessions).toEqual([]);
     }
+    expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
 
     await page.goto('/zh/');
@@ -171,6 +218,7 @@ test('only newly accepted selected public detail views and real contacts reach P
     await otherPopup.close();
     const unselectedContact = { vehicleId: unselectedId, channel: 'telegram' };
     await expect.poll(() => contacts).toEqual([unselectedContact]);
+    expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
 
     await page.goto('/zh/cars/?make=toyota&private=do-not-forward');
@@ -184,12 +232,19 @@ test('only newly accepted selected public detail views and real contacts reach P
     const detailLink = selectedCard.locator('h2 a');
     await detailLink.hover();
     await page.waitForTimeout(850);
+    expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
     await detailLink.click();
     await expect(selectedDetail).toBeVisible();
-    await expect(page.locator('html')).toHaveAttribute('data-pixel-test-document', 'catalog');
+    // Catalog cards open a new document to read current eligibility, even after a warm browse.
+    await expect(page.locator('html')).not.toHaveAttribute('data-pixel-test-document', 'catalog');
     await expect.poll(() => events().sort()).toEqual(['PageView', 'ViewContent']);
     expect(contacts).toEqual([unselectedContact, catalogContact]);
+
+    await page.locator('header a[aria-haspopup="dialog"]:visible').click();
+    await expect(page.locator('dialog[open][aria-labelledby="site-enquiry-title"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    expect(events()).toEqual(['PageView', 'ViewContent']);
 
     const contactLink = page.locator('[data-vehicle-contacts] a[data-analytics-contact="whatsapp"]:visible').last();
     await contactLink.hover();
@@ -199,6 +254,7 @@ test('only newly accepted selected public detail views and real contacts reach P
     });
     expect(contacts).toEqual([unselectedContact, catalogContact]);
     expect(pixel).toHaveLength(2);
+    expect(sdkRequests).toEqual([sdkUrl]);
     const [popup] = await Promise.all([page.waitForEvent('popup'), contactLink.click()]);
     await popup.waitForLoadState('domcontentloaded');
     expect(contactHosts.has(new URL(popup.url()).hostname)).toBe(true);
@@ -207,21 +263,33 @@ test('only newly accepted selected public detail views and real contacts reach P
     await expect.poll(() => contacts).toEqual([unselectedContact, catalogContact, selectedContact]);
     await expect.poll(() => events().sort()).toEqual(['Contact', 'PageView', 'ViewContent']);
 
-    for (const { url, method, privateHeaders, body } of pixel) {
-      expect(url.origin + url.pathname).toBe('https://www.facebook.com/tr');
-      expect([...url.searchParams.keys()].sort()).toEqual(['ev', 'id']);
-      expect(url.searchParams.get('id')).toBe(pixelId);
-      expect(method).toBe('GET');
-      expect(body).toBeNull();
-      expect(privateHeaders).toEqual([]);
-    }
+    const telegramContact = { vehicleId: selectedId, channel: 'telegram' };
+    const telegramLink = selectedDetail.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
+    const [telegramPopup] = await Promise.all([page.waitForEvent('popup'), telegramLink.click()]);
+    await telegramPopup.close();
+    await expect.poll(() => contacts).toEqual([unselectedContact, catalogContact, selectedContact, telegramContact]);
 
+    const vehicleData = { content_type: 'product', content_ids: [selectedId] };
+    await expect.poll(() => pixel).toEqual([
+      ['trackSingle', pixelId, 'PageView'],
+      ['trackSingle', pixelId, 'ViewContent', vehicleData],
+      ['trackSingle', pixelId, 'Contact', { ...vehicleData, contact_channel: 'whatsapp' }],
+      ['trackSingle', pixelId, 'Contact', { ...vehicleData, contact_channel: 'telegram' }],
+    ]);
+    expect(commands.filter(([method]) => method !== 'consent')).toEqual([
+      ['set', 'autoConfig', false, pixelId], ['init', pixelId], ['set', 'trackSingleOnly', true, pixelId],
+      ...pixel,
+    ]);
+    expect(sdkRequests).toEqual([sdkUrl]);
+
+    await page.locator('html').evaluate(element => element.setAttribute('data-pixel-test-document', 'detail'));
     await page.locator('header a[href="/zh/buy/"]:visible').click();
     await expect(page.getByTestId('buy-guide')).toBeVisible();
-    await expect(page.locator('html')).toHaveAttribute('data-pixel-test-document', 'catalog');
+    await expect(page.locator('html')).toHaveAttribute('data-pixel-test-document', 'detail');
     await expect(selectedDetail).toHaveCount(0);
     await page.waitForTimeout(850);
-    expect(pixel).toHaveLength(3);
+    expect(pixel).toHaveLength(4);
+    expect(sdkRequests).toEqual([sdkUrl]);
 
     // The legacy inspection endpoint redirects without rendering a document of its own.
     const inspection = await request.get(`${selectedPath}inspection/`, { maxRedirects: 0 });
@@ -238,7 +306,8 @@ test('only newly accepted selected public detail views and real contacts reach P
     const missing = await page.goto(`/en/cars/${selectedId}/`);
     expect(missing?.status()).toBe(404);
     await page.waitForTimeout(850);
-    expect(pixel).toHaveLength(3);
+    expect(pixel).toHaveLength(4);
+    expect(sdkRequests).toEqual([sdkUrl]);
 
     await setPublicFixtureState(request, { importedWithdrawn: false });
     await page.goto('/zh/privacy/');
@@ -257,20 +326,125 @@ test('only newly accepted selected public detail views and real contacts reach P
       unselectedContact,
       catalogContact,
       selectedContact,
+      telegramContact,
       { vehicleId: selectedId, channel: 'telegram' },
     ]);
     await page.waitForTimeout(850);
-    expect(pixel).toHaveLength(3);
+    expect(pixel).toHaveLength(4);
+    expect(sdkRequests).toEqual([sdkUrl]);
     if (!sessionAnalyticsEnabled) expect(sessions).toEqual([]);
   } finally {
     await resetPublicFixture(request);
   }
 });
 
+test('only a selected vehicle attributes a real contact from the general enquiry dialog', async ({ page, context, request, baseURL }) => {
+  test.skip(!pixelId || !process.env.PUBLIC_FIXTURE_API_URL, 'Requires the isolated Pixel-enabled vehicle fixture.');
+  const { pixel, events, contacts, sdkRequests } = await interceptAdvertising(context, baseURL!);
+  const vehicleData = { content_type: 'product', content_ids: [selectedId] };
+  const dialog = page.getByRole('dialog', { name: 'Contact us' });
+  const openDialog = page.locator('header a[aria-haspopup="dialog"]:visible');
+  await resetPublicFixture(request);
+  try {
+    await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await page.goto(`/en/cars/${selectedId}/`);
+    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
+    await expect.poll(events).toEqual(['PageView', 'ViewContent']);
+    await openDialog.click();
+    await expect(dialog).toBeVisible();
+    expect(events()).toEqual(['PageView', 'ViewContent']);
+    const [selectedPopup] = await Promise.all([
+      page.waitForEvent('popup'),
+      dialog.getByRole('link', { name: 'WhatsApp', exact: true }).click(),
+    ]);
+    await selectedPopup.close();
+    const expectedEvents = [
+      ['trackSingle', pixelId, 'PageView'],
+      ['trackSingle', pixelId, 'ViewContent', vehicleData],
+      ['trackSingle', pixelId, 'Contact', { ...vehicleData, contact_channel: 'whatsapp' }],
+    ];
+    await expect.poll(() => pixel).toEqual(expectedEvents);
+
+    for (const path of [`/en/cars/${unselectedId}/`, '/en/about/']) {
+      await page.goto(path);
+      await openDialog.click();
+      await expect(dialog).toBeVisible();
+      const [otherPopup] = await Promise.all([
+        page.waitForEvent('popup'),
+        dialog.getByRole('link', { name: 'Telegram', exact: true }).click(),
+      ]);
+      await otherPopup.close();
+    }
+    expect(pixel).toEqual(expectedEvents);
+    expect(sdkRequests).toEqual([sdkUrl]);
+    // The existing first-party vehicle count only includes vehicle-tagged links.
+    expect(contacts).toEqual([]);
+  } finally {
+    await resetPublicFixture(request);
+  }
+});
+
+const delayedSdkCases = (['script', 'configuration'] as const).flatMap(stage =>
+  (['stay on the vehicle', 'leave the vehicle', 'withdraw in another tab'] as const).map(change => ({ stage, change })),
+);
+for (const { stage, change } of delayedSdkCases) {
+  test(`a delayed SDK ${stage} rechecks the queued contact when visitors ${change}`, async ({ page, context, request, baseURL }) => {
+    test.skip(!pixelId || !process.env.PUBLIC_FIXTURE_API_URL, 'Requires the isolated Pixel-enabled vehicle fixture.');
+    let release!: () => void;
+    const sdkGate = new Promise<void>(resolve => { release = resolve; });
+    const { commands, contacts, pixel, readyConfigs, sdkRequests } = await interceptAdvertising(context, baseURL!, { [stage]: sdkGate });
+    await resetPublicFixture(request);
+    try {
+      await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+      await page.goto(`/en/cars/${selectedId}/`);
+      const sdkSettled = Promise.race([
+        page.waitForEvent('requestfinished', request => request.url() === sdkUrl),
+        page.waitForEvent('requestfailed', request => request.url() === sdkUrl),
+      ]);
+      await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
+      await expect.poll(() => sdkRequests).toEqual([sdkUrl]);
+      if (stage === 'configuration') {
+        await expect.poll(() => commands).toContainEqual(['set', 'trackSingleOnly', true, pixelId]);
+        expect(readyConfigs).toEqual([]);
+      }
+      const contact = page.locator('[data-vehicle-contacts] a[data-analytics-contact="whatsapp"]:visible').last();
+      const [popup] = await Promise.all([page.waitForEvent('popup'), contact.click()]);
+      await popup.close();
+      await expect.poll(() => contacts).toEqual([{ vehicleId: selectedId, channel: 'whatsapp' }]);
+      expect(pixel).toEqual([]);
+
+      if (change === 'leave the vehicle') {
+        await page.locator('header a[href="/en/buy/"]:visible').click();
+        await expect(page.getByTestId('buy-guide')).toBeVisible();
+      } else if (change === 'withdraw in another tab') {
+        const privacyTab = await context.newPage();
+        await privacyTab.goto('/en/privacy/');
+        await privacyTab.getByTestId('privacy-analytics-withdraw').click();
+        await expect(privacyTab.getByTestId('privacy-analytics-off')).toBeVisible();
+        await privacyTab.close();
+      }
+      release();
+      await sdkSettled;
+      if (stage === 'configuration') await expect.poll(() => readyConfigs).toEqual([pixelId]);
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      if (change === 'stay on the vehicle') {
+        await expect.poll(() => pixel.map(command => command[2])).toEqual(['PageView', 'ViewContent', 'Contact']);
+      } else {
+        expect(commands.filter(([action]) => action === 'track' || action === 'trackSingle')).toEqual([]);
+        if (stage === 'script') expect(commands.filter(([action]) => action === 'init')).toEqual([]);
+      }
+      expect(sdkRequests).toEqual([sdkUrl]);
+    } finally {
+      release();
+      await resetPublicFixture(request);
+    }
+  });
+}
+
 test('a warm detail reopen uses the revised switch without a browser API request', async ({ page, context, request, baseURL }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
   const detail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
 
   await resetPublicFixture(request);
@@ -297,6 +471,7 @@ test('a warm detail reopen uses the revised switch without a browser API request
     await expect.poll(() => contacts).toEqual([{ vehicleId: selectedId, channel: 'telegram' }]);
     await page.waitForTimeout(850);
     expect(pixel).toHaveLength(2);
+    expect(sdkRequests).toEqual([sdkUrl]);
     expect(browserApiRequests).toEqual([]);
     expect(await readVehicleDetailRequests(request)).toHaveLength(2);
   } finally {
@@ -307,7 +482,7 @@ test('a warm detail reopen uses the revised switch without a browser API request
 test('restored detail revalidates Pixel eligibility before recording another event', async ({ page, context, request, baseURL }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
   const detail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
   const detailApi = `/api/v1/vehicles/${selectedId}/`;
 
@@ -342,6 +517,7 @@ test('restored detail revalidates Pixel eligibility before recording another eve
     await expect.poll(() => contacts).toEqual([{ vehicleId: selectedId, channel: 'telegram' }]);
     await page.waitForTimeout(850);
     expect(pixel).toHaveLength(2);
+    expect(sdkRequests).toEqual([sdkUrl]);
     expect(browserApiRequests).toHaveLength(1);
     const [read] = browserApiRequests;
     expect(read.method).toBe('GET');
@@ -359,7 +535,7 @@ test('retries optional detail views once on an older API without using stale Pix
 }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, events, browserApiRequests, contacts } = await interceptAdvertising(context, baseURL!);
   const detailPath = `/zh/cars/${selectedId}/`;
   const detailApi = `/api/v1/vehicles/${selectedId}/`;
   const detail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
@@ -387,6 +563,7 @@ test('retries optional detail views once on an older API without using stale Pix
     );
     await page.getByTestId('tracking-consent-banner').getByRole('button', { name: '接受', exact: true }).click();
     await page.waitForTimeout(850);
+    expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
     expect(browserApiRequests).toEqual([]);
 
@@ -426,6 +603,7 @@ test('retries optional detail views once on an older API without using stale Pix
     await expect.poll(() => contacts).toEqual([{ vehicleId: selectedId, channel: 'telegram' }]);
     await page.waitForTimeout(850);
     expect(pixel).toHaveLength(2);
+    expect(sdkRequests).toEqual([sdkUrl]);
   } finally {
     await resetPublicFixture(request);
   }
@@ -436,7 +614,7 @@ test('restored details retry once when an older website proxy rejects the option
 }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'This test requires an isolated public vehicle fixture.');
-  const { pixel, events } = await interceptAdvertising(context, baseURL!);
+  const { pixel, sdkRequests, events } = await interceptAdvertising(context, baseURL!);
   const detail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
   const detailApi = `/api/v1/vehicles/${selectedId}/`;
   const origin = new URL(baseURL!).origin;
@@ -471,6 +649,7 @@ test('restored details retry once when an older website proxy rejects the option
     await expect(detail).not.toHaveAttribute('data-meta-pixel-enabled', 'true');
     await page.waitForTimeout(850);
     expect(pixel).toHaveLength(2);
+    expect(sdkRequests).toEqual([sdkUrl]);
     expect(gatewayReads).toEqual([
       ['GET', negotiatedDetailQuery], ['GET', supportedDetailQuery],
     ]);
