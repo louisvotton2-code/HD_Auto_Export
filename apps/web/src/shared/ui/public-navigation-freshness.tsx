@@ -1,6 +1,6 @@
 'use client';
-import { usePathname } from 'next/navigation';
-import { useEffect } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef } from 'react';
 import { isPublicVehicleDetailPath } from '@/shared/lib/public-vehicle-detail-path';
 import {
   discardPublicNavigationAfterLeaving,
@@ -11,32 +11,42 @@ import {
 const homePath = /^\/(zh|en|ru)\/$/;
 const vehiclePath = /^\/(zh|en|ru)\/cars(?:\/.*)?$/;
 
-/** Back/Forward between pages rechecks public data. Home fragments only scroll. */
-export function PublicNavigationFreshness() {
+/** Back/Forward rechecks public data when the document's route changes. */
+function PublicHistoryObserver() {
   const pathname = usePathname();
+  const search = useSearchParams()?.toString() ?? '';
+  const observedUrl = useRef<URL | null>(null);
+
   useEffect(() => {
-    // During Back/Forward the browser URL can update before the new route commits.
-    if (pathname === location.pathname) discardPublicNavigationAfterLeaving(pathname);
-  }, [pathname]);
+    // React may still be committing the previous route when the history URL changes.
+    if (pathname !== location.pathname || search !== new URLSearchParams(location.search).toString()) return;
+    observedUrl.current = new URL(location.href);
+    discardPublicNavigationAfterLeaving(pathname);
+  }, [pathname, search]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const navigate = () => {
-      if (homePath.test(location.pathname)) {
-        clearTimeout(timer);
-        // A native in-page link fires popstate before its hashchange.
-        timer = setTimeout(() => {
-          startPublicNavigation();
-          finishPublicNavigation();
-        }, 0);
-      } else if (vehiclePath.test(location.pathname)) {
-        startPublicNavigation();
-        clearTimeout(timer);
-        timer = setTimeout(finishPublicNavigation, 0);
-      }
+    const rememberUrl = () => {
+      observedUrl.current = new URL(location.href);
+    };
+    const recheck = () => {
+      if (!homePath.test(location.pathname) && !vehiclePath.test(location.pathname)) return;
+      startPublicNavigation();
+      clearTimeout(timer);
+      timer = setTimeout(finishPublicNavigation, 0);
+    };
+    const onHistoryChange = () => {
+      const previous = observedUrl.current;
+      const current = new URL(location.href);
+      observedUrl.current = current;
+      // Native anchors also dispatch popstate. The same route and query still show the same resource.
+      if (previous?.pathname === current.pathname && previous.search === current.search && previous.hash !== current.hash) return;
+      recheck();
     };
     const recheckRestoredPage = (event: PageTransitionEvent) => {
-      if (event.persisted) navigate();
+      if (!event.persisted) return;
+      rememberUrl();
+      recheck();
     };
     const maskCachedDetail = (event: PageTransitionEvent) => {
       if (!event.persisted || !isPublicVehicleDetailPath(location.pathname)) return;
@@ -46,26 +56,24 @@ export function PublicNavigationFreshness() {
         detail.inert = true;
       }
     };
-    const ignoreHomeFragment = ({ oldURL, newURL }: HashChangeEvent) => {
-      const from = new URL(oldURL);
-      const to = new URL(newURL);
-      if (homePath.test(to.pathname) && from.pathname === to.pathname && from.search === to.search) {
-        clearTimeout(timer);
-      }
-    };
-    addEventListener('popstate', navigate);
+    rememberUrl();
+    addEventListener('popstate', onHistoryChange);
     addEventListener('pageshow', recheckRestoredPage);
     addEventListener('pagehide', maskCachedDetail);
-    addEventListener('hashchange', ignoreHomeFragment);
+    addEventListener('hashchange', rememberUrl);
     document.documentElement.setAttribute('data-public-history-ready', '');
     return () => {
       clearTimeout(timer);
-      removeEventListener('popstate', navigate);
+      removeEventListener('popstate', onHistoryChange);
       removeEventListener('pageshow', recheckRestoredPage);
       removeEventListener('pagehide', maskCachedDetail);
-      removeEventListener('hashchange', ignoreHomeFragment);
+      removeEventListener('hashchange', rememberUrl);
       document.documentElement.removeAttribute('data-public-history-ready');
     };
   }, []);
   return null;
+}
+
+export function PublicNavigationFreshness() {
+  return <Suspense fallback={null}><PublicHistoryObserver /></Suspense>;
 }

@@ -154,37 +154,64 @@ test.describe('vehicle price contact', () => {
   test.skip(!process.env.PUBLIC_FIXTURE_API_URL, 'An isolated public vehicle fixture is required.');
   test.use({ isMobile: true, hasTouch: true });
 
-  for (const [locale, width] of [['zh', 390], ['ru', 900]] as const) {
-    test(`${locale}: the price contact opens a WhatsApp draft at ${width}px without reloading the detail`, async ({
+  const cases = [
+    { locale: 'zh', width: 320, channel: 'whatsapp', destination: 'https://wa.me/8618215932610', accept: '接受' },
+    { locale: 'ru', width: 900, channel: 'telegram', destination: 'https://t.me/HD_Auto_CN', accept: 'Принять' },
+  ] as const;
+
+  for (const { locale, width, channel, destination, accept } of cases) {
+    test(`${locale}: the price contact scrolls to the channel choices at ${width}px without reloading`, async ({
       page, context, request, baseURL,
     }) => {
       await page.setViewportSize({ width, height: 844 });
       await setPublicFixtureState(request, { importedPublished: true });
       const origin = new URL(baseURL!).origin;
+      const contactCounts: unknown[] = [];
       await context.route('**/*', route => {
-        const url = new URL(route.request().url());
-        if (url.origin === 'https://wa.me')
-          return route.fulfill({ contentType: 'text/plain', body: 'WhatsApp navigation intercepted locally' });
-        if (url.origin === origin && route.request().method() === 'GET') return route.continue();
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.origin === 'https://wa.me' || url.origin === 'https://t.me')
+          return route.fulfill({ contentType: 'text/plain', body: 'Contact navigation intercepted locally' });
+        if (url.origin !== origin) return route.abort();
+        if (request.method() === 'POST' && url.pathname === '/api/v1/analytics/contact-count') {
+          contactCounts.push(request.postDataJSON());
+          return route.fulfill({ status: 202 });
+        }
+        if (request.method() === 'GET') return route.continue();
         return route.abort();
       });
 
       const id = externalFixtureId(1);
       const detailPath = `/${locale}/cars/${id}/`;
+      const contactId = `vehicle-contact-${id}`;
       const detail = page.locator(`main[data-public-vehicle-detail="${id}"]`);
       const contact = detail.getByTestId('vehicle-price-contact');
+      const card = detail.locator(`#${contactId}`);
+      const telegram = card.locator('a[href^="https://t.me/"]');
+      const whatsapp = card.locator('a[href^="https://wa.me/"]');
       await page.goto(`${detailPath}?utm_source=price-contact-test`);
       await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
-      await expect(contact).toBeVisible();
-      await expect(contact).toHaveAccessibleName(/WhatsApp/);
-      await expect(contact).toHaveAttribute('data-analytics-contact', 'whatsapp');
-      await expect(contact).toHaveAttribute('data-analytics-contact-vehicle', id);
+      await page.getByTestId('tracking-consent-banner').getByRole('button', { name: accept, exact: true }).tap();
+      await expect(contact).toHaveAttribute('href', `#${contactId}`);
+      await expect(contact).not.toHaveAttribute('data-analytics-contact');
+      await expect(contact).not.toHaveAttribute('data-analytics-contact-vehicle');
+      await contact.scrollIntoViewIfNeeded();
+      await expect(contact).toBeInViewport();
+      expect(await contact.evaluate(link => {
+        const button = link.getBoundingClientRect();
+        const arrow = link.querySelector('svg')?.getBoundingClientRect();
+        return !!arrow && arrow.width > 0 && arrow.left >= button.left && arrow.right <= button.right &&
+          arrow.top >= button.top && arrow.bottom <= button.bottom;
+      })).toBe(true);
+
       const initialUrl = page.url();
       const unwantedRequests: string[] = [];
       page.on('request', next => {
-        if (next.isNavigationRequest() || new URL(next.url()).pathname === `/api/v1/vehicles/${id}/`)
-          unwantedRequests.push(next.url());
+        const pathname = new URL(next.url()).pathname.replace(/\/$/, '');
+        if (next.isNavigationRequest() || pathname === `/api/v1/vehicles/${id}`) unwantedRequests.push(next.url());
       });
+      const popups: Page[] = [];
+      page.on('popup', popup => { popups.push(popup); });
       await detail.evaluate(element => {
         const boundary = element.closest('[data-freshness]')!;
         const observer = new MutationObserver(records => {
@@ -194,11 +221,19 @@ test.describe('vehicle price contact', () => {
         observer.observe(boundary, { attributes: true, attributeOldValue: true, attributeFilter: ['data-freshness'] });
       });
 
-      const [popup] = await Promise.all([page.waitForEvent('popup'), contact.tap()]);
+      await contact.tap();
+      const anchoredUrl = `${initialUrl}#${contactId}`;
+      await expect(page).toHaveURL(anchoredUrl);
+      await expect(telegram).toBeInViewport({ ratio: 0.75 });
+      await expect(whatsapp).toBeInViewport({ ratio: 0.75 });
+      expect(popups).toHaveLength(0);
+      expect(contactCounts).toEqual([]);
+
+      const [popup] = await Promise.all([page.waitForEvent('popup'), (channel === 'whatsapp' ? whatsapp : telegram).tap()]);
       await popup.waitForLoadState('domcontentloaded');
       try {
         const opened = new URL(popup.url());
-        expect(opened.origin + opened.pathname).toBe('https://wa.me/8618215932610');
+        expect(opened.origin + opened.pathname).toBe(destination);
         const draft = opened.searchParams.get('text');
         expect(draft).toContain('HX100001');
         expect(draft).toContain(detailPath);
@@ -207,7 +242,13 @@ test.describe('vehicle price contact', () => {
       } finally {
         await popup.close();
       }
+      await expect.poll(() => contactCounts).toEqual([{ vehicleId: id, channel }]);
+      expect(popups).toHaveLength(1);
+      await expect(page).toHaveURL(anchoredUrl);
+      await page.goBack();
       await expect(page).toHaveURL(initialUrl);
+      await page.goForward();
+      await expect(page).toHaveURL(anchoredUrl);
       await expect(page.locator('[data-freshness="fresh"]').filter({ has: detail })).toHaveCount(1);
       await expect(page.locator('[data-test-freshness-changed]')).toHaveCount(0);
       expect(unwantedRequests).toEqual([]);
