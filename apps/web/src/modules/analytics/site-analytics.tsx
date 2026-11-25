@@ -13,7 +13,7 @@ import { countVehicleContact } from './contact-count';
 import { startVehiclePixel, stopVehiclePixel, trackVehiclePixelContact } from './pixel';
 import { vehiclePixelPath } from './pixel-config';
 import { clearAnalyticsSession, nextAnalyticsSession } from './session';
-import { enqueueAnalytics, flushAnalyticsImmediately, stopAnalyticsTransport } from './transport';
+import { enqueueAnalytics, flushAnalyticsImmediately, flushAnalyticsOnPageHide, stopAnalyticsTransport } from './transport';
 
 type PageType = AnalyticsEvent['pageType'];
 type EventDetails = AnalyticsEvent extends infer T
@@ -164,13 +164,15 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
       const channel = anchor.dataset.analyticsContact;
       if (channel !== 'whatsapp' && channel !== 'telegram') return;
       const taggedVehicle = anchor.dataset.analyticsContactVehicle;
-      if (context.pixelEnabled && context.vehicleId && (taggedVehicle === undefined || taggedVehicle === context.vehicleId)) {
-        trackVehiclePixelContact(context.vehicleId, channel);
-      }
       const contactVehicle = vehicleId(taggedVehicle);
-      if (!contactVehicle) return;
-      countVehicleContact({ vehicleId: contactVehicle, channel });
-      record(sessionAnalyticsEnabled, { type: 'contact_click', locale, pageType, channel, vehicleId: contactVehicle });
+      if (taggedVehicle !== undefined && !contactVehicle) return;
+      if (contactVehicle) {
+        if (context.pixelEnabled && contactVehicle === context.vehicleId) trackVehiclePixelContact(contactVehicle, channel);
+        countVehicleContact({ vehicleId: contactVehicle, channel });
+      }
+      record(sessionAnalyticsEnabled, { type: 'contact_click', locale, pageType, channel,
+        ...(contactVehicle ? { vehicleId: contactVehicle } : {}),
+      });
     };
     const onPublicAction = ({ detail }: CustomEvent<PublicAnalyticsAction>) => {
       const context = pageContext(location.pathname, locale);
@@ -196,7 +198,7 @@ export function SiteAnalytics({ locale, sessionAnalyticsEnabled, pixelId }: {
         const path = location.pathname;
         frozenPixelSnapshot = { path, navigation: publicNavigationVersion(path) };
       }
-      flushAnalyticsImmediately();
+      flushAnalyticsOnPageHide();
     };
     stopWithoutConsent();
     document.addEventListener('click', onClick, true);

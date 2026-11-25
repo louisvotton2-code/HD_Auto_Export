@@ -154,9 +154,9 @@ test('only a successful empty search and an intentional completed calculation ar
   expect(invalid).toEqual([]);
 });
 
-for (const locale of ['en', 'ru'] as const) {
-  test(`${locale}: a failed analytics request does not obstruct a soft link or retry itself`, async ({ page }) => {
-    const { events, invalid, externalAnalytics } = await capture(page, 503);
+for (const [locale, status] of [['en', 429], ['ru', 500]] as const) {
+  test(`${locale}: analytics HTTP ${status} does not obstruct a soft link or retry itself`, async ({ page }) => {
+    const { events, invalid, externalAnalytics } = await capture(page, status);
     await page.goto(`/${locale}/`);
     await expect.poll(() => events.length).toBe(1);
     expect(events[0]).toMatchObject({ type: 'page_view', pageType: 'home', locale });
@@ -164,6 +164,8 @@ for (const locale of ['en', 'ru'] as const) {
     await expect(page.getByTestId('parts-catalog')).toBeVisible();
     await expect.poll(() => events.length).toBe(2);
     expect(events[1]).toMatchObject({ type: 'page_view', pageType: 'parts', locale });
+    await page.waitForTimeout(1400);
+    expect(events).toHaveLength(2);
     expect(invalid).toEqual([]);
     expect(externalAnalytics).toEqual([]);
   });
