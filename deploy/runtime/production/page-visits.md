@@ -31,7 +31,9 @@ Nginx 使用内置 Unix datagram 投递，不使用 njs。`$realip_remote_addr` 
 }
 ```
 
-中继只向 BE 的 `/internal/analytics/ip-visits` 发送数据。后端校验 TCP 对端和专用投递密钥，公开网关继续封锁 `/internal/`。主机和目标 API 槽切换时核对这两项。BE 的短期 HMAC 密钥由 BE 独立管理。换 HMAC 密钥前停写一个完整滚动窗口，防止同一地址重复计入。中继禁用 core dump，地址只存在于有界内存及同主机私密传输。队列和排序窗口均有上限，单次投递间隔至少 60 ms，观察时间排序留 250 ms 水位。队列满、超出水位或交付失败会记录不含标识的计数，并让对应小时时段覆盖不足。访问消息失败不重放。
+中继只向 BE 的 `/internal/analytics/ip-visits` 发送数据。后端校验 TCP 对端和专用投递密钥，公开网关继续封锁 `/internal/`。主机和目标 API 槽切换时核对这两项。BE 的短期 HMAC 密钥由 BE 独立管理。换 HMAC 密钥前停写一个完整滚动窗口，防止同一地址重复计入。中继禁用 core dump，地址只存在于有界内存及同主机私密传输。队列和排序窗口均有上限，单次投递间隔至少 60 ms，观察时间排序留 250 ms 水位。
+
+每次交付新建同主机私网连接，建连失败时最多再尝试一次。请求开始发送后，写入结果可能无法确定，访问消息只发送一次。队列满、超出水位、HTTP 拒绝和投递异常均保留计数，相关小时仍显示覆盖不足。日志只包含总数和固定故障类别。小时覆盖提交是幂等更新，提交失败可按原间隔再提交，后端已记为部分的小时维持原状态。
 
 在生产 Compose 最后加载 `compose.analytics-visits.yaml` 才会在 API 槽接入中继。将 `HD_ANALYTICS_VISIT_PEERS` 设为 API 看到的实际中继连接来源，使用固定主机地址的 CIDR。通过两个独立 owner-only 文件配置 `HD_ANALYTICS_VISIT_GATEWAY_SECRET_FILE` 和 `HD_ANALYTICS_VISIT_HASH_SECRET_FILE`。中继只读取投递密钥。启用前用真实运行用户检查套接字权限和中继到当前槽的网络；切槽后用合成访问检查新槽接受，旧槽已停止接收。systemd 与 tmpfiles 的模板 UID 和 GID 须与实机网关用户核对后一起替换。
 

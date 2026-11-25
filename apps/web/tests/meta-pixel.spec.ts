@@ -54,9 +54,10 @@ const fixtureSdk = `
   })();
 `;
 
-async function interceptAdvertising(context: BrowserContext, baseURL: string, delays: {
+async function interceptAdvertising(context: BrowserContext, baseURL: string, options: {
   script?: Promise<void>;
   configuration?: Promise<void>;
+  contactRequestsUnavailable?: boolean;
 } = {}) {
   const siteOrigin = new URL(baseURL).origin;
   const sdkRequests: string[] = [];
@@ -64,10 +65,11 @@ async function interceptAdvertising(context: BrowserContext, baseURL: string, de
   const pixel: unknown[][] = [];
   const readyConfigs: string[] = [];
   const contacts: unknown[] = [];
+  const contactBatches: Array<string | null> = [];
   const sessions: AnalyticsEvent[] = [];
   const browserApiRequests: Array<{ method: string; url: URL }> = [];
 
-  await context.exposeBinding('waitForPixelConfig', () => delays.configuration);
+  await context.exposeBinding('waitForPixelConfig', () => options.configuration);
   await context.exposeBinding('captureReadyConfig', (_source, id: string) => { readyConfigs.push(id); });
   await context.exposeBinding('capturePixelCommand', (_source, command: unknown[]) => {
     commands.push(command);
@@ -82,7 +84,7 @@ async function interceptAdvertising(context: BrowserContext, baseURL: string, de
         throw new Error('Unexpected Meta request outside the intercepted SDK loader: ' + url.pathname);
       }
       sdkRequests.push(url.href);
-      if (delays.script) await delays.script;
+      if (options.script) await options.script;
       return route.fulfill({
         contentType: 'application/javascript',
         headers: { 'access-control-allow-origin': siteOrigin },
@@ -91,10 +93,17 @@ async function interceptAdvertising(context: BrowserContext, baseURL: string, de
     }
     if (contactHosts.has(url.hostname)) return route.fulfill({ contentType: 'text/plain', body: 'Contact intercepted' });
     if (url.origin !== siteOrigin) return route.abort();
-    if (url.pathname === '/api/v1/analytics/contact-count') contacts.push(request.postDataJSON());
+    if (url.pathname === '/api/v1/analytics/contact-count') {
+      contacts.push(request.postDataJSON());
+      if (options.contactRequestsUnavailable) return route.fulfill({ status: 503 });
+    }
     if (url.pathname === '/api/v1/analytics/events') {
       const { events } = AnalyticsEventsRequestSchema.parse(request.postDataJSON());
       sessions.push(...events);
+      if (events.some(event => event.type === 'contact_click')) {
+        contactBatches.push(request.postData());
+        if (options.contactRequestsUnavailable) return route.fulfill({ status: 503 });
+      }
     }
     if (url.pathname.startsWith('/api/v1/analytics/')) return route.fulfill({ status: 202 });
     if (url.pathname.startsWith('/api/v1/external-media/') && request.method() === 'POST') {
@@ -106,7 +115,7 @@ async function interceptAdvertising(context: BrowserContext, baseURL: string, de
     return route.continue();
   });
 
-  return { sdkRequests, commands, pixel, readyConfigs, contacts, sessions, browserApiRequests, events: () => pixel.map(command => command[2]) };
+  return { sdkRequests, commands, pixel, readyConfigs, contacts, contactBatches, sessions, browserApiRequests, events: () => pixel.map(command => command[2]) };
 }
 
 async function readVehicleDetailRequests(request: APIRequestContext, transport: 'ssr' | 'public' = 'ssr') {
@@ -362,9 +371,10 @@ test('a returning visitor with both saved grants sends the selected detail witho
   }
 });
 
-test('only a selected vehicle attributes a real contact from the general enquiry dialog', async ({ page, context, request, baseURL }) => {
+test('footer and enquiry links stay site-wide even on a selected vehicle', async ({ page, context, request, baseURL }) => {
   test.skip(!pixelId || !process.env.PUBLIC_FIXTURE_API_URL, 'Requires the isolated Pixel-enabled vehicle fixture.');
-  const { pixel, events, contacts, sdkRequests } = await interceptAdvertising(context, baseURL!);
+  const { pixel, events, contacts, sessions, sdkRequests } = await interceptAdvertising(context, baseURL!);
+  const siteContacts = () => sessions.filter(event => event.type === 'contact_click');
   const vehicleData = { content_type: 'product', content_ids: [selectedId] };
   const dialog = page.getByRole('dialog', { name: 'Contact us' });
   const openDialog = page.locator('header a[aria-haspopup="dialog"]:visible');
@@ -376,20 +386,31 @@ test('only a selected vehicle attributes a real contact from the general enquiry
     await expect.poll(events).toEqual(['PageView', 'ViewContent']);
     await openDialog.click();
     await expect(dialog).toBeVisible();
-    expect(events()).toEqual(['PageView', 'ViewContent']);
+    expect(siteContacts()).toEqual([]);
     const [selectedPopup] = await Promise.all([
       page.waitForEvent('popup'),
       dialog.getByRole('link', { name: 'WhatsApp', exact: true }).click(),
     ]);
     await selectedPopup.close();
-    const expectedEvents = [
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+
+    for (const channel of ['whatsapp', 'telegram'] as const) {
+      const [popup] = await Promise.all([
+        page.waitForEvent('popup'),
+        page.locator(`footer a[data-analytics-contact="${channel}"]:visible`).first().click(),
+      ]);
+      await popup.close();
+    }
+    if (sessionAnalyticsEnabled) await expect.poll(siteContacts).toHaveLength(3);
+    const expectedPixel = [
       ['trackSingle', pixelId, 'PageView'],
       ['trackSingle', pixelId, 'ViewContent', vehicleData],
-      ['trackSingle', pixelId, 'Contact', { ...vehicleData, contact_channel: 'whatsapp' }],
     ];
-    await expect.poll(() => pixel).toEqual(expectedEvents);
+    expect(pixel).toEqual(expectedPixel);
+    expect(contacts).toEqual([]);
 
-    for (const path of [`/en/cars/${unselectedId}/`, '/en/about/']) {
+    for (const [path, contactTotal] of [[`/en/cars/${unselectedId}/`, 4], ['/en/about/', 5]] as const) {
       await page.goto(path);
       await openDialog.click();
       await expect(dialog).toBeVisible();
@@ -398,11 +419,61 @@ test('only a selected vehicle attributes a real contact from the general enquiry
         dialog.getByRole('link', { name: 'Telegram', exact: true }).click(),
       ]);
       await otherPopup.close();
+      if (sessionAnalyticsEnabled) await expect.poll(siteContacts).toHaveLength(contactTotal);
     }
-    expect(pixel).toEqual(expectedEvents);
+    expect(pixel).toEqual(expectedPixel);
     expect(sdkRequests).toEqual([sdkUrl]);
-    // The existing first-party vehicle count only includes vehicle-tagged links.
     expect(contacts).toEqual([]);
+    if (sessionAnalyticsEnabled) {
+      expect(siteContacts().map(({ pageType, channel }) => [pageType, channel])).toEqual([
+        ['vehicle', 'whatsapp'], ['vehicle', 'whatsapp'], ['vehicle', 'telegram'],
+        ['vehicle', 'telegram'], ['about', 'telegram'],
+      ]);
+      for (const contact of siteContacts()) expect(contact).not.toHaveProperty('vehicleId');
+    } else {
+      expect(sessions).toEqual([]);
+    }
+  } finally {
+    await resetPublicFixture(request);
+  }
+});
+
+test('a 503 replays the same site contact once without repeating the vehicle counter or Meta Contact', async ({
+  page, context, request, baseURL,
+}) => {
+  test.skip(!pixelId || !sessionAnalyticsEnabled || !process.env.PUBLIC_FIXTURE_API_URL, 'Requires the isolated Pixel and site analytics fixture.');
+  const { contacts, contactBatches, events, sessions } = await interceptAdvertising(context, baseURL!, {
+    contactRequestsUnavailable: true,
+  });
+  await resetPublicFixture(request);
+  try {
+    await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await page.goto(`/en/cars/${selectedId}/`);
+    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
+    await expect.poll(events).toEqual(['PageView', 'ViewContent']);
+    // Let the initial view reach the server mock before testing a contact-only batch.
+    await expect.poll(() => sessions).toMatchObject([{ type: 'page_view', vehicleId: selectedId }]);
+    const link = page.locator(`[data-public-vehicle-detail="${selectedId}"] [data-vehicle-contacts] a[data-analytics-contact="whatsapp"]:visible`).last();
+    let popups = 0;
+    page.on('popup', () => { popups++; });
+    const [popup] = await Promise.all([page.waitForEvent('popup'), link.click()]);
+    await popup.waitForLoadState('domcontentloaded');
+    expect(contactHosts.has(new URL(popup.url()).hostname)).toBe(true);
+    await popup.close();
+
+    await expect.poll(() => contactBatches).toHaveLength(2);
+    expect(contactBatches[0]).toBeTruthy();
+    expect(contactBatches[1]).toBe(contactBatches[0]);
+    expect(sessions.filter(event => event.type === 'contact_click')).toMatchObject([
+      { type: 'contact_click', vehicleId: selectedId, channel: 'whatsapp' },
+      { type: 'contact_click', vehicleId: selectedId, channel: 'whatsapp' },
+    ]);
+    // Both POSTs received 503. Even after another retry interval, exactly one replay occurred.
+    await page.waitForTimeout(1400);
+    expect(contactBatches).toHaveLength(2);
+    expect(contacts).toEqual([{ vehicleId: selectedId, channel: 'whatsapp' }]);
+    expect(events()).toEqual(['PageView', 'ViewContent', 'Contact']);
+    expect(popups).toBe(1);
   } finally {
     await resetPublicFixture(request);
   }

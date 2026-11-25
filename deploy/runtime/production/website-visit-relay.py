@@ -74,25 +74,51 @@ def private_socket_path(value):
     return path
 
 
+class DeliveryFailure(OSError):
+    def __init__(self, category):
+        super().__init__(category)
+        self.category = category
+
+
 class PrivateApi:
     def __init__(self, host, key):
-        self.connection = HTTPConnection(str(host), 3320, timeout=0.75)
-        self.headers = {'Content-Type': 'application/json', 'X-HD-Analytics-Visit-Key': key}
+        self.host = str(host)
+        self.headers = {'Content-Type': 'application/json', 'X-HD-Analytics-Visit-Key': key,
+                        'Connection': 'close'}
 
     def __call__(self, payload):
+        # The relay is rate limited and the API is on the same host. A fresh
+        # connection avoids losing the first document after an idle period.
+        connection = HTTPConnection(self.host, 3320, timeout=0.75)
         try:
-            self.connection.request('POST', PRIVATE_ENDPOINT, json.dumps(payload, separators=(',', ':')),
-                                    self.headers)
-            response = self.connection.getresponse()
-            if response.status != 204:
-                raise ValueError('Private API rejected delivery')
-            response.read(1)
-        except (OSError, HTTPException, ValueError):
-            self.close()
-            raise
+            for attempt in range(2):
+                try:
+                    connection.connect()
+                except OSError:
+                    connection.close()
+                    if attempt:
+                        raise DeliveryFailure('connectFailed') from None
+                else:
+                    break
+            body = json.dumps(payload, separators=(',', ':'))
+            try:
+                connection.request('POST', PRIVATE_ENDPOINT, body, self.headers)
+                status = connection.getresponse().status
+            except (OSError, HTTPException):
+                # Request bytes may already have reached the API.
+                raise DeliveryFailure('outcomeUncertain') from None
+        finally:
+            connection.close()
 
-    def close(self):
-        self.connection.close()
+        if status == 204:
+            return attempt != 0
+        if status == 429:
+            raise DeliveryFailure('httpRateLimited')
+        if 400 <= status < 500:
+            raise DeliveryFailure('httpRejected')
+        if status >= 500:
+            raise DeliveryFailure('httpUnavailable')
+        raise DeliveryFailure('httpUnexpected')
 
 
 class Health:
@@ -218,6 +244,16 @@ def accept(sock, inbox, health, coverage, stop):
                 health.record('queueDropped')
 
 
+def send_with_health(send, payload, health):
+    try:
+        recovered = send(payload)
+    except DeliveryFailure as failure:
+        health.record(failure.category)
+        raise
+    if recovered:
+        health.record('connectRecovered')
+
+
 def deliver(inbox, send, health, coverage, stop, audit_directory=None):
     next_send = next_seal = 0
     latest_delivery = -1
@@ -228,7 +264,8 @@ def deliver(inbox, send, health, coverage, stop, audit_directory=None):
         if ready is not None:
             hour, status = ready
             try:
-                send({'version': 1, 'kind': 'coverage', 'hour': utc_iso(hour), 'status': status})
+                send_with_health(send, {'version': 1, 'kind': 'coverage', 'hour': utc_iso(hour),
+                                        'status': status}, health)
             except (OSError, HTTPException, ValueError):
                 health.record('coverageFailed')
                 next_seal = monotonic()+15
@@ -260,7 +297,8 @@ def deliver(inbox, send, health, coverage, stop, audit_directory=None):
         latest_delivery = timestamp
         next_send = monotonic()+DELIVERY_INTERVAL
         try:
-            send({'version': 1, 'kind': 'document', 'address': event['address'], 'observedAt': utc_iso(timestamp)})
+            send_with_health(send, {'version': 1, 'kind': 'document', 'address': event['address'],
+                                    'observedAt': utc_iso(timestamp)}, health)
             coverage.forwarded(timestamp)
             health.record('forwarded')
         except (OSError, HTTPException, ValueError):
@@ -365,11 +403,7 @@ def main():
             audit_info = audit_directory.stat()
             if not stat.S_ISDIR(audit_info.st_mode) or audit_info.st_mode & 0o027:
                 raise ValueError('Expected a protected audit directory')
-        api = PrivateApi(host, key)
-        try:
-            run_listener(path, api, preview_probe, audit_directory)
-        finally:
-            api.close()
+        run_listener(path, PrivateApi(host, key), preview_probe, audit_directory)
     except (OSError, ValueError, TypeError, KeyError):
         parser.exit(1, 'Website visit relay could not start or stopped unexpectedly.\n')
 

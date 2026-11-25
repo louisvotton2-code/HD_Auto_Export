@@ -46,7 +46,7 @@ test('an administrator can select website analytics periods, trend metrics and v
   await page.getByRole('link', { name: '网站分析', exact: true }).click();
   await page.getByText('访客行为', { exact: true }).click();
   await expect(page.getByRole('heading', { name: '网站分析', exact: true })).toBeVisible();
-  await expect(page.getByText(/2026-10-21 至 2026-11-19（北京时间）/)).toBeVisible();
+  await expect(page.getByText(/2026-11-13 至 2026-11-19（北京时间）/)).toBeVisible();
   await expect(page.getByText(/采集开始.*2026年11月19日.*00:35/)).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' })).toContainText('1,280');
   await expect(page.getByRole('row').filter({ hasText: vehicleId }).getByRole('cell'))
@@ -57,13 +57,13 @@ test('an administrator can select website analytics periods, trend metrics and v
   await expect(page.getByRole('figure', { name: '车辆卡片点击每日趋势' }).getByRole('img').locator('svg')).toBeVisible();
   await page.getByText('查看每日数据', { exact: true }).click();
   await expect(page.getByText('未采集', { exact: true }).first()).toBeVisible();
-  await page.getByText('近 7 天', { exact: true }).click();
-  await expect(page.getByText(/2026-11-13 至 2026-11-19（北京时间）/)).toBeVisible();
+  await page.getByText('近 30 天', { exact: true }).click();
+  await expect(page.getByText(/2026-10-21 至 2026-11-19（北京时间）/)).toBeVisible();
   await expect(page.getByRole('figure', { name: '车辆卡片点击每日趋势' })).toBeVisible();
-  expect(periods).toEqual(['30', '7']);
+  expect(periods).toEqual(['7', '30']);
   await page.getByRole('button', { name: /刷新$/ }).click();
   await expect(page.getByRole('figure', { name: '车辆卡片点击每日趋势' })).toBeVisible();
-  expect(periods).toEqual(['30', '7', '7']);
+  expect(periods).toEqual(['7', '30', '30']);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
   const supplier = page.getByRole('link', { name: supplierVehicleId, exact: true });
@@ -75,7 +75,7 @@ test('an administrator can select website analytics periods, trend metrics and v
 test('website analytics shows no collection history on a narrow screen', async ({ page }) => {
   await installAnalyticsAdmin(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.route(overviewPath, route => reply(route, sampleOverview(30, false)));
+  await page.route(overviewPath, route => reply(route, sampleOverview(7, false)));
   await page.goto(sessionAnalyticsPage);
   await expect(page.getByText('尚无采集数据', { exact: true })).toBeVisible();
   await expect(page.getByText(/采集开始.*尚无采集记录/)).toBeVisible();
@@ -88,7 +88,7 @@ test('website analytics shows no collection history on a narrow screen', async (
 test('website analytics displays a read failure and reloads when the API recovers', async ({ page }) => {
   await installAnalyticsAdmin(page);
   let recovered = false;
-  await page.route(overviewPath, route => recovered ? reply(route, sampleOverview(30)) : reply(route, error('SERVICE_UNAVAILABLE'), 503));
+  await page.route(overviewPath, route => recovered ? reply(route, sampleOverview(7)) : reply(route, error('SERVICE_UNAVAILABLE'), 503));
   await page.goto(sessionAnalyticsPage);
   await expect(page.getByRole('alert')).toContainText('网站分析读取失败');
   await expect(page.getByText('尚无采集数据', { exact: true })).toHaveCount(0);
@@ -100,7 +100,7 @@ test('website analytics displays a read failure and reloads when the API recover
 
 test('website analytics shows actual zeros for an empty period after collection started', async ({ page }) => {
   await installAnalyticsAdmin(page);
-  await page.route(overviewPath, route => reply(route, sampleOverview(30, false, '2026-09-01T01:00:00.000Z')));
+  await page.route(overviewPath, route => reply(route, sampleOverview(7, false, '2026-09-01T01:00:00.000Z')));
   await page.goto(sessionAnalyticsPage);
   await expect(page.getByText('此期间暂无访问数据', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' }).getByText('0', { exact: true })).toHaveCount(4);
@@ -113,25 +113,25 @@ test('website analytics waits for the current request when quickly switching bac
   await page.route(overviewPath, route => {
     const days = new URL(route.request().url()).searchParams.get('days')!;
     reads.push(days);
-    if (reads.length === 1) return reply(route, sampleOverview(30));
+    if (reads.length === 1) return reply(route, sampleOverview(7));
     waiting.push(route);
   });
   await page.goto(sessionAnalyticsPage);
   await expect(page.getByRole('region', { name: '统计概览' })).toContainText('1,280');
-  await page.getByText('近 30 天', { exact: true }).click();
   await page.getByText('近 7 天', { exact: true }).click();
-  await expect.poll(() => waiting.length).toBe(1);
   await page.getByText('近 30 天', { exact: true }).click();
+  await expect.poll(() => waiting.length).toBe(1);
+  await page.getByText('近 7 天', { exact: true }).click();
   await expect(page.getByText('正在读取网站分析…', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' })).toHaveCount(0);
-  expect(reads).toEqual(['30', '7']);
-  await reply(waiting[0]!, sampleOverview(7));
+  expect(reads).toEqual(['7', '30']);
+  await reply(waiting[0]!, sampleOverview(30));
   await expect.poll(() => waiting.length).toBe(2);
   await expect(page.getByRole('region', { name: '统计概览' })).toHaveCount(0);
-  await reply(waiting[1]!, sampleOverview(30, false));
+  await reply(waiting[1]!, sampleOverview(7, false));
   await expect(page.getByText('尚无采集数据', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: '统计概览' })).not.toContainText('1,280');
-  expect(reads).toEqual(['30', '7', '30']);
+  expect(reads).toEqual(['7', '30', '7']);
 });
 
 test('website analytics shows a permission denial from the service without a loading or empty dashboard', async ({ page }) => {

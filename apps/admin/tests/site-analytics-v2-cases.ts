@@ -172,6 +172,7 @@ test('v2 website analytics distinguishes an interrupted hour from a collected ze
   await page.getByText('今日', { exact: true }).click();
   await expect(readDate(page, today)).toBeVisible();
   await expect(page.getByText(/所选区间有采集停顿/)).toBeVisible();
+  await expect(page.getByText(/覆盖不完整日期/)).toBeVisible();
   await select(page, '趋势指标', '主动联系点击');
   await page.getByText('查看逐小时数据', { exact: true }).click();
   const daily = page.locator('details').filter({ hasText: '查看逐小时数据' });
@@ -184,10 +185,12 @@ test('v2 website analytics shows a month-long report generated at the selected f
   const reads = await installReport(page, { snapshotAt: midnight(today) });
   await page.goto(analyticsPage);
   await tab(page, '历史总览');
+  await expect(page.getByText('统计范围　2026-11-15 至 2026-11-21（北京时间）', { exact: true })).toBeVisible();
+  await page.getByText('近 30 天', { exact: true }).click();
   await expect(page.getByText('统计范围　2026-10-23 至 2026-11-21（北京时间）', { exact: true })).toBeVisible();
   await expect(page.getByText(/统计截止.*00:00/)).toBeVisible();
   await verifyCounters(page, yesterdayCounts);
-  expect(reads[0]).toMatchObject({ startDate: '2026-10-23', endDate: today, granularity: 'day' });
+  expect(reads.at(-1)).toMatchObject({ startDate: '2026-10-23', endDate: today, granularity: 'day' });
 });
 
 test('v2 website analytics keeps all four views on a 390 px screen and shows unknown markets and ordered conversion', async ({ page }) => {
@@ -253,6 +256,7 @@ test('v2 website analytics keeps historical gaps and uncollected country data di
         coverage: 'not_collected',
         legacyCollectionStartedAt: iso(midnight('2026-10-01')),
         totals: { ...report.data.totals, contactClicks: 0 },
+        ranking: { ...report.data.ranking, total: 0, items: [] },
         trend: report.data.trend.map(bucket => ({ ...bucket, coverage: 'not_collected' })),
         markets: { ...report.data.markets, countries: [] },
       },
@@ -272,6 +276,22 @@ test('v2 website analytics keeps historical gaps and uncollected country data di
   await expect(daily.locator('dl > div').filter({ hasText: '2026-11-19' }).locator('dd')).toHaveText('未采集');
   await expect(daily.locator('dl > div').filter({ hasText: '2026-11-20' }).locator('dd')).toHaveText('1');
   await expect(attribution).toHaveCount(0);
+  await tab(page, '车型排行');
+  await expect(page.getByText('所选期间暂无可用于排行的车辆记录，统计覆盖可能不完整', { exact: true })).toBeVisible();
+});
+
+test('v2 website analytics marks a missing detail-session denominator during partial coverage', async ({ page }) => {
+  await installReport(page);
+  await page.route(`**${reportPath}?*`, route => {
+    const query = AnalyticsReportQuerySchema.parse(Object.fromEntries(new URL(route.request().url()).searchParams));
+    const report = sampleReport(query, { rankings: [vehicleX, { ...vehicleY, detailSessions: 0, contactAfterDetailSessions: 0, contactRate: null }] });
+    return reply(route, { ...report, data: { ...report.data, coverage: 'partial' } });
+  });
+  await page.goto(analyticsPage);
+  await tab(page, '车型排行');
+  await select(page, '车源排行指标', '详情联系率');
+  await expect(page.getByRole('row').filter({ hasText: 'SYNTH-Y' })).toContainText('缺少详情会话数');
+  await expect(page.getByRole('row').filter({ hasText: 'SYNTH-X' })).toContainText('50%');
 });
 
 test('v2 website analytics requests ranked pages from the entire result for each selected metric', async ({ page }) => {

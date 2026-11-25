@@ -80,7 +80,7 @@ test('an accepted public contact click sends only its vehicle and channel despit
   expect(meta).toEqual([]);
 });
 
-test('only real vehicle activation is counted, and an opted-in contact stays separate', async ({ page, context, request }) => {
+test('a real site-wide contact is recorded separately from the vehicle contact counter', async ({ page, context, request }) => {
   await setPublicFixtureState(request, { importedPublished: true });
   await context.addInitScript(() => {
     localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
@@ -107,13 +107,17 @@ test('only real vehicle activation is counted, and an opted-in contact stays sep
   const [popup] = await Promise.all([page.waitForEvent('popup'), link.press('Enter')]);
   await popup.close();
   await expect.poll(() => counts).toEqual([{ body: { vehicleId: id, channel: 'telegram' }, clean: true }]);
-  if (sessionAnalyticsEnabled)
-    await expect.poll(() => sessions.filter(event => event.type === 'contact_click')).toMatchObject([
-      { type: 'contact_click', vehicleId: id, channel: 'telegram' },
+  const contactEvents = () => sessions.filter(event => event.type === 'contact_click');
+  if (sessionAnalyticsEnabled) {
+    await expect.poll(contactEvents).toMatchObject([
+      { type: 'contact_click', pageType: 'vehicle', channel: 'telegram' },
+      { type: 'contact_click', pageType: 'vehicle', vehicleId: id, channel: 'telegram' },
     ]);
+    expect(contactEvents()[0]).not.toHaveProperty('vehicleId');
+  }
   await page.waitForTimeout(850);
   expect(counts).toHaveLength(1);
-  expect(sessions.filter(event => event.type === 'contact_click')).toHaveLength(sessionAnalyticsEnabled ? 1 : 0);
+  expect(contactEvents()).toHaveLength(sessionAnalyticsEnabled ? 2 : 0);
 });
 
 test('public contact still opens before a decision, after decline and after withdrawal without reporting', async ({ page, context, request }) => {

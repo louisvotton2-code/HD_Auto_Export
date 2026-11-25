@@ -17,6 +17,7 @@ import { createAnalyticsStorage } from './storage.js';
 import { getAnalyticsReport } from './report.js';
 import { countContact } from './contact.js';
 import { getAnalyticsTraffic } from './traffic.js';
+import { normalizeVisitAddress } from './ip-visits.js';
 
 export const analyticsEventsPath='/api/v1/analytics/events';
 export const analyticsContactPath='/api/v1/analytics/contact-count';
@@ -39,8 +40,9 @@ function gatewayCountry(request:FastifyRequest) {
 function analyticsContext(request:FastifyRequest,config:Config) {
   if(!config.analyticsV2Enabled)return undefined;
   const trusted=trustedGateway(request,config);
-  const rawIp=trusted?request.ip:undefined;
-  const ip=rawIp?.includes(':')?new URL(`http://[${rawIp}]`).hostname:rawIp;
+  const address=trusted?normalizeVisitAddress(request.ip):undefined;
+  // Keep the established digest input for native IPv6 and collapse IPv4-mapped IPv6.
+  const ip=address?.includes(':')?`[${address}]`:address;
   return {secret:config.authSecret,country:(trusted&&gatewayCountry(request))||'ZZ',ip};
 }
 

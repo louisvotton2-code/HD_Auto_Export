@@ -116,7 +116,7 @@ export function AnalyticsCollectionQuality({ quality }: { quality: CollectionQua
       {quality.unknownDimension !== null && <CountryInferenceSource />}
       {quality.runtimeSince && <Typography.Text type="secondary">限流批次自进程启动计数（{formatTime(quality.runtimeSince)} 起）。</Typography.Text>}
       {quality.missingDates.length > 0 && <details className={styles.daily}>
-        <summary>缺失日期（{formatter.format(quality.missingDates.length)} 天）</summary>
+        <summary>覆盖不完整日期（{formatter.format(quality.missingDates.length)} 天）</summary>
         <dl>{quality.missingDates.map(({ date, state }) => <div key={date}>
           <dt><time dateTime={date}>{date}</time></dt><dd>{state === 'interrupted' ? '采集停顿' : state === 'partial' ? '采集不完整' : '未采集'}</dd>
         </div>)}</dl>
