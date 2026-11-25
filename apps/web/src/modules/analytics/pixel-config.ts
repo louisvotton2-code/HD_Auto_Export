@@ -1,3 +1,5 @@
+export const vehiclePixelPath = /^\/(?:zh|en|ru)\/cars\/([^/]+)\/?$/;
+
 export function isPixelId(id: string | null | undefined): id is string {
   return typeof id === 'string' && /^[1-9]\d{4,19}$/.test(id);
 }

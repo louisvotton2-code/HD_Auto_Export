@@ -1,140 +1,151 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getPublicPixelId } from './pixel-config';
-import { trackPixel, type PixelEvent } from './pixel';
+import type * as PixelModule from './pixel';
 
-const consent = vi.hoisted(() => ({
-  advertising: false,
-  listeners: new Set<() => void>(),
-}));
-
-vi.mock('@/shared/lib/tracking-consent', () => ({
-  getTrackingConsent: () => ({ advertising: consent.advertising }),
-  subscribeTrackingConsent: (listener: () => void) => {
-    consent.listeners.add(listener);
-    return () => consent.listeners.delete(listener);
-  },
-}));
+const consent = vi.hoisted(() => ({ advertising: true }));
+vi.mock('@/shared/lib/tracking-consent', () => ({ getTrackingConsent: () => consent }));
 
 const pixelId = '123456789012345';
 const vehicleId = '11111111-1111-4111-8111-111111111111';
-const supplierVehicleId = 'ext-22222222-2222-4222-8222-222222222222';
+const vehicle = { content_type: 'product', content_ids: [vehicleId] };
 
-describe('Facebook Pixel transport', () => {
-  const browser = {
-    parent: {} as object,
-    location: {
-      pathname: `/ru/cars/${vehicleId}/`,
-      href: `https://example.test/ru/cars/${vehicleId}/?private=value`,
-    },
+describe('official Meta Pixel on public vehicle details', () => {
+  let pixel: typeof PixelModule;
+  let fresh: boolean;
+  type TestFbq = {
+    callMethod?: ReturnType<typeof vi.fn>;
+    instance?: { configsLoaded: Record<string, boolean>; asyncParamPromisesAllSettled?: boolean; locks: { isLocked(): boolean; onUnlocked(fn: () => void): void } };
+    disablePushState: boolean;
   };
-  const document = { prerendering: false };
+  const browser: { parent: object; fbq?: TestFbq; _fbq?: TestFbq } = { parent: {} };
+  const location = { pathname: '' };
+  const script = { src: '', onload: () => {}, onerror: () => {} };
+  const append = vi.fn();
+  const document = { head: { append }, createElement: () => script, prerendering: false };
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
+    pixel = await import('./pixel');
+    fresh = consent.advertising = true;
     browser.parent = browser;
-    browser.location.pathname = `/ru/cars/${vehicleId}/`;
+    delete browser.fbq;
+    delete browser._fbq;
+    location.pathname = '/zh/cars/' + vehicleId + '/';
     document.prerendering = false;
-    consent.advertising = false;
+    append.mockClear();
     vi.stubGlobal('window', browser);
+    vi.stubGlobal('location', location);
     vi.stubGlobal('document', document);
   });
-  afterEach(() => vi.unstubAllGlobals());
 
-  it('requires an enabled site flag and a valid Pixel ID', () => {
-    expect(getPublicPixelId('true', ` ${pixelId} `)).toBe(pixelId);
-    expect(getPublicPixelId(undefined, pixelId)).toBeNull();
+  afterEach(() => vi.unstubAllGlobals());
+  const view = () => pixel.startVehiclePixel(pixelId, vehicleId, () => fresh);
+  let unlocked: () => void;
+  function load(configured = true, hintsReady = true) {
+    const commands = vi.fn();
+    browser.fbq!.callMethod = commands;
+    browser.fbq!.instance = {
+      configsLoaded: { [pixelId]: configured }, asyncParamPromisesAllSettled: hintsReady,
+      locks: { isLocked: () => !browser.fbq!.instance!.configsLoaded[pixelId], onUnlocked: fn => { unlocked = fn; } },
+    };
+    script.onload();
+    return commands;
+  }
+
+  it('requires the site flag and a valid pixel number', () => {
+    expect(getPublicPixelId('true', ' ' + pixelId)).toBe(pixelId);
+    for (const invalid of [undefined, '', '00012345', '<script>']) expect(getPublicPixelId('true', invalid)).toBeNull();
     expect(getPublicPixelId('false', pixelId)).toBeNull();
-    for (const invalid of [undefined, '', '00012345', '<script>', '12345&ev=Contact']) {
-      expect(getPublicPixelId('true', invalid)).toBeNull();
-    }
   });
 
-  it('blocks unconsented events and skips staff paths, privacy controls, iframes and prerendering', async () => {
-    const send = vi.fn(async () => new Response());
-    vi.stubGlobal('fetch', send);
-    await trackPixel(pixelId, 'PageView', vehicleId, true);
-    consent.advertising = true;
-    await trackPixel(null, 'PageView', vehicleId, true);
-    await trackPixel(pixelId, 'invalid' as PixelEvent, vehicleId, true);
-
+  it('never loads for stale data, an invalid ID, a frame, a prerender or an expired grant', () => {
+    fresh = false;
+    view();
+    fresh = true;
+    pixel.startVehiclePixel('invalid', vehicleId, () => true);
     browser.parent = {};
-    await trackPixel(pixelId, 'PageView', vehicleId, true);
+    view();
     browser.parent = browser;
     document.prerendering = true;
-    await trackPixel(pixelId, 'PageView', vehicleId, true);
+    view();
     document.prerendering = false;
-    for (const path of ['/staff/preview/', '/ru/staff/preview/', '/ru/privacy/', '/ru/', '/ru/cars/',
-      `/ru/cars/${vehicleId}/inspection/`, `/xx/cars/${vehicleId}/`]) {
-      browser.location.pathname = path;
-      await trackPixel(pixelId, 'PageView', vehicleId, true);
-    }
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it('requires an explicit true flag on the current vehicle even after consent', async () => {
-    consent.advertising = true;
-    const send = vi.fn(async () => new Response());
-    vi.stubGlobal('fetch', send);
-    await trackPixel(pixelId, 'PageView', vehicleId, false);
-    // @ts-expect-error Older or malformed data may omit the flag at runtime.
-    await trackPixel(pixelId, 'ViewContent', vehicleId, undefined);
-    // @ts-expect-error A string from malformed data must not grant permission.
-    await trackPixel(pixelId, 'Contact', vehicleId, 'true');
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it('skips a mismatched route or malformed vehicle ID even with an enabled flag', async () => {
-    consent.advertising = true;
-    const send = vi.fn(async () => new Response());
-    vi.stubGlobal('fetch', send);
-    await trackPixel(pixelId, 'ViewContent', supplierVehicleId, true);
-    browser.location.pathname = '/en/cars/invalid/';
-    await trackPixel(pixelId, 'Contact', 'invalid', true);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it('sends exactly the fixed Pixel event and ID without credentials, referrer or other data', async () => {
-    consent.advertising = true;
-    const send = vi.fn(async (_url: URL, _init: RequestInit) => new Response());
-    vi.stubGlobal('fetch', send);
-    const events = ['PageView', 'ViewContent', 'Contact'] as const;
-    await trackPixel(pixelId, 'PageView', vehicleId, true);
-    browser.location.pathname = `/zh/cars/${supplierVehicleId}`;
-    await trackPixel(pixelId, 'ViewContent', supplierVehicleId, true);
-    browser.location.pathname = `/en/cars/${supplierVehicleId}/`;
-    await trackPixel(pixelId, 'Contact', supplierVehicleId, true);
-    expect(send.mock.calls.map(([url]) => [url.origin, url.pathname, Object.fromEntries(url.searchParams)])).toEqual(
-      events.map(event => ['https://www.facebook.com', '/tr', { id: pixelId, ev: event }]),
-    );
-    for (const [, options] of send.mock.calls) {
-      expect(options).toEqual({
-        method: 'GET',
-        mode: 'cors',
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
-        redirect: 'error',
-        keepalive: true,
-        signal: expect.any(AbortSignal),
-      });
-    }
-  });
-
-  it('aborts in-flight requests on withdrawal and never replays them', async () => {
-    consent.advertising = true;
-    const send = vi.fn((_url: URL, init: RequestInit) => new Promise<Response>((_, reject) => {
-      init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
-    }));
-    vi.stubGlobal('fetch', send);
-    const request = trackPixel(pixelId, 'Contact', vehicleId, true);
-    const signal = send.mock.calls[0][1].signal;
-    expect(signal?.aborted).toBe(false);
     consent.advertising = false;
-    for (const listener of consent.listeners) listener();
-    expect(signal?.aborted).toBe(true);
-    await request;
-    await trackPixel(pixelId, 'PageView', vehicleId, true);
+    view();
     consent.advertising = true;
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(consent.listeners.size).toBe(0);
+    for (const path of ['/staff/preview/', '/en/buy/', '/zh/cars/other/', location.pathname + 'inspection/']) {
+      location.pathname = path;
+      view();
+    }
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('initializes once, disables automatic capture and records only actual requested events', () => {
+    view();
+    view();
+    pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
+    pixel.trackVehiclePixelContact('other', 'telegram');
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(script.src).toBe('https://connect.facebook.net/en_US/fbevents.js');
+    expect(browser.fbq?.disablePushState).toBe(true);
+    const commands = load();
+    view();
+    pixel.trackVehiclePixelContact(vehicleId, 'telegram');
+    expect(commands.mock.calls).toEqual([
+      ['consent', 'grant'], ['set', 'autoConfig', false, pixelId], ['init', pixelId], ['set', 'trackSingleOnly', true, pixelId],
+      ['trackSingle', pixelId, 'PageView'], ['trackSingle', pixelId, 'ViewContent', vehicle],
+      ['trackSingle', pixelId, 'Contact', { ...vehicle, contact_channel: 'whatsapp' }],
+      ['trackSingle', pixelId, 'Contact', { ...vehicle, contact_channel: 'telegram' }],
+    ]);
+    pixel.stopVehiclePixel();
+    pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
+    expect(commands.mock.calls.at(-1)).toEqual(['consent', 'revoke']);
+  });
+
+  it.each(['withdrawn', 'stale', 'left', 'pagehide'])('drops pending events when the SDK is late and the view is %s', reason => {
+    view();
+    pixel.trackVehiclePixelContact(vehicleId, 'telegram');
+    if (reason === 'withdrawn') consent.advertising = false;
+    if (reason === 'stale') fresh = false;
+    if (reason === 'left') location.pathname = '/en/';
+    if (reason === 'pagehide') pixel.stopVehiclePixel();
+    expect(load()).not.toHaveBeenCalled();
+  });
+
+  it('never puts events into the SDK replay queue while the configuration is loading', () => {
+    view();
+    const commands = load(false);
+    pixel.trackVehiclePixelContact(vehicleId, 'telegram');
+    expect(commands.mock.calls.some(([name]) => name === 'trackSingle')).toBe(false);
+    location.pathname = '/zh/buy/';
+    browser.fbq!.instance!.configsLoaded[pixelId] = true;
+    unlocked();
+    expect(commands.mock.calls.at(-1)).toEqual(['consent', 'revoke']);
+    expect(commands.mock.calls.some(([name]) => name === 'trackSingle')).toBe(false);
+  });
+
+  it('drops contacts waiting on SDK client hints when a visitor withdraws', () => {
+    vi.useFakeTimers();
+    try {
+      view();
+      const commands = load(true, false);
+      pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
+      consent.advertising = false;
+      pixel.stopVehiclePixel();
+      browser.fbq!.instance!.asyncParamPromisesAllSettled = true;
+      vi.runAllTimers();
+      expect(commands.mock.calls.some(([name]) => name === 'trackSingle')).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reload a blocked script or replay failed events', () => {
+    view();
+    script.onerror();
+    view();
+    pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(load()).not.toHaveBeenCalled();
   });
 });

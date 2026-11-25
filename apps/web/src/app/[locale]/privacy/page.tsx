@@ -30,20 +30,20 @@ const privacy = {
         description: [
           '你向我们发送车辆咨询时，我们会收到你提供的联系方式和消息。网站启用访问汇总时，网关使用可信来源 IP，在页面和语言之间按滚动 60 分钟窗口去重。首次访问计入当时所在小时，窗口内的重复访问不延长窗口。多人共用同一网络出口时可能只计为一次访问。',
           '启用联系计数时，主动点击公开车辆的 WhatsApp 或 Telegram 链接会提交公开车辆标识和所选渠道。在支持会话分析的范围内，只有你明确同意后，浏览和部分操作才会关联到随机会话标识。会话分析还记录设备类型、访问来源类别和已知推广活动类别。',
-          '网站启用 Meta Pixel（Facebook 像素）时，仅在本站选定的公开车辆详情页上使用。你点击「接受」后，浏览器才会在这些详情页发送页面访问（PageView）、车辆详情浏览（ViewContent）或主动点击联系链接（Contact）事件。',
+          '网站启用 Meta Pixel（Facebook 像素）时，仅在本站选定的公开车辆详情页上使用。你允许广告衡量后，浏览器才会在这些详情页发送页面访问（PageView）、车辆详情浏览（ViewContent）或主动点击联系链接（Contact）事件。',
         ],
       },
       uses: {
         title: '我们如何使用这些信息',
         description: [
           '我们用你提供的信息回复车辆、购买或运输咨询。访问汇总及联系点击有助于了解网站使用情况和车辆关注度。会话分析用于了解从浏览、筛选到咨询的过程。联系点击只表示你点击了联系入口，实际咨询以你发送的消息为准。',
-          '启用 Meta Pixel 时，它用于衡量广告带来的浏览和联系点击。',
+          '我们用 Meta Pixel 衡量哪些广告带来了看车和联系点击，并优化后续广告投放。',
         ],
       },
       cookies: {
         title: 'Cookie 与浏览器存储',
         description: [
-          '网站可能使用 Cookie 和类似技术。浏览器本地存储用于记住你的隐私选择。点击横条的「接受」，即同意本站在相应功能启用时进行会话分析，并在选定的车辆详情页使用 Meta Pixel 衡量广告成效。会话分析使用浏览器会话存储保存短期随机会话标识。旧版仅表示已读的选择不等同于同意。网关按 IP 汇总访问独立于 Cookie 和这一选择。',
+          '浏览器会记住你的隐私选择。「接受」允许横条中说明的用途。同时提供站内分析和广告衡量时，点「选择用途」可只允许其中一项。启用广告衡量后，Meta Pixel 可能设置或读取浏览器 Cookie，以便将看车和联系点击关联到广告。会话分析使用浏览器会话存储保存短期随机标识。网关按 IP 汇总访问独立于 Cookie 和这一选择。',
         ],
       },
       'data-flows': {
@@ -51,7 +51,7 @@ const privacy = {
         description: [
           '访问请求经本站网关送达网站服务。启用会话分析时，网关可能用可信来源 IP 在本机推断国家。车辆联系计数单独发送公开车辆标识和渠道，联系汇总中不保存会话标识、IP 或聊天内容。',
           '当你主动打开 WhatsApp 或 Telegram 链接时，浏览器会进入对应服务。车辆链接可能带上公开车辆资料，方便你编辑询价消息。只有你发送消息后，我们才会通过所选渠道收到你的咨询。服务商对其收到的信息按各自的隐私规则处理。',
-          '发送广告事件时，浏览器直接连接 Meta。本站发送像素编号和事件名称，相关请求不附带 Cookie、完整页面网址、来源页面地址、车辆或会话标识，也不包含你在本站输入的内容。Meta 会收到网络连接信息，例如 IP 地址和浏览器信息，并按自己的隐私政策处理。',
+          '浏览器会从 Meta 加载 Facebook Pixel，并将事件发送给 Meta。车辆浏览事件包含公开车辆编号，联系点击还包含所选渠道（WhatsApp 或 Telegram）。Meta 也可能收到像素编号、页面及来源网址、广告点击或浏览器 Cookie 标识、IP 地址及浏览器信息，并按其隐私政策处理。',
         ],
       },
       storage: {
@@ -82,20 +82,20 @@ const privacy = {
         description: [
           'When you send us a vehicle enquiry, we receive the contact details and message you provide. When visit counting is active, our gateway uses the IP address reported by trusted network infrastructure to count visits across all pages and languages once per address in a rolling window of 60 minutes. The first visit counts in the hour it occurs. Repeat visits within the window do not extend it. People sharing an internet connection may count as one visit.',
           'Where contact counting is active, clicking a public vehicle’s WhatsApp or Telegram link submits the public vehicle identifier and selected channel. Browsing and some actions are associated with a random session identifier only after you explicitly accept session analytics where it is supported. Session analytics also records device type, referral category and recognized campaign category.',
-          'When Meta Pixel (Facebook Pixel) is enabled, the site uses it only on selected public vehicle detail pages. After you click Accept, your browser can send a page visit (PageView), a vehicle detail view (ViewContent), or a click you make on a contact link (Contact) on one of those pages.',
+          'When Meta Pixel (Facebook Pixel) is enabled, the site uses it only on selected public vehicle detail pages. After you allow ad measurement, your browser can send a page visit (PageView), a vehicle detail view (ViewContent), or a click you make on a contact link (Contact) on one of those pages.',
         ],
       },
       uses: {
         title: 'How we use the information',
         description: [
           'We use the information you provide to respond to enquiries about vehicles, purchases and delivery. Visit totals and contact clicks help us understand site usage and interest in vehicles. Session analytics helps us understand how people browse, filter and contact us. A contact click records your selection of a contact link. We receive an enquiry when you send a message.',
-          'When enabled, Meta Pixel measures browsing and contact clicks associated with our ads.',
+          'We use Meta Pixel to measure which ads lead to vehicle views and contact clicks and to improve future ad campaigns.',
         ],
       },
       cookies: {
         title: 'Cookies and browser storage',
         description: [
-          'The site may use cookies and similar technologies. Local browser storage remembers your privacy choice. Clicking Accept on the banner allows session analytics and the use of Meta Pixel for ad measurement on selected vehicle detail pages, where each feature is enabled. Session analytics uses browser session storage for a short-lived random session identifier. Acknowledging an earlier notice did not grant consent. Gateway visit totals based on IP addresses are independent of cookies and this choice.',
+          'Your browser remembers your privacy choices. Accept allows the uses described in the banner. When both site analytics and ad measurement are offered, select Choose purposes to allow just one. When you allow ad measurement, Meta Pixel may set or read browser cookies to associate vehicle views and contact clicks with ads. Session analytics uses browser session storage for a short-lived random identifier. Gateway visit totals based on IP addresses are independent of cookies and this choice.',
         ],
       },
       'data-flows': {
@@ -103,7 +103,7 @@ const privacy = {
         description: [
           'Visit requests pass through our gateway to the site. Where session analytics is enabled, the gateway may use the IP address reported by trusted infrastructure to infer your country locally. The separate vehicle contact counter receives the public vehicle identifier and channel. Its aggregates contain no session identifiers, IP addresses or chat content.',
           'When you open a WhatsApp or Telegram link, your browser goes to that service. A vehicle link can include public listing details for a draft you can review and edit. We receive your enquiry through the channel you choose once you send it. Each provider handles the information it receives under its own privacy terms.',
-          'Your browser connects directly to Meta to send ad events. The site sends the pixel ID and event name. The request omits cookies, full page URLs, referring page addresses, vehicle and session identifiers, and content you enter on the site. Meta receives connection details such as your IP address and browser information and processes them under its own privacy policy.',
+          'Your browser loads Facebook Pixel from Meta and sends events to Meta. A vehicle view includes the public vehicle ID. A contact click also includes the channel you chose (WhatsApp or Telegram). Meta may also receive the pixel ID, page and referrer URLs, ad click or browser cookie identifiers, your IP address and browser information. Meta processes this information under its privacy policy.',
         ],
       },
       storage: {
@@ -134,20 +134,20 @@ const privacy = {
         description: [
           'Когда вы отправляете нам запрос по автомобилю, мы получаем указанные вами контактные данные и сообщение. Если включён подсчёт посещений, шлюз использует IP-адрес из доверенного источника, чтобы учитывать посещения разных страниц и языковых версий один раз за скользящий период в 60 минут. Первое посещение относится к тому часу, в котором оно произошло. Повторные посещения не продлевают этот период. Несколько человек с общим сетевым адресом могут быть учтены как одно посещение.',
           'Если включён подсчёт нажатий на контактные ссылки, то при нажатии на ссылку WhatsApp или Telegram в объявлении передаются публичный идентификатор автомобиля и выбранный канал. Просмотры и некоторые действия связываются со случайным идентификатором сессии только после вашего явного согласия, если аналитика сессий доступна. Аналитика сессий также учитывает тип устройства, категорию источника перехода и категорию известной рекламной кампании.',
-          'Если на сайте включён Meta Pixel (пиксель Facebook), мы используем его только на выбранных нами общедоступных страницах автомобилей. После нажатия кнопки «Принять» браузер может отправлять события о посещении такой страницы (PageView), просмотре информации об автомобиле (ViewContent) и нажатии на контактную ссылку на этой странице (Contact).',
+          'Если на сайте включён Meta Pixel (пиксель Facebook), мы используем его только на выбранных нами общедоступных страницах автомобилей. С вашего согласия на оценку рекламы браузер может отправлять события о посещении такой страницы (PageView), просмотре информации об автомобиле (ViewContent) и нажатии на контактную ссылку на этой странице (Contact).',
         ],
       },
       uses: {
         title: 'Как мы используем данные',
         description: [
           'Мы используем предоставленные вами сведения, чтобы отвечать на вопросы об автомобилях, покупке и доставке. Сводные данные о посещениях и нажатиях помогают понять, как пользуются сайтом и какими автомобилями интересуются. Аналитика сессий показывает, как посетители просматривают каталог, используют фильтры и открывают контактные ссылки. Мы получаем запрос после отправки сообщения.',
-          'Если Meta Pixel включён, он помогает оценить просмотры и нажатия на контактные ссылки, связанные с нашей рекламой.',
+          'С помощью Meta Pixel мы определяем, какие объявления приводят к просмотрам автомобилей и нажатиям на кнопки связи, и улучшаем рекламные кампании.',
         ],
       },
       cookies: {
         title: 'Cookie и хранилище браузера',
         description: [
-          'Сайт может использовать cookie и похожие технологии. Браузер хранит ваш выбор в отношении конфиденциальности. Нажатие кнопки «Принять» на баннере означает согласие на аналитику сессий и на оценку эффективности рекламы с помощью Meta Pixel на выбранных страницах автомобилей, если соответствующие функции включены. Для аналитики сайт временно сохраняет случайный идентификатор сессии в браузере. Подтверждение ознакомления с прежним уведомлением не означает согласия. Подсчёт посещений на шлюзе по IP-адресу не зависит от cookie и этого выбора.',
+          'Браузер запоминает ваш выбор. Кнопка «Принять» разрешает использование данных в целях, указанных в уведомлении. Если предлагаются и аналитика сайта, и оценка рекламы, кнопка «Выбрать цели» позволяет выбрать только одну из них. С вашего согласия Meta Pixel может сохранять или считывать файлы cookie, чтобы связывать просмотры автомобилей и нажатия на кнопки связи с рекламой. Для аналитики сайт временно сохраняет случайный идентификатор сессии в браузере. Подсчёт посещений на шлюзе по IP-адресу не зависит от cookie и этого выбора.',
         ],
       },
       'data-flows': {
@@ -155,7 +155,7 @@ const privacy = {
         description: [
           'Запросы поступают на сайт через наш шлюз. Если аналитика сессий включена, шлюз может определять страну по IP-адресу из доверенного источника без обращения к внешним сервисам. Отдельный счётчик нажатий на контактные ссылки получает публичный идентификатор автомобиля и канал. В его сводках нет идентификаторов сессий, IP-адресов и содержимого переписки.',
           'Если вы открываете ссылку на WhatsApp или Telegram, браузер переходит в выбранный сервис. Ссылка на контакт по автомобилю может содержать публичные данные объявления для черновика сообщения, который вы можете проверить и изменить. Мы получаем ваш запрос после отправки сообщения. Каждый сервис обрабатывает полученные данные по своим правилам конфиденциальности.',
-          'Для передачи рекламных событий ваш браузер соединяется с Meta напрямую. Сайт передаёт идентификатор пикселя и название события. Запрос не содержит cookie, полного адреса страницы, адреса страницы-источника, идентификаторов автомобиля или сессии и сведений, которые вы вводите на сайте. Meta получает сведения о подключении, например ваш IP-адрес и сведения о браузере, и обрабатывает их по своей политике конфиденциальности.',
+          'Браузер загружает Facebook Pixel с серверов Meta и передаёт события в Meta. При просмотре передаётся публичный идентификатор автомобиля, а при нажатии на кнопку связи — также выбранный канал (WhatsApp или Telegram). Meta также может получать идентификатор пикселя, адреса текущей и предыдущей страниц, идентификаторы рекламных переходов или файлов cookie, IP-адрес и сведения о браузере. Meta обрабатывает эти данные в соответствии со своей политикой конфиденциальности.',
         ],
       },
       storage: {
