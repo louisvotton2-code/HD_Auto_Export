@@ -191,4 +191,17 @@ test('analytics HTTP persists only deduplicated public interactions and protects
   assert.equal(timeResponse.statusCode,202,timeResponse.body);
   const bucket=await db.pool.query("SELECT minute FROM analytics_activity_minutes WHERE event_type='calculator_complete'");
   assert.equal(bucket.rows[0]?.minute.getTime(),Math.floor(occurrence.getTime()/60_000)*60_000);
+
+  await t.test('trusted daily IP estimates deduplicate mapped and native IPv4 without dropping page views', async()=>{
+    const totals=async()=> (await db.pool.query(`SELECT
+      (SELECT coalesce(sum(unique_ips),0)::int FROM analytics_daily_ips) AS ips,
+      (SELECT coalesce(sum(page_views),0)::int FROM analytics_daily) AS views`)).rows[0];
+    const previous=await totals();
+    for(const ip of ['192.0.2.42','::ffff:192.0.2.42','2001:db8::2','2001:0db8:0:0:0:0:0:2']) {
+      const result=await collect([{eventId:randomUUID(),type:'page_view',pageType:'home',locale:'ru'}],
+        {...edgeHeaders,'x-forwarded-for':ip});
+      assert.equal(result.statusCode,202,result.body);
+    }
+    assert.deepEqual(await totals(),{ips:previous.ips+2,views:previous.views+4});
+  });
 });
