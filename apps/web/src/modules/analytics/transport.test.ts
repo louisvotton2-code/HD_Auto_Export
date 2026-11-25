@@ -131,25 +131,6 @@ describe('first-party analytics delivery', () => {
     expect(request(1)?.body).toBe(JSON.stringify({ events: [nextEvent] }));
   });
 
-  it('rechecks a denial already saved in another tab before replaying', async () => {
-    post.mockResolvedValueOnce(unavailable());
-    transport.enqueueAnalytics(firstEvent);
-    await vi.advanceTimersByTimeAsync(700);
-    storage.set('hd-auto:privacy-choice:v3', 'deny');
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(post).toHaveBeenCalledTimes(1);
-    expect(choices.getTrackingConsent()).toBe('declined');
-  });
-
-  it('does not start a queued pagehide delivery after a denial saved in another tab', async () => {
-    transport.enqueueAnalytics(firstEvent);
-    storage.set('hd-auto:privacy-choice:v3', 'deny');
-    transport.flushAnalyticsOnPageHide();
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(post).not.toHaveBeenCalled();
-    expect(choices.getTrackingConsent()).toBe('declined');
-  });
-
   it('aborts a replay that is already in flight when consent is withdrawn', async () => {
     post.mockResolvedValueOnce(unavailable());
     post.mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {

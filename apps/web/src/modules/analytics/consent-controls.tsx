@@ -3,7 +3,11 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { Link } from '@/i18n/navigation';
 import type { Locale } from '@/i18n/routing';
-import { getTrackingConsent, saveTrackingConsent, subscribeTrackingConsent } from '@/shared/lib/tracking-consent';
+import {
+  getTrackingConsent,
+  saveTrackingConsent,
+  subscribeTrackingConsent,
+} from '@/shared/lib/tracking-consent';
 import styles from './consent-controls.module.css';
 
 const labels = {
@@ -45,7 +49,7 @@ const labels = {
 function usePublicConsent() {
   return useSyncExternalStore(
     subscribeTrackingConsent,
-    () => window.parent === window ? getTrackingConsent() : null,
+    () => (window.parent === window ? getTrackingConsent() : null),
     () => null,
   );
 }
@@ -55,9 +59,11 @@ export function PrivacyAnalyticsWithdrawal({ locale }: { locale: Locale }) {
   const copy = labels[locale];
   if (!consent) return null;
   if (consent === 'declined') {
-    return <p className={styles.withdrawalStatus} role="status" data-testid="privacy-analytics-off">
-      {copy.stopped}
-    </p>;
+    return (
+      <p className={styles.withdrawalStatus} role="status" data-testid="privacy-analytics-off">
+        {copy.stopped}
+      </p>
+    );
   }
   return (
     <button
@@ -82,7 +88,10 @@ export function TrackingConsentControls({ locale }: { locale: Locale }) {
     if (!showBanner || !element) return;
     const style = document.documentElement.style;
     const measure = () => {
-      style.setProperty('--privacy-bar-offset', `${Math.ceil(element.getBoundingClientRect().height)}px`);
+      style.setProperty(
+        '--privacy-bar-offset',
+        `${Math.ceil(element.getBoundingClientRect().height)}px`,
+      );
     };
     const observer = new ResizeObserver(measure);
     measure();
@@ -96,20 +105,37 @@ export function TrackingConsentControls({ locale }: { locale: Locale }) {
   return (
     <>
       <div className={styles.footerControl}>
-        <Link href="/privacy/" locale={locale} prefetch={false} className={styles.preferenceLink}>{copy.policy}</Link>
+        <Link href="/privacy/" locale={locale} prefetch={false} className={styles.preferenceLink}>
+          {copy.policy}
+        </Link>
       </div>
       {showBanner && (
-        <section ref={banner} className={styles.banner} aria-label={copy.bannerTitle} data-testid="tracking-consent-banner">
+        <section
+          ref={banner}
+          className={styles.banner}
+          aria-label={copy.bannerTitle}
+          data-testid="tracking-consent-banner"
+        >
           <div className={styles.bannerInner}>
             <p className={styles.bannerCopy}>
               {copy.notice}{' '}
-              <Link href="/privacy/" locale={locale} prefetch={false} className={styles.learnMore}>{copy.learnMore}</Link>
+              <Link href="/privacy/" locale={locale} prefetch={false} className={styles.learnMore}>
+                {copy.learnMore}
+              </Link>
             </p>
             <div className={styles.actions}>
-              <button type="button" className={styles.accept} onClick={() => saveTrackingConsent(true)}>
+              <button
+                type="button"
+                className={styles.accept}
+                onClick={() => saveTrackingConsent(true)}
+              >
                 {copy.accept}
               </button>
-              <button type="button" className={styles.accept} onClick={() => saveTrackingConsent(false)}>
+              <button
+                type="button"
+                className={styles.accept}
+                onClick={() => saveTrackingConsent(false)}
+              >
                 {copy.refuse}
               </button>
             </div>
