@@ -28,7 +28,9 @@ export function PublicNavigationFreshness() {
   const observedDetail = useRef<URL | null>(null);
   useEffect(() => {
     // During Back/Forward the browser URL can update before the new route commits.
-    if (pathname === location.pathname) discardPublicNavigationAfterLeaving(pathname);
+    if (pathname !== location.pathname) return;
+    if (!isPublicVehicleDetailPath(pathname)) observedDetail.current = null;
+    discardPublicNavigationAfterLeaving(pathname);
   }, [pathname]);
 
   useEffect(() => {

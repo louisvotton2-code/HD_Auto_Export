@@ -252,6 +252,15 @@ test.describe('vehicle price contact', () => {
       await expect(page.locator('[data-freshness="fresh"]').filter({ has: detail })).toHaveCount(1);
       await expect(page.locator('[data-test-freshness-changed]')).toHaveCount(0);
       expect(unwantedRequests).toEqual([]);
+
+      // Skipping the hash entry from another page is a real return to the detail.
+      await page.locator(`footer a[href="/${locale}/buy/"]`).click();
+      await expect(page.getByTestId('buy-guide')).toBeVisible();
+      const recheck = page.waitForRequest(next => new URL(next.url()).pathname.replace(/\/$/, '') === `/api/v1/vehicles/${id}`);
+      await page.evaluate(() => history.go(-2));
+      await expect(page).toHaveURL(initialUrl);
+      await recheck;
+      await expect(page.locator('[data-freshness="fresh"]').filter({ has: detail })).toHaveCount(1);
     });
   }
 });
