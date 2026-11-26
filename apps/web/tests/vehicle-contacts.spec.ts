@@ -1,3 +1,4 @@
+import { seedAcceptedVisitor } from './helpers/accepted-visitor';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { externalFixtureId } from '@hd/contracts/fixtures';
 import { resetPublicFixture, publicFixtureLabels, setPublicFixtureState } from './helpers/public-fixture';
@@ -155,11 +156,11 @@ test.describe('vehicle price contact', () => {
   test.use({ isMobile: true, hasTouch: true });
 
   const cases = [
-    { locale: 'zh', width: 320, channel: 'whatsapp', destination: 'https://wa.me/8618215932610', accept: '接受' },
-    { locale: 'ru', width: 900, channel: 'telegram', destination: 'https://t.me/HD_Auto_CN', accept: 'Принять' },
+    { locale: 'zh', width: 320, channel: 'whatsapp', destination: 'https://wa.me/8618215932610' },
+    { locale: 'ru', width: 900, channel: 'telegram', destination: 'https://t.me/HD_Auto_CN' },
   ] as const;
 
-  for (const { locale, width, channel, destination, accept } of cases) {
+  for (const { locale, width, channel, destination } of cases) {
     test(`${locale}: the price contact scrolls to the channel choices at ${width}px without reloading`, async ({
       page, context, request, baseURL,
     }) => {
@@ -189,9 +190,9 @@ test.describe('vehicle price contact', () => {
       const card = detail.locator(`#${contactId}`);
       const telegram = card.locator('a[href^="https://t.me/"]');
       const whatsapp = card.locator('a[href^="https://wa.me/"]');
+      await seedAcceptedVisitor(page, baseURL!);
       await page.goto(`${detailPath}?utm_source=price-contact-test`);
       await expect(page.locator('html')).toHaveAttribute('data-public-history-ready', '');
-      await page.getByTestId('tracking-consent-banner').getByRole('button', { name: accept, exact: true }).tap();
       await expect(contact).toHaveAttribute('href', `#${contactId}`);
       await expect(contact).not.toHaveAttribute('data-analytics-contact');
       await expect(contact).not.toHaveAttribute('data-analytics-contact-vehicle');

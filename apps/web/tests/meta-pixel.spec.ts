@@ -1,3 +1,4 @@
+import { seedAcceptedVisitor } from './helpers/accepted-visitor';
 import { expect, test, type APIRequestContext, type BrowserContext } from '@playwright/test';
 import { AnalyticsEventsRequestSchema, type AnalyticsEvent } from '@hd/contracts/analytics';
 import { externalFixtureId } from '@hd/contracts/fixtures';
@@ -159,6 +160,7 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/en/cars/${selectedId}/`);
     const detail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
     await expect(detail).toBeVisible();
@@ -169,9 +171,6 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
     expect(requests[0]?.query).not.toHaveProperty('pixelView');
     if (indexable) expect(requests[0]?.query).toHaveProperty('seoView', 'eligible');
     else expect(requests[0]?.query).not.toHaveProperty('seoView');
-    const banner = page.getByTestId('tracking-consent-banner');
-    await expect(banner.getByRole('button')).toHaveCount(2);
-    await banner.getByRole('button', { name: 'Accept', exact: true }).click();
     if (sessionAnalyticsEnabled)
       await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
     else {
@@ -381,8 +380,8 @@ test('footer and enquiry links stay site-wide even on a selected vehicle', async
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/en/cars/${selectedId}/`);
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
     await expect.poll(events).toEqual(['PageView', 'ViewContent']);
     await openDialog.click();
     await expect(dialog).toBeVisible();
@@ -448,8 +447,8 @@ test('a 503 replays the same site contact once without repeating the vehicle cou
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/en/cars/${selectedId}/`);
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
     await expect.poll(events).toEqual(['PageView', 'ViewContent']);
     // Let the initial view reach the server mock before testing a contact-only batch.
     await expect.poll(() => sessions).toMatchObject([{ type: 'page_view', vehicleId: selectedId }]);
@@ -491,12 +490,12 @@ for (const { stage, change } of delayedSdkCases) {
     await resetPublicFixture(request);
     try {
       await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
-      await page.goto(`/en/cars/${selectedId}/`);
+      await seedAcceptedVisitor(page, baseURL!);
       const sdkSettled = Promise.race([
         page.waitForEvent('requestfinished', request => request.url() === sdkUrl),
         page.waitForEvent('requestfailed', request => request.url() === sdkUrl),
       ]);
-      await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
+      await page.goto(`/en/cars/${selectedId}/`);
       await expect.poll(() => sdkRequests).toEqual([sdkUrl]);
       if (stage === 'configuration') {
         await expect.poll(() => commands).toContainEqual(['set', 'trackSingleOnly', true, pixelId]);
@@ -545,9 +544,9 @@ test('a warm detail reopen uses the revised switch without a browser API request
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/en/cars/${selectedId}/`);
     await expect(detail).toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
     await expect.poll(() => events().sort()).toEqual(['PageView', 'ViewContent']);
     expect(await readVehicleDetailRequests(request)).toEqual([expect.objectContaining({
       method: 'GET', serviceAuthenticated: true,
@@ -584,9 +583,9 @@ test('restored detail revalidates Pixel eligibility before recording another eve
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/en/cars/${selectedId}/`);
     await expect(detail).toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
     await expect.poll(() => events().sort()).toEqual(['PageView', 'ViewContent']);
     expect(browserApiRequests).toEqual([]);
     await page.evaluate(() => {
@@ -640,6 +639,7 @@ test('retries optional detail views once on an older API without using stale Pix
     await setPublicFixtureState(request, {
       importedPublished: true, importedPixelEnabled: true, detailNegotiationUnsupported: true,
     });
+    await seedAcceptedVisitor(page, baseURL!);
     const legacyDocument = await page.goto(detailPath);
     expect(legacyDocument?.status()).toBe(200);
     await expect(detail).toBeVisible();
@@ -656,7 +656,6 @@ test('retries optional detail views once on an older API without using stale Pix
         method: 'GET', serviceAuthenticated: true, query: negotiatedDetailQuery,
       })),
     );
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: '接受', exact: true }).click();
     await page.waitForTimeout(850);
     expect(sdkRequests).toEqual([]);
     expect(pixel).toEqual([]);
@@ -726,9 +725,9 @@ test('restored details retry once when an older website proxy rejects the option
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
+    await seedAcceptedVisitor(page, baseURL!);
     await page.goto(`/zh/cars/${selectedId}/`);
     await expect(detail).toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await page.getByTestId('tracking-consent-banner').getByRole('button', { name: '接受', exact: true }).click();
     await expect.poll(() => events().sort()).toEqual(['PageView', 'ViewContent']);
     expect(gatewayReads).toEqual([]);
 

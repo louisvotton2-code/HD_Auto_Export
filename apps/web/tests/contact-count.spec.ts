@@ -1,3 +1,4 @@
+import { seedAcceptedVisitor } from './helpers/accepted-visitor';
 import { expect, test, type BrowserContext } from '@playwright/test';
 import { externalFixtureId } from '@hd/contracts/fixtures';
 import { resetPublicFixture, setPublicFixtureState } from './helpers/public-fixture';
@@ -40,15 +41,9 @@ async function captureContactRequests(context: BrowserContext, status = 202) {
 test('an accepted public contact click sends only its vehicle and channel despite counter failure', async ({ page, context, request, baseURL }) => {
   await setPublicFixtureState(request, { importedPublished: true });
   await context.addCookies([{ name: 'ignored-counter-fixture', value: 'must-not-forward', url: baseURL! }]);
-  // The retired preference must confer no consent or activate old Meta tracking.
-  await context.addInitScript(() => {
-    localStorage.setItem('hd-auto:tracking-preferences:v1',
-      JSON.stringify({ version: 1, analytics: true, advertising: true }));
-  });
+  await seedAcceptedVisitor(page, baseURL!);
   const { counts, sessions, meta } = await captureContactRequests(context, 503);
   const id = externalFixtureId(1);
-  await page.goto('/en/about/');
-  await page.getByTestId('tracking-consent-banner').getByRole('button', { name: 'Accept', exact: true }).click();
   for (const [locale, channel, destination] of [
     ['zh', 'whatsapp', /^https:\/\/(?:wa\.me|api\.whatsapp\.com)\//],
     ['ru', 'telegram', /^https:\/\/t\.me\//],
@@ -80,12 +75,9 @@ test('an accepted public contact click sends only its vehicle and channel despit
   expect(meta).toEqual([]);
 });
 
-test('a real site-wide contact is recorded separately from the vehicle contact counter', async ({ page, context, request }) => {
+test('a real site-wide contact is recorded separately from the vehicle contact counter', async ({ page, context, request, baseURL }) => {
   await setPublicFixtureState(request, { importedPublished: true });
-  await context.addInitScript(() => {
-    localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
-    localStorage.setItem('hd-auto:meta-advertising:v2', 'allow-sdk');
-  });
+  await seedAcceptedVisitor(page, baseURL!);
   const { counts, sessions } = await captureContactRequests(context);
   const id = externalFixtureId(1);
   await page.goto('/en/cars/fixture_demo/');
@@ -125,7 +117,6 @@ test('public contact still opens before a decision, after decline and after with
   const { counts, sessions, meta } = await captureContactRequests(context);
   const id = externalFixtureId(1);
   const path = `/en/cars/${id}/`;
-  const banner = page.getByTestId('tracking-consent-banner');
   const link = page.locator(`[data-public-vehicle-detail="${id}"] [data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible`).last();
   async function expectContactWithoutReporting(expectedSessions = 0, expectedMeta = 0) {
     const [popup] = await Promise.all([page.waitForEvent('popup'), link.click()]);
@@ -139,23 +130,26 @@ test('public contact still opens before a decision, after decline and after with
   }
 
   await page.goto(path);
-  await expect(banner).toBeVisible();
-  await expectContactWithoutReporting();
-  await banner.getByRole('button', { name: 'Decline', exact: true }).click();
-  await page.reload();
-  await expect(banner).toHaveCount(0);
   await expectContactWithoutReporting();
 
-  // Exercise the independent withdrawal path after opting in from a fresh choice.
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate(() => {
+    localStorage.setItem('hd-auto:privacy-choice:v3', 'deny');
+    localStorage.setItem('hd-auto:meta-advertising:v2', 'deny');
+  });
+  await page.reload();
+  await expectContactWithoutReporting();
+
+  // Enter the public privacy page as a returning, accepted visitor before withdrawing.
+  await page.evaluate(() => {
+    localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
+    localStorage.setItem('hd-auto:meta-advertising:v2', 'allow-sdk');
+  });
   await page.goto('/en/privacy/');
-  await banner.getByRole('button', { name: 'Accept', exact: true }).click();
   const withdraw = page.getByTestId('privacy-analytics-withdraw');
   await expect(withdraw).toBeVisible();
   await withdraw.click();
   await expect(page.getByTestId('privacy-analytics-off')).toBeVisible();
   const countsAtWithdrawal = { sessions: sessions.length, meta: meta.length };
   await page.goto(path);
-  await expect(banner).toHaveCount(0);
   await expectContactWithoutReporting(countsAtWithdrawal.sessions, countsAtWithdrawal.meta);
 });
