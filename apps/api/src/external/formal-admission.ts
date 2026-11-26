@@ -10,9 +10,19 @@ export async function admitFormalListing(tx: PoolClient, source: string, externa
   return result.rows[0]!.admitted;
 }
 
+type FullSyncAdmissionEvidence =
+  | { basis: 'csv'; snapshotId: string }
+  | { basis: 'incremental'; eventId: string }
+  | { basis: 'replay'; eventId: string; replayId: string };
+
 /** Only the full worker reaches this after its live disk and capacity checks. */
-export async function permitFullSyncAdmission(tx: PoolClient) {
-  await tx.query("SET LOCAL hd.external_full_sync_admission = 'on'");
+export async function permitFullSyncAdmission(tx: PoolClient, evidence?: FullSyncAdmissionEvidence) {
+  if (evidence) {
+    await tx.query(`SELECT set_config('hd.external_full_sync_admission','on',true),
+      set_config('hd.external_formal_admission_context',$1,true)`,[JSON.stringify(evidence)]);
+  } else {
+    await tx.query("SET LOCAL hd.external_full_sync_admission = 'on'");
+  }
 }
 
 export async function isFormalListingAdmitted(tx: PoolClient, source: string, externalId: string): Promise<boolean> {

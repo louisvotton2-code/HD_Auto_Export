@@ -7,6 +7,7 @@ import type {PoolClient} from 'pg';
 import type {Database} from '../../db/index.js';
 import {jsonHash} from '../normalize.js';
 import {DEFAULT_FORMAL_LISTING_LIMIT} from '../formal-admission.js';
+import {defaultHeavyWorkPausePercent,heavyWorkPausePercentSchema,reachedHeavyWorkPause,type HeavyWorkPausePercent} from './disk-policy.js';
 
 const bytes=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const token=z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -16,19 +17,19 @@ const decisionSchema=z.strictObject({schemaVersion:z.literal(1),model:z.enum(['h
  snapshotId:z.uuid(),targetRows:bytes,sampleRows:bytes,evidenceHash:z.string().regex(/^[a-f0-9]{64}$/),
  measuredAt:utc,expiresAt:utc,decision:z.enum(['allow','wait','blocked']),reason,
  projectedPeakBytes:bytes.nullable(),diskTotalBytes:bytes.positive(),currentUsedBytes:bytes,
+ heavyWorkPausePercent:heavyWorkPausePercentSchema.optional(),
  components:z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),z.union([bytes,token])).refine(value=>Object.keys(value).length<=64),
 }).refine(value=>value.decision==='allow'?value.reason==='SYNC_CAPACITY_VERIFIED':value.decision==='blocked'?value.reason==='SYNC_CAPACITY_LIMIT':value.reason==='SYNC_CAPACITY_INSUFFICIENT_SAMPLE'||value.reason==='SYNC_CAPACITY_WAITING_MEASUREMENT');
 export type CapacityDecision=z.infer<typeof decisionSchema>;
 export type CapacityBinding={snapshotId:string;targetRows:number;sampleRows:number;evidenceHash:string};
 export type CapacityDisk={total:number;available:number;used:number};
 export type CapacityResult={allowed:boolean;code:string|null;decision:CapacityDecision|null};
-const reached70=(used:number,total:number)=>BigInt(used)*10n>=BigInt(total)*7n;
-
 /** Private, bounded, one-inode read. Atomic host rename cannot expose a half-written file. */
-export async function readCapacityDecision(file:string|undefined,binding:CapacityBinding,disk:CapacityDisk,cap=0,now=Date.now()):Promise<CapacityResult>{
+export async function readCapacityDecision(file:string|undefined,binding:CapacityBinding,disk:CapacityDisk,cap=0,now=Date.now(),
+ heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent):Promise<CapacityResult>{
  const wait:CapacityResult={allowed:false,code:'SYNC_CAPACITY_AWAITING_DECISION',decision:null};
  if(!Number.isSafeInteger(disk.total)||disk.total<=0||!Number.isSafeInteger(disk.available)||disk.available<0||disk.available>disk.total)return wait;
- if(reached70(disk.total-disk.available,disk.total))return {...wait,code:'SYNC_CAPACITY_LIMIT'};
+ if(reachedHeavyWorkPause(disk.total-disk.available,disk.total,heavyWorkPausePercent))return {...wait,code:'SYNC_CAPACITY_LIMIT'};
  if(!file||!path.isAbsolute(file)||!Number.isSafeInteger(cap)||cap<0)return wait;
  let handle:Awaited<ReturnType<typeof open>>|undefined;
  try{
@@ -41,8 +42,10 @@ export async function readCapacityDecision(file:string|undefined,binding:Capacit
   const parsed=decisionSchema.safeParse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,size))));
   if(!parsed.success)return wait;const d=parsed.data,measured=Date.parse(d.measuredAt),expires=Date.parse(d.expiresAt);
   if(measured>now+60_000||expires<=now||expires<=measured||expires-measured>600_000||d.currentUsedBytes>d.diskTotalBytes||d.diskTotalBytes!==disk.total||d.projectedPeakBytes!==null&&d.projectedPeakBytes<d.currentUsedBytes)return wait;
-  if(d.snapshotId!==binding.snapshotId||d.targetRows!==binding.targetRows||d.sampleRows!==binding.sampleRows||d.evidenceHash!==binding.evidenceHash)return wait;
-  if(d.projectedPeakBytes!==null&&reached70(d.projectedPeakBytes,d.diskTotalBytes)||reached70(d.currentUsedBytes,d.diskTotalBytes))return {...wait,decision:d,code:'SYNC_CAPACITY_LIMIT'};
+  if(d.snapshotId!==binding.snapshotId||d.targetRows!==binding.targetRows||d.sampleRows!==binding.sampleRows||d.evidenceHash!==binding.evidenceHash||
+   (d.heavyWorkPausePercent??defaultHeavyWorkPausePercent)!==heavyWorkPausePercent)return wait;
+  if((d.projectedPeakBytes!==null&&reachedHeavyWorkPause(d.projectedPeakBytes,d.diskTotalBytes,heavyWorkPausePercent))||
+   reachedHeavyWorkPause(d.currentUsedBytes,d.diskTotalBytes,heavyWorkPausePercent))return {...wait,decision:d,code:'SYNC_CAPACITY_LIMIT'};
   if(d.decision!=='allow'||d.projectedPeakBytes===null)return {...wait,decision:d};
   if(cap>0&&d.projectedPeakBytes>cap)return {...wait,decision:d,code:'SYNC_CAPACITY_BUDGET_CAP'};
   return {allowed:true,code:null,decision:d};

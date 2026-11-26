@@ -10,7 +10,8 @@ const migrationsFolder = fileURLToPath(new URL('../../migrations/', import.meta.
 const hanPairMigrationAt = 1794182400050; // 0050
 const replayMigrationAt = 1794182400053; // 0053
 const keywordMatchMigrationAt = 1794182400054; // 0054
-const migrationModes = ['--defer-han-pair-index', '--complete-han-pair-index', '--apply-keyword-match'] as const;
+const formalExpansionMigrationAt = 1794182400055; // 0055
+const migrationModes = ['--defer-han-pair-index', '--complete-han-pair-index', '--apply-keyword-match', '--apply-formal-expansion'] as const;
 type MigrationMode = typeof migrationModes[number];
 
 async function applyExplicitMigration(db: Database, mode: MigrationMode) {
@@ -20,12 +21,15 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
   const before = release.filter(entry => entry.folderMillis < hanPairMigrationAt);
   const later = release.filter(entry => entry.folderMillis > hanPairMigrationAt);
   const keywordMatch = files.find(entry => entry.folderMillis === keywordMatchMigrationAt);
-  if (!hanPair || before.length !== 50 || later.length !== 3 || later.at(-1)?.folderMillis !== replayMigrationAt || !keywordMatch) {
-    throw new Error('Expected the migration sequence through 0054.');
+  const formalExpansion = files.find(entry => entry.folderMillis === formalExpansionMigrationAt);
+  if (!hanPair || before.length !== 50 || later.length !== 3 || later.at(-1)?.folderMillis !== replayMigrationAt || !keywordMatch || !formalExpansion) {
+    throw new Error('Expected the known migration sequence through 0055.');
   }
   const pending = [...before, ...later];
   const pendingWithKeywordMatch = [...pending, keywordMatch];
   const completedWithKeywordMatch = [...release, keywordMatch];
+  const pendingWithFormalExpansion = [...pendingWithKeywordMatch, formalExpansion];
+  const completedWithFormalExpansion = [...completedWithKeywordMatch, formalExpansion];
   await db.transaction(async tx => {
     await tx.query('SELECT pg_advisory_xact_lock(78291331)');
     const ledger = await tx.query<{ created_at: string; hash: string }>(
@@ -34,8 +38,18 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
       expected.every((entry, index) => ledger.rows[index]?.created_at === String(entry.folderMillis) &&
         ledger.rows[index]?.hash === entry.hash);
 
+    const expansionApplied = matches(pendingWithFormalExpansion) || matches(completedWithFormalExpansion);
+    if (mode === '--apply-formal-expansion') {
+      if (expansionApplied) return;
+      if (!matches(pendingWithKeywordMatch) && !matches(completedWithKeywordMatch)) {
+        throw new Error('Expected the exact 0054 ledger with 0050 pending or complete.');
+      }
+      await applyLedgerEntry(tx, formalExpansion);
+      return;
+    }
+
     if (mode === '--apply-keyword-match') {
-      if (matches(pendingWithKeywordMatch) || matches(completedWithKeywordMatch)) return;
+      if (matches(pendingWithKeywordMatch) || matches(completedWithKeywordMatch) || expansionApplied) return;
       if (!matches(pending) && !matches(release)) throw new Error('Expected the exact 0053 ledger with 0050 pending or complete.');
       await applyLedgerEntry(tx, keywordMatch);
       return;
@@ -43,7 +57,7 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
 
     if (mode === '--defer-han-pair-index') {
       const at0049 = matches(before);
-      if (!at0049 && !matches(pending) && !matches(pendingWithKeywordMatch)) {
+      if (!at0049 && !matches(pending) && !matches(pendingWithKeywordMatch) && !matches(pendingWithFormalExpansion)) {
         throw new Error('Expected the exact 0049 ledger or the single pending 0050 entry.');
       }
       const index = await tx.query<{ exists: boolean }>(
@@ -60,8 +74,8 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
       return;
     }
 
-    const isPending = matches(pending) || matches(pendingWithKeywordMatch);
-    if (!isPending && !matches(release) && !matches(completedWithKeywordMatch)) {
+    const isPending = matches(pending) || matches(pendingWithKeywordMatch) || matches(pendingWithFormalExpansion);
+    if (!isPending && !matches(release) && !matches(completedWithKeywordMatch) && !matches(completedWithFormalExpansion)) {
       throw new Error('Expected the exact pending or completed 0050 ledger.');
     }
     await tx.query("SET LOCAL hd.require_prebuilt_search_zh_han_pairs_index='on'");
@@ -91,7 +105,7 @@ export async function migrateDatabase(db: Database, mode?: MigrationMode) {
         coalesce(max(created_at) > $1, false) AND count(*) FILTER (WHERE created_at=$1)=0 AS pending
         FROM drizzle.__drizzle_migrations`, [hanPairMigrationAt]);
       if (gap.rows[0]?.pending) {
-        throw new Error('Migration 0050 is pending. Run the explicit mode for 0054 or prebuild and complete 0050 first.');
+        throw new Error('Migration 0050 is pending. Apply later migrations in their explicit modes or prebuild and complete 0050 first.');
       }
     }
     // Reuse the locked connection so concurrent migrators cannot exhaust the pool.

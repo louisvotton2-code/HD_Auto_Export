@@ -5,6 +5,19 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {readCapacityDecision} from './full-sync/capacity.js';
+import {readHeavyWorkPausePercent,reachedHeavyWorkPause} from './full-sync/disk-policy.js';
+
+test('heavy work defaults to 70 percent and accepts only explicit 70 or 80 percent',()=>{
+ assert.equal(readHeavyWorkPausePercent(undefined),70);
+ assert.equal(readHeavyWorkPausePercent('70'),70);
+ assert.equal(readHeavyWorkPausePercent('80'),80);
+ for(const value of ['','0','75','81','80.0',' 80'])assert.throws(()=>readHeavyWorkPausePercent(value),
+  {code:'SYNC_HEAVY_WORK_PAUSE_PERCENT_INVALID'});
+ assert.equal(reachedHeavyWorkPause(699,1000,70),false);
+ assert.equal(reachedHeavyWorkPause(700,1000,70),true);
+ assert.equal(reachedHeavyWorkPause(799,1000,80),false);
+ assert.equal(reachedHeavyWorkPause(800,1000,80),true);
+});
 
 test('capacity decisions fail closed for missing, stale, mismatched and unsafe files; atomic allow is revocable',async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'hd-capacity-')),file=path.join(root,'decision.json'),now=Date.parse('2026-11-14T00:00:00Z');
@@ -29,6 +42,20 @@ test('capacity decisions fail closed for missing, stale, mismatched and unsafe f
   assert.equal((await read(now,100)).code,'SYNC_CAPACITY_BUDGET_CAP');
   await replace({...good,projectedPeakBytes:disk.total*.7});assert.equal((await read()).code,'SYNC_CAPACITY_LIMIT');
   await replace(good);assert.equal((await readCapacityDecision(file,binding,{...disk,available:disk.total*.3,used:.7},0,now)).code,'SYNC_CAPACITY_LIMIT');
+  const highDisk={...disk,available:disk.total*.25,used:.75};
+  const readAt80=(current=highDisk,cap=0)=>readCapacityDecision(file,binding,current,cap,now,80);
+  assert.equal((await readAt80()).code,'SYNC_CAPACITY_AWAITING_DECISION','A legacy receipt only allows 70 percent');
+  const raised={...good,heavyWorkPausePercent:80,currentUsedBytes:disk.total*.75,projectedPeakBytes:disk.total*.79};
+  await replace(raised);
+  assert.equal((await read()).code,'SYNC_CAPACITY_AWAITING_DECISION','An 80-percent receipt cannot change the local policy');
+  assert.equal((await readAt80()).allowed,true);
+  assert.equal((await readAt80(highDisk,raised.projectedPeakBytes-1)).code,'SYNC_CAPACITY_BUDGET_CAP');
+  assert.equal((await readAt80({...disk,available:disk.total*.2,used:.8})).code,'SYNC_CAPACITY_LIMIT');
+  await replace({...raised,projectedPeakBytes:disk.total*.8});
+  assert.equal((await readAt80()).code,'SYNC_CAPACITY_LIMIT');
+  await replace({...raised,heavyWorkPausePercent:'80'});
+  assert.equal((await readAt80()).code,'SYNC_CAPACITY_AWAITING_DECISION');
+  await replace(good);
   const linked=path.join(root,'link.json');await symlink(file,linked);assert.equal((await readCapacityDecision(linked,binding,disk,0,now)).allowed,false);
   // Reader reopens each time; it sees complete old/new files and never caches an allow permanently.
   for(let i=0;i<8;i++){

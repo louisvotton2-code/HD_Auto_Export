@@ -11,18 +11,48 @@ import {FullSyncWorker,configureFullSync} from './engine.js';
 import {fullSyncStatus,setFullSyncPaused} from './status.js';
 import {AdmissionReplayRequest,admissionReplayStatus,inspectAdmissionReplay,prepareAdmissionReplay,requireAdmissionReplayMigration} from './admission-replay.js';
 import {readReplayApproval} from './replay-approval.js';
+import {readHeavyWorkPausePercent} from './disk-policy.js';
+import {AdmissionChangeRequest,admissionOperationError,changeAdmissionLimit,inspectAdmissionChange,validateAdmissionApproval} from './admission-operations.js';
+import {AdmissionBatchReceiptRequest,readAdmissionBatchReceipt} from './admission-receipt.js';
 async function main(){
  const [command,...args]=process.argv.slice(2),flags=new Map<string,string>();
- if(!['configure','run','serve','status','control','archive-pin','archive-release','replay-check','replay-prepare','replay-status'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
+ if(!['configure','run','serve','status','control','archive-pin','archive-release','replay-check','replay-prepare','replay-status',
+  'admission-check','admission-change','admission-receipt'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
  for(let i=0;i<args.length;i+=2){const key=args[i]!,value=args[i+1]!;if(!['--mode','--actor','--max-ticks','--action','--version','--key','--reference','--plan','--replay-id'].includes(key)||flags.has(key))throw new FullSyncError('SYNC_USAGE');flags.set(key,value);}
  const need=(key:string)=>{const value=flags.get(key);if(!value)throw new FullSyncError('SYNC_USAGE');return value;};
  const env=readDatabaseEnvironment();if(!env.DATABASE_URL)throw new FullSyncError('SYNC_DATABASE_REQUIRED');
  const production=env.NODE_ENV==='production'||env.HD_DEPLOYMENT_ENV==='production';
  const replay=command?.startsWith('replay-')??false;
- if(production&&replay!==(env.HD_FULL_REPLAY_OPS==='true'))
+ const admission=command?.startsWith('admission-')??false;
+ if(production&&(replay||admission)!==(env.HD_FULL_REPLAY_OPS==='true'))
    throw new FullSyncError('SYNC_REPLAY_OPS_REQUIRED');
+ const heavyWorkPausePercent=readHeavyWorkPausePercent(env.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT);
  const db=createDatabase(env.DATABASE_URL,2);let worker:FullSyncWorker|undefined;
  try{
+  if(admission){
+   const plan=need('--plan');
+   const receipt=command==='admission-receipt';
+   const write=command==='admission-change';
+   const expectedPlan=receipt?'/private/admission/receipt.json':'/private/admission/plan.json';
+   if(flags.size!==(write?2:1)||!path.isAbsolute(plan)||(production&&plan!==expectedPlan))throw new FullSyncError('SYNC_USAGE');
+   let data:unknown;
+   try{data=JSON.parse(readLocalSecret(plan,32*1024));}catch{throw new FullSyncError('SYNC_ADMISSION_PLAN_INVALID');}
+   if(receipt){
+    const request=AdmissionBatchReceiptRequest.safeParse(data);
+    if(!request.success)throw new FullSyncError('SYNC_ADMISSION_PLAN_INVALID');
+    console.log(JSON.stringify(await readAdmissionBatchReceipt(db,request.data).catch(admissionOperationError)));
+   }else{
+    const request=AdmissionChangeRequest.safeParse(data);
+    if(!request.success)throw new FullSyncError('SYNC_ADMISSION_PLAN_INVALID');
+    const result=write?await changeAdmissionLimit(db,request.data,need('--actor'),()=>{
+     try{return validateAdmissionApproval(readLocalSecret('/private/admission/approval.json',65_536,true),
+      request.data,env.HD_RELEASE_ID,heavyWorkPausePercent,Number(env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0));}
+     catch{throw new FullSyncError('SYNC_ADMISSION_CAPACITY_APPROVAL_INVALID');}
+    }).catch(admissionOperationError):await inspectAdmissionChange(db,request.data).catch(admissionOperationError);
+    console.log(JSON.stringify(result));
+   }
+   return;
+  }
   if(replay)await requireAdmissionReplayMigration(db);
   if(command==='replay-check'||command==='replay-prepare'){
    const plan=need('--plan');
@@ -31,7 +61,7 @@ async function main(){
    if(!request.success)throw new FullSyncError('SYNC_REPLAY_PLAN_INVALID');
    const result=command==='replay-check'?await inspectAdmissionReplay(db,request.data):
     await prepareAdmissionReplay(db,{id:need('--actor'),requestId:'full-sync:replay-prepare'},request.data,
-     production?readReplayApproval(request.data,env.HD_RELEASE_ID):undefined);
+     production?readReplayApproval(request.data,env.HD_RELEASE_ID,heavyWorkPausePercent):undefined);
    console.log(JSON.stringify(result));
    return;
   }else if(command==='replay-status'){console.log(JSON.stringify(await admissionReplayStatus(db,need('--replay-id'))));return;
@@ -58,7 +88,7 @@ async function main(){
     beforeBulk:(count,source)=>reserveBulkQuota(db,count,source),
     onBulkAttempt:observation=>console.info(JSON.stringify({event:'external.full_sync.bulk_attempt',...observation}))
    });
-   worker=new FullSyncWorker(db,client,directory,undefined,observation=>console.info(JSON.stringify(observation)));
+   worker=new FullSyncWorker(db,client,directory,undefined,observation=>console.info(JSON.stringify(observation)),heavyWorkPausePercent);
    if(!await worker.acquire()){process.exitCode=75;return;}
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});
    const max=Number(flags.get('--max-ticks')??1);if(!Number.isInteger(max)||max<1||max>10000)throw new FullSyncError('SYNC_USAGE');
