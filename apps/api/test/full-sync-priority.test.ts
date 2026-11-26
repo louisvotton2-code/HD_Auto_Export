@@ -13,12 +13,14 @@ import type {FullSyncClient} from '../src/external/full-sync/client.js';
 import {FullSyncError} from '../src/external/full-sync/types.js';
 import type {Change,Source} from '../src/external/full-sync/types.js';
 import {fullSyncTimings,recordDetailTiming,recordWithdrawalTiming} from '../src/external/full-sync/timing.js';
-import {ExternalStore} from '../src/external/store.js';
+import {applyFormalCandidate,ExternalStore} from '../src/external/store.js';
+import {jsonHash} from '../src/external/normalize.js';
 import {InventoryService} from '../src/vehicles/service.js';
 import {buildApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 import {randomUUID} from 'node:crypto';
 import {ExternalSyncTimingsSchema} from '@hd/contracts/admin';
+import {makeExternalCandidateFixture} from '@hd/contracts/fixtures';
 
 test('sync priority, fairness and five-stage observations persist without confusing queued work with publication',async t=>{
  const forbidden=mock.method(globalThis,'fetch',async()=>{throw new Error('No external calls in isolated sync test');});
@@ -395,4 +397,111 @@ test('sync priority, fairness and five-stage observations persist without confus
   });
   assert.equal(forbidden.mock.callCount(),0);
  }finally{await worker?.close();await db?.close();try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}"`);}finally{await maintenance.close();await rm(directory,{recursive:true,force:true});forbidden.mock.restore();}}
+});
+
+test('a saturated source defers only new rotation for the tick, then CSV and rotation resume',async t=>{
+ const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
+ if(!['postgres:','postgresql:'].includes(url.protocol)||url.hostname!=='127.0.0.1'||url.pathname!=='/postgres'||url.search||url.hash)throw new Error('Isolated loopback maintenance DB required');
+ const maintenance=createDatabase(url.href,1),name=`hd_rotate_csv_${randomBytes(8).toString('hex')}`;
+ const directory=await mkdtemp(path.join(tmpdir(),'hd-rotate-csv-')),decisionFile=path.join(directory,'decision.json');
+ const priorDecision=process.env.FULL_SYNC_CAPACITY_DECISION_FILE,priorBudget=process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
+ let db:Database|undefined,worker:FullSyncWorker|undefined,created=false,monotonicMs=0;
+ const applied:string[]=[],requests:string[][]=[];
+ const snapshot=randomUUID(),previous=randomUUID();
+ const absent='800001',withdrawn='800002',sampled='800003',price='810001';
+ const actor={id:'rotation-admin',requestId:'rotate-csv'};
+ const client={bulk:async function*(source:Source,ids:string[],locale:string){
+  assert.equal(source,'dongchedi');requests.push(ids);
+  const results=ids.map(id=>({id,source,title:locale,hasInspectionReport:false}));
+  const body=JSON.stringify({results,notFound:[]});
+  yield {results,notFound:[],rawResponse:{body,hash:createHash('sha256').update(body).digest('hex')}};
+ }} as unknown as FullSyncClient;
+ try{
+  await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;url.pathname=`/${name}`;db=createDatabase(url.href,2);
+  const database=db;await migrateDatabase(database);
+  await database.pool.query("INSERT INTO staff(id,name,email,role,banned) VALUES($1,'Test','rotation@example.invalid','admin',false)",[actor.id]);
+  await configureFullSync(database,actor,'continuous');
+  await database.pool.query(`UPDATE external_full_sync SET next_delta_at=now()+interval '1 day',next_maintenance_at=now()+interval '1 day',
+   next_snapshot_at=now()+interval '1 day' WHERE id=1`);
+  await database.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,apply_cursor,created_at,completed_at,bytes,sha256)
+   VALUES($1,now()-interval '1 hour','complete',$3,1,1,1,now()-interval '1 hour',now()-interval '1 hour',100,repeat('a',64)),
+     ($2,now(),'verified',$4,1,1,0,now(),NULL,100,repeat('b',64))`,
+  [previous,snapshot,path.join(directory,'previous.csv.gz'),path.join(directory,'active.csv.gz')]);
+  const csv={source:'che168',id:sampled};
+  await database.pool.query("INSERT INTO external_full_stage VALUES($1,1,'che168',$2,$3)",[snapshot,sampled,JSON.stringify(csv)]);
+  await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,applied_generation,
+   last_snapshot,last_detail_at,locales,sampled,report_state,csv_hash) VALUES
+   ('che168',$1,'rotation:absent','active',1,NULL,now(),ARRAY['zh','en','ru'],false,'no_report',NULL),
+   ('che168',$2,'rotation:withdrawn','active',1,$4,now(),ARRAY['zh','en','ru'],false,'no_report',NULL),
+   ('che168',$3,'rotation:sampled','active',1,$4,now(),ARRAY['zh','en','ru'],true,'no_report',$5)`,
+  [absent,withdrawn,sampled,previous,jsonHash(csv)]);
+  await database.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,applied_generation,last_snapshot,last_detail_at)
+   SELECT 'dongchedi',(810000+n)::text,'rotation:'||(810000+n),'active',1,$1,now() FROM generate_series(1,501) n`,[previous]);
+  await database.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,queued_at,locales)
+   SELECT 'dongchedi',(810000+n)::text,'detail',1,0,now()-interval '1 hour'+n*interval '1 second',
+    CASE WHEN n<=3 THEN ARRAY[]::text[] ELSE ARRAY['zh','en','ru'] END FROM generate_series(1,501) n`);
+  const fixture=makeExternalCandidateFixture();
+  const publish=(source:Source,id:string,canonical:string)=>database.transaction(tx=>applyFormalCandidate(tx,{
+   ...fixture,platformId:source,externalId:id,listingUrl:`https://www.${source}.com/vehicles/${id}`,images:[],inspection:null,relatedListingUrls:[],
+  },actor,randomUUID(),{id:canonical,primary:true}));
+  const absentListing=await publish('che168',absent,'rotation:absent');
+  await publish('dongchedi',price,'rotation:'+price);
+  const inventory=new InventoryService(database,true);
+  await inventory.getPublic(`ext-${absentListing.listingId}`,'en','localized');
+  await database.pool.query(`INSERT INTO external_full_events(event_id,payload_hash,source,external_id,operation,business_at,document_refs,source_type)
+   VALUES(1,'fixture','dongchedi',$1,'upsert',now(),'[]','price'),(2,'fixture','che168',$2,'withdraw',now(),'[]','removed')`,[price,withdrawn]);
+
+  worker=new FullSyncWorker(database,client,directory,async(_tx,input)=>{
+   applied.push(`${input.operation}:${input.externalId}`);
+   if(input.operation==='upsert')monotonicMs+=5000;
+  });
+  assert.equal(await worker.acquire(),true);
+  worker.space=async()=>({used:0,total:1e12,available:1e12});
+  t.mock.method(performance,'now',()=>monotonicMs);
+  process.env.FULL_SYNC_CAPACITY_DECISION_FILE=decisionFile;process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES='0';
+  await assert.rejects(worker.estimateCapacity(snapshot,100),/SYNC_CAPACITY_AWAITING_DECISION/);
+  const evidence=(await worker.state()).capacity_estimate;
+  const measuredAt=Date.now();
+  await writeFile(decisionFile,JSON.stringify({schemaVersion:1,model:'hd-ext07-peak-v1',snapshotId:snapshot,targetRows:evidence.targetRows,
+   sampleRows:evidence.sampleRows,evidenceHash:evidence.evidenceHash,measuredAt:new Date(measuredAt).toISOString(),
+   expiresAt:new Date(measuredAt+300_000).toISOString(),decision:'allow',reason:'SYNC_CAPACITY_VERIFIED',diskTotalBytes:1e12,
+   projectedPeakBytes:1e9,currentUsedBytes:0,components:{fixtureMeasuredPeak:1e9}}),{mode:0o600});
+  const csvState=async()=>(await database.pool.query(`SELECT state,apply_cursor::int AS cursor
+   FROM external_full_snapshots WHERE id=$1`,[snapshot])).rows[0];
+  const detailCount=async()=>(await database.pool.query(`SELECT count(*)::int AS n FROM external_full_work
+   WHERE source='dongchedi' AND kind='detail'`)).rows[0].n;
+  const member=async(id:string)=>(await database.pool.query(`SELECT m.state,m.verification_pending,m.desired_generation::int AS generation,
+   w.priority FROM external_full_members m LEFT JOIN external_full_work w
+   ON (w.source,w.external_id,w.kind)=(m.source,m.external_id,'detail') WHERE m.external_id=$1`,[id])).rows[0];
+
+  await worker.tick();
+  assert.equal((await worker.state()).capacity_pending,false);
+  assert.deepEqual(applied,[`withdraw:${withdrawn}`],'received withdrawal goes first even while the capacity decision is pending');
+  assert.equal((await member(price)).priority,100,'the known public price change keeps its urgent lane');
+  assert.equal(await detailCount(),501);
+  assert.deepEqual(await csvState(),{state:'verified',cursor:0});
+
+  await worker.tick();
+  assert.deepEqual(applied,[`withdraw:${withdrawn}`,`upsert:${price}`],'the blocked CSV tick still commits the urgent detail');
+  assert.equal(await detailCount(),500,'existing work is consumed before evaluating the 500-row gate');
+  assert.deepEqual(await csvState(),{state:'verified',cursor:0});
+  assert.deepEqual(await member(absent),{state:'active',verification_pending:false,generation:1,priority:null},'a blocked tick must not create new rotation');
+
+  await worker.tick();
+  assert.equal(applied.at(-1),'upsert:810002');
+  assert.deepEqual(await csvState(),{state:'complete',cursor:1});
+  assert.deepEqual(await member(absent),{state:'active',verification_pending:true,generation:2,priority:0},'absence from an export resumes verification without withdrawing');
+  await inventory.getPublic(`ext-${absentListing.listingId}`,'en','localized');
+
+  await database.pool.query(`UPDATE external_full_members SET last_accessed_at=now()+interval '1 second' WHERE external_id=$1`,[sampled]);
+  await worker.tick();
+  assert.deepEqual(await csvState(),{state:'complete',cursor:1});
+  assert.equal((await member(sampled)).priority,30,'normal rotation also runs when there is no active export');
+  assert.ok(requests.every(ids=>ids.length<=3),'only the minimal synthetic details should fetch');
+ }finally{
+  if(priorDecision===undefined)delete process.env.FULL_SYNC_CAPACITY_DECISION_FILE;else process.env.FULL_SYNC_CAPACITY_DECISION_FILE=priorDecision;
+  if(priorBudget===undefined)delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;else process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=priorBudget;
+  await worker?.close();await db?.close();
+  try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}"`);}finally{await maintenance.close();await rm(directory,{recursive:true,force:true});}
+ }
 });
