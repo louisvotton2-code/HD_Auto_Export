@@ -14,21 +14,40 @@ import {readReplayApproval} from './replay-approval.js';
 import {readHeavyWorkPausePercent} from './disk-policy.js';
 import {AdmissionChangeRequest,admissionOperationError,changeAdmissionLimit,inspectAdmissionChange,validateAdmissionApproval} from './admission-operations.js';
 import {AdmissionBatchReceiptRequest,readAdmissionBatchReceipt} from './admission-receipt.js';
+import {armDeltaPolicy,deltaPolicyOperationError,prepareDeltaPolicy,readDeltaPolicyStatus,requestDeltaReconciliation} from './delta-policy.js';
 async function main(){
  const [command,...args]=process.argv.slice(2),flags=new Map<string,string>();
  if(!['configure','run','serve','status','control','archive-pin','archive-release','replay-check','replay-prepare','replay-status',
-  'admission-check','admission-change','admission-receipt'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
- for(let i=0;i<args.length;i+=2){const key=args[i]!,value=args[i+1]!;if(!['--mode','--actor','--max-ticks','--action','--version','--key','--reference','--plan','--replay-id'].includes(key)||flags.has(key))throw new FullSyncError('SYNC_USAGE');flags.set(key,value);}
+  'admission-check','admission-change','admission-receipt','delta-prepare','delta-arm','delta-reconcile','delta-status'].includes(command??'')||args.length%2)throw new FullSyncError('SYNC_USAGE');
+ const delta=command?.startsWith('delta-')??false;
+ const allowedFlags=delta?['--actor','--snapshot','--evidence','--since','--anchor-cursor']:
+  ['--mode','--actor','--max-ticks','--action','--version','--key','--reference','--plan','--replay-id'];
+ for(let i=0;i<args.length;i+=2){const key=args[i]!,value=args[i+1]!;if(!allowedFlags.includes(key)||flags.has(key))throw new FullSyncError('SYNC_USAGE');flags.set(key,value);}
  const need=(key:string)=>{const value=flags.get(key);if(!value)throw new FullSyncError('SYNC_USAGE');return value;};
  const env=readDatabaseEnvironment();if(!env.DATABASE_URL)throw new FullSyncError('SYNC_DATABASE_REQUIRED');
  const production=env.NODE_ENV==='production'||env.HD_DEPLOYMENT_ENV==='production';
  const replay=command?.startsWith('replay-')??false;
  const admission=command?.startsWith('admission-')??false;
- if(production&&(replay||admission)!==(env.HD_FULL_REPLAY_OPS==='true'))
+ if(production&&(replay||admission||delta)!==(env.HD_FULL_REPLAY_OPS==='true'))
    throw new FullSyncError('SYNC_REPLAY_OPS_REQUIRED');
  const heavyWorkPausePercent=readHeavyWorkPausePercent(env.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT);
  const db=createDatabase(env.DATABASE_URL,2);let worker:FullSyncWorker|undefined;
  try{
+  if(delta){
+   try{
+    if(command==='delta-status'){
+     if(flags.size!==0)throw new FullSyncError('SYNC_USAGE');
+     console.log(JSON.stringify(await readDeltaPolicyStatus(db)));
+    }else{
+     if(flags.size!==(command==='delta-reconcile'?4:2))throw new FullSyncError('SYNC_USAGE');
+     const actor={id:need('--actor'),requestId:`full-sync:${command}`};
+     const result=command==='delta-reconcile'?await requestDeltaReconciliation(db,actor,need('--evidence'),need('--since'),need('--anchor-cursor')):
+      await (command==='delta-prepare'?prepareDeltaPolicy:armDeltaPolicy)(db,actor,need('--snapshot'));
+     console.log(JSON.stringify(result));
+    }
+   }catch(error){deltaPolicyOperationError(error);}
+   return;
+  }
   if(admission){
    const plan=need('--plan');
    const receipt=command==='admission-receipt';
