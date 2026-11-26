@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
@@ -10,6 +10,7 @@ import {rememberFormalWithdrawal} from '../src/external/formal-admission.js';
 import type {FullSyncClient} from '../src/external/full-sync/client.js';
 import {configureFullSync,FullSyncWorker} from '../src/external/full-sync/engine.js';
 import type {Change,Source} from '../src/external/full-sync/types.js';
+import {jsonHash} from '../src/external/normalize.js';
 
 test('supplier detail refresh preserves real report coverage only for the same listing lifecycle',async t=>{
  const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
@@ -136,6 +137,120 @@ test('supplier detail refresh preserves real report coverage only for the same l
  }finally{
   await worker.close();
   await db.close();
+  try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}" WITH (FORCE)`);}
+  finally{await maintenance.close();await rm(directory,{recursive:true,force:true});}
+ }
+});
+
+test('capacity repair reaches the real report gap ahead of ordinary rechecks across CSV chunks',async t=>{
+ const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
+ if(!['postgres:','postgresql:'].includes(url.protocol)||url.hostname!=='127.0.0.1'||url.pathname!=='/postgres'||url.search||url.hash)
+  throw new Error('Use isolated loopback maintenance PostgreSQL.');
+ t.mock.method(globalThis,'fetch',async()=>{throw new Error('No network in capacity repair tests');});
+ const name=`hd_full_report_repair_${randomBytes(8).toString('hex')}`,maintenance=createDatabase(url.toString(),1);
+ const directory=await mkdtemp(path.join(tmpdir(),'hd-full-report-repair-')),decisionFile=path.join(directory,'decision.json');
+ const previousDecision=process.env.FULL_SYNC_CAPACITY_DECISION_FILE,previousBudget=process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;
+ url.pathname=`/${name}`;
+ const db=createDatabase(url.toString(),2);
+ let created=false;
+ const ids=Array.from({length:301},(_,index)=>String(600001+index));
+ const changed=[ids[0]!,ids[100]!,ids[200]!],gap=ids[279]!;
+ const rechecks=ids.filter(id=>!changed.includes(id)).slice(0,142);
+ const reportRequests:string[]=[];
+ const raw=(value:unknown)=>{
+  const body=JSON.stringify(value);
+  return {hash:createHash('sha256').update(body).digest('hex'),body};
+ };
+ const client={
+  report:async(source:Source,id:string)=>{
+   reportRequests.push(id);
+   const payload={source,id,available:true,summary:[]};
+   return {payload,rawResponse:raw(payload)};
+  },
+  bulk:async function*(source:Source,requested:string[]){
+   const results=requested.map(id=>({source,id,status:'active',hasInspectionReport:true}));
+   yield {results,notFound:[],rawResponse:raw({results,notFound:[]})};
+  },
+ } as unknown as FullSyncClient;
+ const worker=new FullSyncWorker(db,client,directory,async()=>{});
+ const diskTotal=1024**4;
+ worker.space=async()=>({used:0,available:diskTotal,total:diskTotal});
+ try{
+  await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;
+  await migrateDatabase(db);
+  await db.pool.query("INSERT INTO staff(id,name,email,role,banned) VALUES('report-repair-admin','Sync fixture','report-repair@example.invalid','admin',false)");
+  await configureFullSync(db,{id:'report-repair-admin',requestId:'report-repair'},'continuous');
+  assert.equal(await worker.acquire(),true);
+  process.env.FULL_SYNC_CAPACITY_DECISION_FILE=decisionFile;process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES='0';
+  const snapshot=randomUUID(),csvRows=ids.map(id=>({source:'che168',id,has_report:'true'}));
+  await db.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,bytes,rows,staged,target_rows)
+    VALUES($1,now(),'verified',$2,100,301,301,301)`,[snapshot,path.join(directory,'fixture.csv.gz')]);
+  await db.pool.query(`INSERT INTO external_full_stage(snapshot_id,row_number,source,external_id,payload)
+    SELECT $1,n,'che168',id,payload::jsonb FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS rows(id,payload,n)`,
+  [snapshot,ids,csvRows.map(row=>JSON.stringify(row))]);
+  await db.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,applied_generation,locales,
+    sampled,last_detail_at,csv_hash,has_report,report_state,report_checked_at)
+    SELECT 'che168',id,'fixture:'||id,'active',1,ARRAY['zh','en','ru'],true,now(),hash,
+      id=ANY($3::text[]) OR id=$4,CASE WHEN id=$4 THEN 'pending' WHEN id=ANY($3::text[]) THEN 'available' ELSE 'no_report' END,
+      CASE WHEN id=ANY($3::text[]) THEN now() END FROM unnest($1::text[],$2::text[]) AS rows(id,hash)`,
+  [ids,csvRows.map(row=>changed.includes(row.id)?null:jsonHash(row)),rechecks,gap]);
+  await db.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,queued_at)
+    SELECT 'che168',id,'report',1,10,now()-interval '1 hour'+n*interval '1 second'
+    FROM unnest($1::text[]) WITH ORDINALITY AS rows(id,n)`,[[...rechecks,gap]]);
+  const csvState=async()=>(await db.pool.query("SELECT state,apply_cursor::int AS cursor FROM external_full_snapshots WHERE id=$1",[snapshot])).rows[0];
+  const reportState=async(id:string)=>(await db.pool.query("SELECT report_state FROM external_full_members WHERE source='che168' AND external_id=$1",[id])).rows[0].report_state;
+  const allowCapacity=async()=>{
+   await assert.rejects(worker.capacityGate(),/SYNC_CAPACITY_AWAITING_DECISION/);
+   const state=await worker.state(),estimate=state.capacity_estimate;
+   assert.equal(state.capacity_pending,true);assert.equal(estimate.sampleEvidenceSufficient,true);
+   const measuredAt=Date.now();
+   await writeFile(decisionFile,JSON.stringify({schemaVersion:1,model:'hd-ext07-peak-v1',snapshotId:snapshot,targetRows:estimate.targetRows,
+    sampleRows:estimate.sampleRows,evidenceHash:estimate.evidenceHash,measuredAt:new Date(measuredAt).toISOString(),
+    expiresAt:new Date(measuredAt+300_000).toISOString(),decision:'allow',reason:'SYNC_CAPACITY_VERIFIED',
+    diskTotalBytes:diskTotal,projectedPeakBytes:1e9,currentUsedBytes:0,components:{fixture:1e9}}),{mode:0o600});
+   assert.equal(await worker.capacityGate(),true);
+   assert.equal((await worker.state()).capacity_pending,false);
+  };
+
+  await assert.rejects(worker.capacityGate(),/SYNC_CAPACITY_INSUFFICIENT_SAMPLE/);
+  assert.deepEqual(await csvState(),{state:'verified',cursor:0});
+  assert.equal(await worker.report(true),1);
+  assert.deepEqual(reportRequests,[gap],'repair must pick the rank-143 gap first');
+  assert.equal(await reportState(gap),'available');
+
+  const controls=['700001','700002','700003','700004','700005','700006'];
+  await db.pool.query(`INSERT INTO external_full_members(source,external_id,canonical_id,state,applied_generation,report_state,sampled,last_detail_at)
+    SELECT 'che168',id,'fixture:'||id,CASE WHEN n=4 THEN 'withdrawn' ELSE 'active' END,1,'pending',n<>5,
+      CASE WHEN n<>6 THEN now() END FROM unnest($1::text[]) WITH ORDINALITY AS rows(id,n)`,[controls]);
+  await db.pool.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,attempts,due_at)
+    SELECT 'che168',id,'report',CASE WHEN n=1 THEN 0 ELSE 1 END,20,CASE WHEN n=3 THEN 5 ELSE 0 END,
+      CASE WHEN n=2 THEN now()+interval '1 hour' ELSE now() END FROM unnest($1::text[]) WITH ORDINALITY AS rows(id,n)`,[controls]);
+  assert.equal(await worker.report(true),0,'stale, future, exhausted, withdrawn, unsampled and unmaterialized reports cannot repair the cohort');
+  assert.deepEqual(reportRequests,[gap]);
+  await db.pool.query("DELETE FROM external_full_work WHERE external_id=ANY($1::text[])",[controls]);
+  await db.pool.query("DELETE FROM external_full_members WHERE external_id=ANY($1::text[])",[controls]);
+  await allowCapacity();
+
+  for(const [index,id] of changed.entries()){
+   await assert.rejects(worker.promoteSnapshot(snapshot),/SYNC_CAPACITY_INSUFFICIENT_SAMPLE/);
+   assert.deepEqual(await csvState(),{state:'applying',cursor:(index+1)*100});
+   assert.equal(await worker.report(true),0,'repair must leave ordinary rechecks queued before the target detail is complete');
+   assert.equal(await worker.details(true),1);
+   assert.equal(await reportState(id),'pending');
+   assert.equal(await worker.report(true),1);
+   assert.equal(reportRequests.at(-1),id);
+   assert.equal(await reportState(id),'available');
+   await allowCapacity();
+  }
+  assert.deepEqual(reportRequests,[gap,...changed]);
+  assert.equal(await worker.promoteSnapshot(snapshot),1);
+  assert.deepEqual(await csvState(),{state:'complete',cursor:301});
+  assert.equal(await worker.report(),1);
+  assert.equal(reportRequests.at(-1),rechecks[0],'ordinary rechecks preserve their FIFO order');
+ }finally{
+  if(previousDecision===undefined)delete process.env.FULL_SYNC_CAPACITY_DECISION_FILE;else process.env.FULL_SYNC_CAPACITY_DECISION_FILE=previousDecision;
+  if(previousBudget===undefined)delete process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES;else process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES=previousBudget;
+  await worker.close();await db.close();
   try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}" WITH (FORCE)`);}
   finally{await maintenance.close();await rm(directory,{recursive:true,force:true});}
  }

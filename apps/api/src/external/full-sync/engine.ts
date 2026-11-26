@@ -709,9 +709,21 @@ export class FullSyncWorker{
  }
  async report(sampleOnly=false){
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
-  await this.heavy(sampleOnly);const job=(await this.db.pool.query(`SELECT w.*,w.generation<>m.desired_generation OR m.state='withdrawn' AS stale
+  await this.heavy(sampleOnly);
+  // Match the ordered capacity cohort and probe report jobs only for real gaps.
+  // Routine rechecks resume after the gate has enough evidence to reopen.
+  const job=(await this.db.pool.query(sampleOnly?`SELECT w.*,false AS stale FROM (
+   SELECT source,external_id,desired_generation,state,report_state FROM external_full_members
+   WHERE sampled AND last_detail_at IS NOT NULL ORDER BY source COLLATE "C",external_id COLLATE "C" LIMIT 10001
+  ) m CROSS JOIN LATERAL (
+   SELECT w.* FROM external_full_work w
+   WHERE w.source=m.source AND w.external_id=m.external_id AND w.kind='report'
+    AND w.generation=m.desired_generation AND w.attempts<5 AND w.due_at<=now() LIMIT 1
+  ) w WHERE m.state<>'withdrawn' AND m.report_state IN ('unknown','pending')
+  ORDER BY w.priority DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`:`SELECT w.*,w.generation<>m.desired_generation OR m.state='withdrawn' AS stale
    FROM external_full_work w JOIN external_full_members m USING(source,external_id)
-   WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now() AND ($1=false OR (m.sampled AND m.state<>'withdrawn')) ORDER BY w.priority DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[sampleOnly])).rows[0];if(!job)return 0;
+   WHERE w.kind='report' AND w.attempts<5 AND w.due_at<=now()
+   ORDER BY w.priority DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`)).rows[0];if(!job)return 0;
   let transportMissing=false;
   try{
    const response=job.stale?undefined:await this.client.report(job.source,job.external_id).catch((error:unknown)=>{
