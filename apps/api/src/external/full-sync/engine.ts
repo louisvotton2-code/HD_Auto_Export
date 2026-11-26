@@ -332,7 +332,7 @@ export class FullSyncWorker{
    return scheduled;
   });
  }
- async snapshot(){
+ async snapshot(onPromotionBlocked?:()=>void){
   // Freeze CSV expansion while the first detail sample waits for reports/capacity approval.
   if(await this.sampleSaturated())return 0;
   await this.heavy();await mkdir(this.directory,{recursive:true,mode:0o700});
@@ -369,7 +369,7 @@ export class FullSyncWorker{
    });
    if(!finalized)return; // Retain the original path and retry after the backup lease is explicitly released.
   }
-  return this.promoteSnapshot(snapshot.id);
+  return this.promoteSnapshot(snapshot.id,onPromotionBlocked);
  }
  async estimateCapacity(snapshotId:string,bytes:number,input?:CapacityMeasurement){
   const {disk,state,sample,snapshot}=input??{
@@ -406,16 +406,19 @@ export class FullSyncWorker{
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);
   if(!allowed)throw new FullSyncError(code!);
  }
- async promoteSnapshot(id:string){
+ async promoteSnapshot(id:string,onPromotionBlocked?:()=>void){
   const remaining=await this.sampleRemaining();if(!remaining)return 0;
-  const target=Math.min(500,remaining);let promoted=0;
+  const target=Math.min(LIMITS.bulk,remaining);let promoted=0;
   // At most ten 100-row transactions per tick; interleaved sources can fill one real 500-ID bulk.
   for(let part=0;part<10;part++){
    const ready=(await this.db.pool.query(`SELECT source,count(*)::integer AS n FROM (
     SELECT w.source FROM external_full_work w JOIN external_full_members m USING(source,external_id)
     WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND m.state<>'withdrawn'
     ORDER BY w.priority DESC,w.due_at,w.source,w.external_id LIMIT 1000) q GROUP BY source`)).rows;
-   if(ready.some(row=>row.n>=target))break;
+   if(ready.some(row=>row.n>=target)){
+    if(promoted===0&&target===LIMITS.bulk)onPromotionBlocked?.();
+    break;
+   }
    const count=await this.promoteSnapshotChunk(id);promoted+=count;if(count<100)break;
    await this.applyEvents(true);
   }
@@ -901,17 +904,20 @@ export class FullSyncWorker{
    this.phase='snapshot';
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();
+   let promotionBlocked=false;
+   const onPromotionBlocked=()=>{promotionBlocked=true;};
    // Detail work can outlive a snapshot. A continuous export follows its own schedule after the prior snapshot completes.
-   if(active||(snapshotDue&&current.mode==='continuous'))await this.snapshot();
+   if(active||(snapshotDue&&current.mode==='continuous'))await this.snapshot(onPromotionBlocked);
    else if(snapshotDue&&!current.last_success_at){
     const bootstrapDetailPending=current.since_at&&(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
-    if(!bootstrapDetailPending)await this.snapshot();
+    if(!bootstrapDetailPending)await this.snapshot(onPromotionBlocked);
    }
    // Reserve one report per tick: progress survives a continuous stream of high-priority updates.
    this.phase='withdrawals';await this.applyEvents(true);
    this.phase='reports';for(let n=deferredReports;n<(refreshed?1:20);n++){await this.applyEvents(true);if(!await this.report())break;}
    this.phase='capacity';await this.capacityGate();
-   this.phase='rotation';await this.rotate();
+   // Let the ready queue drain after a whole promotion turn was blocked.
+   if(!promotionBlocked){this.phase='rotation';await this.rotate();}
    this.phase='archive_cleanup';await this.pruneStaging();
    this.phase='finalize';
    const pending=(await this.db.pool.query("SELECT 1 FROM external_full_work UNION ALL SELECT 1 FROM external_full_events WHERE applied_at IS NULL UNION ALL SELECT 1 FROM external_full_members WHERE state<>'withdrawn' AND (applied_generation<desired_generation OR cardinality(locales)<3 OR verification_pending) LIMIT 1")).rowCount;
