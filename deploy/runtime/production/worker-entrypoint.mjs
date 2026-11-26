@@ -5,10 +5,19 @@ import {deploymentDatabaseIdentity} from '../database-name.mjs';
 const replayPlan = '/private/replay/plan.json';
 const admissionPlan = '/private/admission/plan.json';
 const admissionReceipt = '/private/admission/receipt.json';
-const replayId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const staffId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
+const evidenceReference = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const replayCommands = new Set(['replay-check', 'replay-prepare', 'replay-status']);
 const admissionCommands = new Set(['admission-check', 'admission-change', 'admission-receipt']);
+const deltaCommands = new Set(['delta-prepare', 'delta-arm', 'delta-status', 'delta-reconcile']);
+
+function isUtcTimestamp(value) {
+  if (value.startsWith('0000-') || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return false;
+  const date = new Date(value);
+  const [seconds, fraction = ''] = value.slice(0, -1).split('.');
+  return Number.isFinite(date.getTime()) && date.toISOString() === `${seconds}.${fraction.padEnd(3, '0')}Z`;
+}
 
 export function workerEnvironment(input, password, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('Worker must start as a non-root user');
@@ -37,6 +46,18 @@ export function workerInvocation(args) {
   }
   if (args[0] === 'full-sync') {
     const [, command, ...flags] = args;
+    if (deltaCommands.has(command)) {
+      const actor = flags[0] === '--actor' && staffId.test(flags[1]);
+      const allowed = command === 'delta-status' ? flags.length === 0 : actor && (
+        command === 'delta-reconcile'
+          ? flags.length === 8 && flags[2] === '--evidence' && evidenceReference.test(flags[3]) &&
+            flags[4] === '--since' && isUtcTimestamp(flags[5]) && flags[6] === '--anchor-cursor' &&
+            /^(0|[1-9][0-9]{0,15})$/.test(flags[7]) && Number.isSafeInteger(Number(flags[7]))
+          : flags.length === 4 && flags[2] === '--snapshot' && uuid.test(flags[3])
+      );
+      if (!allowed) throw new Error('Incremental sync policy requires an exact operation and arguments');
+      return {argv: ['dist/external/full-sync/cli.js', ...args.slice(1)], formalFx: false, fullSync: false, replay: true};
+    }
     if (admissionCommands.has(command)) {
       const allowed = command === 'admission-change'
         ? flags.length === 4 && flags[0] === '--actor' && staffId.test(flags[1]) &&
@@ -50,7 +71,7 @@ export function workerInvocation(args) {
       const allowed = command === 'replay-check'
         ? flags.length === 2 && flags[0] === '--plan' && flags[1] === replayPlan
         : command === 'replay-status'
-          ? flags.length === 2 && flags[0] === '--replay-id' && replayId.test(flags[1])
+          ? flags.length === 2 && flags[0] === '--replay-id' && uuid.test(flags[1])
           : flags.length === 4 && flags[0] === '--actor' && staffId.test(flags[1]) &&
             flags[2] === '--plan' && flags[3] === replayPlan;
       if (!allowed) throw new Error('Replay requires a supported operation and fixed private input');
