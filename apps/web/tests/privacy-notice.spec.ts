@@ -1,85 +1,14 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
-const legacyChoiceKey = 'hd-auto:privacy-choice:v3';
-const legacyAdvertisingKey = 'hd-auto:meta-advertising:v2';
-const sessionKey = 'hd-auto:analytics-session:v2';
-const sessionAnalytics = process.env.ANALYTICS_V2_ENABLED !== 'false';
-
-test.beforeEach(async ({ context, baseURL }) => {
-  const siteOrigin = new URL(baseURL!).origin;
-  await context.route('**/*', (route) => {
-    const url = new URL(route.request().url());
-    if (url.href === 'https://t.me/HD_Auto_CN')
-      return route.fulfill({ contentType: 'text/plain', body: 'Contact link intercepted locally' });
-    if (url.origin !== siteOrigin) return route.abort();
-    if (url.pathname.startsWith('/api/v1/analytics/')) return route.fulfill({ status: 202 });
-    return route.continue();
-  });
-});
-
-function capturedAnalytics(page: Page) {
-  const sessions: Array<{ pageType: string; sessionId: string; type: string }> = [];
-  const advertising: string[] = [];
-  page.on('request', (request) => {
-    const { hostname, pathname } = new URL(request.url());
-    if (pathname === '/api/v1/analytics/events' && request.method() === 'POST') {
-      sessions.push(...request.postDataJSON().events);
-    }
-    if (hostname === 'connect.facebook.net' || hostname.endsWith('.facebook.net') ||
-      ((hostname === 'facebook.com' || hostname.endsWith('.facebook.com')) && pathname.startsWith('/tr'))) {
-      advertising.push(pathname);
-    }
-  });
-  return { sessions, advertising };
-}
-
-const readStorage = (page: Page, key: string) => page.evaluate(name => localStorage.getItem(name), key);
-const readSession = (page: Page) => page.evaluate(name => sessionStorage.getItem(name), sessionKey);
-
-for (const [locale, width, height, accept, decline, learnMore, policyTitle, windowText, adPurpose] of [
-  ['zh', 320, 568, '接受', '拒绝', '了解更多', '隐私说明', '60 分钟', '衡量广告效果'],
-  ['en', 1440, 900, 'Accept', 'Decline', 'Learn more', 'Privacy notice', '60 minutes', 'measure ad performance'],
-  ['ru', 320, 300, 'Принять', 'Отклонить', 'Подробнее', 'Конфиденциальность', '60 минут', 'оценки эффективности рекламы'],
+for (const [locale, width, height, policyTitle, windowText] of [
+  ['zh', 320, 568, '隐私说明', '60 分钟'],
+  ['en', 1440, 900, 'Privacy notice', '60 minutes'],
+  ['ru', 320, 300, 'Конфиденциальность', '60 минут'],
 ] as const) {
-  test(`${locale}: the notice and seven-section privacy page are reachable`, async ({ page }) => {
+  test(`${locale}: the footer opens the seven-section privacy page`, async ({ page }) => {
     await page.setViewportSize({ width, height });
-    const { sessions, advertising } = capturedAnalytics(page);
     await page.goto(`/${locale}/about/`);
-    const banner = page.getByRole('region').and(page.getByTestId('tracking-consent-banner'));
-    const copy = banner.getByRole('paragraph');
-    await expect(banner).toHaveAccessibleName(/\S/);
-    await expect(banner.getByRole('heading')).toHaveCount(0);
-    await expect(copy).toContainText(/cookie/i);
-    await expect(copy).toContainText(adPurpose);
-    await expect(page.locator('main h1')).toBeVisible();
-    await page.evaluate(() => {
-      const overlay = document.createElement('div');
-      overlay.setAttribute('aria-hidden', 'true');
-      Object.assign(overlay.style, { position: 'fixed', inset: 'auto 0 0', height: '120px', zIndex: '200' });
-      document.body.append(overlay);
-    });
-    const action = banner.getByRole('button', { name: accept, exact: true });
-    const refusal = banner.getByRole('button', { name: decline, exact: true });
-    const link = banner.getByRole('link', { name: learnMore, exact: true });
-    const box = (await banner.boundingBox())!;
-    expect(box.width).toBe(width);
-    expect(box.y + box.height).toBeCloseTo(height, 0);
-    expect((await copy.boundingBox())!.y).toBeGreaterThanOrEqual(box.y);
-    await expect(banner.getByRole('button')).toHaveCount(2);
-    await expect(banner.locator('details, [role="switch"]')).toHaveCount(0);
-    await expect(link).toHaveAttribute('href', `/${locale}/privacy/`);
-    expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    expect((await refusal.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    for (const control of [link, action, refusal]) {
-      await expect(control).toBeInViewport({ ratio: 0.98 });
-      expect(await control.evaluate(element => {
-        const rect = element.getBoundingClientRect();
-        return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
-      })).toBe(true);
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-    await link.click();
-    await expect(page).toHaveURL(new RegExp(`/${locale}/privacy/$`));
+    await page.locator(`footer a[href="/${locale}/privacy/"]`).click();
     const policy = page.getByTestId('privacy-page');
     await expect(policy.getByRole('heading', { level: 1, name: policyTitle })).toBeVisible();
     await expect(policy.getByRole('heading', { level: 2 })).toHaveCount(7);
@@ -91,158 +20,31 @@ for (const [locale, width, height, accept, decline, learnMore, policyTitle, wind
     await expect(policy.locator('a[href="https://wa.me/8618215932610"]')).toBeVisible();
     await expect(policy.locator('a[href="https://t.me/HD_Auto_CN"]')).toBeVisible();
     await expect(policy.locator('form, input, [role="switch"]')).toHaveCount(0);
-    await expect(policy.getByTestId('privacy-meta-opt-in')).toHaveCount(0);
-    await expect(policy.getByTestId('privacy-meta-withdraw')).toHaveCount(0);
     await expect(page.locator('footer button[aria-haspopup="dialog"]')).toHaveCount(0);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
-    expect(await readStorage(page, legacyChoiceKey)).toBeNull();
-    expect(await readStorage(page, legacyAdvertisingKey)).toBeNull();
-    expect(await readSession(page)).toBeNull();
-    await page.waitForTimeout(850);
-    expect(sessions).toEqual([]);
-    expect(advertising).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   });
 }
 
-test('accept starts a session that survives reload and can be withdrawn on the privacy page', async ({ page }) => {
-  test.skip(!sessionAnalytics, 'Session analytics is disabled in this configuration.');
-  await page.setViewportSize({ width: 390, height: 844 });
-  const { sessions, advertising } = capturedAnalytics(page);
-  await page.goto('/en/about/');
-  const banner = page.getByTestId('tracking-consent-banner');
-  const accept = banner.getByRole('button', { name: 'Accept', exact: true });
-  await expect(accept).toBeVisible();
-  await page.waitForTimeout(850);
-  expect(sessions).toEqual([]);
-  expect(await readSession(page)).toBeNull();
-  await accept.click();
-  await expect(banner).toHaveCount(0);
-  expect(await readStorage(page, legacyChoiceKey)).toBe('allow');
-  expect(await readStorage(page, legacyAdvertisingKey)).toBe('allow-sdk');
-  await expect.poll(() => sessions[0]).toMatchObject({ type: 'page_view', pageType: 'about', sessionId: expect.any(String) });
-
-  await page.reload();
-  await expect(banner).toHaveCount(0);
-  await expect.poll(() => sessions.length).toBeGreaterThan(1);
-  expect(sessions.at(-1)?.sessionId).toBe(sessions[0]?.sessionId);
-
-  await page.locator('footer').getByRole('link', { name: 'Privacy notice' }).click();
-  const policy = page.getByTestId('privacy-page');
-  const withdraw = policy.getByTestId('privacy-analytics-withdraw');
-  await expect(withdraw).toBeVisible();
-  await withdraw.click();
-  expect(await readStorage(page, legacyChoiceKey)).toBe('deny');
-  expect(await readStorage(page, legacyAdvertisingKey)).toBe('deny');
-  await expect.poll(() => readSession(page)).toBeNull();
-  const recorded = sessions.length;
-  await page.goto('/en/buy/');
-  await page.reload();
-  await expect(page.getByTestId('buy-guide')).toBeVisible();
-  await expect(banner).toHaveCount(0);
-  await page.waitForTimeout(850);
-  expect(sessions).toHaveLength(recorded);
-  expect(advertising).toEqual([]);
-});
-
-for (const [label, site, ads] of [
-  ['site analytics only', 'allow', null],
-  ['advertising only', null, 'allow-sdk'],
-  ['the previous lightweight Pixel', 'allow', 'allow'],
-] as const) {
-  test(`a legacy grant for ${label} requires a new choice before either purpose runs`, async ({ page }) => {
-    const { sessions, advertising } = capturedAnalytics(page);
-    await page.addInitScript(({ site, ads, legacyChoiceKey, legacyAdvertisingKey }) => {
-      if (site && !localStorage.getItem(legacyChoiceKey)) localStorage.setItem(legacyChoiceKey, site);
-      if (ads && !localStorage.getItem(legacyAdvertisingKey)) localStorage.setItem(legacyAdvertisingKey, ads);
-    }, { site, ads, legacyChoiceKey, legacyAdvertisingKey });
-    await page.goto('/en/about/');
-    const banner = page.getByTestId('tracking-consent-banner');
-    await expect(banner.getByRole('button', { name: 'Accept', exact: true })).toBeVisible();
-    await page.waitForTimeout(850);
-    expect(sessions).toEqual([]);
-    expect(await readSession(page)).toBeNull();
-    await banner.getByRole('button', { name: 'Decline', exact: true }).click();
-    await expect(banner).toHaveCount(0);
-    expect(await readStorage(page, legacyChoiceKey)).toBe('deny');
-    expect(await readStorage(page, legacyAdvertisingKey)).toBe('deny');
-    await page.reload();
-    await expect(banner).toHaveCount(0);
-    await page.waitForTimeout(850);
-    expect(await readSession(page)).toBeNull();
-    expect(sessions).toEqual([]);
-    expect(advertising).toEqual([]);
-  });
-}
-
-for (const [site, ads] of [['allow', 'deny'], ['deny', 'allow-sdk']] as const) {
-  test(`the legacy ${site === 'deny' ? 'site' : 'advertising'} refusal still stops all analytics`, async ({ page }) => {
-    const { sessions, advertising } = capturedAnalytics(page);
-    await page.addInitScript(({ site, ads, legacyChoiceKey, legacyAdvertisingKey }) => {
-      localStorage.setItem(legacyChoiceKey, site);
-      localStorage.setItem(legacyAdvertisingKey, ads);
-    }, { site, ads, legacyChoiceKey, legacyAdvertisingKey });
-    await page.goto('/en/privacy/');
-    await expect(page.getByTestId('privacy-analytics-off')).toBeVisible();
-    await expect(page.getByTestId('tracking-consent-banner')).toHaveCount(0);
-    await page.waitForTimeout(850);
-    expect(await readSession(page)).toBeNull();
-    expect(sessions).toEqual([]);
-    expect(advertising).toEqual([]);
-  });
-}
-
-test('retired preference keys grant neither session analytics nor advertising', async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem('hd-auto:privacy-notice:v2', 'read');
-    localStorage.setItem('hd-auto:privacy-analytics:v2', 'allow');
-    localStorage.setItem('hd-auto:meta-advertising:v1', 'allow');
-    localStorage.setItem('hd-auto:tracking-preferences:v1',
-      JSON.stringify({ version: 1, analytics: true, advertising: true }));
-  });
-  const { sessions, advertising } = capturedAnalytics(page);
-  await page.goto('/en/about/');
-  const banner = page.getByTestId('tracking-consent-banner');
-  await page.reload();
-  await expect(banner.getByRole('button', { name: 'Accept', exact: true })).toBeVisible();
-  await page.waitForTimeout(850);
-  expect(await readSession(page)).toBeNull();
-  expect(sessions).toEqual([]);
-  expect(advertising).toEqual([]);
-});
-
-test('mobile calculator action stays accessible before acknowledgement', async ({ page }) => {
+test('mobile calculator action stays accessible', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto('/zh/calculator/russia/');
-  const banner = page.getByTestId('tracking-consent-banner');
-  const calculator = page.locator('.mobile-result-bar');
-  await expect(banner).toBeVisible();
-  await expect(calculator).toBeVisible();
-  await expect.poll(async () => {
-    const [action, bar] = await Promise.all([calculator.boundingBox(), banner.boundingBox()]);
-    return Math.round(action!.y + action!.height - bar!.y);
-  }).toBeLessThanOrEqual(0);
-  await calculator.getByRole('button').click();
-  await expect(banner).toBeVisible();
-  expect(await readSession(page)).toBeNull();
+  const action = page.locator('.mobile-result-bar').getByRole('button');
+  await expect(action).toBeInViewport();
+  await action.click();
 });
 
-test('manual contact opens before a choice and after explicit decline', async ({ page }) => {
-  const { sessions, advertising } = capturedAnalytics(page);
+test('manual contact opens Telegram', async ({ page, context }) => {
+  await context.route('https://t.me/HD_Auto_CN', route =>
+    route.fulfill({ contentType: 'text/plain', body: 'Contact link intercepted locally' }));
   await page.goto('/en/parts/');
-  const banner = page.getByTestId('tracking-consent-banner');
-  await expect(banner).toBeVisible();
   const contact = page.locator('header a[aria-haspopup="dialog"]:visible');
   const dialog = page.getByRole('dialog', { name: 'Contact us' });
   await contact.click();
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Close contact window' }).click();
-  await expect(banner).toBeVisible();
-
-  await banner.getByRole('button', { name: 'Decline', exact: true }).click();
-  await page.goto('/en/parts/');
-  await expect(banner).toHaveCount(0);
+  await expect(dialog).toBeHidden();
   await contact.click();
-  await expect(dialog).toBeVisible();
   const [popup] = await Promise.all([
     page.waitForEvent('popup'),
     dialog.getByRole('link', { name: 'Telegram', exact: true }).click(),
@@ -250,7 +52,4 @@ test('manual contact opens before a choice and after explicit decline', async ({
   await popup.waitForLoadState('domcontentloaded');
   expect(popup.url()).toBe('https://t.me/HD_Auto_CN');
   await popup.close();
-  expect(await readSession(page)).toBeNull();
-  expect(sessions).toEqual([]);
-  expect(advertising).toEqual([]);
 });

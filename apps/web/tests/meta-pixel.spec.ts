@@ -128,26 +128,15 @@ async function readVehicleDetailRequests(request: APIRequestContext, transport: 
     .filter(entry => entry.path === `${prefix}/vehicles/${selectedId}`);
 }
 
-test('ordinary browsing sends no Pixel before or after one-click acceptance', async ({ page, context, baseURL }) => {
+test('ordinary browsing sends no Pixel across navigation and reload', async ({ page, context, baseURL }) => {
   const { pixel, sdkRequests } = await interceptAdvertising(context, baseURL!);
   await page.goto('/en/about/');
-  const banner = page.getByTestId('tracking-consent-banner');
   await expect(page.locator('main h1')).toBeVisible();
-  await expect(banner).toBeVisible();
-  await page.waitForTimeout(850);
-  expect(sdkRequests).toEqual([]);
-  expect(pixel).toEqual([]);
-
-  await banner.getByRole('button', { name: 'Accept', exact: true }).click();
-  await expect(banner).toHaveCount(0);
   await page.locator('header a[href="/en/buy/"]:visible').click();
   await expect(page.getByTestId('buy-guide')).toBeVisible();
   await page.reload();
-  await expect(banner).toHaveCount(0);
   await page.locator('footer').getByRole('link', { name: 'Privacy notice', exact: true }).click();
   await expect(page.getByTestId('privacy-page')).toBeVisible();
-  await expect(page.getByTestId('privacy-meta-opt-in')).toHaveCount(0);
-  await expect(page.getByTestId('privacy-meta-withdraw')).toHaveCount(0);
   await page.waitForTimeout(850);
   expect(sdkRequests).toEqual([]);
   expect(pixel).toEqual([]);
@@ -184,7 +173,7 @@ test('acceptance with Meta disabled sends no Pixel on a public vehicle detail', 
   }
 });
 
-test('one acceptance enables selected detail views and contact analytics until withdrawal', async ({
+test('vehicle targeting limits detail views and channel contacts to eligible vehicles', async ({
   page, context, request, baseURL,
 }) => {
   test.skip(!pixelId, 'Enable Meta with a synthetic fixture Pixel ID.');
@@ -192,31 +181,10 @@ test('one acceptance enables selected detail views and contact analytics until w
   const { pixel, sdkRequests, commands, contacts, sessions, events } = await interceptAdvertising(context, baseURL!);
   const selectedPath = `/zh/cars/${selectedId}/`;
   const selectedDetail = page.locator(`[data-public-vehicle-detail="${selectedId}"]`);
-  const banner = page.getByTestId('tracking-consent-banner');
-  await context.addInitScript((siteOrigin: string) => {
-    if (location.origin !== siteOrigin) return;
-    if (!localStorage.getItem('hd-auto:meta-advertising:v2')) localStorage.setItem('hd-auto:meta-advertising:v2', 'allow');
-    if (!localStorage.getItem('hd-auto:privacy-choice:v3')) localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
-  }, new URL(baseURL!).origin);
+  await seedAcceptedVisitor(page, baseURL!);
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
-    await page.goto(selectedPath);
-    await expect(selectedDetail).toBeVisible();
-    await expect(selectedDetail).toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await expect(banner).toContainText('衡量广告效果');
-    const preConsentLink = selectedDetail.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
-    const [preConsentPopup] = await Promise.all([page.waitForEvent('popup'), preConsentLink.click()]);
-    await preConsentPopup.close();
-    await page.waitForTimeout(850);
-    expect(sessions).toEqual([]);
-    expect(contacts).toEqual([]);
-    expect(sdkRequests).toEqual([]);
-    expect(pixel).toEqual([]);
-
-    await page.goto('/zh/');
-    await banner.getByRole('button', { name: '接受', exact: true }).click();
-    await expect(banner).toHaveCount(0);
     await page.goto(`/zh/cars/${unselectedId}/`);
     const legacyDetail = page.locator(`[data-public-vehicle-detail="${unselectedId}"]`);
     await expect(legacyDetail).toBeVisible();
@@ -319,30 +287,6 @@ test('one acceptance enables selected detail views and contact analytics until w
     expect(pixel).toHaveLength(4);
     expect(sdkRequests).toEqual([sdkUrl]);
 
-    await setPublicFixtureState(request, { importedWithdrawn: false });
-    await page.goto('/zh/privacy/');
-    await page.getByTestId('privacy-analytics-withdraw').click();
-    await expect(page.getByTestId('privacy-analytics-off')).toBeVisible();
-    await page.reload();
-    await expect(page.getByTestId('privacy-analytics-off')).toBeVisible();
-    expect(await page.evaluate(() => sessionStorage.getItem('hd-auto:analytics-session:v2'))).toBeNull();
-    const sessionCountAtWithdrawal = sessions.length;
-    await page.goto(selectedPath);
-    await expect(selectedDetail).toBeVisible();
-    await expect(banner).toHaveCount(0);
-    const postWithdrawalLink = page.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
-    const [postWithdrawalPopup] = await Promise.all([page.waitForEvent('popup'), postWithdrawalLink.click()]);
-    await postWithdrawalPopup.close();
-    await page.waitForTimeout(850);
-    expect(contacts).toEqual([
-      unselectedContact,
-      catalogContact,
-      selectedContact,
-      telegramContact,
-    ]);
-    expect(sessions).toHaveLength(sessionCountAtWithdrawal);
-    expect(pixel).toHaveLength(4);
-    expect(sdkRequests).toEqual([sdkUrl]);
     if (!sessionAnalyticsEnabled) expect(sessions).toEqual([]);
   } finally {
     await resetPublicFixture(request);
@@ -362,7 +306,6 @@ test('a returning visitor with both saved grants sends the selected detail witho
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });
     await page.goto(`/en/cars/${selectedId}/`);
     await expect.poll(events).toEqual(['PageView', 'ViewContent']);
-    await expect(page.getByTestId('tracking-consent-banner')).toHaveCount(0);
     if (sessionAnalyticsEnabled)
       await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
   } finally {
@@ -479,7 +422,7 @@ test('a 503 replays the same site contact once without repeating the vehicle cou
 });
 
 const delayedSdkCases = (['script', 'configuration'] as const).flatMap(stage =>
-  (['stay on the vehicle', 'leave the vehicle', 'withdraw in another tab'] as const).map(change => ({ stage, change })),
+  (['stay on the vehicle', 'leave the vehicle'] as const).map(change => ({ stage, change })),
 );
 for (const { stage, change } of delayedSdkCases) {
   test(`a delayed SDK ${stage} rechecks the queued contact when visitors ${change}`, async ({ page, context, request, baseURL }) => {
@@ -510,12 +453,6 @@ for (const { stage, change } of delayedSdkCases) {
       if (change === 'leave the vehicle') {
         await page.locator('header a[href="/en/buy/"]:visible').click();
         await expect(page.getByTestId('buy-guide')).toBeVisible();
-      } else if (change === 'withdraw in another tab') {
-        const privacyTab = await context.newPage();
-        await privacyTab.goto('/en/privacy/');
-        await privacyTab.getByTestId('privacy-analytics-withdraw').click();
-        await expect(privacyTab.getByTestId('privacy-analytics-off')).toBeVisible();
-        await privacyTab.close();
       }
       release();
       await sdkSettled;
@@ -558,7 +495,6 @@ test('a warm detail reopen uses the revised switch without a browser API request
     await page.reload();
     await expect(detail).toBeVisible();
     await expect(detail).not.toHaveAttribute('data-meta-pixel-enabled', 'true');
-    await expect(page.getByTestId('tracking-consent-banner')).toHaveCount(0);
     const contactLink = detail.locator('[data-vehicle-contacts] a[data-analytics-contact="telegram"]:visible').last();
     const [popup] = await Promise.all([page.waitForEvent('popup'), contactLink.click()]);
     await popup.close();

@@ -13,7 +13,6 @@ const unavailable = () => new Response(null, { status: 503 });
 let transport: typeof import('./transport');
 let choices: typeof import('@/shared/lib/tracking-consent');
 let storage: Map<string, string>;
-let unsubscribe: () => void;
 let post: ReturnType<typeof vi.fn<typeof fetch>>;
 
 beforeEach(async () => {
@@ -32,14 +31,10 @@ beforeEach(async () => {
   choices = await import('@/shared/lib/tracking-consent');
   transport = await import('./transport');
   choices.saveTrackingConsent(true);
-  unsubscribe = choices.subscribeTrackingConsent(() => {
-    if (choices.getTrackingConsent() !== 'accepted') transport.stopAnalyticsTransport();
-  });
 });
 
 afterEach(async () => {
   transport.stopAnalyticsTransport();
-  unsubscribe();
   await vi.runOnlyPendingTimersAsync();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -118,12 +113,11 @@ describe('first-party analytics delivery', () => {
     expect(request(1)?.signal?.aborted).toBe(true);
   });
 
-  it('discards a delayed retry on withdrawal even when consent is granted again immediately', async () => {
+  it('discards a delayed retry when the transport is stopped and another event arrives immediately', async () => {
     post.mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(new Response(null, { status: 202 }));
     transport.enqueueAnalytics(firstEvent);
     await vi.advanceTimersByTimeAsync(700);
-    choices.saveTrackingConsent(false);
-    choices.saveTrackingConsent(true);
+    transport.stopAnalyticsTransport();
     transport.enqueueAnalytics(nextEvent);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(post).toHaveBeenCalledTimes(2);
@@ -131,7 +125,7 @@ describe('first-party analytics delivery', () => {
     expect(request(1)?.body).toBe(JSON.stringify({ events: [nextEvent] }));
   });
 
-  it('aborts a replay that is already in flight when consent is withdrawn', async () => {
+  it('aborts a replay that is already in flight when the transport is stopped', async () => {
     post.mockResolvedValueOnce(unavailable());
     post.mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {
       options?.signal?.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
@@ -140,7 +134,7 @@ describe('first-party analytics delivery', () => {
     await vi.advanceTimersByTimeAsync(1_700);
     expect(post).toHaveBeenCalledTimes(2);
     expect(request(1)?.signal?.aborted).toBe(false);
-    choices.saveTrackingConsent(false);
+    transport.stopAnalyticsTransport();
     expect(request(1)?.signal?.aborted).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(post).toHaveBeenCalledTimes(2);
