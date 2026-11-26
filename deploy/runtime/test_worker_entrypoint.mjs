@@ -85,6 +85,25 @@ test('one-shot replay accepts only the fixed plan and the exact argument shape',
 });
 
 
+test('formal admission is restricted to the private database-only service and fixed input files', () => {
+  const plan = '/private/admission/plan.json', receipt = '/private/admission/receipt.json';
+  for (const args of [['admission-check', '--plan', plan],
+    ['admission-change', '--actor', 'ExistingStaff-01', '--plan', plan],
+    ['admission-receipt', '--plan', receipt]]) {
+    const operation = workerInvocation(['full-sync', ...args]);
+    assert.deepEqual(operation.argv, ['dist/external/full-sync/cli.js', ...args]);
+    assert.doesNotThrow(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT: '80'}, operation));
+    assert.throws(() => checkWorkerMode({}, operation));
+    assert.throws(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', CHINACARAPI_KEY_FILE: '/run/secrets/provider'}, operation));
+    assert.throws(() => checkWorkerMode({HD_FULL_REPLAY_OPS: 'true', FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT: '81'}, operation));
+  }
+  for (const args of [['admission-check', '--plan', receipt], ['admission-receipt', '--plan', plan],
+    ['admission-change', '--plan', plan], ['admission-change', '--actor', '--force', '--plan', plan],
+    ['admission-check', '--plan', plan, '--force']]) {
+    assert.throws(() => workerInvocation(['full-sync', ...args]));
+  }
+});
+
 test('backup lease uses only the database CLI without media scanning', () => {
   assert.deepEqual(workerInvocation(['backup-lease', 'acquire', '--reference', 'backup:ext09:daily-20261114']), {argv: ['dist/backup-lease-cli.js', 'acquire', '--reference', 'backup:ext09:daily-20261114'], formalFx: false, fullSync: false});
   for (const args of [['backup-lease'], ['backup-lease', 'serve', '--reference', 'backup:a'], ['backup-lease', 'release', '--reference', 'not-a-backup'], ['backup-lease', 'acquire', '--reference', 'backup:a', '--force']]) assert.throws(() => workerInvocation(args));

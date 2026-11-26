@@ -3,9 +3,12 @@ import {pathToFileURL} from 'node:url';
 import {deploymentDatabaseIdentity} from '../database-name.mjs';
 
 const replayPlan = '/private/replay/plan.json';
+const admissionPlan = '/private/admission/plan.json';
+const admissionReceipt = '/private/admission/receipt.json';
 const replayId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const staffId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 const replayCommands = new Set(['replay-check', 'replay-prepare', 'replay-status']);
+const admissionCommands = new Set(['admission-check', 'admission-change', 'admission-receipt']);
 
 export function workerEnvironment(input, password, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('Worker must start as a non-root user');
@@ -34,6 +37,15 @@ export function workerInvocation(args) {
   }
   if (args[0] === 'full-sync') {
     const [, command, ...flags] = args;
+    if (admissionCommands.has(command)) {
+      const allowed = command === 'admission-change'
+        ? flags.length === 4 && flags[0] === '--actor' && staffId.test(flags[1]) &&
+          flags[2] === '--plan' && flags[3] === admissionPlan
+        : flags.length === 2 && flags[0] === '--plan' &&
+          flags[1] === (command === 'admission-receipt' ? admissionReceipt : admissionPlan);
+      if (!allowed) throw new Error('Formal admission requires an exact operation and fixed private input');
+      return {argv: ['dist/external/full-sync/cli.js', ...args.slice(1)], formalFx: false, fullSync: false, replay: true};
+    }
     if (replayCommands.has(command)) {
       const allowed = command === 'replay-check'
         ? flags.length === 2 && flags[0] === '--plan' && flags[1] === replayPlan
@@ -58,6 +70,10 @@ export function workerInvocation(args) {
 }
 
 export function checkWorkerMode(input, operation) {
+  if (input.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT !== undefined &&
+      !['70', '80'].includes(input.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT)) {
+    throw new Error('Unsupported full-sync disk policy');
+  }
   if ((input.HD_FULL_REPLAY_OPS !== undefined && input.HD_FULL_REPLAY_OPS !== 'true') ||
       Boolean(operation.replay) !== (input.HD_FULL_REPLAY_OPS === 'true')) {
     throw new Error('Replay requires the dedicated one-shot service');

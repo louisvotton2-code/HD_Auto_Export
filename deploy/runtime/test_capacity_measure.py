@@ -107,10 +107,16 @@ class BoundedAdmission(unittest.TestCase):
             disk.return_value.f_bavail=346*1024**2
             disk.return_value.f_frsize=1024
             result=m.measure()
+            forecast=m.measure(prospective_target_rows=1_000_000)
             run.assert_not_called()
         self.assertEqual(result['targetRows'],100_000)
         self.assertEqual(result['components']['filesystemReservedBytes'],4*1024**3)
         self.assertEqual(result['components']['recoveryDumpBytes'],40_000_000)
+        self.assertEqual(forecast['incumbent']['evidenceHash'],e['evidenceHash'])
+        self.assertEqual(forecast['incumbent']['targetRows'],100_000)
+        self.assertEqual(forecast['prospectiveTargetRows'],1_000_000)
+        self.assertNotIn('evidenceHash',forecast['prospective'])
+        self.assertGreater(forecast['prospective']['projectedPeakBytes'],result['projectedPeakBytes'])
 
     def test_bounded_target_waits_when_sample_is_insufficient(self):
         e=Peak().data() | {'sampleEvidenceSufficient': False}

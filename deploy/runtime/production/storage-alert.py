@@ -1,4 +1,4 @@
-"""Persistent local storage alerts; the formal worker independently enforces 70%."""
+"""Persistent local storage alerts; the formal worker enforces its own disk policy."""
 import argparse
 import json
 import os
@@ -46,14 +46,18 @@ def main():
     s = args.config.lstat()
     if os.getuid() != 0 or not stat.S_ISREG(s.st_mode) or s.st_uid != 0 or stat.S_IMODE(s.st_mode) & 0o077:
         raise ValueError('Private root-owned configuration required')
-    expected = json.loads(args.config.read_text())['filesystemUuid']
+    config = json.loads(args.config.read_text())
+    expected = config['filesystemUuid']
+    stop_percent = config.get('heavyWorkPausePercent',70)
+    if type(stop_percent) is not int or stop_percent not in (70,80):
+        raise ValueError('Invalid heavy-work pause threshold')
     if not re.fullmatch(r'[a-f0-9-]{36}', expected):
         raise ValueError('Explicit data filesystem UUID required')
     actual = subprocess.check_output(['findmnt', '--mountpoint', str(ROOT/'data'), '-n', '-o', 'UUID'], text=True, timeout=10).strip()
     if actual != expected:
         raise ValueError('Data filesystem identity mismatch')
     fs = os.statvfs(ROOT/'data')
-    value = classify(fs.f_blocks*fs.f_frsize, fs.f_bavail*fs.f_frsize)
+    value = classify(fs.f_blocks*fs.f_frsize, fs.f_bavail*fs.f_frsize, stop_percent=stop_percent)
     value.update(event='hd_auto.storage', asOf=time.time(), includesReservedSpace=True)
     write_alert(value, ROOT/'staging/ext07/storage-alert.json')
     return 0
