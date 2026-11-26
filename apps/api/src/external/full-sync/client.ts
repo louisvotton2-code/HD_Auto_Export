@@ -28,7 +28,8 @@ export class FullSyncClient{
   catch{throw new FullSyncError('SYNC_TIMEOUT');}
   if(!response.ok){await response.body?.cancel();const wait=response.status===429?retryAfter(response.headers.get('retry-after')):1000;
    if(response.status===429)await this.options.defer?.(wait);
-   throw new FullSyncError(response.status===410?'SYNC_CURSOR_EXPIRED':response.status===429?'SYNC_RATE_LIMITED':response.status===413?'SYNC_TOO_LARGE':`SYNC_HTTP_${response.status}`,wait);}
+   const expiredCursor=response.status===410&&endpoint.startsWith('/api/catalog/changes?');
+   throw new FullSyncError(expiredCursor?'SYNC_CURSOR_EXPIRED':response.status===429?'SYNC_RATE_LIMITED':response.status===413?'SYNC_TOO_LARGE':`SYNC_HTTP_${response.status}`,wait);}
   return response;
  }
  private async exclusive<T>(work:()=>Promise<T>){if(this.busy)throw new FullSyncError('SYNC_NETWORK_BUSY');this.busy=true;try{return await work();}finally{this.busy=false;}}

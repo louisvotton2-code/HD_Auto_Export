@@ -21,6 +21,8 @@ import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './apply.js';
 import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapshot, eligibleReplayEvents} from './admission-replay.js';
 import {observeMaterialization,type DetailMaterializationObserver} from './materialization-log.js';
+import {readDeltaPolicy} from './delta-policy.js';
+import {scanDeltaSnapshotChunk} from './delta-census.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
@@ -28,6 +30,7 @@ const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC
 const capacityMeasurementMaxAgeMs=30_000;
 const detailMaterializationBudgetMs=5_000;
 const detailMaterializationTimeout='SYNC_DETAIL_SQL_TIMEOUT';
+const deltaEventAuditBatch=2_000;
 type CapacitySnapshot=Parameters<typeof capacityTarget>[0]&{id:string;bytes:string};
 type CapacityMeasurement={state:Record<string,any>;disk:CapacityDisk;sample:CapacitySample;snapshot:CapacitySnapshot|undefined};
 type DetailJobKey={source:Source;external_id:string;generation:string;replay_id?:string|null};
@@ -36,7 +39,7 @@ function completeCapacitySample(snapshot:CapacitySnapshot|undefined,sample:Capac
   &&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
 }
 type TickPhase='startup'|'withdrawals'|'delta_receive'|'delta_apply'|'space'|'source_maintenance'|
- 'daily'|'snapshot'|'details'|'admission_replay'|'reports'|'capacity'|'rotation'|'archive_cleanup'|'finalize';
+ 'daily'|'snapshot'|'details'|'admission_replay'|'reports'|'capacity'|'rotation'|'archive_cleanup'|'delta_transition'|'finalize';
 export async function configureFullSync(db:Database,actor:Actor,mode:'full'|'continuous'){
  if(!await formalAdmissionInstalled(db.pool))throw new FullSyncError('SYNC_ADMISSION_MIGRATION_REQUIRED');
  return db.transaction(async tx=>{
@@ -89,6 +92,8 @@ export class FullSyncWorker{
   if(!(await this.db.pool.query(`SELECT to_regclass('external_full_admission_replays') IS NOT NULL
     AND to_regclass('external_full_admission_replay_items') IS NOT NULL AS installed`)).rows[0]?.installed)
    throw new FullSyncError('SYNC_REPLAY_MIGRATION_REQUIRED');
+  if(!(await this.db.pool.query("SELECT to_regclass('external_full_delta_policy') IS NOT NULL AS installed")).rows[0]?.installed)
+   throw new FullSyncError('SYNC_DELTA_POLICY_MIGRATION_REQUIRED');
   const c=await this.db.pool.connect();if(!(await c.query('SELECT pg_try_advisory_lock(78291333) AS ok')).rows[0].ok){c.release();return false;}
   this.lock=c;c.on('error',()=>{this.lost=true;});
   const state=(await this.db.pool.query('UPDATE external_full_sync SET worker_fence=worker_fence+1 WHERE id=1 RETURNING worker_fence,last_error_code')).rows[0]!;
@@ -142,10 +147,15 @@ export class FullSyncWorker{
  }
  /** 2000-event page staged in 100-event transactions. Cursor advances only after every chunk and raw evidence is durable. */
  async receiveDelta(){
-  await this.alive();const s=await this.state();if(!s.since_at)return false;
+  await this.alive();const s=await this.state(),policy=await readDeltaPolicy(this.db.pool);
+  const replay=policy?.phase==='recovery'&&policy.recovery_pending_receive;
+  if(!replay&&(!s.since_at||policy?.cursor_invalid))return false;
+  const since=new Date(replay?policy.recovery_since_at!:s.since_at).toISOString();
+  const cursor=replay||s.receive_cursor===null?null:String(s.receive_cursor);
   try{
-  const page=await this.client.changes(new Date(s.since_at).toISOString(),s.receive_cursor===null?null:String(s.receive_cursor));
-  const key=s.receive_cursor===null?`since:${new Date(s.since_at).toISOString()}`:`cursor:${s.receive_cursor}`;
+   const page=await this.client.changes(since,cursor);
+   if(replay&&BigInt(page.cursor)>BigInt(policy.recovery_anchor_cursor!))throw new FullSyncError('SYNC_DELTA_OVERLAP_INVALID');
+   const key=cursor===null?`since:${since}`:`cursor:${cursor}`;
   await this.transaction(async tx=>{await persistSourceResponse(tx,page.rawResponse);await protectSourceBlob(tx,page.rawResponse.hash,{kind:'pending',reference:`full-page:${key}`});});
   for(let offset=0;offset<page.changes.length;offset+=LIMITS.dbBatch){await this.alive();await this.transaction(async tx=>{
    for(const e of page.changes.slice(offset,offset+LIMITS.dbBatch)){
@@ -159,26 +169,57 @@ export class FullSyncWorker{
   await this.transaction(async tx=>{
    const current=(await tx.query('SELECT receive_cursor,since_at FROM external_full_sync WHERE id=1 FOR UPDATE')).rows[0]!;
    if(String(current.receive_cursor)!==String(s.receive_cursor)||new Date(current.since_at).getTime()!==new Date(s.since_at).getTime())throw new FullSyncError('SYNC_CURSOR_CONFLICT');
+    if(replay){
+     const updated=await tx.query(`UPDATE external_full_delta_policy SET recovery_pending_receive=false,cursor_invalid=false,
+      recovery_previous_cursor=greatest(recovery_previous_cursor,$3::numeric),updated_at=clock_timestamp()
+      WHERE id=1 AND phase='recovery' AND recovery_pending_receive AND recovery_since_at=$1 AND evidence=$2`,
+     [since,policy.evidence,s.receive_cursor]);
+     if(!updated.rowCount)throw new FullSyncError('SYNC_CURSOR_CONFLICT');
+    }
    await tx.query(`INSERT INTO external_full_receipts(cursor_key,next_cursor,event_count,complete) VALUES($1,$2,$3,true) ON CONFLICT(cursor_key) DO UPDATE SET next_cursor=excluded.next_cursor,event_count=excluded.event_count,complete=true`,[key,page.nextCursor,page.changes.length]);
-   await tx.query("UPDATE external_full_sync SET receive_cursor=$1,last_receive_at=clock_timestamp(),next_delta_at=CASE WHEN $2 THEN clock_timestamp() ELSE date_bin(interval '5 minutes',clock_timestamp(),'epoch'::timestamptz)+interval '5 minutes' END WHERE id=1",[page.nextCursor,page.hasMore]);
+    await tx.query("UPDATE external_full_sync SET receive_cursor=$1,last_receive_at=clock_timestamp(),next_delta_at=CASE WHEN $2 THEN clock_timestamp() ELSE date_bin(interval '5 minutes',clock_timestamp(),'epoch'::timestamptz)+interval '5 minutes' END,since_at=coalesce($3::timestamptz,since_at) WHERE id=1",[page.nextCursor,page.hasMore,replay?since:null]);
+    if(policy&&!page.hasMore)await tx.query(`UPDATE external_full_delta_policy SET last_terminal_cursor=$1,last_terminal_at=clock_timestamp()
+     WHERE id=1 AND evidence IS NOT DISTINCT FROM $2 AND NOT recovery_pending_receive AND NOT cursor_invalid`,[page.nextCursor,policy.evidence]);
    await releaseSourceReferences(tx,'pending',`full-page:${key}`);
    await recordReceiveObservation(tx);
   });return page.hasMore;
-  }catch(error){try{await this.transaction(tx=>recordReceiveObservation(tx,errorCode(error)));}catch{/* Missing coverage remains explicit if the database/lease is unavailable. */}throw error;}
+  }catch(error){
+   const code=errorCode(error);
+   if(policy&&(code==='SYNC_CURSOR_EXPIRED'||code==='SYNC_DELTA_OVERLAP_INVALID')){
+    await this.transaction(async tx=>{
+     const result=await tx.query(`UPDATE external_full_delta_policy p
+      SET phase=CASE WHEN phase='draining' THEN phase ELSE 'blocked' END,
+       cursor_invalid=CASE WHEN $2 THEN p.cursor_invalid ELSE true END,recovery_pending_receive=false,
+       reason=CASE WHEN $2 THEN p.reason ELSE 'cursor_expired' END,updated_at=clock_timestamp()
+      FROM external_full_sync s WHERE p.id=1 AND s.id=1 AND p.evidence IS NOT DISTINCT FROM $1
+       AND p.recovery_pending_receive=$2 AND s.receive_cursor IS NOT DISTINCT FROM $3::numeric
+       AND s.since_at IS NOT DISTINCT FROM $4::timestamptz`,[policy.evidence,replay,s.receive_cursor,s.since_at]);
+     if(!result.rowCount)return; // A new recovery plan was filed while this request was in flight.
+     await tx.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=clock_timestamp() WHERE id=1',[code]);
+     await recordReceiveObservation(tx,code);
+    });
+    return false;
+   }
+   try{await this.transaction(tx=>recordReceiveObservation(tx,code));}catch{/* Missing coverage remains explicit if the database/lease is unavailable. */}
+   throw error;
+  }
  }
  async applyEvents(withdrawOnly=false){
   await this.alive();
-  const events=(await this.db.pool.query(`WITH eligible AS (SELECT e.*,a.external_id IS NOT NULL AS admitted,
+  const events=(await this.db.pool.query(`WITH boundary AS (
+   SELECT (SELECT high_water FROM external_full_delta_policy WHERE id=1 AND phase='draining' AND NOT $1) AS high_water
+   ), eligible AS (SELECT e.*,a.external_id IS NOT NULL AS admitted,
+   coalesce(e.event_id<=boundary.high_water,false) AS in_boundary,
    coalesce((e.operation='upsert' AND f.active AND f.locale_mask=7) OR (e.operation='relist' AND l.published_at IS NOT NULL),false) AS urgent,
    admission.admitted_count >= admission.admission_limit AS at_limit FROM external_full_events e
-   CROSS JOIN external_formal_admission_state admission
+   CROSS JOIN external_formal_admission_state admission CROSS JOIN boundary
    LEFT JOIN external_formal_admissions a USING(source,external_id)
    LEFT JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
    LEFT JOIN external_catalog_filter f ON f.listing_id=l.id
    WHERE admission.id=1 AND e.applied_at IS NULL AND ($1=false OR e.operation='withdraw')
-    ), ranked AS (SELECT *,row_number() OVER(PARTITION BY admitted,operation='withdraw' ORDER BY urgent DESC,event_id) AS lane_row FROM eligible)
+    ), ranked AS (SELECT *,row_number() OVER(PARTITION BY admitted,operation='withdraw' ORDER BY in_boundary DESC,urgent DESC,event_id) AS lane_row FROM eligible)
    SELECT * FROM ranked ORDER BY (operation='withdraw') DESC,
-   CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,urgent DESC,event_id LIMIT 100`,[withdrawOnly])).rows;
+   CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,in_boundary DESC,urgent DESC,event_id LIMIT 100`,[withdrawOnly])).rows;
   let expansionAllowed:boolean|undefined,completed=0;
   for(const event of events){
    const withdraw=event.operation==='withdraw';
@@ -202,7 +243,9 @@ export class FullSyncWorker{
     if(!known&&withdraw)await rememberFormalWithdrawal(tx,event.source,event.external_id,event.event_id,at);
     if(!known&&!withdraw&&!blockedByWithdrawal){
      const gates=(await tx.query(`SELECT admitted_count >= admission_limit AS at_limit,
-        admission_limit>$1 AND EXISTS (SELECT 1 FROM external_full_snapshots WHERE state IN ('downloading','staging','verified','applying')) AS snapshot_first,
+        (admission_limit>$1 OR EXISTS(SELECT 1 FROM external_full_delta_policy)) AND
+          EXISTS (SELECT 1 FROM external_full_snapshots WHERE state IN ('downloading','staging','verified','applying'))
+          OR EXISTS(SELECT 1 FROM external_full_delta_policy WHERE phase='recovery' OR cursor_invalid) AS snapshot_first,
         enabled AND NOT paused AND NOT disk_paused AND NOT capacity_pending AS can_expand
         FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`,[DEFAULT_FORMAL_LISTING_LIMIT])).rows[0]!;
      if(!gates.at_limit&&(!expansionAllowed||!gates.can_expand||gates.snapshot_first))return false;
@@ -336,17 +379,69 @@ export class FullSyncWorker{
   // Freeze CSV expansion while the first detail sample waits for reports/capacity approval.
   if(await this.sampleSaturated())return 0;
   await this.heavy();await mkdir(this.directory,{recursive:true,mode:0o700});
+  const policy=await readDeltaPolicy(this.db.pool);
   let snapshot=(await this.db.pool.query("SELECT * FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
+  if(snapshot&&policy&&(policy.phase!=='draining'||policy.snapshot_id!==snapshot.id))throw new FullSyncError('SYNC_DELTA_SNAPSHOT_CONFLICT');
   if(!snapshot){
+   if(policy){
+    if(policy.phase!=='recovery'||policy.cursor_invalid||policy.recovery_pending_receive)return;
+    const attempt=await this.transaction(async tx=>{
+     const stopped=await tx.query(`UPDATE external_full_delta_policy SET phase='blocked',reason='recovery_limit',updated_at=clock_timestamp()
+      WHERE id=1 AND phase='recovery' AND recovery_attempts>=12 AND next_recovery_at<=clock_timestamp()`);
+     if(stopped.rowCount)await tx.query(`UPDATE external_full_sync SET last_error_code='SYNC_DELTA_RECOVERY_LIMIT',
+      last_error_at=clock_timestamp() WHERE id=1`);
+     return tx.query(`UPDATE external_full_delta_policy p
+      SET recovery_attempts=recovery_attempts+1,next_recovery_at=clock_timestamp()+interval '5 minutes'
+      FROM external_full_sync s WHERE p.id=1 AND s.id=1 AND p.phase='recovery' AND NOT p.recovery_pending_receive
+       AND NOT p.cursor_invalid AND p.recovery_attempts<12 AND p.next_recovery_at<=clock_timestamp()
+       AND s.receive_cursor>=p.recovery_previous_cursor`);
+    });
+    if(!attempt.rowCount)return;
+   }
    const generatedAt=await this.client.probeExport(),id=randomUUID();
-   await this.transaction(async tx=>{await tx.query("INSERT INTO external_full_snapshots(id,generated_at,state,path) VALUES($1,$2,'downloading',$3)",[id,generatedAt,path.join(this.directory,`${id}.csv`)]);
-    await tx.query('UPDATE external_full_sync SET since_at=coalesce(since_at,$1) WHERE id=1',[generatedAt]);});
+   const created=await this.transaction(async tx=>{
+    if(policy){
+     const covers=(await tx.query(`SELECT s.since_at<=$1::timestamptz AND NOT EXISTS (
+      SELECT 1 FROM external_full_snapshots WHERE state='complete' AND generated_at>=$1::timestamptz) AS covers
+      FROM external_full_sync s WHERE s.id=1`,[generatedAt])).rows[0]!.covers;
+     if(!covers)return false; // The supplier still exposes an older export. Keep receiving deltas.
+    }
+    await tx.query("INSERT INTO external_full_snapshots(id,generated_at,state,path) VALUES($1,$2,'downloading',$3)",[id,generatedAt,path.join(this.directory,`${id}.csv`)]);
+    if(policy)await tx.query(`UPDATE external_full_delta_policy SET phase='draining',snapshot_id=$1,high_water=NULL,
+      audit_cursor=0,audit_missing=0,audit_capacity_excluded=0,event_audit_cursor=0,next_recovery_at='-infinity',
+      transitioned_at=NULL,updated_at=clock_timestamp() WHERE id=1`,[id]);
+    else await tx.query('UPDATE external_full_sync SET since_at=coalesce(since_at,$1) WHERE id=1',[generatedAt]);
+    return true;
+   });
+   if(!created)return;
    // Capture at the x-generated-at start before the long download; no overlapping network requests.
    await this.receiveDelta();await this.applyEvents(true);
    snapshot=(await this.db.pool.query('SELECT * FROM external_full_snapshots WHERE id=$1',[id])).rows[0];
   }
   if(snapshot.state==='downloading'){
+   if(policy?.recovery_since_at){
+    const allowed=await this.transaction(async tx=>{
+     const stopped=await tx.query(`UPDATE external_full_delta_policy SET phase='blocked',reason='recovery_limit',updated_at=clock_timestamp()
+      WHERE id=1 AND phase='draining' AND snapshot_id=$1 AND recovery_attempts>=12 AND next_recovery_at<=clock_timestamp()`,[snapshot.id]);
+     if(stopped.rowCount){
+      await tx.query("UPDATE external_full_snapshots SET state='failed',error_code='SYNC_DELTA_RECOVERY_LIMIT' WHERE id=$1",[snapshot.id]);
+      await tx.query(`UPDATE external_full_sync SET last_error_code='SYNC_DELTA_RECOVERY_LIMIT',last_error_at=clock_timestamp() WHERE id=1`);
+      return false;
+     }
+     const attempt=await tx.query(`UPDATE external_full_delta_policy SET recovery_attempts=recovery_attempts+1,next_recovery_at=clock_timestamp()+interval '5 minutes'
+      WHERE id=1 AND phase='draining' AND snapshot_id=$1 AND recovery_attempts<12 AND next_recovery_at<=clock_timestamp()`,[snapshot.id]);
+     return Boolean(attempt.rowCount);
+    });
+    if(!allowed)return;
+   }
    const downloaded=await this.client.downloadExport(snapshot.path,async()=>{await this.heavy();await this.applyEvents(true);});
+   if(policy&&new Date(downloaded.generatedAt)<new Date(snapshot.generated_at)){
+    await this.transaction(async tx=>{
+     await tx.query("UPDATE external_full_snapshots SET state='failed',error_code='SYNC_DELTA_EXPORT_REGRESSED' WHERE id=$1",[snapshot.id]);
+     await tx.query("UPDATE external_full_delta_policy SET phase='blocked',reason='audit_gap',updated_at=clock_timestamp() WHERE id=1");
+    });
+    throw new FullSyncError('SYNC_DELTA_EXPORT_REGRESSED');
+   }
    await this.db.pool.query("UPDATE external_full_snapshots SET state='staging',generated_at=$2,sha256=$3,bytes=$4 WHERE id=$1",[snapshot.id,downloaded.generatedAt,downloaded.sha256,downloaded.bytes]);
    snapshot={...snapshot,...{state:'staging',generated_at:new Date(downloaded.generatedAt),sha256:downloaded.sha256,bytes:downloaded.bytes}};
   }
@@ -494,9 +589,13 @@ export class FullSyncWorker{
    if(atLimit&&rows.length<100)last=snap.rows;
    const complete=BigInt(last)>=BigInt(snap.rows);
    await tx.query("UPDATE external_full_snapshots SET state=$2,apply_cursor=$3,completed_at=CASE WHEN $4 THEN now() ELSE NULL END WHERE id=$1",[id,complete?'complete':'applying',last,complete]);
-   if(complete)await tx.query(`UPDATE external_full_sync SET next_snapshot_at=CASE WHEN mode='continuous' THEN
-    greatest(date_bin(interval '24 hours',statement_timestamp(),$1::timestamptz)+interval '24 hours',
-     statement_timestamp()+interval '5 minutes') ELSE now()+interval '1 day' END WHERE id=1`,[snap.created_at]);
+   if(complete){
+    await this.captureDeltaHighWater(tx,id);
+    await tx.query(`UPDATE external_full_sync SET next_snapshot_at=CASE
+     WHEN EXISTS(SELECT 1 FROM external_full_delta_policy) THEN 'infinity'::timestamptz WHEN mode='continuous' THEN
+      greatest(date_bin(interval '24 hours',statement_timestamp(),$1::timestamptz)+interval '24 hours',
+       statement_timestamp()+interval '5 minutes') ELSE now()+interval '1 day' END WHERE id=1`,[snap.created_at]);
+   }
    return processed;
   });
  }
@@ -760,18 +859,19 @@ export class FullSyncWorker{
  }
  async rotate(){
   if(await this.sampleSaturated())return 0;await this.heavy();return this.transaction(async tx=>{
-   // Missing in one complete export is a high-priority verification, never a removal signal.
+   // An old frozen export is not negative evidence for a later delta admission.
+   const legacy=!(await readDeltaPolicy(tx));
    const exports=(await tx.query<{completed:string|null;applying:string|null}>(`SELECT
-    (SELECT id FROM external_full_snapshots WHERE state='complete' ORDER BY created_at DESC,id DESC LIMIT 1) AS completed,
-    (SELECT id FROM external_full_snapshots WHERE state IN ('verified','applying') LIMIT 1) AS applying`)).rows[0]!;
+    (SELECT id FROM external_full_snapshots WHERE $1 AND state='complete' ORDER BY created_at DESC,id DESC LIMIT 1) AS completed,
+    (SELECT id FROM external_full_snapshots WHERE $1 AND state IN ('verified','applying') LIMIT 1) AS applying`,[legacy])).rows[0]!;
    const rows=(await tx.query(`SELECT m.*,e.missing_from_export FROM external_full_members m
     CROSS JOIN LATERAL (SELECT $1::uuid IS NOT NULL AND m.last_snapshot IS DISTINCT FROM $1
      AND ($2::uuid IS NULL OR m.last_snapshot IS DISTINCT FROM $2) AS missing_from_export) e
     WHERE m.state<>'withdrawn' AND NOT EXISTS(SELECT 1 FROM external_full_work w WHERE w.source=m.source AND w.external_id=m.external_id AND kind='detail') AND
     NOT EXISTS(SELECT 1 FROM external_full_admission_replay_items item WHERE item.source=m.source AND item.external_id=m.external_id
       AND item.detail_generation=m.desired_generation AND item.state='scheduled') AND
-    (last_detail_at IS NULL OR last_detail_at<now()-interval '7 days' OR last_accessed_at>last_detail_at OR photo_expires_at<now()+interval '1 day' OR (e.missing_from_export AND NOT verification_pending))
-    ORDER BY (last_accessed_at>last_detail_at) DESC NULLS LAST,(photo_expires_at<now()+interval '1 day') DESC NULLS LAST,last_detail_at NULLS FIRST,source,external_id LIMIT 100`,[exports.completed,exports.applying])).rows;
+    (last_detail_at IS NULL OR ($3 AND last_detail_at<now()-interval '7 days') OR last_accessed_at>last_detail_at OR photo_expires_at<now()+interval '1 day' OR (e.missing_from_export AND NOT verification_pending))
+    ORDER BY (last_accessed_at>last_detail_at) DESC NULLS LAST,(photo_expires_at<now()+interval '1 day') DESC NULLS LAST,last_detail_at NULLS FIRST,source,external_id LIMIT 100`,[exports.completed,exports.applying,legacy])).rows;
    for(const m of rows){const next=(await tx.query(`UPDATE external_full_members SET desired_generation=desired_generation+1,verification_pending=verification_pending OR $3::boolean WHERE source=$1 AND external_id=$2 RETURNING desired_generation`,[m.source,m.external_id,m.missing_from_export])).rows[0]!;
     await queue(tx,m.source,m.external_id,'detail',next.desired_generation,m.last_accessed_at||m.photo_expires_at?30:0);}
    return rows.length;
@@ -840,12 +940,116 @@ export class FullSyncWorker{
   await this.db.pool.query('UPDATE external_full_sync SET last_capacity_sample=$1,capacity_pending=false WHERE id=1',[sample.details]);
   return true;
  }
+ private async captureDeltaHighWater(tx:PoolClient,snapshotId:string){
+  // Only a durable terminal page establishes the supplier frontier. Once
+  // captured, later pages advance receive_cursor without changing this proof.
+  await tx.query(`UPDATE external_full_delta_policy p SET high_water=p.last_terminal_cursor,updated_at=clock_timestamp()
+   FROM external_full_sync s,external_full_snapshots b WHERE p.id=1 AND s.id=1
+   AND p.phase='draining' AND p.snapshot_id=b.id AND b.id=$1 AND b.state='complete'
+   AND p.high_water IS NULL AND NOT p.cursor_invalid AND s.receive_cursor>=p.last_terminal_cursor
+   AND s.since_at<=b.generated_at AND p.last_terminal_at>=b.generated_at
+   AND (p.recovery_previous_cursor IS NULL OR p.last_terminal_cursor>=p.recovery_previous_cursor)`,[snapshotId]);
+ }
+ private async proveDeltaTransition(){
+  const policy=await readDeltaPolicy(this.db.pool);
+  if(policy?.phase!=='draining'||!policy.snapshot_id)return;
+  const snapshot=(await this.db.pool.query<{state:string;rows:string;generated_at:Date}>(
+   'SELECT state,rows,generated_at FROM external_full_snapshots WHERE id=$1',[policy.snapshot_id])).rows[0]!;
+  if(snapshot.state!=='complete')return;
+  await this.transaction(async tx=>{
+   const snapshotId=policy.snapshot_id!;
+   if(policy.high_water===null&&!policy.cursor_invalid)await this.captureDeltaHighWater(tx,snapshotId);
+   const current=(await readDeltaPolicy(tx))!;
+   if(BigInt(current.audit_cursor)<BigInt(snapshot.rows)){
+    const batch=await scanDeltaSnapshotChunk(tx,snapshotId,current.audit_cursor);
+    if(BigInt(batch.pending)>0n)return;
+    await tx.query(`UPDATE external_full_delta_policy SET audit_cursor=$1,audit_missing=audit_missing+$2,
+     audit_capacity_excluded=audit_capacity_excluded+$3,updated_at=clock_timestamp() WHERE id=1`,
+    [batch.cursor,batch.missing,batch.capacityExcluded]);
+    return;
+   }
+   const invalid=current.cursor_invalid;
+   if(invalid||BigInt(current.audit_missing)>0n){
+    await this.blockDeltaTransition(tx,invalid);
+    return;
+   }
+   if(current.high_water===null)return;
+   // Check the entire durable frontier by event ID, including outstanding
+   // work received before the CSV. Bound each tick without a wide history scan.
+   const through=(await tx.query<{cursor:string}>(`SELECT
+    (CASE WHEN count(*)<$3 THEN $2::numeric ELSE max(event_id) END)::text AS cursor FROM (
+     SELECT event_id FROM external_full_events WHERE event_id>$1 AND event_id<=$2 ORDER BY event_id LIMIT $3
+    ) boundary`,[current.event_audit_cursor,current.high_water,deltaEventAuditBatch])).rows[0]!.cursor;
+   const work=(await tx.query<{unapplied:boolean;detail_pending:boolean;detail_unresolved:boolean}>(`WITH owed AS MATERIALIZED (
+    SELECT e.source,e.external_id,coalesce(m.desired_generation,e.detail_generation) AS generation
+    FROM external_full_events e
+    LEFT JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id
+    WHERE e.applied_at IS NOT NULL AND e.event_id>$1 AND e.event_id<=$2 AND (
+     e.public_outcome='pending' OR
+     (e.operation<>'withdraw' AND e.detail_generation IS NOT NULL
+       AND e.public_outcome='superseded' AND coalesce(m.state<>'withdrawn',true)
+       AND coalesce(m.applied_generation<e.detail_generation,true)))
+    ) SELECT
+    EXISTS(SELECT 1 FROM external_full_events WHERE applied_at IS NULL AND event_id>$1 AND event_id<=$2) AS unapplied,
+    EXISTS(SELECT 1 FROM owed) AS detail_pending,
+    EXISTS(SELECT 1 FROM owed o WHERE NOT EXISTS(SELECT 1 FROM external_full_work w
+     WHERE w.source=o.source AND w.external_id=o.external_id AND w.kind='detail' AND w.generation=o.generation
+       AND w.attempts<5)) AS detail_unresolved`,[current.event_audit_cursor,through])).rows[0]!;
+   if(work.detail_unresolved){
+    await this.blockDeltaTransition(tx,false);
+    return;
+   }
+   if(work.unapplied||work.detail_pending)return;
+   // An older recovered removal may have been superseded by a later price
+   // event already in the database. Absence from the replacement is not a
+   // withdrawal by itself, so require affirmative newer evidence before arming.
+   const conflictingWithdrawal=current.recovery_anchor_cursor!==null&&(await tx.query(`SELECT EXISTS(
+    SELECT 1 FROM external_full_events e
+    JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id
+    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
+    JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask<>0
+    LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
+    WHERE e.event_id>greatest($1::numeric,$5::numeric) AND e.event_id<=least($2::numeric,$6::numeric)
+     AND e.operation='withdraw' AND e.public_outcome='superseded'
+     AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
+     AND NOT EXISTS(SELECT 1 FROM external_full_events relist WHERE relist.source=e.source AND relist.external_id=e.external_id
+      AND relist.event_id>e.event_id AND relist.business_at>=e.business_at AND relist.operation='relist'
+      AND relist.applied_at IS NOT NULL AND relist.error_code IS NULL AND m.applied_generation>=relist.detail_generation
+      AND l.source_updated_at>=relist.business_at)
+     AND NOT ($4::timestamptz>=e.business_at AND coalesce(l.source_updated_at>=e.business_at,false)
+      AND EXISTS(SELECT 1 FROM external_full_stage csv WHERE csv.snapshot_id=$3 AND csv.source=e.source AND csv.external_id=e.external_id))
+    ) AS missing`,[current.recovery_anchor_cursor,current.recovery_previous_cursor,snapshotId,snapshot.generated_at,current.event_audit_cursor,through])).rows[0]!.missing;
+   const staleEvent=(await tx.query(`SELECT EXISTS(SELECT 1 FROM external_full_events e
+    JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id AND m.event_order>=e.event_id
+    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
+    JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask=7
+    JOIN external_catalog c ON c.listing_id=l.id
+    LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
+    WHERE e.event_id>$1 AND e.event_id<=$2 AND e.public_outcome IN ('not_public','superseded') AND e.detail_generation IS NOT NULL
+     AND (e.source_type IN ('new','relisted') OR (e.source_type='price' AND e.was_public))
+     AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
+     AND (l.source_updated_at IS NULL OR l.source_updated_at<e.business_at OR
+      (e.source_type='price' AND l.source_updated_at=e.business_at AND c.price_cny IS NOT DISTINCT FROM e.prior_public_price))
+    ) AS missing`,[current.event_audit_cursor,through])).rows[0]!.missing;
+   if(conflictingWithdrawal||staleEvent)await this.blockDeltaTransition(tx,false);
+   else await tx.query(`UPDATE external_full_delta_policy SET event_audit_cursor=$1,
+    phase=CASE WHEN $1=high_water THEN 'ready' ELSE phase END,updated_at=clock_timestamp() WHERE id=1`,[through]);
+  });
+ }
+ private async blockDeltaTransition(tx:PoolClient,cursorInvalid:boolean){
+  await tx.query("UPDATE external_full_delta_policy SET phase='blocked',reason=$1,updated_at=clock_timestamp() WHERE id=1",
+   [cursorInvalid?'cursor_expired':'audit_gap']);
+  await tx.query(`UPDATE external_full_sync SET last_error_code=$1,last_error_at=clock_timestamp() WHERE id=1`,
+   [cursorInvalid?'SYNC_CURSOR_EXPIRED':'SYNC_DELTA_AUDIT_GAP']);
+ }
  async pruneStaging(){
   await this.transaction(async tx=>{
    if(!await physicalCleanupAllowed(tx))return;
    await tx.query('SELECT pg_advisory_xact_lock(78291334)');
    const obsolete=(await tx.query(`SELECT s.id,s.path FROM external_full_snapshots s WHERE s.archive_pruned_at IS NULL AND s.state IN('complete','failed') AND
     (s.created_at<now()-interval '7 days' OR s.id NOT IN(SELECT id FROM external_full_snapshots ORDER BY created_at DESC LIMIT 2)) AND
+    NOT EXISTS(SELECT 1 FROM external_full_delta_policy p WHERE p.snapshot_id=s.id OR p.retained_snapshot_id=s.id OR s.id=(
+      SELECT id FROM external_full_snapshots WHERE state='complete' ORDER BY created_at DESC,id DESC LIMIT 1)) AND
     NOT EXISTS(SELECT 1 FROM external_full_archive_pins p WHERE p.snapshot_id=s.id) ORDER BY s.created_at LIMIT 1`)).rows[0];
    if(!obsolete)return;
    await tx.query('DELETE FROM external_full_stage WHERE ctid IN(SELECT ctid FROM external_full_stage WHERE snapshot_id=$1 LIMIT 200)',[obsolete.id]);
@@ -914,13 +1118,15 @@ export class FullSyncWorker{
    this.phase='withdrawals';await this.applyEvents(true);
    this.phase='admission_replay';await this.replayAdmissions();
    this.phase='snapshot';
+   const policy=await readDeltaPolicy(this.db.pool);
    const active=(await this.db.pool.query("SELECT id FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rows[0];
    const snapshotDue=new Date(current.next_snapshot_at).getTime()<=Date.now();
    let promotionBlocked=false;
    const onPromotionBlocked=()=>{promotionBlocked=true;};
-   // Detail work can outlive a snapshot. A continuous export follows its own schedule after the prior snapshot completes.
-   if(active||(snapshotDue&&current.mode==='continuous'))await this.snapshot(onPromotionBlocked);
-   else if(snapshotDue&&!current.last_success_at){
+   // Durable intent fences both legacy export triggers before the current CSV finishes.
+   if(active||policy?.phase==='recovery')await this.snapshot(onPromotionBlocked);
+   else if(!policy&&snapshotDue&&current.mode==='continuous')await this.snapshot(onPromotionBlocked);
+   else if(!policy&&snapshotDue&&!current.last_success_at){
     const bootstrapDetailPending=current.since_at&&(await this.db.pool.query("SELECT 1 FROM external_full_work WHERE kind='detail' LIMIT 1")).rowCount;
     if(!bootstrapDetailPending)await this.snapshot(onPromotionBlocked);
    }
@@ -928,14 +1134,16 @@ export class FullSyncWorker{
    this.phase='withdrawals';await this.applyEvents(true);
    this.phase='reports';for(let n=deferredReports;n<(refreshed?1:20);n++){await this.applyEvents(true);if(!await this.report())break;}
    this.phase='capacity';await this.capacityGate();
+   this.phase='delta_transition';await this.proveDeltaTransition();
    // Let the ready queue drain after a whole promotion turn was blocked.
    if(!promotionBlocked){this.phase='rotation';await this.rotate();}
    this.phase='archive_cleanup';await this.pruneStaging();
    this.phase='finalize';
    const pending=(await this.db.pool.query("SELECT 1 FROM external_full_work UNION ALL SELECT 1 FROM external_full_events WHERE applied_at IS NULL UNION ALL SELECT 1 FROM external_full_members WHERE state<>'withdrawn' AND (applied_generation<desired_generation OR cardinality(locales)<3 OR verification_pending) LIMIT 1")).rowCount;
    const building=(await this.db.pool.query("SELECT 1 FROM external_full_snapshots WHERE state IN('downloading','staging','verified','applying') LIMIT 1")).rowCount;
-   if(!pending&&!building)await this.db.pool.query('UPDATE external_full_sync SET last_success_at=now(),last_error_code=NULL,last_error_at=NULL WHERE id=1');
-  }catch(error){const code=errorCode(error);if(code==='SYNC_LEASE_LOST')throw error;if(code==='SYNC_CURSOR_EXPIRED')await this.recover();await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=now() WHERE id=1',[code]);if(code!=='SYNC_HEAVY_PAUSED')throw error;}
+   if(!pending&&!building)await this.db.pool.query(`UPDATE external_full_sync SET last_success_at=now(),last_error_code=NULL,last_error_at=NULL WHERE id=1
+    AND NOT EXISTS(SELECT 1 FROM external_full_delta_policy WHERE phase IN('blocked','recovery') OR cursor_invalid)`);
+  }catch(error){const code=errorCode(error);if(code==='SYNC_LEASE_LOST')throw error;if(code==='SYNC_CURSOR_EXPIRED'&&!await readDeltaPolicy(this.db.pool))await this.recover();await this.db.pool.query('UPDATE external_full_sync SET last_error_code=$1,last_error_at=now() WHERE id=1',[code]);if(code!=='SYNC_HEAVY_PAUSED')throw error;}
  }
 }
 

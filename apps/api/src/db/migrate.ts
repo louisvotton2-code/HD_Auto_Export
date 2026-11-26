@@ -11,7 +11,8 @@ const hanPairMigrationAt = 1794182400050; // 0050
 const replayMigrationAt = 1794182400053; // 0053
 const keywordMatchMigrationAt = 1794182400054; // 0054
 const formalExpansionMigrationAt = 1794182400055; // 0055
-const migrationModes = ['--defer-han-pair-index', '--complete-han-pair-index', '--apply-keyword-match', '--apply-formal-expansion'] as const;
+const deltaPolicyMigrationAt = 1794182400056; // 0056
+const migrationModes = ['--defer-han-pair-index', '--complete-han-pair-index', '--apply-keyword-match', '--apply-formal-expansion', '--apply-delta-policy'] as const;
 type MigrationMode = typeof migrationModes[number];
 
 async function applyExplicitMigration(db: Database, mode: MigrationMode) {
@@ -22,14 +23,18 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
   const later = release.filter(entry => entry.folderMillis > hanPairMigrationAt);
   const keywordMatch = files.find(entry => entry.folderMillis === keywordMatchMigrationAt);
   const formalExpansion = files.find(entry => entry.folderMillis === formalExpansionMigrationAt);
-  if (!hanPair || before.length !== 50 || later.length !== 3 || later.at(-1)?.folderMillis !== replayMigrationAt || !keywordMatch || !formalExpansion) {
-    throw new Error('Expected the known migration sequence through 0055.');
+  const deltaPolicy = files.find(entry => entry.folderMillis === deltaPolicyMigrationAt);
+  if (!hanPair || before.length !== 50 || later.length !== 3 || later.at(-1)?.folderMillis !== replayMigrationAt ||
+    !keywordMatch || !formalExpansion || !deltaPolicy) {
+    throw new Error('Expected the known migration sequence through 0056.');
   }
   const pending = [...before, ...later];
   const pendingWithKeywordMatch = [...pending, keywordMatch];
   const completedWithKeywordMatch = [...release, keywordMatch];
   const pendingWithFormalExpansion = [...pendingWithKeywordMatch, formalExpansion];
   const completedWithFormalExpansion = [...completedWithKeywordMatch, formalExpansion];
+  const pendingWithDeltaPolicy = [...pendingWithFormalExpansion, deltaPolicy];
+  const completedWithDeltaPolicy = [...completedWithFormalExpansion, deltaPolicy];
   await db.transaction(async tx => {
     await tx.query('SELECT pg_advisory_xact_lock(78291331)');
     const ledger = await tx.query<{ created_at: string; hash: string }>(
@@ -39,8 +44,16 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
         ledger.rows[index]?.hash === entry.hash);
 
     const expansionApplied = matches(pendingWithFormalExpansion) || matches(completedWithFormalExpansion);
+    const deltaPolicyApplied = matches(pendingWithDeltaPolicy) || matches(completedWithDeltaPolicy);
+    if (mode === '--apply-delta-policy') {
+      if (deltaPolicyApplied) return;
+      if (!expansionApplied) throw new Error('Expected the exact 0055 ledger with 0050 pending or complete.');
+      await applyLedgerEntry(tx, deltaPolicy);
+      return;
+    }
+
     if (mode === '--apply-formal-expansion') {
-      if (expansionApplied) return;
+      if (expansionApplied || deltaPolicyApplied) return;
       if (!matches(pendingWithKeywordMatch) && !matches(completedWithKeywordMatch)) {
         throw new Error('Expected the exact 0054 ledger with 0050 pending or complete.');
       }
@@ -49,7 +62,7 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
     }
 
     if (mode === '--apply-keyword-match') {
-      if (matches(pendingWithKeywordMatch) || matches(completedWithKeywordMatch) || expansionApplied) return;
+      if (matches(pendingWithKeywordMatch) || matches(completedWithKeywordMatch) || expansionApplied || deltaPolicyApplied) return;
       if (!matches(pending) && !matches(release)) throw new Error('Expected the exact 0053 ledger with 0050 pending or complete.');
       await applyLedgerEntry(tx, keywordMatch);
       return;
@@ -57,7 +70,7 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
 
     if (mode === '--defer-han-pair-index') {
       const at0049 = matches(before);
-      if (!at0049 && !matches(pending) && !matches(pendingWithKeywordMatch) && !matches(pendingWithFormalExpansion)) {
+      if (!at0049 && !matches(pending) && !matches(pendingWithKeywordMatch) && !matches(pendingWithFormalExpansion) && !matches(pendingWithDeltaPolicy)) {
         throw new Error('Expected the exact 0049 ledger or the single pending 0050 entry.');
       }
       const index = await tx.query<{ exists: boolean }>(
@@ -74,8 +87,8 @@ async function applyExplicitMigration(db: Database, mode: MigrationMode) {
       return;
     }
 
-    const isPending = matches(pending) || matches(pendingWithKeywordMatch) || matches(pendingWithFormalExpansion);
-    if (!isPending && !matches(release) && !matches(completedWithKeywordMatch) && !matches(completedWithFormalExpansion)) {
+    const isPending = matches(pending) || matches(pendingWithKeywordMatch) || matches(pendingWithFormalExpansion) || matches(pendingWithDeltaPolicy);
+    if (!isPending && !matches(release) && !matches(completedWithKeywordMatch) && !matches(completedWithFormalExpansion) && !matches(completedWithDeltaPolicy)) {
       throw new Error('Expected the exact pending or completed 0050 ledger.');
     }
     await tx.query("SET LOCAL hd.require_prebuilt_search_zh_han_pairs_index='on'");

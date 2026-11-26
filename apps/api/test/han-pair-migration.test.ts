@@ -50,6 +50,7 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
     (await db.pool.query(`SELECT created_at::text, hash FROM drizzle.__drizzle_migrations ORDER BY ${order}`)).rows;
   const defer = () => migrateDatabase(db, '--defer-han-pair-index');
   const complete = () => migrateDatabase(db, '--complete-han-pair-index');
+  const applyDeltaPolicy = () => migrateDatabase(db, '--apply-delta-policy');
   const runMigrationCli = (mode: '--defer-han-pair-index' | '--complete-han-pair-index') =>
     promisify(execFile)(process.execPath, ['--import', 'tsx', 'src/db/migrate.ts', mode], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), env: { DATABASE_URL: address.href },
@@ -87,7 +88,8 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
     await tx.query("UPDATE external_listings SET upstream_state='withdrawn' WHERE id=$1", [withdrawn]);
     return listingId;
   });
-  const cursors = async () => (await db.pool.query(`SELECT s.receive_cursor,s.received_events,s.applied_events,p.apply_cursor
+  const cursors = async (target = db) => (await target.pool.query(`SELECT
+    s.receive_cursor,s.received_events,s.applied_events,s.since_at,s.last_receive_at,s.next_delta_at,s.next_snapshot_at,p.apply_cursor
     FROM external_full_sync s CROSS JOIN external_full_snapshots p WHERE s.id=1`)).rows;
   const beforeCursors = await cursors();
   const inventory = new InventoryService(db, true);
@@ -134,25 +136,70 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   await migrateDatabase(db, '--apply-keyword-match');
   assert.deepEqual(await ledger('id'), [...pending, keyword]);
 
+  await assert.rejects(applyDeltaPolicy, /Expected the exact 0055 ledger/);
   const expansion = { created_at: String(files[55]!.folderMillis), hash: files[55]!.hash };
   await migrateDatabase(db, '--apply-formal-expansion');
   const pendingWithExpansion = [...pending, keyword, expansion];
   assert.deepEqual(await ledger('id'), pendingWithExpansion);
   assert.deepEqual(await cursors(), beforeCursors);
+
+  const deltaPolicy = { created_at: String(files[56]!.folderMillis), hash: files[56]!.hash };
+  await Promise.all([applyDeltaPolicy(), applyDeltaPolicy()]);
+  const pendingWithDeltaPolicy = [...pendingWithExpansion, deltaPolicy];
+  assert.deepEqual(await ledger('id'), pendingWithDeltaPolicy);
+  assert.equal((await db.pool.query('SELECT 1 FROM external_full_delta_policy')).rowCount, 0);
+  assert.deepEqual(await cursors(), beforeCursors);
+  await migrateDatabase(db, '--apply-keyword-match');
+  await migrateDatabase(db, '--apply-formal-expansion');
+  await defer();
+  assert.deepEqual(await ledger('id'), pendingWithDeltaPolicy);
   await assert.rejects(migrateDatabase(db), /Migration 0050 is pending/);
   await db.transaction(tx => tx.query(files[50]!.sql[0]!));
   await db.pool.query(`CREATE INDEX CONCURRENTLY external_catalog_search_zh_han_pairs_idx ON public.external_catalog_search
     USING gin (public.external_catalog_han_pairs(search_document)) WHERE locale='zh'`);
   const [, completedCli] = await Promise.all([complete(), runMigrationCli('--complete-han-pair-index')]);
   assert.match(completedCli.stdout, /Database migrations applied/);
-  const completedById = [...pendingWithExpansion, history[50]];
-  const completedByTimestamp = [...history, keyword, expansion];
+  const completedById = [...pendingWithDeltaPolicy, history[50]];
+  const completedByTimestamp = [...history, keyword, expansion, deltaPolicy];
   assert.deepEqual(await ledger('id'), completedById);
   assert.deepEqual(await ledger('created_at'), completedByTimestamp);
   assert.deepEqual(await cursors(), beforeCursors);
   await migrateDatabase(db);
+  await applyDeltaPolicy();
   assert.deepEqual(await ledger('id'), completedById);
   assert.deepEqual(await ledger('created_at'), completedByTimestamp);
+
+  await t.test('0056 also applies after completing 0050 on the exact 0055 ledger', async subtest => {
+    const completedName = `${name}_complete`;
+    await maintenance.pool.query(`CREATE DATABASE "${completedName}"`);
+    const completedAddress = new URL(address.href);
+    completedAddress.pathname = `/${completedName}`;
+    const completedDb = createDatabase(completedAddress.href, 2);
+    subtest.after(async () => {
+      try { await completedDb.close(); }
+      finally { await maintenance.pool.query(`DROP DATABASE "${completedName}" WITH (FORCE)`); }
+    });
+    const completedEntries = (journal.entries as { idx: number; tag: string }[]).slice(0, 56);
+    await Promise.all(completedEntries.slice(50).map(({ tag }) =>
+      copyFile(new URL(`${tag}.sql`, source), path.join(previous, `${tag}.sql`))));
+    await writeFile(path.join(previous, 'meta/_journal.json'), JSON.stringify({ ...journal, entries: completedEntries }));
+    await migrate(completedDb.orm, { migrationsFolder: previous });
+    await completedDb.pool.query(`UPDATE external_full_sync SET since_at='2026-11-25T00:00:00Z',
+      last_receive_at='2026-11-25T00:05:00Z',next_delta_at='2026-11-25T00:10:00Z',next_snapshot_at='2026-11-26T00:00:00Z',
+      receive_cursor=82,received_events=9,applied_events=8 WHERE id=1`);
+    await completedDb.pool.query(`INSERT INTO external_full_snapshots(id,generated_at,state,path,rows,staged,apply_cursor)
+      VALUES ($1,'2026-11-25T00:00:00Z','applying','synthetic.csv',6,6,3)`, [randomUUID()]);
+    const completedBefore = await cursors(completedDb);
+    const completedLedger = () => completedDb.pool.query('SELECT created_at::text, hash FROM drizzle.__drizzle_migrations ORDER BY id');
+    assert.deepEqual((await completedLedger()).rows, completedByTimestamp.slice(0, -1));
+    await migrateDatabase(completedDb, '--apply-delta-policy');
+    await migrateDatabase(completedDb, '--apply-delta-policy');
+    await migrateDatabase(completedDb, '--apply-keyword-match');
+    await migrateDatabase(completedDb, '--apply-formal-expansion');
+    assert.deepEqual((await completedLedger()).rows, completedByTimestamp);
+    assert.equal((await completedDb.pool.query('SELECT 1 FROM external_full_delta_policy')).rowCount, 0);
+    assert.deepEqual(await cursors(completedDb), completedBefore);
+  });
   assert.deepEqual((await inventory.listPublic(query, 'han-pair-complete')).data.items.map(item => item.id), [`ext-${before}`]);
   assert.equal((await inventory.filters(filters)).total, 1);
 });
