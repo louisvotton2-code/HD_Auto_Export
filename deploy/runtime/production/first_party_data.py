@@ -24,6 +24,7 @@ _SUPPLIER_TABLES = tuple('''
     external_catalog_keyword_match external_catalog_keyword_match_en external_catalog_keyword_match_ru
     external_catalog_keyword_match_state
     external_catalog_global_facets external_catalog_state external_formal_admission_state external_formal_admissions
+    external_formal_expansion_operations external_formal_expansion_admissions
     external_full_admission_replays external_full_admission_replay_items
     external_full_aliases external_full_archive_pins external_full_controls external_full_daily
     external_full_events external_full_members external_full_receipts external_full_receive_observations external_full_snapshots

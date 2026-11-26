@@ -4,6 +4,7 @@ import { readLocalSecret } from '../../local-secrets.js';
 import { jsonHash } from '../normalize.js';
 import type { AdmissionReplayRequest } from './admission-replay.js';
 import { FullSyncError } from './types.js';
+import { defaultHeavyWorkPausePercent, heavyWorkPausePercentSchema, reachedHeavyWorkPause, type HeavyWorkPausePercent } from './disk-policy.js';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const release = z.string().regex(/^[a-f0-9]{40}$/);
@@ -18,6 +19,7 @@ const prospective = z.object({
   kind: z.literal('replay-prospective-capacity-v1'), release, batch,
   preflightAt: time, sourceNativeExpiresAt: time, workerFence: count.min(1),
   diskTotalBytes: count.min(1), estimatedPeakBytes: count.min(1),
+  heavyWorkPausePercent: heavyWorkPausePercentSchema.default(defaultHeavyWorkPausePercent),
   quota: z.object({ requiredInitialDetailIds: count, operatorApprovedRetryIds: count,
     verifiedRemainingDetailIds: count, accountCheckedAt: time }),
 });
@@ -25,11 +27,12 @@ const checked = z.strictObject({
   kind: z.literal('replay-prewrite-checked-v1'), release, batch,
   prospectiveReceiptSha256: digest, checkedAt: time,
 });
-export type ReplayOperatorApproval = { workerFence: string; expiresAt: number };
+export type ReplayOperatorApproval = { workerFence: string; expiresAt: number; heavyWorkPausePercent: HeavyWorkPausePercent };
 
 /** Recheck the host-issued, read-only receipts at the private production command boundary. */
 export function validateReplayApproval(plan: AdmissionReplayRequest, expectedRelease: string | undefined,
-  raw: string, checkedRaw: string, now = Date.now()): ReplayOperatorApproval {
+  raw: string, checkedRaw: string, now = Date.now(),
+  heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent): ReplayOperatorApproval {
   try {
     const forecast = prospective.parse(JSON.parse(raw));
     const proof = checked.parse(JSON.parse(checkedRaw));
@@ -52,18 +55,20 @@ export function validateReplayApproval(plan: AdmissionReplayRequest, expectedRel
         accountAt <= preflight && new Date(accountAt).toISOString().slice(0,10) === day &&
         quota.requiredInitialDetailIds === plan.eventIds.length * 3 &&
         quota.operatorApprovedRetryIds <= quota.verifiedRemainingDetailIds - quota.requiredInitialDetailIds &&
-        10n * BigInt(forecast.estimatedPeakBytes) < 7n * BigInt(forecast.diskTotalBytes)) {
-      return { workerFence: String(forecast.workerFence), expiresAt };
+        forecast.heavyWorkPausePercent === heavyWorkPausePercent &&
+        !reachedHeavyWorkPause(forecast.estimatedPeakBytes,forecast.diskTotalBytes,heavyWorkPausePercent)) {
+      return { workerFence: String(forecast.workerFence), expiresAt, heavyWorkPausePercent };
     }
   } catch { /* Operator evidence is private. Do not report the payload or parser details. */ }
   throw new FullSyncError('SYNC_REPLAY_APPROVAL_INVALID');
 }
 
-export function readReplayApproval(plan: AdmissionReplayRequest, expectedRelease: string | undefined) {
+export function readReplayApproval(plan: AdmissionReplayRequest, expectedRelease: string | undefined,
+  heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent) {
   try {
     return validateReplayApproval(plan, expectedRelease,
       readLocalSecret('/private/replay/capacity.json', 65_536, true),
-      readLocalSecret('/private/replay/checked.json', 65_536));
+      readLocalSecret('/private/replay/checked.json', 65_536), Date.now(), heavyWorkPausePercent);
   } catch {
     throw new FullSyncError('SYNC_REPLAY_APPROVAL_INVALID');
   }

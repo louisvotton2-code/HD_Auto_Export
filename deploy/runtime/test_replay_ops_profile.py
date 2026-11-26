@@ -76,11 +76,21 @@ class ReplayOpsProfile(unittest.TestCase):
             'NODE_ENV': 'production', 'NODE_OPTIONS': '--max-old-space-size=192',
             'HD_DATABASE_NAME': self.database, 'HD_DEPLOYMENT_ENV': 'production', 'HD_RELEASE_ID': self.release,
             'HD_FULL_REPLAY_OPS': 'true', 'DB_POOL_MAX': '2', 'EXTERNAL_SYNC_MODE': 'off',
-            'TRANSLATION_PROVIDER': 'disabled',
+            'TRANSLATION_PROVIDER': 'disabled', 'FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT': '70',
+            'FULL_SYNC_CAPACITY_APPROVED_BYTES': '0',
         })
         for key in ('build', 'cap_add', 'depends_on', 'devices', 'expose', 'network_mode', 'ports', 'privileged', 'volumes'):
             with self.subTest(key=key):
                 self.assertNotIn(key, service)
+
+    def test_replay_keeps_the_explicit_percentage_and_absolute_capacity_budget(self):
+        env = {**self.env, 'FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT': '80',
+               'FULL_SYNC_CAPACITY_APPROVED_BYTES': '340000000000'}
+        cfg = json.loads(subprocess.check_output(self.compose + ['--profile', 'full-replay-ops',
+            'config', '--format', 'json'], env=env, text=True))
+        policy = cfg['services']['full-replay-ops']['environment']
+        self.assertEqual(policy['FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT'], '80')
+        self.assertEqual(policy['FULL_SYNC_CAPACITY_APPROVED_BYTES'], '340000000000')
 
 
 if __name__ == '__main__':

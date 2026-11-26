@@ -23,12 +23,24 @@ class CapacityDecisionTests(unittest.TestCase):
     def test_binding_and_allow(self):
         result = m.decision(self.input, self.now)
         self.assertEqual(result['decision'], 'allow')
+        self.assertNotIn('heavyWorkPausePercent',result)
         self.assertEqual(result['evidenceHash'], 'a'*64)
         self.assertEqual(result['expiresAt'], '2026-11-14T00:10:00Z')
 
     def test_exact_threshold_blocks(self):
         self.input['projectedPeakBytes'] = 700
         self.assertEqual(m.decision(self.input, self.now)['decision'], 'blocked')
+
+    def test_explicit_80_percent_threshold_allows_only_below_80(self):
+        self.input['heavyWorkPausePercent'] = 80
+        self.input['projectedPeakBytes'] = 799
+        allowed = m.decision(self.input, self.now)
+        self.assertEqual(allowed['decision'], 'allow')
+        self.assertEqual(allowed['heavyWorkPausePercent'],80)
+        self.input['projectedPeakBytes'] = 800
+        self.assertEqual(m.decision(self.input, self.now)['decision'], 'blocked')
+        with self.assertRaises(ValueError):
+            m.decision({**self.input, 'heavyWorkPausePercent':81}, self.now)
 
     def test_missing_and_insufficient_wait(self):
         self.assertEqual(m.decision(None, self.now)['decision'], 'wait')

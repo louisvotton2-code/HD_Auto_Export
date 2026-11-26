@@ -67,7 +67,8 @@ class FirstPartyPixelSettings(unittest.TestCase):
 
     def test_supplier_replay_schema_is_retained_without_replay_data(self):
         options = data.dump_options()
-        for table in ('external_full_admission_replays', 'external_full_admission_replay_items'):
+        for table in ('external_full_admission_replays', 'external_full_admission_replay_items',
+                      'external_formal_expansion_operations', 'external_formal_expansion_admissions'):
             with self.subTest(table=table):
                 self.assertIn(f'--exclude-table-data=public.{table}', options)
                 self.assertNotIn(f'--exclude-table=public.{table}', options)

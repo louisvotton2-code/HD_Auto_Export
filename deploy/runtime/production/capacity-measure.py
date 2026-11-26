@@ -45,6 +45,9 @@ def config():
     target = c.get('admissionTargetRows')
     if target is not None and (type(target) is not int or not 1 <= target <= MAX_ADMISSION_TARGET_ROWS):
         raise ValueError('Invalid bounded admission target')
+    stop_percent = c.get('heavyWorkPausePercent',70)
+    if type(stop_percent) is not int or stop_percent not in (70,80):
+        raise ValueError('Invalid heavy-work pause threshold')
     if subprocess.check_output(['findmnt','--mountpoint',str(ROOT/'data'),'-no','UUID'],text=True).strip() != c['filesystemUuid']:
         raise ValueError('Unexpected filesystem')
     return c
@@ -172,7 +175,10 @@ def bounded_evidence(c, e):
     return type(target) is int and 0 < target <= cap
 
 
-def measure():
+def measure(*, prospective_target_rows=None):
+    if prospective_target_rows is not None and (type(prospective_target_rows) is not int or
+            not 1 <= prospective_target_rows <= MAX_ADMISSION_TARGET_ROWS):
+        raise ValueError('Invalid prospective admission target')
     c = config()
     e = evidence(c)
     if not bounded_evidence(c, e):
@@ -196,17 +202,24 @@ def measure():
         scoped = dict(backup_database=sql(c,measurement_sql()),
                       backup_files=sum(allocated(p) for p in media_roots)
                                    +sum(allocated(p,backup_control=True) for p in control_roots))
-    result = project(e, used=used, total=total, available_reserve=(fs.f_bfree-fs.f_bavail)*fs.f_frsize,
-                     media=sum(allocated(p) for p in c['mediaRoots']),
-                     controls=sum(allocated(p) for p in c['controlRoots']),
-                     daily=daily_bytes(), database=sizes['database'],
-                     wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'],
-                     samples=recovery_samples(ROOT/'backups/ext07',c['database'],scope=selected), **scoped)
+    measured = dict(used=used, total=total, available_reserve=(fs.f_bfree-fs.f_bavail)*fs.f_frsize,
+                    media=sum(allocated(p) for p in c['mediaRoots']),
+                    controls=sum(allocated(p) for p in c['controlRoots']),
+                    daily=daily_bytes(), database=sizes['database'],
+                    wal_on_disk=sizes['walOnDisk'], wal_configured=sizes['walConfigured'],
+                    samples=recovery_samples(ROOT/'backups/ext07',c['database'],scope=selected), **scoped)
+    result = project(e, **measured)
     latest = evidence(c)
     if (not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash'] or
             backup_policy(c) != policy):
         return None
-    return {**e, **result}
+    stop_percent = c.get('heavyWorkPausePercent',70)
+    if prospective_target_rows is not None:
+        proposed = project({**e, 'targetRows':prospective_target_rows}, **measured)
+        # This surface has neither an allow decision nor a hash that purports to bind the proposed target.
+        return {'incumbent':{**e, **result}, 'prospectiveTargetRows':prospective_target_rows,
+                'prospective':proposed, 'heavyWorkPausePercent':stop_percent}
+    return {**e, **result, 'heavyWorkPausePercent':stop_percent}
 
 
 def dump_command(c, image, name, extra):

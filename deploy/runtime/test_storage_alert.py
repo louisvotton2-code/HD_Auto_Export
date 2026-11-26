@@ -22,6 +22,11 @@ class StorageAlertTests(unittest.TestCase):
         for total,available in [(0,0),(100,-1),(100,101),(True,1),(100,1.5)]:
             with self.assertRaises(ValueError):alert.classify(total,available)
 
+    def test_80_percent_pause_preserves_60_percent_warning(self):
+        for available,level in [(41,'ok'),(40,'warning'),(21,'warning'),(20,'paused')]:
+            with self.subTest(available=available):
+                self.assertEqual(alert.classify(100,available,stop_percent=80)['level'],level)
+
     def test_system_disk_gate_alerts_at_75_and_blocks_at_80(self):
         cases = [(26, 'ok', 0), (25, 'warning', 0), (21, 'warning', 0), (20, 'release-limit', 1)]
         for available, level, exit_code in cases:

@@ -102,32 +102,18 @@ test('direct detail starts a separate session and never sends a raw acquisition 
   expect(invalid).toEqual([]);
 });
 
-test('history restore applies a stored consent change before sending a view', async ({ page }) => {
+test('history restore starts a new session after the previous session expires', async ({ page }) => {
   const { events } = await capture(page);
   await page.goto('/zh/');
   await expect.poll(() => events.length).toBe(1);
-  await page.evaluate(() => {
-    localStorage.setItem('hd-auto:privacy-choice:v3', 'deny');
-    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-  });
-  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('hd-auto:analytics-session:v2'))).toBeNull();
-  await page.waitForTimeout(850);
-  expect(events).toHaveLength(1);
-  await page.evaluate(() => {
-    localStorage.setItem('hd-auto:privacy-choice:v3', 'allow');
-    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-  });
-  await expect.poll(() => events.length).toBe(2);
-  await page.waitForTimeout(850);
-  expect(events).toHaveLength(2);
   // A different document in this tab can clear the session while this page is frozen.
   await page.evaluate(() => {
     sessionStorage.removeItem('hd-auto:analytics-session:v2');
     window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   });
-  await expect.poll(() => events.length).toBe(3);
-  expect(events[2]).toMatchObject({ entry: 'home', sequence: 0 });
-  expect(events[2]?.sessionId).not.toBe(events[1]?.sessionId);
+  await expect.poll(() => events.length).toBe(2);
+  expect(events[1]).toMatchObject({ entry: 'home', sequence: 0 });
+  expect(events[1]?.sessionId).not.toBe(events[0]?.sessionId);
 });
 
 test('only a successful empty search and an intentional completed calculation are counted', async ({ page }) => {

@@ -14,7 +14,8 @@ import {jsonHash} from '../normalize.js';
 import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formalWithdrawal,isFormalListingAdmitted,permitFullSyncAdmission,rememberFormalWithdrawal,DEFAULT_FORMAL_LISTING_LIMIT,FORMAL_LISTING_LIMIT_CODE} from '../formal-admission.js';
 import {runSourceMaintenance} from './maintenance.js';
 import {syncAccount} from './quota.js';
-import {advanceCapacitySampleLifecycle,capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type MeasuredCohort,type CapacityDisk,type CapacitySample} from './capacity.js';
+import {advanceCapacitySampleLifecycle,capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type CapacityBinding,type MeasuredCohort,type CapacityDisk,type CapacitySample} from './capacity.js';
+import {defaultHeavyWorkPausePercent,reachedHeavyWorkPause,type HeavyWorkPausePercent} from './disk-policy.js';
 import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,supersedeTiming} from './timing.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './apply.js';
@@ -79,7 +80,8 @@ export class FullSyncWorker{
  private phase:TickPhase='startup';
  private reportOwed=false;
  constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource,
-  private materializationObserver?:DetailMaterializationObserver){}
+  private materializationObserver?:DetailMaterializationObserver,
+  private readonly heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent){}
  get tickPhase(){return this.phase;}
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
  async acquire(){
@@ -103,21 +105,33 @@ export class FullSyncWorker{
   });
  }
  async state(){return (await this.db.pool.query('SELECT * FROM external_full_sync WHERE id=1')).rows[0]!;}
- async space(){const disk=await statfs(this.directory);const used=1-disk.bavail/disk.blocks;if(!Number.isFinite(used))throw new FullSyncError('SYNC_SPACE_UNKNOWN');
-  await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1 AND disk_paused IS DISTINCT FROM $1',[used>=.70]);return {used,available:disk.bavail*disk.bsize,total:disk.blocks*disk.bsize};}
+ private isDiskPaused(disk:CapacityDisk){
+  return reachedHeavyWorkPause(disk.total-disk.available,disk.total,this.heavyWorkPausePercent);
+ }
+ async space(){
+  const disk=await statfs(this.directory),available=disk.bavail*disk.bsize,total=disk.blocks*disk.bsize;
+  if(!Number.isSafeInteger(total)||total<=0||!Number.isSafeInteger(available)||available<0||available>total)
+   throw new FullSyncError('SYNC_SPACE_UNKNOWN');
+  const measured={used:1-available/total,available,total};
+  await this.db.pool.query('UPDATE external_full_sync SET disk_paused=$1 WHERE id=1 AND disk_paused IS DISTINCT FROM $1',[this.isDiskPaused(measured)]);
+  return measured;
+ }
+ private readHostCapacityDecision(binding:CapacityBinding,disk:CapacityDisk,approved=Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0)){
+  return readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved,undefined,this.heavyWorkPausePercent);
+ }
  // Only work restricted to existing sampled members (and its required account refresh) may request sampleRepair.
  async heavy(sampleRepair=false){
   await this.alive();const s=await this.state(),disk=await this.space();
-  if(!s.enabled||s.paused||disk.used>=.70)throw new FullSyncError('SYNC_HEAVY_PAUSED');
+  if(!s.enabled||s.paused||this.isDiskPaused(disk))throw new FullSyncError('SYNC_HEAVY_PAUSED');
   if(!sampleRepair){if(s.capacity_pending)throw new FullSyncError('SYNC_CAPACITY_PENDING');if(Number(s.last_capacity_sample)>0)await this.checkCapacityDecision(s,disk);}
  }
  private async checkCapacityDecision(state:Record<string,any>,disk:CapacityDisk){
   const snapshot=await this.capacitySnapshot();
   const sample=await capacitySample(this.db),prior=state.capacity_baseline?.detailSample;
   const enough=snapshot&&completeCapacitySample(snapshot,sample)&&validMeasuredCohort(prior,sample);
-  const result=enough?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,
+  const result=enough?await this.readHostCapacityDecision(
    capacityBinding(snapshot.id,capacityTarget(snapshot),sample,prior,state.capacity_baseline?.sampleLifecycleEpoch??null),
-   disk,Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0)):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'};
+   disk):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'};
   if(!result.allowed){await this.db.pool.query('UPDATE external_full_sync SET capacity_pending=true WHERE id=1');throw new FullSyncError(result.code!);}
  }
  private async capacitySnapshot(id?:string):Promise<CapacitySnapshot|undefined>{
@@ -193,7 +207,7 @@ export class FullSyncWorker{
         FROM external_full_sync s CROSS JOIN external_formal_admission_state a WHERE s.id=1 AND a.id=1`,[DEFAULT_FORMAL_LISTING_LIMIT])).rows[0]!;
      if(!gates.at_limit&&(!expansionAllowed||!gates.can_expand||gates.snapshot_first))return false;
      if(!gates.at_limit){
-      await permitFullSyncAdmission(tx);
+      await permitFullSyncAdmission(tx,{basis:'incremental',eventId:String(event.event_id)});
       admitted=await admitFormalListing(tx,event.source,event.external_id);
       if(!admitted)return false;
      }
@@ -383,10 +397,10 @@ export class FullSyncWorker{
   const projectedBytesPerDetail=enoughSample?Math.max(mean,measuredSample!.bytesPerDetail):null;
   const fixedBytes=sqlStagingBytes+archiveBytes+Number(wal),binding=capacityBinding(snapshotId,rows,sample,measuredSample,state.capacity_baseline?.sampleLifecycleEpoch??null);
   const approved=Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0);
-  const admission=enoughSample?await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE',decision:null};
+  const admission=enoughSample?await this.readHostCapacityDecision(binding,disk,approved):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE',decision:null};
   const allowed=admission.allowed&&state.enabled&&!state.paused;
   const code=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':admission.code;
-  const estimate={...binding,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,
+  const estimate={...binding,heavyWorkPausePercent:this.heavyWorkPausePercent,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,
     estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 or hd-ext09-daily-two-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
   await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2,
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);
@@ -422,7 +436,7 @@ export class FullSyncWorker{
      LEFT JOIN external_full_members m ON m.source=s.source AND m.external_id=s.external_id AND m.state='withdrawn'
      WHERE snapshot_id=$1 AND row_number>$2 ${eligible}
      ORDER BY row_number LIMIT 100`,[id,snap.apply_cursor])).rows;
-   if(!atLimit&&rows.length)await permitFullSyncAdmission(tx);
+   if(!atLimit&&rows.length)await permitFullSyncAdmission(tx,{basis:'csv',snapshotId:id});
    let last=snap.apply_cursor,processed=0,ceilingReached=atLimit;
    for(const entry of rows){
     const memberWithdrawn=entry.member_withdrawn_at&&new Date(snap.generated_at)<=new Date(entry.member_withdrawn_at);
@@ -611,7 +625,7 @@ export class FullSyncWorker{
      await retireReplayDetail(tx,replay,job.source,job.external_id,String(current.generation),'verified_withdrawn');
      return;
     }
-    await permitFullSyncAdmission(tx);
+    await permitFullSyncAdmission(tx,{basis:'replay',eventId:replay.event_id,replayId:replay.replay_id});
     await tx.query("SELECT set_config('hd.external_full_admission_replay',$1,true)",[replay.replay_id]);
     if(!await admitFormalListing(tx,job.source,job.external_id))return;
     if(replay.operation==='relist')await clearFormalWithdrawal(tx,job.source,job.external_id,replay.business_at,replay.event_id);
@@ -791,16 +805,17 @@ export class FullSyncWorker{
     &&estimate?.sampleEvidenceSufficient===true&&age>=0&&age<capacityMeasurementMaxAgeMs) {
    const binding=capacityBinding(snapshot.id,capacityTarget(snapshot),sample,prior,state.capacity_baseline?.sampleLifecycleEpoch??null);
    if(estimate.evidenceHash===binding.evidenceHash) {
-    const approval=await readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0));
+    const approval=await this.readHostCapacityDecision(binding,disk);
     const allowed=approval.allowed&&state.enabled&&!state.paused;
     const reason=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':approval.code;
     const estimatedBytes=approval.decision?.projectedPeakBytes??null;
     // Keep the physical observation timestamp. Rechecking a receipt is not a measurement.
     if(state.capacity_pending===allowed||estimate.allowed!==allowed||estimate.reason!==reason||estimate.estimatedBytes!==estimatedBytes||
+      estimate.heavyWorkPausePercent!==this.heavyWorkPausePercent||
       (allowed&&Number(state.last_capacity_sample)!==sample.details)) {
      await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=capacity_estimate||$1::jsonb,capacity_pending=NOT $2,
       last_capacity_sample=CASE WHEN $2 THEN $3 ELSE last_capacity_sample END WHERE id=1`,
-     [JSON.stringify({allowed,reason,decision:approval.decision,estimatedBytes}),allowed,sample.details]);
+     [JSON.stringify({allowed,reason,decision:approval.decision,estimatedBytes,heavyWorkPausePercent:this.heavyWorkPausePercent}),allowed,sample.details]);
     }
     if(!allowed)throw new FullSyncError(reason!);
     return true;
@@ -860,7 +875,7 @@ export class FullSyncWorker{
    this.phase='delta_receive';
    if(s.since_at&&new Date(s.next_delta_at).getTime()<=Date.now())try{await this.receiveDelta();}catch(e){if(e instanceof FullSyncError&&e.code==='SYNC_CURSOR_EXPIRED')await this.recover();else throw e;}
    this.phase='delta_apply';await this.applyEvents();
-   this.phase='space';const disk=await this.space(),current=await this.state();if(current.paused||disk.used>=.70)return;
+   this.phase='space';const disk=await this.space(),current=await this.state();if(current.paused||this.isDiskPaused(disk))return;
    this.phase='source_maintenance';
    await runSourceMaintenance(this.db);
    if(current.capacity_pending){

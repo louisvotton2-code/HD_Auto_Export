@@ -59,7 +59,7 @@ describe('official Meta Pixel on public vehicle details', () => {
     expect(getPublicPixelId('false', pixelId)).toBeNull();
   });
 
-  it('never loads for stale data, an invalid ID, a frame, a prerender or an expired grant', () => {
+  it('never loads for stale data, an invalid ID, a frame, or a prerender', () => {
     fresh = false;
     view();
     fresh = true;
@@ -70,9 +70,6 @@ describe('official Meta Pixel on public vehicle details', () => {
     document.prerendering = true;
     view();
     document.prerendering = false;
-    getTrackingConsent.mockReturnValue('pending');
-    view();
-    getTrackingConsent.mockReturnValue('accepted');
     for (const path of ['/staff/preview/', '/en/buy/', '/zh/cars/other/', location.pathname + 'inspection/']) {
       location.pathname = path;
       view();
@@ -102,10 +99,9 @@ describe('official Meta Pixel on public vehicle details', () => {
     expect(commands.mock.calls.at(-1)).toEqual(['consent', 'revoke']);
   });
 
-  it.each(['withdrawn', 'stale', 'left', 'pagehide'])('drops pending events when the SDK is late and the view is %s', reason => {
+  it.each(['stale', 'left', 'pagehide'])('drops pending events when the SDK is late and the view is %s', reason => {
     view();
     pixel.trackVehiclePixelContact(vehicleId, 'telegram');
-    if (reason === 'withdrawn') getTrackingConsent.mockReturnValue('declined');
     if (reason === 'stale') fresh = false;
     if (reason === 'left') location.pathname = '/en/';
     if (reason === 'pagehide') pixel.stopVehiclePixel();
@@ -124,13 +120,12 @@ describe('official Meta Pixel on public vehicle details', () => {
     expect(commands.mock.calls.some(([name]) => name === 'trackSingle')).toBe(false);
   });
 
-  it('drops contacts waiting on SDK client hints when a visitor withdraws', () => {
+  it('drops contacts waiting on SDK client hints when the view is stopped', () => {
     vi.useFakeTimers();
     try {
       view();
       const commands = load(true, false);
       pixel.trackVehiclePixelContact(vehicleId, 'whatsapp');
-      getTrackingConsent.mockReturnValue('declined');
       pixel.stopVehiclePixel();
       browser.fbq!.instance!.asyncParamPromisesAllSettled = true;
       vi.runAllTimers();

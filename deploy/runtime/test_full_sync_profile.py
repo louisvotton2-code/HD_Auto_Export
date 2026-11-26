@@ -23,6 +23,8 @@ class FullSyncProfile(unittest.TestCase):
                       'PROXY_SUBNET': '172.30.94.0/24', 'PROXY_DYNAMIC_RANGE': '172.30.94.128/25',
                       'PROXY_GATEWAY': '172.30.94.1', 'PROXY_IP': '172.30.94.2', 'WEB_IP': '172.30.94.3',
                       'FULL_SYNC_DATA_ROOT': str(root / 'full-sync'),
+                      'FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT': '80',
+                      'FULL_SYNC_CAPACITY_APPROVED_BYTES': '340000000000',
                       'CHINACARAPI_KEY_FILE': str(root / 'existing-provider-key')}
             envfile = root / 'fixture.env'
             envfile.write_text(''.join(k + '=' + v + '\n' for k, v in values.items()))
@@ -51,11 +53,13 @@ class FullSyncProfile(unittest.TestCase):
         self.assertNotIn('DATABASE_URL', worker['environment'])
         self.assertNotIn('AUTH_SECRET', worker['environment'])
         self.assertEqual({s['source'] for s in worker['secrets']}, {'release_app_db_password', 'chinacarapi_key'})
-        self.assertEqual(len(worker['volumes']), 1)
-        self.assertEqual(worker['volumes'][0]['target'], '/private/full-sync')
-        self.assertFalse(worker['volumes'][0].get('read_only', False))
+        volumes = {volume['target']: volume for volume in worker['volumes']}
+        self.assertEqual(set(volumes), {'/private/full-sync', '/private/capacity'})
+        self.assertFalse(volumes['/private/full-sync'].get('read_only', False))
+        self.assertTrue(volumes['/private/capacity']['read_only'])
         self.assertEqual(worker['environment']['FULL_SYNC_ARCHIVE_ROOT'], '/private/full-sync')
-        self.assertEqual(str(worker['environment']['FULL_SYNC_CAPACITY_APPROVED_BYTES']), '0')
+        self.assertEqual(worker['environment']['FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT'], '80')
+        self.assertEqual(worker['environment']['FULL_SYNC_CAPACITY_APPROVED_BYTES'], '340000000000')
         self.assertEqual(worker['environment']['CHINACARAPI_KEY_FILE'], '/run/secrets/chinacarapi_key')
         self.assertTrue(cfg['networks']['default']['internal'])
         self.assertFalse(cfg['networks']['full_worker_egress'].get('internal', False))
