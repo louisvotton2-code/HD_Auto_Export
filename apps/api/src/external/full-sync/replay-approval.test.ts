@@ -16,7 +16,7 @@ const forecast = { kind: 'replay-prospective-capacity-v1', release, batch, prefl
   quota: { requiredInitialDetailIds: 6, operatorApprovedRetryIds: 2, verifiedRemainingDetailIds: 8,
     accountCheckedAt: '2026-11-23T12:59:30+00:00' } };
 
-function receipts(estimate = forecast) {
+function receipts(estimate:typeof forecast&{heavyWorkPausePercent?:unknown}=forecast) {
   const raw = JSON.stringify(estimate)+'\n';
   const proof = { kind: 'replay-prewrite-checked-v1', release, batch, prospectiveReceiptSha256: sha(raw),
     checkedAt: '2026-11-23T12:59:50Z' };
@@ -27,7 +27,7 @@ function receipts(estimate = forecast) {
 test('production evidence binds the exact bytes, live release, events, capacity and worker fence', () => {
   const {raw,proof,plan} = receipts();
   assert.deepEqual(validateReplayApproval(plan,release,raw,JSON.stringify(proof),now),
-    {workerFence:'7',expiresAt:Date.parse('2026-11-23T13:00:40Z')});
+    {workerFence:'7',expiresAt:Date.parse('2026-11-23T13:00:40Z'),heavyWorkPausePercent:70});
   const refusals: Array<[AdmissionReplayRequest,string,string,typeof proof,number]> = [
     [plan,release,raw.trimEnd(),proof,now],
     [plan,'b'.repeat(40),raw,proof,now],
@@ -51,4 +51,18 @@ test('production approval rejects the physical boundary, insufficient quota and 
     assert.throws(()=>validateReplayApproval(plan,release,raw,JSON.stringify(proof),now),
       {code:'SYNC_REPLAY_APPROVAL_INVALID'});
   }
+});
+
+test('raised replay approval binds the same explicit pause threshold and rejects the exact boundary',()=>{
+ const raised={...forecast,heavyWorkPausePercent:80,estimatedPeakBytes:79};
+ const {raw,proof,plan}=receipts(raised);
+ assert.equal(validateReplayApproval(plan,release,raw,JSON.stringify(proof),now,80).heavyWorkPausePercent,80);
+ assert.throws(()=>validateReplayApproval(plan,release,raw,JSON.stringify(proof),now),
+  {code:'SYNC_REPLAY_APPROVAL_INVALID'});
+ for(const estimate of [forecast,{...raised,heavyWorkPausePercent:70},
+   {...raised,heavyWorkPausePercent:'80'},{...raised,estimatedPeakBytes:80}]){
+  const current=receipts(estimate);
+  assert.throws(()=>validateReplayApproval(current.plan,release,current.raw,JSON.stringify(current.proof),now,80),
+   {code:'SYNC_REPLAY_APPROVAL_INVALID'});
+ }
 });

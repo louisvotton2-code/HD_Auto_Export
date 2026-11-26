@@ -113,7 +113,10 @@ test('replay is fenced, bound to a verified generation and never publishes from 
     await assert.rejects(prepareAdmissionReplay(db,actor,input),/SYNC_REPLAY_WORKER_RUNNING/);
     await worker.close();
 
-    const prepared=await prepareAdmissionReplay(db,actor,input);
+    const approval={workerFence:String((await worker.state()).worker_fence),expiresAt:Date.now()+60_000};
+    await assert.rejects(prepareAdmissionReplay(db,actor,input,{...approval,heavyWorkPausePercent:80}),
+      /SYNC_REPLAY_CAPACITY_NOT_READY/);
+    const prepared=await prepareAdmissionReplay(db,actor,input,{...approval,heavyWorkPausePercent:70});
     assert.deepEqual(prepared.items,{pending:8});
     assert.deepEqual((await prepareAdmissionReplay(db,actor,input)).items,{pending:8});
     await assert.rejects(prepareAdmissionReplay(db,actor,{...input,capacityReceipt:'c'.repeat(64)}),/SYNC_REPLAY_CONFLICT/);

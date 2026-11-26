@@ -5,6 +5,7 @@ import type {Database} from '../../db/index.js';
 import {FORMAL_LISTING_LIMIT_CODE, DEFAULT_FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 import {jsonHash} from '../normalize.js';
 import type {ReplayOperatorApproval} from './replay-approval.js';
+import {defaultHeavyWorkPausePercent} from './disk-policy.js';
 import {FullSyncError, type Actor, type Source} from './types.js';
 
 const digest=z.string().regex(/^[a-f0-9]{64}$/);
@@ -170,11 +171,14 @@ export async function prepareAdmissionReplay(db:Database,actor:Actor,request:Adm
       throw new FullSyncError('SYNC_REPLAY_WORKER_RUNNING');
     await tx.query('SELECT pg_advisory_xact_lock(78291332)');
     if(!await physicalCleanupAllowed(tx))throw new FullSyncError('SYNC_REPLAY_BACKUP_ACTIVE');
-    const state=(await tx.query(`SELECT enabled,paused,disk_paused,capacity_pending,last_capacity_sample,worker_fence::text
+    const state=(await tx.query(`SELECT enabled,paused,disk_paused,capacity_pending,last_capacity_sample,worker_fence::text,
+      capacity_estimate->'heavyWorkPausePercent' AS heavy_work_pause_percent
       FROM external_full_sync WHERE id=1 FOR UPDATE`)).rows[0]!;
     if(!state.enabled||state.paused||state.disk_paused||state.capacity_pending||Number(state.last_capacity_sample)<=0)
       throw new FullSyncError('SYNC_REPLAY_CAPACITY_NOT_READY');
     if(approval&&state.worker_fence!==approval.workerFence)throw new FullSyncError('SYNC_REPLAY_WORKER_CHANGED');
+    if(approval&&(state.heavy_work_pause_percent??defaultHeavyWorkPausePercent)!==approval.heavyWorkPausePercent)
+      throw new FullSyncError('SYNC_REPLAY_CAPACITY_NOT_READY');
     const admission=(await tx.query<AdmissionState>(`${admissionStateSql} FOR UPDATE`)).rows[0]!;
     if((await tx.query("SELECT 1 FROM external_full_admission_replays WHERE state IN ('pending','scheduled')")).rowCount)
       throw new FullSyncError('SYNC_REPLAY_PLAN_PENDING');
