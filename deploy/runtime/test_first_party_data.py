@@ -65,10 +65,11 @@ class FirstPartyPixelSettings(unittest.TestCase):
         self.assertIn("'external_listing_pixel_settings'", data._validate_supplier_tables_sql())
         self.assertNotIn("'external_listing_pixel_settings'", data.measurement_sql())
 
-    def test_supplier_replay_schema_is_retained_without_replay_data(self):
+    def test_supplier_control_schema_is_retained_without_replay_or_delta_data(self):
         options = data.dump_options()
         for table in ('external_full_admission_replays', 'external_full_admission_replay_items',
-                      'external_formal_expansion_operations', 'external_formal_expansion_admissions'):
+                      'external_formal_expansion_operations', 'external_formal_expansion_admissions',
+                      'external_full_delta_policy'):
             with self.subTest(table=table):
                 self.assertIn(f'--exclude-table-data=public.{table}', options)
                 self.assertNotIn(f'--exclude-table=public.{table}', options)

@@ -104,6 +104,42 @@ test('formal admission is restricted to the private database-only service and fi
   }
 });
 
+test('incremental sync policy accepts only the dedicated database-only service and exact arguments', () => {
+  const actor = 'ExistingStaff-01';
+  const snapshot = '781af2ee-24b6-4b2f-8613-556805f53a16';
+  const evidence = 'incident:confirmed-gap-20261126.1';
+  const at = '2026-11-25T00:09:20.496Z';
+  const profile = {HD_FULL_REPLAY_OPS: 'true', FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT: '80'};
+  for (const args of [['delta-status'], ['delta-prepare', '--actor', actor, '--snapshot', snapshot],
+    ['delta-arm', '--actor', actor, '--snapshot', snapshot],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', at, '--anchor-cursor', '0'],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', '2026-11-25T00:09:20Z',
+      '--anchor-cursor', String(Number.MAX_SAFE_INTEGER)]]) {
+    const operation = workerInvocation(['full-sync', ...args]);
+    assert.deepEqual(operation, {argv: ['dist/external/full-sync/cli.js', ...args], formalFx: false, fullSync: false, replay: true});
+    assert.doesNotThrow(() => checkWorkerMode(profile, operation));
+    assert.throws(() => checkWorkerMode({}, operation));
+    for (const name of ['CHINACARAPI_KEY_FILE', 'CHINACARAPI_ACCOUNT_KEY_FILE', 'FULL_SYNC_ARCHIVE_ROOT',
+      'FULL_SYNC_CAPACITY_DECISION_FILE']) {
+      assert.throws(() => checkWorkerMode({...profile, [name]: '/private/unexpected'}, operation));
+    }
+  }
+  for (const args of [['delta-status', '--actor', actor], ['delta-prepare', '--actor', actor, '--snapshot', 'latest'],
+    ['delta-arm', '--snapshot', snapshot, '--actor', actor], ['delta-arm', '--actor', '--force', '--snapshot', snapshot],
+    ['delta-arm', '--actor', actor, '--snapshot', snapshot, '--force'],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', at],
+    ['delta-reconcile', '--actor', actor, '--evidence', '/tmp/audit', '--since', at, '--anchor-cursor', '1'],
+    ['delta-reconcile', '--actor', actor, '--evidence', 'a'.repeat(129), '--since', at, '--anchor-cursor', '1'],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', '2026-02-30T00:09:20Z', '--anchor-cursor', '1'],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', '0000-11-25T00:09:20Z', '--anchor-cursor', '1'],
+    ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', '2026-11-25T00:09:20+08:00', '--anchor-cursor', '1'],
+    ...['01', '-1', '1.0', '1e4', '9007199254740992'].map(cursor =>
+      ['delta-reconcile', '--actor', actor, '--evidence', evidence, '--since', at, '--anchor-cursor', cursor])]) {
+    assert.throws(() => workerInvocation(['full-sync', ...args]));
+  }
+});
+
 test('backup lease uses only the database CLI without media scanning', () => {
   assert.deepEqual(workerInvocation(['backup-lease', 'acquire', '--reference', 'backup:ext09:daily-20261114']), {argv: ['dist/backup-lease-cli.js', 'acquire', '--reference', 'backup:ext09:daily-20261114'], formalFx: false, fullSync: false});
   for (const args of [['backup-lease'], ['backup-lease', 'serve', '--reference', 'backup:a'], ['backup-lease', 'release', '--reference', 'not-a-backup'], ['backup-lease', 'acquire', '--reference', 'backup:a', '--force']]) assert.throws(() => workerInvocation(args));
