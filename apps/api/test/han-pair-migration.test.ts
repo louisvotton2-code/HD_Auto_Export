@@ -133,17 +133,26 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   await migrateDatabase(db, '--apply-keyword-match');
   await migrateDatabase(db, '--apply-keyword-match');
   assert.deepEqual(await ledger('id'), [...pending, keyword]);
+
+  const expansion = { created_at: String(files[55]!.folderMillis), hash: files[55]!.hash };
+  await migrateDatabase(db, '--apply-formal-expansion');
+  const pendingWithExpansion = [...pending, keyword, expansion];
+  assert.deepEqual(await ledger('id'), pendingWithExpansion);
+  assert.deepEqual(await cursors(), beforeCursors);
   await assert.rejects(migrateDatabase(db), /Migration 0050 is pending/);
   await db.transaction(tx => tx.query(files[50]!.sql[0]!));
   await db.pool.query(`CREATE INDEX CONCURRENTLY external_catalog_search_zh_han_pairs_idx ON public.external_catalog_search
     USING gin (public.external_catalog_han_pairs(search_document)) WHERE locale='zh'`);
   const [, completedCli] = await Promise.all([complete(), runMigrationCli('--complete-han-pair-index')]);
   assert.match(completedCli.stdout, /Database migrations applied/);
-  assert.deepEqual(await ledger('id'), [...pending, keyword, history[50]]);
-  assert.deepEqual(await ledger('created_at'), [...history, keyword]);
+  const completedById = [...pendingWithExpansion, history[50]];
+  const completedByTimestamp = [...history, keyword, expansion];
+  assert.deepEqual(await ledger('id'), completedById);
+  assert.deepEqual(await ledger('created_at'), completedByTimestamp);
   assert.deepEqual(await cursors(), beforeCursors);
   await migrateDatabase(db);
-  assert.deepEqual(await ledger('created_at'), [...history, keyword]);
+  assert.deepEqual(await ledger('id'), completedById);
+  assert.deepEqual(await ledger('created_at'), completedByTimestamp);
   assert.deepEqual((await inventory.listPublic(query, 'han-pair-complete')).data.items.map(item => item.id), [`ext-${before}`]);
   assert.equal((await inventory.filters(filters)).total, 1);
 });
