@@ -27,10 +27,17 @@ type RelistDetailWindow = ArchivedEventPageEvidence & {
 export type RelistArchiveEvidence = RelistDetailWindow & { sourceUpdatedAt: string };
 type HistoricalWitness = { kind: 'price'; eventId: string } |
   { kind: 'withdrawal'; eventId: string; requiresLinkedReceipts: boolean };
-export type HistoricalRelistArchiveEvidence = RelistDetailWindow & {
+export type HistoricalRelistArchiveEvidence = (RelistDetailWindow & {
   outcome: 'effective' | 'not_public';
   witness?: HistoricalWitness;
-};
+}) | (ArchivedEventPageEvidence & {
+  kind: 'relisted' | 'price';
+  appliedAt: string;
+  detailUpdatedAt: string;
+  priceCents: null;
+  outcome: 'not_public';
+  witness: { kind: 'processed'; eventId: string };
+});
 
 export type RelistCsvSample = {
   source: unknown;
@@ -47,7 +54,8 @@ const locales = ['en', 'ru', 'zh'] as const;
 export type HistoricalCorroboration = {
   eventId: string;
   unavailableLocales: (typeof locales)[number][];
-} & ({ priceEventId: string } | { withdrawalEventId: string; scope: 'public_before_withdrawal' });
+} & ({ priceEventId: string } | { withdrawalEventId: string; scope: 'public_before_withdrawal' } |
+  { supersededByEventId: string; scope: 'processed_publication_unconfirmed'; processedEventIds?: string[] });
 export const relistProofBatch = 8;
 const relatedEventLimit = 32;
 const relatedEventsPerRelist = 2;
@@ -61,6 +69,7 @@ const decodedBatchLimit = 24 * 1024 * 1024;
 type DecodeBudget = { remaining: number };
 type CompletedPage = { cursor: string; nextCursor: string; eventCount: number };
 type WithdrawalInterval = { relist: ArchivedEventPageEvidence; withdrawal: ArchivedEventPageEvidence };
+type ReceiptRange = { eventId: string; start: string; end: string; checkpoints?: string[] };
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -101,13 +110,14 @@ function normalizeEventPage<T extends ArchivedEventPageEvidence>(proof: T): T | 
   return { ...proof, businessAt };
 }
 
-function normalizeWindow<T extends RelistDetailWindow>(value: T): T | null {
+function normalizeWindow<T extends RelistDetailWindow | HistoricalRelistArchiveEvidence>(value: T): T | null {
   const proof = normalizeEventPage(value);
-  if (!proof || proof.kind !== 'relisted') return null;
+  if (!proof || (proof.kind !== 'relisted' && !(proof.kind === 'price' && proof.priceCents === null))) return null;
   const appliedAt = exactTime(proof.appliedAt);
   const detailUpdatedAt = exactTime(proof.detailUpdatedAt);
   if (!appliedAt || !detailUpdatedAt ||
-      proof.businessAt > appliedAt || appliedAt > detailUpdatedAt || !/^[1-9][0-9]{0,15}$/.test(proof.priceCents)) return null;
+      proof.businessAt > appliedAt || appliedAt > detailUpdatedAt ||
+      (proof.priceCents !== null && !/^[1-9][0-9]{0,15}$/.test(proof.priceCents))) return null;
   return { ...proof, appliedAt, detailUpdatedAt };
 }
 
@@ -168,8 +178,8 @@ function completedPage(page: Record<string, unknown>, ids: Iterable<string>): Co
 }
 
 async function verifyLinkedReceipts(tx: PoolClient, intervals: readonly WithdrawalInterval[],
-  responses: ReadonlyMap<string, CompletedPage>) {
-  const ranges = [];
+  responses: ReadonlyMap<string, CompletedPage>, chain: readonly ArchivedEventPageEvidence[], frontier?: string) {
+  const ranges: ReceiptRange[] = [];
   for (const { relist, withdrawal } of intervals) {
     const left = responses.get(relist.responseHash);
     const right = responses.get(withdrawal.responseHash);
@@ -178,11 +188,26 @@ async function verifyLinkedReceipts(tx: PoolClient, intervals: readonly Withdraw
     if (BigInt(left.nextCursor) > BigInt(right.cursor)) return false;
     ranges.push({ eventId: relist.eventId, start: left.nextCursor, end: right.cursor });
   }
+  if (chain.length) {
+    const checkpoints: string[] = [];
+    let previous: CompletedPage | undefined;
+    for (const event of chain) {
+      const page = responses.get(event.responseHash);
+      if (!page) return false;
+      if (page === previous) continue;
+      if (previous && BigInt(page.cursor) < BigInt(previous.nextCursor)) return false;
+      checkpoints.push(page.cursor);
+      previous = page;
+    }
+    const start = checkpoints[0]!, end = previous!.nextCursor;
+    if (frontier && BigInt(frontier) > BigInt(start) && BigInt(frontier) < BigInt(end)) checkpoints.push(frontier);
+    ranges.push({ eventId: chain[0]!.eventId, start, end, checkpoints });
+  }
   if (!ranges.length) return true;
   // Receipts are committed after all rows on that page. Follow cursor keys between verified originals.
   // Interior pages need only indexed receipt reads, under a fixed hop limit.
   return (await tx.query<{ matched: boolean }>(`WITH RECURSIVE bounds AS (
-    SELECT * FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,start numeric,"end" numeric)
+    SELECT * FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,start numeric,"end" numeric,checkpoints numeric[])
   ), walk AS (
     SELECT "eventId",start AS cursor,"end",0 AS hops FROM bounds
     UNION ALL
@@ -193,13 +218,15 @@ async function verifyLinkedReceipts(tx: PoolClient, intervals: readonly Withdraw
       LIMIT 1
     ) r ON true
     WHERE w.cursor<w."end" AND w.hops<$2
-  ) SELECT NOT EXISTS(SELECT 1 FROM bounds b WHERE NOT EXISTS(
-    SELECT 1 FROM walk w WHERE w."eventId"=b."eventId" AND w.cursor=b."end")) AS matched`,
+  ) SELECT NOT EXISTS(SELECT 1 FROM bounds b CROSS JOIN LATERAL
+    unnest(array_append(coalesce(b.checkpoints,ARRAY[]::numeric[]),b."end")) required(cursor)
+    WHERE NOT EXISTS(SELECT 1 FROM walk w WHERE w."eventId"=b."eventId" AND w.cursor=required.cursor)) AS matched`,
   [JSON.stringify(ranges), historyReceiptLinkLimit, LIMITS.events])).rows[0]?.matched === true;
 }
 
 async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedEventPageEvidence>,
-  missingDocuments: ReadonlySet<string>, budget: DecodeBudget, intervals: readonly WithdrawalInterval[]) {
+  missingDocuments: ReadonlySet<string>, budget: DecodeBudget, intervals: readonly WithdrawalInterval[],
+  chain: readonly ArchivedEventPageEvidence[], frontier?: string) {
   const pages = new Map<string, ArchivedEventPageEvidence[]>();
   for (const proof of proofs.values()) {
     const expected = pages.get(proof.responseHash);
@@ -211,6 +238,10 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
   [[...pages.keys()], compressedPageLimit])).rows;
   if (blobs.length !== pages.size) return false;
   const requiredResponses = new Set(intervals.flatMap(({ relist, withdrawal }) => [relist.responseHash, withdrawal.responseHash]));
+  for (const item of chain) requiredResponses.add(item.responseHash);
+  const chainIds = new Set(chain.map(item => item.eventId));
+  const first = chain[0];
+  const last = chain.at(-1);
   const completed = new Map<string, CompletedPage>();
   for (const blob of blobs) {
     const page = decodeArchive(blob.compressed, blob.hash, decodedPageLimit, budget);
@@ -228,6 +259,8 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
       if (intervals.some(({ relist, withdrawal }) => event.source === relist.source &&
           event.vehicleId === relist.externalId && Number(relist.eventId) < Number(id) &&
           Number(id) < Number(withdrawal.eventId))) return false;
+      if (first && last && event.source === first.source && event.vehicleId === first.externalId &&
+          Number(first.eventId) < event.id && event.id < Number(last.eventId) && !chainIds.has(id)) return false;
       byId.set(id, event);
     }
     if (!expected.every(proof => {
@@ -249,7 +282,7 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
     WHERE NOT EXISTS(SELECT 1 FROM external_full_receipts r WHERE r.cursor_key='cursor:'||q.cursor
       AND r.complete AND r.next_cursor=q."nextCursor" AND r.event_count=q."eventCount")) AS matched`,
   [JSON.stringify([...completed.values()])])).rows[0]?.matched === true;
-  return matched && await verifyLinkedReceipts(tx, intervals, completed);
+  return matched && await verifyLinkedReceipts(tx, intervals, completed, chain, frontier);
 }
 
 async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, RelistArchiveEvidence>, budget: DecodeBudget) {
@@ -318,6 +351,10 @@ async function verifyHistoricalDetails(tx: PoolClient, proofs: ReadonlyMap<strin
   for (const row of rows) {
     const proof = proofs.get(row.eventId);
     if (!proof || row.candidateCount > historyDocumentLimit || row.observedCount > 1) return null;
+    if (proof.witness?.kind === 'processed' && !corroboration.has(row.eventId)) {
+      corroboration.set(row.eventId, { eventId: row.eventId, unavailableLocales: [],
+        supersededByEventId: proof.witness.eventId, scope: 'processed_publication_unconfirmed' });
+    }
     if (row.observedCount === 0) {
       const witness = proof.witness;
       if (!witness) return null;
@@ -334,12 +371,15 @@ async function verifyHistoricalDetails(tx: PoolClient, proofs: ReadonlyMap<strin
     if (!row.hash || !row.compressed || (row.eventSequence !== null && row.eventSequence !== row.eventId)) return null;
     const detail = decodeArchive(row.compressed, row.hash, decodedDetailLimit, budget);
     if (!detail || !row.sourceUpdatedAt || jsonHash(detail) !== row.hash || detail.source !== proof.source ||
-        detail.id !== proof.externalId || detail.status !== 'active' || !atExactTime(detail.updatedAt, row.sourceUpdatedAt) ||
-        positiveCny(object(detail.price)?.cny) !== BigInt(proof.priceCents)) return null;
-    if (proof.outcome === 'effective' ? row.sourceUpdatedAt < proof.businessAt : row.sourceUpdatedAt >= proof.businessAt) return null;
+        detail.id !== proof.externalId || !atExactTime(detail.updatedAt, row.sourceUpdatedAt)) return null;
+    const amount = positiveCny(object(detail.price)?.cny);
+    if (proof.priceCents !== null && (detail.status !== 'active' || amount !== BigInt(proof.priceCents) ||
+        (proof.outcome === 'effective' ? row.sourceUpdatedAt < proof.businessAt : row.sourceUpdatedAt >= proof.businessAt))) return null;
+    // Compare retained observations to each other without assigning a historic public price.
+    const version = JSON.stringify([row.sourceUpdatedAt, detail.status, amount?.toString()]);
     const previous = versions.get(row.eventId);
-    if (previous !== undefined && previous !== row.sourceUpdatedAt) return null;
-    versions.set(row.eventId, row.sourceUpdatedAt);
+    if (previous !== undefined && previous !== version) return null;
+    versions.set(row.eventId, version);
   }
   return [...corroboration.values()];
 }
@@ -353,10 +393,15 @@ function samePageProof(a: ArchivedEventPageEvidence, b: ArchivedEventPageEvidenc
 export async function verifyRelistArchiveEvidence(tx: PoolClient,
   proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = [],
   missingDocuments: readonly ArchivedEventPageEvidence[] = [],
-  history: readonly HistoricalRelistArchiveEvidence[] = []): Promise<{ historyCorroboration: HistoricalCorroboration[] } | null> {
+  history: readonly HistoricalRelistArchiveEvidence[] = [],
+  processed?: { chain: readonly ArchivedEventPageEvidence[]; frontier: string },
+): Promise<{ historyCorroboration: HistoricalCorroboration[] } | null> {
+  const processedChain = processed?.chain ?? [];
   if ((!proofs.length && !related.length && !missingDocuments.length) || proofs.length > relistProofBatch ||
       related.length > relatedEventLimit || missingDocuments.length > relatedEventLimit + 2 * relistProofBatch ||
-      (history.length > 0 && (proofs.length !== 1 || history.length >= relistHistoryCycles))) return null;
+      (history.length > 0 && (proofs.length !== 1 ||
+        history.length >= (processedChain.length ? relistHistoryEventLimit : relistHistoryCycles))) ||
+      processedChain.length >= relistHistoryEventLimit) return null;
   const byId = new Map<string, RelistArchiveEvidence>();
   const relationsByIdentity = new Map<string, number>();
   for (const value of proofs) {
@@ -368,7 +413,7 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient,
     relationsByIdentity.set(identity, 0);
   }
   const pages = new Map<string, ArchivedEventPageEvidence>(byId);
-  const relationLimit = history.length ? relistHistoryEventLimit - 1 : relatedEventsPerRelist;
+  const relationLimit = history.length || processedChain.length ? relistHistoryEventLimit - 1 : relatedEventsPerRelist;
   for (const value of related) {
     const proof = normalizeEventPage(value);
     if (!proof) return null;
@@ -396,6 +441,16 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient,
   }
   const historical = new Map<string, HistoricalRelistArchiveEvidence>();
   const current = byId.values().next().value;
+  const chain: ArchivedEventPageEvidence[] = [];
+  for (const value of processedChain) {
+    const proof = normalizeEventPage(value);
+    const previous = chain.at(-1);
+    const event = proof && pages.get(proof.eventId);
+    if (!proof || !current || !event || !samePageProof(event, proof) || proof.source !== current.source ||
+        proof.externalId !== current.externalId || (previous && BigInt(previous.eventId) >= BigInt(proof.eventId))) return null;
+    chain.push(proof);
+  }
+  if (chain.length && (chain[0]!.kind !== 'relisted' || chain.at(-1)?.eventId !== current?.eventId)) return null;
   for (const value of history) {
     const proof = normalizeWindow(value);
     if (!proof || !current || historical.has(proof.eventId) || byId.has(proof.eventId) ||
@@ -407,6 +462,7 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient,
       const kind = proof.witness.kind === 'price' ? 'price' : 'removed';
       if (!witness || witness.kind !== kind || witness.source !== proof.source || witness.externalId !== proof.externalId ||
           BigInt(witness.eventId) <= BigInt(proof.eventId) || witness.businessAt <= proof.businessAt) return null;
+      if (proof.witness.kind === 'processed' && !chain.length) return null;
     }
     historical.set(proof.eventId, proof);
   }
@@ -418,9 +474,9 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient,
   const intervals: WithdrawalInterval[] = [];
   for (const proof of historical.values()) {
     const witness = proof.witness;
-    if (witness?.kind === 'withdrawal' && (witness.requiresLinkedReceipts || missingHistory.has(proof.eventId))) {
+    if (!chain.length && witness?.kind === 'withdrawal' && (witness.requiresLinkedReceipts || missingHistory.has(proof.eventId))) {
       intervals.push({ relist: proof, withdrawal: pages.get(witness.eventId)! });
     }
   }
-  return await verifyPages(tx, pages, receiptProofs, budget, intervals) ? { historyCorroboration } : null;
+  return await verifyPages(tx, pages, receiptProofs, budget, intervals, chain, processed?.frontier) ? { historyCorroboration } : null;
 }

@@ -16,6 +16,7 @@ import { FullSyncError, type Change, type FullApply, type Locale, type Source } 
 import { canonicalJson, jsonHash } from '../src/external/normalize.js';
 import { decodeSourceBlob } from '../src/external/sources/archive.js';
 import { catalogColumns, loadSourceDocumentRefs } from '../src/external/sources/index.js';
+import { ExternalStore } from '../src/external/store.js';
 
 const actor = { id: 'delta-policy-admin', requestId: 'delta-policy-test' };
 const archiveAt = '2024-10-04T00:00:00.000Z';
@@ -491,6 +492,21 @@ async function pruneEventMetadata(f: Awaited<ReturnType<typeof fixture>>, eventI
     assert.equal((await tx.query('DELETE FROM external_source_documents WHERE id=$1', [evidence.id])).rowCount, 1);
     return { ...evidence, page, cursorKey, pin };
   });
+}
+
+async function fixtureLegacyWithdrawal(f: Awaited<ReturnType<typeof fixture>>, eventId: number) {
+  await f.db.pool.query(`DELETE FROM external_source_heads h USING external_full_events e
+    WHERE e.event_id=$1 AND e.operation='withdraw' AND h.provider='chinacarapi'
+      AND h.source=e.source AND h.external_id=e.external_id AND h.kind='event' AND h.locale='und'
+      AND h.document_id=(e.document_refs->0->>'id')::uuid`, [eventId]);
+  const receipt = await pruneEventMetadata(f, eventId);
+  await f.db.transaction(async tx => {
+    await tx.query(`UPDATE external_full_sync SET timing_started_at=(
+      SELECT applied_at+interval '1 microsecond' FROM external_full_events WHERE event_id=$1) WHERE id=1`, [eventId]);
+    await tx.query(`UPDATE external_full_events SET source_type=NULL,detail_generation=NULL,was_public=NULL,
+      prior_public_price=NULL,public_effective_at=NULL,public_outcome='unknown' WHERE event_id=$1`, [eventId]);
+  });
+  return receipt;
 }
 
 test('a historical price with pruned metadata needs both original blobs and a completed receipt', async t => {
@@ -1154,7 +1170,7 @@ test('cross-water audit refuses a withdrawal that is itself outside the fixed bo
 
 async function supersededRelistLifecycle(t: TestContext, cycles: number,
   { freezeBeforeLastRelist = false, lastSourceNewer = false, firstCyclePrices = [] as number[],
-    firstCycleRefreshPrices = [] as number[] } = {}) {
+    firstCycleRefreshPrices = [] as number[], firstCycleUnconfirmedPrice = undefined as number | undefined } = {}) {
   const source = 'dongchedi' as const, vehicleId = '982';
   const f = await fixture(t, source);
   const upstream = (id: number, type: Change['type'], at: string) => ({ ...change(id, vehicleId, type, at), source });
@@ -1255,6 +1271,17 @@ async function supersededRelistLifecycle(t: TestContext, cycles: number,
         assert.deepEqual(await f.event(priceId), { applied: true, public_outcome: 'effective' });
         assert.deepEqual(await f.published(vehicleId), { price });
         previousPrice = price;
+      }
+      if (firstCycleUnconfirmedPrice !== undefined) {
+        const priceId = nextEvent++;
+        const at = businessAt(priceId);
+        const event = { ...upstream(priceId, 'price', at), oldPrice: { cny: previousPrice }, newPrice: { cny: firstCycleUnconfirmedPrice } };
+        // An actual detail fetch still carries the previous quote. The event completed, but a change did not become public.
+        f.details.set(vehicleId, { price: previousPrice, at });
+        await ingest(event);
+        assert.equal(await worker.details(), 1);
+        assert.deepEqual(await f.event(priceId), { applied: true, public_outcome: 'not_public' });
+        assert.deepEqual(await f.published(vehicleId), { price: previousPrice });
       }
     }
   }
@@ -1577,6 +1604,258 @@ test('withdrawal-confirmed historical relist resumes across ordinary refresh gen
   assert.equal(ready?.high_water, '7');
   assert.deepEqual(await h.f.sync(), received);
   assert.deepEqual(await h.f.published(h.vehicleId), published);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('processed relist and price can be covered without claiming historical public effect', async t => {
+  const source = 'dongchedi' as const, vehicleId = '982';
+  const f = await fixture(t, source), db = f.db;
+  const store = new ExternalStore(db);
+  let worker = await f.start();
+  await f.ingest(worker, ['981', vehicleId, '983'].map((id, index) => ({ ...change(index + 1, id, 'new', baseAt), source })));
+  assert.equal(await worker.applyEvents(), 3);
+  assert.equal(await worker.details(), 3);
+  const { id: listingId } = (await db.pool.query<{ id: string }>(`SELECT id FROM external_listings
+    WHERE provider='chinacarapi' AND platform_id=$1 AND external_id=$2`, [source, vehicleId])).rows[0]!;
+  const snapshotId = await f.seedSnapshot([[1, '981'], [2, '983']]);
+  await worker.close();
+  await prepareDeltaPolicy(db, actor, snapshotId);
+  worker = await f.start();
+  assert.equal(await worker.promoteSnapshot(snapshotId), 1);
+  assert.equal(await worker.details(), 1);
+
+  const eventTime = (id: number) => new Date(Date.parse(changedAt) + id * 1_000).toISOString();
+  const ingest = async (id: number, type: Change['type'], oldPrice?: number, newPrice?: number) => {
+    const prices = oldPrice === undefined || newPrice === undefined ? {} : { oldPrice: { cny: oldPrice }, newPrice: { cny: newPrice } };
+    await f.ingest(worker, [{ ...change(id, vehicleId, type, eventTime(id)), source, ...prices }]);
+    assert.equal(await worker.applyEvents(), 1);
+  };
+  const hide = async (hidden: boolean) => {
+    const id = `ext-${listingId}`;
+    const current = await store.getListing(id, 'en');
+    await store.saveOverrides(id, { version: current.version, overrides: { ...current.overrides, hidden } }, randomUUID(), actor);
+  };
+  const detailHeads = async (eventId: number) => (await db.pool.query<{ locale: Locale; id: string; hash: string; compressed: Buffer }>(`
+    SELECT h.locale,h.document_id AS id,b.hash,b.compressed FROM external_source_heads h
+    JOIN external_source_documents d ON d.id=h.document_id JOIN external_source_blobs b ON b.hash=d.hash
+    JOIN external_full_events e ON e.event_id=$3
+    WHERE h.provider='chinacarapi' AND h.source=$1 AND h.external_id=$2 AND h.kind='detail'
+      AND h.observed_at BETWEEN e.applied_at AND e.detail_updated_at ORDER BY h.locale`, [source, vehicleId, eventId])).rows;
+
+  await ingest(4, 'removed');
+  assert.deepEqual(await f.event(4), { applied: true, public_outcome: 'effective' });
+  await fixtureLegacyWithdrawal(f, 4);
+
+  await hide(true);
+  f.details.set(vehicleId, { price: 68000, at: eventTime(5) });
+  await ingest(5, 'relisted', 68000, 68000);
+  assert.equal(await worker.details(), 1);
+  assert.equal(await f.published(vehicleId), undefined);
+  const oldDetails = await detailHeads(5);
+  assert.deepEqual(oldDetails.map(row => row.locale), ['en', 'ru', 'zh']);
+  // Pin actual observations so ordinary source retention leaves them available for the conflicting-original control.
+  assert.equal((await db.pool.query(`INSERT INTO external_source_document_refs(document_id,kind,reference)
+    SELECT id,'audit','fixture-processed-relist-original' FROM external_source_documents WHERE id=ANY($1::uuid[])`,
+  [oldDetails.map(row => row.id)])).rowCount, 3);
+  await pruneEventMetadata(f, 5);
+
+  f.details.set(vehicleId, { price: 68100, at: new Date(Date.parse(eventTime(5)) + 1).toISOString() });
+  await db.pool.query(`UPDATE external_full_members SET last_accessed_at=last_detail_at+interval '1 microsecond'
+    WHERE source=$1 AND external_id=$2`, [source, vehicleId]);
+  assert.equal(await worker.rotate(), 1);
+  assert.equal(await worker.details(), 1);
+  f.details.set(vehicleId, { price: 68600, at: eventTime(6) });
+  await ingest(6, 'price', 68100, 68600);
+  assert.equal(await worker.details(), 1);
+  assert.equal(await f.published(vehicleId), undefined);
+  await ingest(7, 'removed');
+  assert.equal(await f.published(vehicleId), undefined);
+  const timing = await db.pool.query(`SELECT event_id::int AS id,was_public,public_outcome,
+    prior_public_price,public_effective_at,detail_updated_at IS NOT NULL AS materialized,detail_generation::int AS generation
+    FROM external_full_events WHERE event_id BETWEEN 5 AND 7 ORDER BY event_id`);
+  const g = timing.rows[0]!.generation;
+  assert.deepEqual(timing.rows, [
+    { id: 5, was_public: false, public_outcome: 'not_public', prior_public_price: null, public_effective_at: null, materialized: true, generation: g },
+    { id: 6, was_public: false, public_outcome: 'not_public', prior_public_price: null, public_effective_at: null, materialized: true, generation: g + 2 },
+    { id: 7, was_public: false, public_outcome: 'not_public', prior_public_price: null, public_effective_at: null, materialized: false, generation: g + 3 },
+  ]);
+  await worker.tick();
+  assert.equal((await f.policy())?.high_water, '7');
+  assert.equal((await f.policy())?.audit_cursor, '2');
+  assert.equal((await f.policy())?.audit_missing, '0');
+  assert.equal((await f.policy())?.event_audit_cursor, '0');
+
+  f.details.set(vehicleId, { price: 66000, at: eventTime(8) });
+  await ingest(8, 'relisted', 66000, 66000);
+  assert.equal(await worker.details(), 1);
+  assert.deepEqual(await f.event(8), { applied: true, public_outcome: 'not_public' });
+  await hide(false);
+  assert.deepEqual(await f.published(vehicleId), { price: 66000 });
+  const liveDetails = await detailHeads(8);
+  assert.deepEqual(liveDetails.map(row => row.locale), ['en', 'ru', 'zh']);
+  const received = await f.sync();
+  assert.equal(received.receive_cursor, '8');
+
+  const pruneDetails = (ids: string[]) => db.transaction(async tx => {
+    await tx.query('DELETE FROM external_source_document_refs WHERE document_id=ANY($1::uuid[])', [ids]);
+    assert.equal((await tx.query('DELETE FROM external_source_documents WHERE id=ANY($1::uuid[])', [ids])).rowCount, ids.length);
+  });
+  const replaceBlob = (hash: string, compressed: Buffer) =>
+    db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [hash, compressed]);
+  const retained = oldDetails[2]!;
+  await pruneDetails(oldDetails.slice(0, 2).map(row => row.id));
+  await replaceBlob(retained.hash, gzipSync(canonicalJson({ ...JSON.parse(gunzipSync(retained.compressed).toString('utf8')), id: '999' })));
+  await worker.tick();
+  const blocked = await f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await worker.close();
+
+  const resumeRequest = { snapshotId, snapshotSha256: 'a'.repeat(64), highWater: '7', eventAuditCursor: '0',
+    evidence: 'fixture-processed-without-publication-proof' };
+  const refuse = async () => {
+    await assert.rejects(resumeDeltaAudit(db, actor, resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await f.policy(), blocked);
+  };
+  await refuse();
+  await replaceBlob(retained.hash, retained.compressed);
+  await pruneDetails([retained.id]);
+  const proveReceipt = (cursor: string, complete: boolean) =>
+    db.pool.query('UPDATE external_full_receipts SET complete=$2 WHERE cursor_key=$1', [cursor, complete]);
+  for (const cursor of ['cursor:3', 'cursor:5', 'cursor:7']) {
+    assert.equal((await proveReceipt(cursor, false)).rowCount, 1);
+    await refuse();
+    await proveReceipt(cursor, true);
+  }
+  const { detail_at: priceDetailAt } = (await db.pool.query<{ detail_at: string }>(
+    'SELECT detail_updated_at::text AS detail_at FROM external_full_events WHERE event_id=6')).rows[0]!;
+  await db.pool.query(`UPDATE external_full_events SET error_code='SYNC_LISTING_LIMIT',detail_generation=NULL,detail_updated_at=NULL
+    WHERE event_id=6`);
+  await refuse();
+  await db.pool.query(`UPDATE external_full_events SET error_code=NULL,detail_generation=$1,detail_updated_at=NULL
+    WHERE event_id=6`, [g + 2]);
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET detail_updated_at=$1 WHERE event_id=6', [priceDetailAt]);
+  await db.pool.query('UPDATE external_full_events SET was_public=true WHERE event_id=7');
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET was_public=false WHERE event_id=7');
+  const live = liveDetails[0]!;
+  await replaceBlob(live.hash, gzipSync(canonicalJson({ ...JSON.parse(gunzipSync(live.compressed).toString('utf8')), price: { cny: 65000 } })));
+  await refuse();
+  await replaceBlob(live.hash, live.compressed);
+
+  const resumed = await resumeDeltaAudit(db, actor, resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '0');
+  const audit = (await db.pool.query<{ changes: Array<{ path: string; after: Array<Record<string, unknown>> }> }>(`
+    SELECT changes FROM audit_events WHERE operation='external.sync.delta.resumeAudit'`)).rows;
+  assert.equal(audit.length, 1);
+  const proof = audit[0]!.changes.find(item => item.path === 'sync.delta.historyCorroboration')?.after
+    .find(item => item.eventId === '5');
+  assert.equal(proof?.scope, 'processed_publication_unconfirmed');
+  assert.equal(proof.supersededByEventId, '7');
+  assert.deepEqual(proof.unavailableLocales, ['en', 'ru', 'zh']);
+  assert.deepEqual(proof.processedEventIds, ['5', '6', '7']);
+  worker = await f.start();
+  await worker.tick();
+  assert.equal((await f.policy())?.event_audit_cursor, '5');
+  for (let count = 0; count < 3 && (await f.policy())?.phase !== 'ready'; count++) await worker.tick();
+  assert.equal((await f.policy())?.phase, 'ready');
+  assert.equal((await f.policy())?.event_audit_cursor, '7');
+  assert.equal((await f.policy())?.high_water, '7');
+  assert.deepEqual(await f.sync(), received);
+  assert.deepEqual(await f.published(vehicleId), { price: 66000 });
+  assert.equal(f.exportCalls(), 0);
+});
+
+test('a current relist uses a pre-timing withdrawal only with its exact completed original page', async t => {
+  const h = await supersededRelistLifecycle(t, 1);
+  const db = h.f.db;
+  const receipt = await fixtureLegacyWithdrawal(h.f, 4);
+  assert.equal(h.resumeRequest.highWater, '5');
+  assert.deepEqual(await h.f.published(h.vehicleId), { price: 68000 });
+  const setComplete = (complete: boolean) =>
+    db.pool.query('UPDATE external_full_receipts SET complete=$2 WHERE cursor_key=$1', [receipt.cursorKey, complete]);
+  assert.equal((await setComplete(false)).rowCount, 1);
+  await h.worker.tick();
+  await h.worker.close();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  await setComplete(true);
+
+  const setTimingBoundary = (microseconds: number) => db.pool.query(`UPDATE external_full_sync SET timing_started_at=(
+    SELECT applied_at+$1*interval '1 microsecond' FROM external_full_events WHERE event_id=4) WHERE id=1`, [microseconds]);
+  await setTimingBoundary(0);
+  await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.deepEqual(await h.f.policy(), blocked);
+  await setTimingBoundary(1);
+
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.event_audit_cursor, '0');
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  assert.deepEqual(await h.f.event(4), { applied: true, public_outcome: 'unknown' });
+  assert.deepEqual(await h.f.published(h.vehicleId), { price: 68000 });
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('a prior public price change and a processed-only price retain separate audit evidence', async t => {
+  const h = await supersededRelistLifecycle(t, 2, { firstCyclePrices: [68500], firstCycleUnconfirmedPrice: 69300 });
+  const db = h.f.db;
+  const timing = (await db.pool.query(`SELECT event_id::int AS id,prior_public_price::int AS price,was_public,
+    public_outcome,public_effective_at IS NOT NULL AS confirmed,detail_updated_at IS NOT NULL AS materialized
+    FROM external_full_events WHERE event_id IN (6,7) ORDER BY event_id`)).rows;
+  assert.deepEqual(timing, [
+    { id: 6, price: 68000, was_public: true, public_outcome: 'effective', confirmed: true, materialized: true },
+    { id: 7, price: 68500, was_public: true, public_outcome: 'not_public', confirmed: false, materialized: true },
+  ]);
+  assert.equal(h.resumeRequest.highWater, '9');
+  assert.deepEqual(await h.f.published(h.vehicleId), { price: 66000 });
+  const setPreviousPrice = (price: number) =>
+    db.pool.query('UPDATE external_full_events SET prior_public_price=$1 WHERE event_id=7', [price]);
+  await setPreviousPrice(68600);
+  await h.worker.tick();
+  await h.worker.close();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  await setPreviousPrice(68500);
+  assert.equal((await resumeDeltaAudit(db, actor, h.resumeRequest)).event_audit_cursor, '0');
+
+  const worker = await h.f.start();
+  await worker.tick();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  const setPriceReceipt = (complete: boolean) => db.pool.query(
+    "UPDATE external_full_receipts SET complete=$1 WHERE cursor_key='cursor:6'", [complete]);
+  assert.equal((await setPriceReceipt(false)).rowCount, 1);
+  await worker.tick();
+  await worker.close();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  await setPriceReceipt(true);
+  const resumePrice = { ...h.resumeRequest, eventAuditCursor: '5' };
+  assert.equal((await resumeDeltaAudit(db, actor, resumePrice)).event_audit_cursor, '5');
+  const audit = (await db.pool.query<{ changes: Array<{ path: string; after: Array<Record<string, unknown>> }> }>(`
+    SELECT changes FROM audit_events WHERE operation='external.sync.delta.resumeAudit' ORDER BY created_at`)).rows;
+  assert.equal(audit.length, 2);
+  const proof = audit[1]!.changes.find(item => item.path === 'sync.delta.historyCorroboration')?.after
+    .find(item => item.eventId === '7');
+  assert.equal(proof?.scope, 'processed_publication_unconfirmed');
+  assert.equal(proof.supersededByEventId, '8');
+  assert.deepEqual(proof.processedEventIds, ['7']);
+
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '7');
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '9');
+  assert.deepEqual(await h.f.published(h.vehicleId), { price: 66000 });
   assert.deepEqual(await h.observations(), h.original);
   assert.equal(h.f.exportCalls(), 0);
 });
