@@ -1153,7 +1153,8 @@ test('cross-water audit refuses a withdrawal that is itself outside the fixed bo
 });
 
 async function supersededRelistLifecycle(t: TestContext, cycles: number,
-  { freezeBeforeLastRelist = false, lastSourceNewer = false, firstCyclePrices = [] as number[] } = {}) {
+  { freezeBeforeLastRelist = false, lastSourceNewer = false, firstCyclePrices = [] as number[],
+    firstCycleRefreshPrices = [] as number[] } = {}) {
   const source = 'dongchedi' as const, vehicleId = '982';
   const f = await fixture(t, source);
   const upstream = (id: number, type: Change['type'], at: string) => ({ ...change(id, vehicleId, type, at), source });
@@ -1222,6 +1223,28 @@ async function supersededRelistLifecycle(t: TestContext, cycles: number,
     heads.set(relistId, Object.fromEntries(pinned.rows.map(row => [row.locale, row.document_id])) as Record<Locale, string>);
 
     if (cycle === 0) {
+      for (const [index, price] of firstCycleRefreshPrices.entries()) {
+        const before = (await f.db.pool.query<{ order: string; generation: string }>(`SELECT
+          event_order::text AS "order",applied_generation::text AS generation FROM external_full_members
+          WHERE source=$1 AND external_id=$2`, [source, vehicleId])).rows[0]!;
+        await f.db.pool.query(`UPDATE external_full_members SET last_accessed_at=last_detail_at+interval '1 microsecond'
+          WHERE source=$1 AND external_id=$2`, [source, vehicleId]);
+        const at = new Date(Date.parse(businessAt(relistId)) + index + 1).toISOString();
+        f.details.set(vehicleId, { price, at });
+        assert.equal(await worker.rotate(), 1);
+        assert.equal(await worker.details(), 1);
+        assert.deepEqual((await f.db.pool.query(`SELECT event_order::text AS "order",applied_generation::text AS generation
+          FROM external_full_members WHERE source=$1 AND external_id=$2`, [source, vehicleId])).rows[0],
+        { order: String(relistId), generation: String(BigInt(before.generation) + 1n) });
+        assert.deepEqual(await f.published(vehicleId), { price });
+        previousPrice = price;
+      }
+      if (firstCycleRefreshPrices.length) {
+        // A different identity contributes a real completed page between this relist and its next withdrawal.
+        const unrelatedId = nextEvent++;
+        await ingest({ ...change(unrelatedId, '981', 'removed', businessAt(unrelatedId)), source });
+        assert.deepEqual(await f.event(unrelatedId), { applied: true, public_outcome: 'effective' });
+      }
       for (const price of firstCyclePrices) {
         const priceId = nextEvent++;
         const at = businessAt(priceId);
@@ -1273,7 +1296,10 @@ test('superseded relist audit verifies each historical generation and stops at t
   const db = h.f.db;
   const oldDetail = h.heads.get(5)!.ru, currentDetail = h.heads.get(9)!.ru;
   const setLocale = (locale: 'ru' | 'und') => db.pool.query('UPDATE external_source_documents SET locale=$2 WHERE id=$1', [oldDetail, locale]);
+  const setReceipt = (complete: boolean) =>
+    db.pool.query("UPDATE external_full_receipts SET complete=$1 WHERE cursor_key='cursor:5'", [complete]);
   assert.equal((await setLocale('und')).rowCount, 1);
+  assert.equal((await setReceipt(false)).rowCount, 1);
   const received = await h.f.sync();
   assert.equal(received.receive_cursor, '9');
   await h.worker.tick();
@@ -1304,6 +1330,7 @@ test('superseded relist audit verifies each historical generation and stops at t
   await db.pool.query('UPDATE external_source_documents SET first_observed_at=$2,last_observed_at=$3 WHERE id=$1', [oldDetail, first_seen, last_seen]);
   await db.pool.query('UPDATE external_source_responses SET observed_at=$3 WHERE document_id=$1 AND response_hash=$2',
     [oldDetail, response, observed]);
+  await setReceipt(true);
 
   const currentFirst = (await db.pool.query<{ stamp: string }>('SELECT first_observed_at::text AS stamp FROM external_source_documents WHERE id=$1',
     [currentDetail])).rows[0]!.stamp;
@@ -1343,7 +1370,7 @@ test('superseded relist audit verifies each historical generation and stops at t
   assert.equal(h.f.exportCalls(), 0);
 });
 
-test('superseded relist audit requires old details even when the current relist is effective', async t => {
+test('superseded relist audit needs historical evidence even when the current relist is effective', async t => {
   const h = await supersededRelistLifecycle(t, 2, { freezeBeforeLastRelist: true, lastSourceNewer: true });
   const db = h.f.db, oldDetail = h.heads.get(5)!.en;
   const received = await h.f.sync(), published = await h.f.published(h.vehicleId);
@@ -1352,7 +1379,10 @@ test('superseded relist audit requires old details even when the current relist 
   assert.deepEqual(await h.f.event(7), { applied: true, public_outcome: 'effective' });
 
   const setLocale = (locale: 'en' | 'und') => db.pool.query('UPDATE external_source_documents SET locale=$2 WHERE id=$1', [oldDetail, locale]);
+  const setReceipt = (complete: boolean) =>
+    db.pool.query("UPDATE external_full_receipts SET complete=$1 WHERE cursor_key='cursor:5'", [complete]);
   assert.equal((await setLocale('und')).rowCount, 1);
+  assert.equal((await setReceipt(false)).rowCount, 1);
   await h.worker.tick();
   const blocked = await h.f.policy();
   assert.equal(blocked?.reason, 'audit_gap');
@@ -1361,6 +1391,7 @@ test('superseded relist audit requires old details even when the current relist 
   await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
   assert.deepEqual(await h.f.policy(), blocked);
   assert.equal((await setLocale('en')).rowCount, 1);
+  await setReceipt(true);
 
   const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
   assert.equal(resumed.phase, 'draining');
@@ -1463,6 +1494,90 @@ test('price-confirmed historical relist resumes across two applied prices and a 
   assert.deepEqual(await h.observations(), h.original);
   assert.equal((await db.pool.query('SELECT 1 FROM external_source_documents WHERE id=ANY($1::uuid[])',
     [[old.en, old.ru, old.zh, priceEvidence.id]])).rowCount, 0);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('withdrawal-confirmed historical relist resumes across ordinary refresh generations', async t => {
+  const h = await supersededRelistLifecycle(t, 2, {
+    freezeBeforeLastRelist: true, lastSourceNewer: true, firstCycleRefreshPrices: [69000, 68000],
+  });
+  const db = h.f.db, old = h.heads.get(5)!;
+  const received = await h.f.sync(), published = await h.f.published(h.vehicleId);
+  assert.equal(received.receive_cursor, '8');
+  assert.equal(h.resumeRequest.highWater, '7');
+  assert.deepEqual(await h.f.event(5), { applied: true, public_outcome: 'not_public' });
+  assert.deepEqual(await h.f.event(7), { applied: true, public_outcome: 'effective' });
+  assert.deepEqual(await h.f.event(8), { applied: true, public_outcome: 'effective' });
+  assert.deepEqual(Object.keys(h.heads.get(8)!).sort(), ['en', 'ru', 'zh']);
+  assert.deepEqual(published, { price: 66000 });
+  const endpoints = (await db.pool.query(`SELECT e.detail_generation-r.detail_generation AS gap,
+      e.prior_public_price::int AS price,e.was_public AS visible
+    FROM external_full_events e CROSS JOIN external_full_events r WHERE e.event_id=7 AND r.event_id=5`)).rows[0];
+  assert.deepEqual(endpoints, { gap: '3', price: 68000, visible: true });
+  await pruneEventMetadata(h.f, 5);
+
+  const oldBlob = (await db.pool.query<{ hash: string; compressed: Buffer }>(`SELECT b.hash,b.compressed
+    FROM external_source_documents d JOIN external_source_blobs b USING(hash) WHERE d.id=$1`, [old.zh])).rows[0]!;
+  const pruneDetails = (ids: string[]) => db.transaction(async tx => {
+    await tx.query('DELETE FROM external_source_document_refs WHERE document_id=ANY($1::uuid[])', [ids]);
+    assert.equal((await tx.query('DELETE FROM external_source_documents WHERE id=ANY($1::uuid[])', [ids])).rowCount, ids.length);
+  });
+  await pruneDetails([old.en, old.ru]);
+  const replaceBlob = (compressed: Buffer) =>
+    db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [oldBlob.hash, compressed]);
+  const wrongDetail = { ...JSON.parse(gunzipSync(oldBlob.compressed).toString('utf8')), price: { cny: 68001 } };
+  assert.equal((await replaceBlob(gzipSync(canonicalJson(wrongDetail)))).rowCount, 1);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await h.worker.close();
+
+  const refuse = async () => {
+    await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refuse();
+  await replaceBlob(oldBlob.compressed);
+  await pruneDetails([old.zh]);
+
+  const setReceipt = (key: string, complete: boolean) =>
+    db.pool.query('UPDATE external_full_receipts SET complete=$2 WHERE cursor_key=$1', [key, complete]);
+  for (const key of ['cursor:5', 'cursor:6']) {
+    assert.equal((await setReceipt(key, false)).rowCount, 1);
+    await refuse();
+    await setReceipt(key, true);
+  }
+  const setWithdrawal = (price: number, wasPublic: boolean) => db.pool.query(`
+    UPDATE external_full_events SET prior_public_price=$1,was_public=$2 WHERE event_id=7`, [price, wasPublic]);
+  await setWithdrawal(68100, true);
+  await refuse();
+  await setWithdrawal(68000, false);
+  await refuse();
+  await setWithdrawal(68000, true);
+
+  const audit = async () => (await db.pool.query<{ changes: Array<{ path: string; after: unknown }> }>(`
+    SELECT changes FROM audit_events WHERE operation='external.sync.delta.resumeAudit'`)).rows;
+  assert.deepEqual(await audit(), []);
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '0');
+  const audits = await audit();
+  assert.equal(audits.length, 1);
+  assert.deepEqual(audits[0]!.changes.find(change => change.path === 'sync.delta.historyCorroboration')?.after, [
+    { eventId: '5', withdrawalEventId: '7', scope: 'public_before_withdrawal', unavailableLocales: ['en', 'ru', 'zh'] },
+  ]);
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  await restarted.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '7');
+  assert.equal(ready?.high_water, '7');
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.f.published(h.vehicleId), published);
+  assert.deepEqual(await h.observations(), h.original);
   assert.equal(h.f.exportCalls(), 0);
 });
 
