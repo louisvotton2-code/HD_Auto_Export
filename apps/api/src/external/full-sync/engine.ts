@@ -22,7 +22,7 @@ import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './ap
 import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapshot, eligibleReplayEvents} from './admission-replay.js';
 import {observeMaterialization,type DetailMaterializationObserver} from './materialization-log.js';
 import {readDeltaPolicy} from './delta-policy.js';
-import {scanDeltaSnapshotChunk} from './delta-census.js';
+import {findDeltaAuditDetails,scanDeltaSnapshotChunk,type QueuedDetail} from './delta-census.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
@@ -31,6 +31,8 @@ const capacityMeasurementMaxAgeMs=30_000;
 const detailMaterializationBudgetMs=5_000;
 const detailMaterializationTimeout='SYNC_DETAIL_SQL_TIMEOUT';
 const deltaEventAuditBatch=2_000;
+const deltaAuditDetailSlots=4;
+const deltaAuditBulkIdsPerLocale=25;
 type CapacitySnapshot=Parameters<typeof capacityTarget>[0]&{id:string;bytes:string};
 type CapacityMeasurement={state:Record<string,any>;disk:CapacityDisk;sample:CapacitySample;snapshot:CapacitySnapshot|undefined};
 type DetailJobKey={source:Source;external_id:string;generation:string;replay_id?:string|null};
@@ -599,6 +601,29 @@ export class FullSyncWorker{
    return processed;
   });
  }
+ private async preferDeltaAuditDetails(source:Source,candidates:QueuedDetail[]){
+  // A swap preserves the exact missing languages, source, and total batch size.
+  if(candidates.some(job=>job.priority>=100||job.replay_id)||
+    (['zh','en','ru'] as const).some(locale=>candidates.filter(job=>!job.locales.includes(locale)).length>deltaAuditBulkIdsPerLocale))return false;
+  const [oldest,...rest]=candidates;
+  if(!oldest)return false;
+  const donors=rest.filter(job=>job.priority<=50&&job.locales.length===0).slice(-deltaAuditDetailSlots);
+  if(!donors.length)return false;
+  let promoted:QueuedDetail[];
+  try{
+   promoted=await this.db.transaction(async tx=>{
+    await tx.query("SET LOCAL statement_timeout='250ms'");
+    return findDeltaAuditDetails(tx,source,candidates.map(job=>job.external_id),donors.length);
+   });
+  }catch(error){
+   if(classifyCapacityFailure(error).code==='SQL_STATEMENT_CANCELLED')return false;
+   throw error;
+  }
+  if(!promoted.length)return false;
+  const replace=new Set(donors.slice(-promoted.length).map(job=>job.external_id));
+  candidates.splice(1,candidates.length-1,...promoted,...rest.filter(job=>!replace.has(job.external_id)));
+  return true;
+ }
  async details(sampleOnly=false){
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
   await this.heavy(sampleOnly);const remaining=await this.sampleRemaining(),restrictToSample=sampleOnly||remaining===0;
@@ -610,11 +635,14 @@ export class FullSyncWorker{
      AND item.detail_generation=w.generation AND item.state='scheduled'
    WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
      AND ($1=false OR m.sampled) ORDER BY CASE WHEN $2 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample,oldest])).rows[0];
-  if(!selected)return 0;const candidates=(await this.db.pool.query(`SELECT w.*,item.replay_id FROM external_full_work w JOIN external_full_members m USING(source,external_id)
+  if(!selected)return 0;const candidates=(await this.db.pool.query<QueuedDetail>(`SELECT w.source,w.external_id,w.generation,w.locales,w.priority,item.replay_id
+   FROM external_full_work w JOIN external_full_members m USING(source,external_id)
    LEFT JOIN external_full_admission_replay_items item ON item.source=w.source AND item.external_id=w.external_id
      AND item.detail_generation=w.generation AND item.state='scheduled'
    WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
      AND ($2=false OR m.sampled) ORDER BY CASE WHEN $4 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source,oldest])).rows;
+  // Keep every other existing oldest-first turn and all priority turns unchanged.
+  const auditAssist=!restrictToSample&&turn%8===0&&await this.preferDeltaAuditDetails(selected.source,candidates);
   const jobs=[];
   for(const job of candidates){
    if(!job.replay_id){jobs.push(job);continue;}
@@ -640,7 +668,7 @@ export class FullSyncWorker{
    if(wanted.some(job=>job.replay_id))await this.heavy();
    const outstanding=new Map<string,DetailJobKey>(wanted.map(job=>[job.external_id,job]));
    let receiving=true,archiveJob:DetailJobKey|undefined;
-   try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale)){
+   try{for await(const response of this.client.bulk(source,wanted.map(j=>j.external_id),locale,{splitOnFailure:!auditAssist})){
     receiving=false;
     await this.heavy(sampleOnly);await this.applyEvents(true);await this.transaction(tx=>persistSourceResponse(tx,response.rawResponse));
     for(const payload of response.results){
@@ -672,6 +700,9 @@ export class FullSyncWorker{
      throw error;
     }
     if(error instanceof FullSyncError&&(error.code.startsWith('SYNC_ACCOUNT_')||error.code==='SYNC_SOURCE_FORBIDDEN'||error.code==='SYNC_RATE_LIMITED'))throw error;
+    // Splits can charge the same IDs again. Use the usual retry/split on a later
+    // unmodified turn without penalizing the ordinary jobs in this batch.
+    if(auditAssist&&error instanceof FullSyncError&&(error.code==='SYNC_TIMEOUT'||error.code==='SYNC_TOO_LARGE'))throw error;
     const affected=error instanceof FullSyncError?error.affectedIds:undefined;
     for(const id of affected??outstanding.keys()){
      const job=outstanding.get(id);if(job)await failOnce(job,errorCode(error));

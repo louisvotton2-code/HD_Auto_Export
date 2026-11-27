@@ -58,7 +58,7 @@ export class FullSyncClient{
   return {...page,rawResponse:raw.rawResponse};
  }
  /** Each successful half is yielded and persisted before requesting the next half. No result array grows with catalog size. */
- async *bulk(source:Source,ids:string[],locale:Locale):AsyncGenerator<Bulk>{
+ async *bulk(source:Source,ids:string[],locale:Locale,{splitOnFailure=true}={}):AsyncGenerator<Bulk>{
   if(!ids.length||ids.length>500||new Set(ids).size!==ids.length||ids.some(id=>!/^\d{1,100}$/.test(id)))throw new FullSyncError('SYNC_BULK_INVALID');
   const q=new URLSearchParams({source});if(locale!=='en')q.set('lang',locale);
   let started:number|null=null,raw:Awaited<ReturnType<FullSyncClient['json']>>|undefined;
@@ -78,7 +78,7 @@ export class FullSyncClient{
    if(returned.length!==ids.length||new Set(returned).size!==ids.length||returned.some(id=>!ids.includes(id))||result.results.some(r=>r.source!==source))throw new FullSyncError('SYNC_BULK_IDENTITY');
   }catch(e){
    const code=e instanceof FullSyncError?e.code:null;
-   const splitCode=ids.length>1&&(code==='SYNC_TIMEOUT'||code==='SYNC_TOO_LARGE')?code:null;
+   const splitCode=splitOnFailure&&ids.length>1&&(code==='SYNC_TIMEOUT'||code==='SYNC_TOO_LARGE')?code:null;
    observe(code==='SYNC_TIMEOUT'?'timeout':code==='SYNC_TOO_LARGE'?'too_large':code==='SYNC_RATE_LIMITED'?'rate_limited':'rejected',splitCode);
    if(splitCode){const middle=Math.ceil(ids.length/2);yield* this.bulk(source,ids.slice(0,middle),locale);yield* this.bulk(source,ids.slice(middle),locale);return;}
    if(e instanceof FullSyncError)e.affectedIds??=ids;throw e;

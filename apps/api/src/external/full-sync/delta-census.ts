@@ -1,8 +1,60 @@
 import type { PoolClient } from 'pg';
 import { DEFAULT_FORMAL_LISTING_LIMIT } from '../formal-admission.js';
-import { FullSyncError } from './types.js';
+import { FullSyncError, type Locale, type Source } from './types.js';
 
 const censusChunkRows = 2_000;
+
+export type QueuedDetail = {
+  source: Source;
+  external_id: string;
+  generation: string;
+  locales: Locale[];
+  priority: number;
+  replay_id: string | null;
+};
+
+/** Select only admitted, unstaged work actually holding up this CSV census block. */
+export async function findDeltaAuditDetails(
+  tx: PoolClient,
+  source: Source,
+  alreadySelected: string[],
+  limit: number,
+): Promise<QueuedDetail[]> {
+  const {rows} = await tx.query<QueuedDetail>(`
+    WITH current_block AS MATERIALIZED (
+      SELECT s.id, s.generated_at, p.audit_cursor
+      FROM external_full_delta_policy p JOIN external_full_snapshots s ON s.id = p.snapshot_id
+      WHERE p.id = 1 AND p.phase = 'draining' AND p.high_water IS NOT NULL
+        AND NOT p.cursor_invalid AND p.audit_missing = 0
+        AND s.state = 'complete' AND s.staged = s.rows AND s.apply_cursor = s.rows
+        AND s.archive_pruned_at IS NULL AND p.audit_cursor < s.rows
+        AND NOT EXISTS (
+          SELECT 1 FROM external_full_work urgent JOIN external_full_members m USING (source, external_id)
+          WHERE urgent.kind = 'detail' AND urgent.priority >= 100 AND urgent.attempts < 5
+            AND urgent.due_at <= now() AND urgent.generation = m.desired_generation AND m.state <> 'withdrawn'
+        )
+    )
+    SELECT w.source, w.external_id, w.generation, w.locales, w.priority, NULL::uuid AS replay_id
+    FROM current_block b JOIN external_full_stage s ON s.snapshot_id = b.id
+      AND s.row_number > b.audit_cursor AND s.row_number <= b.audit_cursor + $3
+    JOIN external_formal_admissions a USING (source, external_id)
+    JOIN external_full_members m USING (source, external_id)
+    JOIN external_full_work w USING (source, external_id)
+    WHERE s.source = $1 AND s.external_id <> ALL($2::text[])
+      AND m.state = 'pending' AND m.last_snapshot = b.id AND w.generation = m.desired_generation
+      AND w.kind = 'detail' AND w.priority <= 50 AND w.attempts < 5 AND w.due_at <= now() AND w.locales = '{}'
+      AND NOT EXISTS (
+        SELECT 1 FROM external_ingestion_identity_state i
+        WHERE i.provider = 'chinacarapi' AND i.source = s.source AND i.external_id = s.external_id
+          AND i.withdrawn AND i.business_at >= b.generated_at
+      ) AND NOT EXISTS (
+        SELECT 1 FROM external_full_admission_replay_items item
+        WHERE item.source = w.source AND item.external_id = w.external_id
+          AND item.detail_generation = w.generation AND item.state = 'scheduled'
+      )
+    ORDER BY s.row_number LIMIT $4`, [source, alreadySelected, censusChunkRows, limit]);
+  return rows;
+}
 
 type DeltaSnapshotChunk = {
   cursor: string;

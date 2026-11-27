@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { test, type TestContext } from 'node:test';
 import { gunzipSync } from 'node:zlib';
 import { createDatabase } from '../src/db/index.js';
@@ -10,7 +11,8 @@ import { migrateDatabase } from '../src/db/migrate.js';
 import { FullSyncClient } from '../src/external/full-sync/client.js';
 import { armDeltaPolicy, prepareDeltaPolicy, readDeltaPolicy, requestDeltaReconciliation } from '../src/external/full-sync/delta-policy.js';
 import { configureFullSync, FullSyncWorker } from '../src/external/full-sync/engine.js';
-import { FullSyncError, type Change, type Locale, type Source } from '../src/external/full-sync/types.js';
+import { FullSyncError, type Change, type FullApply, type Locale, type Source } from '../src/external/full-sync/types.js';
+import { jsonHash } from '../src/external/normalize.js';
 import { catalogColumns } from '../src/external/sources/index.js';
 
 const actor = { id: 'delta-policy-admin', requestId: 'delta-policy-test' };
@@ -126,8 +128,8 @@ async function fixture(t: TestContext) {
     },
   } as unknown as FullSyncClient;
 
-  const start = async () => {
-    const worker = new FullSyncWorker(db, client, directory);
+  const start = async (syncClient = client, apply?: FullApply) => {
+    const worker = new FullSyncWorker(db, syncClient, directory, apply);
     // This fixture isolates the cutover and polling logic from native host capacity receipts.
     worker.heavy = async () => {};
     worker.capacityGate = async () => false;
@@ -560,4 +562,163 @@ test('a recovered withdrawal superseded by a price needs affirmative evidence be
   assert.deepEqual(await f.published('501'), { price: 68000 });
   await assert.rejects(armDeltaPolicy(f.db, actor, replacement), /SYNC_DELTA_NOT_READY/);
   assert.equal(f.exportCalls(), 2);
+});
+
+test('a bounded same-source detail turn unblocks the current CSV census without widening provider work', async t => {
+  const f = await fixture(t);
+  const snapshot = randomUUID();
+  const pickedCsv = (ordinal: number) => String(610000 + ordinal);
+  const blockers = [2001, 2002, 2003, 2004, 2008].map(pickedCsv);
+  const otherSource = pickedCsv(2005), tombstone = pickedCsv(2006), below = pickedCsv(2000), above = pickedCsv(4001);
+  const pendingOrdinals = [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2008, 4001];
+  const older = Array.from({ length: 504 }, (_, i) => String(710001 + i));
+  const fullyArchived = 485;
+  const baseline = older.slice(fullyArchived, 500);
+  const edited = [...blockers.slice(0, 4), ...baseline.slice(0, -4)];
+  const localeOrder = ['zh', 'en', 'ru'] as const;
+  await f.db.transaction(async tx => {
+    await tx.query(`INSERT INTO external_full_snapshots
+      (id,generated_at,state,path,sha256,bytes,rows,staged,apply_cursor,completed_at)
+      VALUES($1,$2,'complete',$3,repeat('a',64),1024,4001,4001,4001,clock_timestamp())`,
+    [snapshot, archiveAt, `/private/delta-fixture/${snapshot}.csv.gz`]);
+    await tx.query(`INSERT INTO external_full_stage(snapshot_id,row_number,source,external_id,payload)
+      SELECT $1,n,CASE WHEN n=2005 THEN 'dongchedi' ELSE 'che168' END,(610000+n)::text,'{}'
+      FROM generate_series(1,4001) n`, [snapshot]);
+    await tx.query(`INSERT INTO external_full_members
+      (source,external_id,canonical_id,state,applied_generation,last_snapshot,last_detail_at,sampled)
+      SELECT source,external_id,'audit:'||external_id,CASE WHEN row_number=ANY($2::int[]) THEN 'pending' ELSE 'active' END,
+        CASE WHEN row_number=ANY($2::int[]) THEN 0 ELSE 1 END,$1,
+        CASE WHEN row_number=ANY($2::int[]) THEN NULL ELSE clock_timestamp() END,true
+      FROM external_full_stage WHERE snapshot_id=$1`, [snapshot, pendingOrdinals]);
+    await tx.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,queued_at)
+      SELECT source,external_id,'detail',1,50,
+        $3::timestamptz+CASE WHEN source='dongchedi' THEN interval '1 minute' ELSE interval '0' END
+      FROM external_full_stage WHERE snapshot_id=$1 AND row_number=ANY($2::int[])`, [snapshot, pendingOrdinals, archiveAt]);
+    await tx.query(`INSERT INTO external_ingestion_identity_state
+      (provider,source,external_id,withdrawn,observed_at,business_at)
+      VALUES('chinacarapi','che168',$1,true,$2,$2)`, [tombstone, changedAt]);
+    await tx.query(`INSERT INTO external_full_members
+      (source,external_id,canonical_id,state,applied_generation,last_detail_at,sampled)
+      SELECT 'che168',id,'older:'||id,'active',1,clock_timestamp(),true FROM unnest($1::text[]) id`, [older]);
+    await tx.query(`INSERT INTO external_full_work(source,external_id,kind,generation,priority,queued_at,locales)
+      SELECT 'che168',id,'detail',1,50,$2::timestamptz+n*interval '1 second',
+        CASE WHEN n<=$3 THEN ARRAY['zh','en','ru'] ELSE '{}'::text[] END
+      FROM unnest($1::text[]) WITH ORDINALITY AS u(id,n)`, [older, baseAt, fullyArchived]);
+    // Archive real, per-identity references set-wise to model the already fetched 485 jobs.
+    const documents = older.slice(0, fullyArchived).flatMap(external_id => {
+      const payload = { id: external_id, source: 'che168', status: 'active', updatedAt: baseAt, hasInspectionReport: false };
+      return localeOrder.map(locale => ({ id: randomUUID(), external_id, locale, hash: jsonHash(payload), payload }));
+    });
+    const serialized = JSON.stringify(documents);
+    await tx.query(`INSERT INTO external_source_blobs(hash,payload)
+      SELECT DISTINCT hash,payload FROM jsonb_to_recordset($1) AS d(hash text,payload jsonb)`, [serialized]);
+    await tx.query(`WITH saved AS (
+      INSERT INTO external_source_documents
+        (id,provider,source,external_id,kind,locale,hash,presence,first_observed_at,last_observed_at,source_updated_at)
+      SELECT id,'chinacarapi','che168',external_id,'detail',locale,hash,'{}',$2,$2,$2
+      FROM jsonb_to_recordset($1) AS d(id uuid,external_id text,locale text,hash text)
+      RETURNING id,external_id,locale
+    ), protected AS (
+      INSERT INTO external_source_document_refs(document_id,kind,reference)
+      SELECT id,'pending','full:che168:'||external_id||':detail' FROM saved RETURNING document_id
+    ), grouped AS (
+      SELECT external_id,jsonb_agg(jsonb_build_object('id',id,'observedAt',$2::timestamptz,
+        'sourceUpdatedAt',$2::timestamptz) ORDER BY locale) AS refs
+      FROM saved JOIN protected ON document_id=id GROUP BY external_id
+    ) UPDATE external_full_work w SET document_refs=g.refs FROM grouped g
+      WHERE w.source='che168' AND w.kind='detail' AND w.external_id=g.external_id`, [serialized, baseAt]);
+    await tx.query("UPDATE external_full_sync SET last_capacity_sample=10000,next_delta_at='infinity' WHERE id=1");
+  });
+  const admitted = (await f.db.pool.query(`SELECT count(*)::int AS count FROM external_full_stage s
+    JOIN external_formal_admissions a USING(source,external_id) WHERE s.snapshot_id=$1`, [snapshot])).rows[0]!;
+  assert.equal(admitted.count, 4001);
+  await prepareDeltaPolicy(f.db, actor, snapshot);
+  await f.db.pool.query('UPDATE external_full_delta_policy SET audit_cursor=2000,high_water=0 WHERE id=1');
+
+  const calls: Array<{ source: string; locale: string; ids: string[] }> = [];
+  const quota: Array<{ source: Source; ids: number }> = [];
+  const failures: Array<'timeout' | 413 | 429> = [];
+  const client = new FullSyncClient('delta-census-fixture', {
+    wait: async () => {},
+    beforeBulk: async (ids, source) => { quota.push({ source, ids }); },
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, '/api/vehicle/bulk');
+      const source = url.searchParams.get('source')!;
+      const locale = url.searchParams.get('lang') ?? 'en';
+      const { ids } = JSON.parse(String(init?.body)) as { ids: string[] };
+      calls.push({ source, locale, ids });
+      const failure = failures.shift();
+      if (failure === 'timeout') throw new DOMException('Synthetic provider timeout', 'TimeoutError');
+      if (failure) return new Response(null, { status: failure });
+      return Response.json({ results: ids.map(id => ({ source, id, status: 'active', hasInspectionReport: false, updatedAt: changedAt })),
+        notFound: [] });
+    },
+  });
+  const applied: string[] = [];
+  let monotonicMs = 0;
+  t.mock.method(performance, 'now', () => monotonicMs);
+  const worker = await f.start(client, async (_tx, input) => {
+    applied.push(input.externalId);
+    if (applied.length === 5) monotonicMs += 5000;
+  });
+  const setNextTurn = (turn: number) => f.db.pool.query('UPDATE external_full_sync SET detail_turn=$1 WHERE id=1', [turn - 1]);
+  const request = (source: Source, ids: string[], locale: Locale = 'zh') => ({ source, locale, ids });
+  const refusedTurn = async (turn: number, expected: ReturnType<typeof request>, sampleOnly = false) => {
+    await setNextTurn(turn);
+    calls.length = 0;
+    failures.push(429);
+    await assert.rejects(worker.details(sampleOnly), { code: 'SYNC_RATE_LIMITED' });
+    assert.deepEqual(calls, [expected]);
+  };
+  await refusedTurn(4, request('che168', baseline));
+  await refusedTurn(8, request('che168', baseline), true);
+  const additionalMissing = older.slice(0, 11);
+  await f.db.pool.query("UPDATE external_full_work SET locales='{}' WHERE source='che168' AND external_id=ANY($1::text[])", [additionalMissing]);
+  await refusedTurn(8, request('che168', [...additionalMissing, ...baseline]));
+  await f.db.pool.query("UPDATE external_full_work SET locales=ARRAY['zh','en','ru'] WHERE source='che168' AND external_id=ANY($1::text[])",
+    [additionalMissing]);
+  await f.db.pool.query("UPDATE external_full_work SET priority=100 WHERE source='dongchedi' AND external_id=$1", [otherSource]);
+  await refusedTurn(8, request('che168', baseline));
+  await refusedTurn(9, request('dongchedi', [otherSource]));
+  await f.db.pool.query("UPDATE external_full_work SET priority=50 WHERE source='dongchedi' AND external_id=$1", [otherSource]);
+  await refusedTurn(8, request('che168', edited));
+
+  const queue = async () => (await f.db.pool.query(`SELECT source,external_id,attempts,locales,document_refs,due_at,last_error_code
+    FROM external_full_work WHERE kind='detail' ORDER BY source,external_id`)).rows;
+  const before = await queue();
+  for (const failure of ['timeout', 413] as const) {
+    await setNextTurn(8);
+    calls.length = 0;
+    quota.length = 0;
+    failures.push(failure);
+    await assert.rejects(worker.details(), { code: failure === 'timeout' ? 'SYNC_TIMEOUT' : 'SYNC_TOO_LARGE' });
+    assert.deepEqual(calls, [request('che168', edited)], 'Do not split a substituted batch');
+    assert.deepEqual(quota, [{ source: 'che168', ids: baseline.length }]);
+    assert.deepEqual(await queue(), before, 'A failed substituted batch must not charge or reschedule any job');
+    calls.length = 0;
+    failures.push(413, 429);
+    await assert.rejects(worker.details(), { code: 'SYNC_RATE_LIMITED' });
+    assert.deepEqual(calls, [request('che168', baseline), request('che168', baseline.slice(0, Math.ceil(baseline.length / 2)))],
+      'The next ordinary turn keeps source selection, original IDs and ordinary split behavior');
+    assert.deepEqual(await queue(), before);
+  }
+
+  await setNextTurn(8);
+  calls.length = 0;
+  quota.length = 0;
+  await worker.tick();
+  assert.deepEqual(calls, localeOrder.map(locale => request('che168', edited, locale)));
+  assert.deepEqual(quota, localeOrder.map(() => ({ source: 'che168', ids: baseline.length })));
+  assert.deepEqual(applied, [older[0], ...blockers.slice(0, 4)], 'The oldest job and four audit blockers commit before the 5s budget ends');
+  assert.equal((await f.policy())?.audit_cursor, '2000', 'The fifth blocker and other source remain pending');
+  const oldAndUnrelated = [...older, below, tombstone];
+  await f.db.pool.query("UPDATE external_full_work SET due_at=clock_timestamp()+interval '1 day' WHERE source='che168' AND external_id=ANY($1::text[])",
+    [oldAndUnrelated]);
+  await worker.tick();
+  assert.equal((await f.policy())?.audit_cursor, '2000');
+  await worker.tick();
+  assert.equal((await f.policy())?.audit_cursor, '4000');
+  assert.equal((await f.policy())?.audit_missing, '0');
+  assert.ok(applied.includes(blockers[4]!) && applied.includes(otherSource));
 });
