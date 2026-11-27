@@ -37,6 +37,7 @@ const decodedPageLimit = 4 * 1024 * 1024;
 const decodedDetailLimit = 1024 * 1024;
 const decodedBatchLimit = 24 * 1024 * 1024;
 type DecodeBudget = { remaining: number };
+type CompletedPage = { cursor: string; nextCursor: string; eventCount: number };
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -129,7 +130,24 @@ async function verifyCsv(tx: PoolClient, snapshotId: string, proofs: ReadonlyMap
   });
 }
 
-async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedEventPageEvidence>, budget: DecodeBudget) {
+function completedPage(page: Record<string, unknown>, ids: Iterable<string>): CompletedPage | null {
+  const { cursor, nextCursor, hasMore } = page;
+  if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor < 0 ||
+      typeof nextCursor !== 'number' || !Number.isSafeInteger(nextCursor) || nextCursor <= cursor ||
+      typeof hasMore !== 'boolean') return null;
+  let last = cursor;
+  let eventCount = 0;
+  for (const id of ids) {
+    const current = Number(id);
+    if (current <= last || current > nextCursor) return null;
+    last = current;
+    eventCount++;
+  }
+  return { cursor: String(cursor), nextCursor: String(nextCursor), eventCount };
+}
+
+async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedEventPageEvidence>,
+  missingDocuments: ReadonlySet<string>, budget: DecodeBudget) {
   const pages = new Map<string, ArchivedEventPageEvidence[]>();
   for (const proof of proofs.values()) {
     const expected = pages.get(proof.responseHash);
@@ -140,7 +158,8 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
     FROM external_source_blobs WHERE hash=ANY($1::text[]) AND raw_exact AND octet_length(compressed)<=$2`,
   [[...pages.keys()], compressedPageLimit])).rows;
   if (blobs.length !== pages.size) return false;
-  return blobs.every(blob => {
+  const completed: CompletedPage[] = [];
+  for (const blob of blobs) {
     const page = decodeArchive(blob.compressed, blob.hash, decodedPageLimit, budget);
     const expected = pages.get(blob.hash);
     if (!expected || !page || !Array.isArray(page.changes) || page.changes.length > LIMITS.events) return false;
@@ -153,12 +172,25 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
       if (byId.has(id)) return false;
       byId.set(id, event);
     }
-    return expected.every(proof => {
+    if (!expected.every(proof => {
       const event = byId.get(proof.eventId);
       return !!(event && event.type === proof.kind && event.source === proof.source &&
         event.vehicleId === proof.externalId && atExactTime(event.at, proof.businessAt) && jsonHash(event) === proof.eventHash);
-    });
-  });
+    })) return false;
+    if (expected.some(proof => missingDocuments.has(proof.eventId))) {
+      const receipt = completedPage(page, byId.keys());
+      if (!receipt) return false;
+      completed.push(receipt);
+    }
+  }
+  if (!completed.length) return true;
+  // The response itself proves membership. The mutable receipt only corroborates the exact completed range,
+  // and its creation time does not date a specific response received on a reused cursor.
+  return (await tx.query<{ matched: boolean }>(`SELECT NOT EXISTS(
+    SELECT 1 FROM jsonb_to_recordset($1::jsonb) AS q(cursor text,"nextCursor" numeric,"eventCount" integer)
+    WHERE NOT EXISTS(SELECT 1 FROM external_full_receipts r WHERE r.cursor_key='cursor:'||q.cursor
+      AND r.complete AND r.next_cursor=q."nextCursor" AND r.event_count=q."eventCount")) AS matched`,
+  [JSON.stringify(completed)])).rows[0]?.matched === true;
 }
 
 async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, RelistArchiveEvidence>, budget: DecodeBudget) {
@@ -184,10 +216,17 @@ async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, Rel
   });
 }
 
-/** Verify original event pages and the current source heads. In-snapshot relists also need a later matching export row. */
+function samePageProof(a: ArchivedEventPageEvidence, b: ArchivedEventPageEvidence) {
+  return a.kind === b.kind && a.source === b.source && a.externalId === b.externalId &&
+    a.businessAt === b.businessAt && a.eventHash === b.eventHash && a.responseHash === b.responseHash;
+}
+
+/** Verify source archives, using a completed original page when event metadata has been pruned. */
 export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: string,
-  proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = []): Promise<boolean> {
-  if ((!proofs.length && !related.length) || proofs.length > relistProofBatch || related.length > relatedEventLimit ||
+  proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = [],
+  missingDocuments: readonly ArchivedEventPageEvidence[] = []): Promise<boolean> {
+  if ((!proofs.length && !related.length && !missingDocuments.length) || proofs.length > relistProofBatch ||
+      related.length > relatedEventLimit || missingDocuments.length > relatedEventLimit + 2 * relistProofBatch ||
       !z.uuid().safeParse(snapshotId).success) return false;
   const byId = new Map<string, RelistArchiveEvidence>();
   const csvProofs = new Map<string, RelistArchiveEvidence>();
@@ -207,9 +246,7 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: st
     if (!proof) return false;
     const previous = pages.get(proof.eventId);
     if (previous) {
-      if (previous.kind !== proof.kind || previous.source !== proof.source || previous.externalId !== proof.externalId ||
-          previous.businessAt !== proof.businessAt || previous.eventHash !== proof.eventHash ||
-          previous.responseHash !== proof.responseHash) return false;
+      if (!samePageProof(previous, proof)) return false;
       continue;
     }
     const identity = `${proof.source}:${proof.externalId}`;
@@ -220,7 +257,16 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: st
     }
     pages.set(proof.eventId, proof);
   }
+  const receiptProofs = new Set<string>();
+  for (const value of missingDocuments) {
+    const proof = normalizeEventPage(value);
+    if (!proof || receiptProofs.has(proof.eventId)) return false;
+    const previous = pages.get(proof.eventId);
+    if (previous && !samePageProof(previous, proof)) return false;
+    pages.set(proof.eventId, proof);
+    receiptProofs.add(proof.eventId);
+  }
   const budget = { remaining: decodedBatchLimit };
-  return (!csvProofs.size || await verifyCsv(tx, snapshotId, csvProofs)) && await verifyPages(tx, pages, budget) &&
+  return (!csvProofs.size || await verifyCsv(tx, snapshotId, csvProofs)) && await verifyPages(tx, pages, receiptProofs, budget) &&
     (!byId.size || await verifyDetailHeads(tx, byId, budget));
 }

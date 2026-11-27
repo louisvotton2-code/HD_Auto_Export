@@ -1,7 +1,8 @@
 import { gunzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { jsonHash, sha256 } from '../normalize.js';
+import { jsonHash } from '../normalize.js';
 import { atExactTime, positiveCny, relistProofBatch, verifyRelistArchiveEvidence, type ArchivedEventPageEvidence, type RelistArchiveEvidence } from './relist-audit-evidence.js';
 
 const eventBatch = 2_000;
@@ -61,8 +62,9 @@ function eventProof(event: StoredEvent, kind: EventProof['kind'], price: bigint 
 
 function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
   try {
-    const raw = new TextDecoder('utf-8', { fatal: true }).decode(gunzipSync(compressed, { maxOutputLength: decodedEventLimit }));
-    if (sha256(raw) !== proof.eventHash) return false;
+    const bytes = gunzipSync(compressed, { maxOutputLength: decodedEventLimit });
+    if (createHash('sha256').update(bytes).digest('hex') !== proof.eventHash) return false;
+    const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const event = object(JSON.parse(raw));
     if (!event || jsonHash(event) !== proof.eventHash || typeof event.id !== 'number' ||
         !Number.isSafeInteger(event.id) || String(event.id) !== proof.eventId ||
@@ -79,24 +81,36 @@ function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
   }
 }
 
-async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]) {
-  const refs = proofs.map(({ eventId, source, externalId, businessAt, eventHash, documentId, responseHash }) =>
-    ({ eventId, source, externalId, businessAt, hash: eventHash, documentId, responseHash }));
-  const rows = (await tx.query<{ eventId: string; compressed: Buffer }>(`SELECT q."eventId",b.compressed
+async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]): Promise<EventProof[] | null> {
+  const refs = proofs.map(({ eventId, source, externalId, businessAt, eventHash, documentId, responseHash, kind }) =>
+    ({ eventId, source, externalId, businessAt, hash: eventHash, documentId, responseHash, kind }));
+  // Retention can delete an applied event's document metadata independently of the blobs.
+  // Join by UUID first so an extant but contradictory row never takes the fallback.
+  const rows = (await tx.query<{ eventId: string; compressed: Buffer; missingDocument: boolean }>(`SELECT
+    q."eventId",b.compressed,d.id IS NULL AS "missingDocument"
     FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,source text,"externalId" text,"businessAt" timestamptz,
-      hash text,"documentId" uuid,"responseHash" text)
-    JOIN external_source_documents d ON d.id=q."documentId" AND d.hash=q.hash AND d.provider='chinacarapi'
-      AND d.source=q.source AND d.external_id=q."externalId" AND d.kind='event' AND d.locale='und'
-      AND d.event_sequence=q."eventId"::numeric AND d.source_updated_at=q."businessAt"
+      hash text,"documentId" uuid,"responseHash" text,kind text)
+    JOIN external_source_blobs b ON b.hash=q.hash AND octet_length(b.compressed)<=$2
+    LEFT JOIN external_source_documents d ON d.id=q."documentId"
+    WHERE CASE WHEN d.id IS NULL THEN EXISTS(SELECT 1 FROM external_full_events e
+      WHERE e.event_id=q."eventId"::numeric AND e.source=q.source AND e.external_id=q."externalId"
+        AND e.business_at=q."businessAt" AND e.payload_hash=q.hash AND e.source_type=q.kind
+        AND e.operation=CASE q.kind WHEN 'removed' THEN 'withdraw' WHEN 'relisted' THEN 'relist' ELSE 'upsert' END
+        AND e.applied_at>=e.received_at AND e.error_code IS NULL
+        AND e.document_refs->0->>'id'=q."documentId"::text AND e.document_refs->0->>'responseHash'=q."responseHash")
+    ELSE d.hash=q.hash AND d.provider='chinacarapi' AND d.source=q.source AND d.external_id=q."externalId"
+      AND d.kind='event' AND d.locale='und' AND d.event_sequence=q."eventId"::numeric AND d.source_updated_at=q."businessAt"
       AND (d.response_hash=q."responseHash" OR EXISTS(SELECT 1 FROM external_source_responses r
-        WHERE r.document_id=d.id AND r.response_hash=q."responseHash"))
-    JOIN external_source_blobs b ON b.hash=d.hash AND octet_length(b.compressed)<=$2`,
+        WHERE r.document_id=d.id AND r.response_hash=q."responseHash")) END`,
   [JSON.stringify(refs), compressedEventLimit])).rows;
-  const bytes = new Map(rows.map(row => [row.eventId, row.compressed]));
-  return proofs.every(proof => {
-    const compressed = bytes.get(proof.eventId);
-    return compressed !== undefined && matchesProviderEvent(proof, compressed);
-  });
+  const archives = new Map(rows.map(row => [row.eventId, row]));
+  const missingDocuments: EventProof[] = [];
+  for (const proof of proofs) {
+    const archive = archives.get(proof.eventId);
+    if (!archive || !matchesProviderEvent(proof, archive.compressed)) return null;
+    if (archive.missingDocument) missingDocuments.push(proof);
+  }
+  return missingDocuments;
 }
 
 /** Bind both standalone relists and the current successor of a historical price to the same lifecycle evidence. */
@@ -287,8 +301,9 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
       }
     }
   }
-  if (!await verifyEventDocuments(tx,[...documents.values()]) ||
-      (relists.size && !await verifyRelistArchiveEvidence(tx,snapshotId,[...relists.values()],[...related.values()]))) {
+  const missingDocuments = await verifyEventDocuments(tx,[...documents.values()]);
+  if (missingDocuments === null || ((relists.size || missingDocuments.length) &&
+      !await verifyRelistArchiveEvidence(tx,snapshotId,[...relists.values()],[...related.values()],missingDocuments))) {
     return { status: 'blocked', through: after };
   }
   // Stop at the last proved event when more evidence would exceed this batch's budget.
