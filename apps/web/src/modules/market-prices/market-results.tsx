@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import type { Locale } from '@/i18n/routing';
+import type { PublicMedia } from '@hd/contracts/public';
+import { VehiclePhoto } from '@/modules/vehicles';
 import { formatDisplayAmount } from '@/shared/lib/display-amount';
-import { publicMediaUrl } from '@/shared/lib/public-media';
 import { isPublicVehicleDetailPath } from '@/shared/lib/public-vehicle-detail-path';
 import { Icon } from '@/shared/ui/icon';
 import styles from './market-results.module.css';
@@ -16,7 +16,7 @@ export type MarketExtreme = {
   trim: string | null;
   modelYear: number | null;
   mileageKm: number | null;
-  image: { url: string; alt: string } | null;
+  image: PublicMedia | null;
   price: MarketMoney;
 };
 
@@ -101,25 +101,13 @@ function MarketPrice({ value, locale }: { value: MarketMoney | null; locale: Loc
   return <Price usd={makeMoneyFormat(locale, 'USD')(value?.usd)} cny={makeMoneyFormat(locale, 'CNY')(value?.cny)} />;
 }
 
-function ExtremePhoto({ src, alt }: { src: string | null; alt: string }) {
-  const [failed, setFailed] = useState(false);
-  return (
-    <span className={styles.photo}>
-      <Icon name="car" size={30} />
-      {src && !failed && <img src={src} alt={alt} loading="lazy" decoding="async" onError={() => setFailed(true)} />}
-    </span>
-  );
-}
-
 function ExtremeCard({ locale, vehicle, label, showPrice }: { locale: Locale; vehicle: MarketExtreme; label: string; showPrice: boolean }) {
   const t = copy[locale];
-  const imageUrl = vehicle.image?.url;
-  // Only use same-origin public images supplied by the site; placeholders cover other cases.
-  const src = imageUrl && /^\/(?!\/)[^\\\s]+$/.test(imageUrl) ? publicMediaUrl(imageUrl) : null;
-  const alt = vehicle.image?.alt === vehicle.title ? '' : vehicle.image?.alt ?? '';
   const children = (
     <>
-      <ExtremePhoto key={src} src={src} alt={alt} />
+      <span className={styles.photo}>
+        <VehiclePhoto image={vehicle.image} locale={locale} alt={vehicle.image?.alt || vehicle.title} compact reportRemoteFailure={false} />
+      </span>
       <span className={styles.cardContent}>
         <span className={styles.cardLabel}>{label}</span>
         <span className={styles.cardTitle}>{vehicle.title}</span>

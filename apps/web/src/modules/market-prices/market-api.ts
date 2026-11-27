@@ -1,7 +1,36 @@
-import { MarketPriceResponseSchema, type MarketPriceResponse } from '@hd/contracts/public';
+import { ExternalHttpsUrlSchema, MarketPriceResponseSchema, type MarketPriceResponse, type PublicMedia } from '@hd/contracts/public';
 import { publicVehicleCover } from '@/modules/vehicles';
-import { publicMediaVariantUrl } from '@/shared/lib/public-media';
 import type { MarketExtreme, MarketMoney, MarketResultView } from './market-results';
+
+// The catalog publishes external images through the BE source profiles. Mirror the current
+// production media restrictions at this render boundary without proxying arbitrary addresses.
+const unsignedPhotos = new Set(['p3-dcd.byteimg.com', 'p9-dcd.byteimg.com']);
+const signedPhotos = new Set(['p3-dcd-sign.byteimg.com', 'p9-dcd-sign.byteimg.com']);
+const psm = /^[A-Za-z0-9.]{1,80}$/;
+const signingKey = /^[A-Za-z0-9]{1,32}$/;
+const signedQuery = { psm, 'x-expires': /^\d{10}$/, 'x-signature': /^[A-Za-z0-9+_/=-]{10,160}$/ };
+
+function exactQuery(params: URLSearchParams, rules: Record<string, RegExp>) {
+  const entries = [...params];
+  return entries.length === Object.keys(rules).length && new Set(params.keys()).size === entries.length
+    && entries.every(([key, value]) => Object.hasOwn(rules, key) && rules[key]!.test(value));
+}
+
+function eligibleRemote(cover: PublicMedia, now: number) {
+  if (!cover.remote || (cover.remote.expiresAt && Date.parse(cover.remote.expiresAt) <= now)
+      || !ExternalHttpsUrlSchema.safeParse(cover.url).success) return false;
+  const { hostname, search, searchParams } = new URL(cover.url);
+  if (hostname === 'erscglobal2.autoimg.cn') return !search;
+  if (unsignedPhotos.has(hostname)) return exactQuery(searchParams, { psm });
+  return signedPhotos.has(hostname) && Number(searchParams.get('x-expires')) * 1_000 > now
+    && (exactQuery(searchParams, { ...signedQuery, lk3s: signingKey }) || exactQuery(searchParams, { ...signedQuery, rk3s: signingKey }));
+}
+
+function eligibleCover(cover: PublicMedia | null) {
+  if (!cover) return null;
+  if (/^\/api\/v1\/media\/[A-Za-z0-9_-]+\/?(?:\?variant=(?:thumb|card))?$/.test(cover.url)) return cover;
+  return eligibleRemote(cover, Date.now()) ? cover : null;
+}
 
 type MarketStatistics = MarketPriceResponse['data']['statistics'];
 function amount(value: MarketStatistics['min']): MarketMoney | null {
@@ -12,10 +41,7 @@ function toExtreme(extreme: MarketPriceResponse['data']['extremes']['min'], pric
   if (!extreme || !price) return undefined;
   const { vehicle, detailPath } = extreme;
   if (detailPath !== vehicle.detailPath) throw new Error('Mismatched market vehicle link');
-  const cover = publicVehicleCover(vehicle);
-  const image = cover && /^\/api\/v1\/media\//.test(cover.url)
-    ? { url: publicMediaVariantUrl(cover.url, 'card') ?? cover.url, alt: cover.alt }
-    : null;
+  const image = eligibleCover(publicVehicleCover(vehicle));
   const localizedTrim = vehicle.display?.trim;
   return {
     href: detailPath,

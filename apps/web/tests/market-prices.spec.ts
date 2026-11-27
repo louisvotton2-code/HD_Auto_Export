@@ -87,7 +87,7 @@ test('market form sends committed filters only, restores them after back, and li
   await expect(detail).toBeVisible();
   await expect(detail).toContainText('2024');
   await expect(detail).toContainText('10,000');
-  await expect(detail.locator('img')).toHaveAttribute('src', /\/api\/v1\/media\/media_fixture_car_1\/\?variant=card$/);
+  await expect(detail.locator('img')).toHaveAttribute('src', /\/api\/v1\/media\/media_fixture_car_1\/(?:\?variant=thumb)?$/);
   await detail.click();
   await expect(page).toHaveURL(/\/zh\/cars\/fixture_car_1\//);
   await page.goBack();
@@ -166,4 +166,64 @@ test('a missing USD rate keeps exact CNY and never infers an exchange rate', asy
   const result = page.getByTestId('market-result-region');
   await expect(result.getByText('99,999,999,999,999.99 CNY', { exact: true })).toHaveCount(1);
   await expect(result).toContainText('USD prices are unavailable');
+});
+
+test('market extremes show current approved photos while missing photos stay read-only', async ({ page }) => {
+  await page.clock.setFixedTime(new Date(asOf));
+  await useFacetFixtures(page);
+  const approved = 'https://erscglobal2.autoimg.cn/market-fixture.webp';
+  const unrelated = 'https://market-images.example.invalid/market-fixture-unrelated.webp';
+  const expired = 'https://erscglobal2.autoimg.cn/market-fixture-expired.webp';
+  const broken = 'https://erscglobal2.autoimg.cn/market-fixture-broken.webp';
+  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGO4vyT/PwAHSgLyk2ZIzwAAAABJRU5ErkJggg==', 'base64');
+  const imageRequests: string[] = [];
+  const failureReports: string[] = [];
+
+  await page.route(url => url.pathname.startsWith('/market-fixture'), async (route) => {
+    const request = route.request();
+    imageRequests.push(request.url());
+    if (request.url() !== approved) return route.fulfill({ status: 404 });
+    expect((await request.allHeaders()).referer).toBeUndefined();
+    return route.fulfill({ contentType: 'image/png', body: image });
+  });
+  await page.route(url => url.pathname.startsWith('/api/v1/external-media/'), (route) => {
+    failureReports.push(route.request().url());
+    return route.fulfill({ status: 404 });
+  });
+  await page.route(url => marketPath.test(url.pathname), (route) => {
+    const useUnavailableImages = new URL(route.request().url()).searchParams.has('trim');
+    const fixture = fixtureReport('en', 2);
+    const { min, max } = fixture.data.extremes;
+    if (!min || !max) throw new Error('Missing extreme fixture');
+    const cover = (index: number, url: string, expiresAt = '2026-11-27T13:00:00.000Z') => ({
+      ...makePublicVehicleFixture().images[0]!,
+      id: `ximg-a0b1c2d3-0000-4000-8000-00000000000${index}`,
+      url,
+      remote: { revision: 1, refreshedAt: '2026-11-27T10:00:00.000Z', expiresAt },
+    });
+    min.vehicle.images = [useUnavailableImages ? cover(3, expired, '2026-11-27T11:00:00.000Z') : cover(1, approved)];
+    max.vehicle.images = [useUnavailableImages ? cover(4, broken) : cover(2, unrelated)];
+    return route.fulfill({ json: MarketPriceResponseSchema.parse(fixture) });
+  });
+
+  const result = page.getByTestId('market-result-region');
+  const minCard = result.locator('a[href="/en/cars/fixture_car_1/"]');
+  const maxCard = result.locator('a[href="/en/cars/fixture_car_2/"]');
+  const fallback = '[data-vehicle-photo-unavailable]';
+  await page.goto(`/en/market-prices/?${selected}`);
+  const approvedPhoto = minCard.locator('img');
+  await approvedPhoto.scrollIntoViewIfNeeded();
+  await expect(approvedPhoto).toHaveAttribute('src', approved);
+  await expect.poll(() => approvedPhoto.evaluate((node: HTMLImageElement) => node.naturalWidth)).toBeGreaterThan(0);
+  await expect(maxCard.locator(fallback)).toBeVisible();
+  await expect(maxCard.locator('img')).toHaveCount(0);
+  expect(imageRequests).toEqual([approved]);
+
+  await page.goto(`/en/market-prices/?${selected}&trim=touring`);
+  await maxCard.scrollIntoViewIfNeeded();
+  await expect.poll(() => imageRequests).toEqual([approved, broken]);
+  await expect(minCard.locator(fallback)).toBeVisible();
+  await expect(maxCard.locator(fallback)).toBeVisible();
+  await expect(result.locator('img')).toHaveCount(0);
+  expect(failureReports).toEqual([]);
 });
