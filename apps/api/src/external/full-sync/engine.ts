@@ -987,7 +987,7 @@ export class FullSyncWorker{
   const snapshot=(await this.db.pool.query<{state:string;rows:string;generated_at:Date}>(
    'SELECT state,rows,generated_at FROM external_full_snapshots WHERE id=$1',[policy.snapshot_id])).rows[0]!;
   if(snapshot.state!=='complete')return;
-  await this.transaction(async tx=>{
+  const historyProof=await this.transaction(async tx=>{
    const snapshotId=policy.snapshot_id!;
    if(policy.high_water===null&&!policy.cursor_invalid)await this.captureDeltaHighWater(tx,snapshotId);
    const current=(await readDeltaPolicy(tx))!;
@@ -1011,7 +1011,10 @@ export class FullSyncWorker{
    if(audit.status==='blocked')await this.blockDeltaTransition(tx,false);
    else if(audit.status==='advance')await tx.query(`UPDATE external_full_delta_policy SET event_audit_cursor=$1,
     phase=CASE WHEN $1=high_water THEN 'ready' ELSE phase END,updated_at=clock_timestamp() WHERE id=1`,[audit.through]);
+   if(audit.historyCorroboration)return {snapshotId,highWater:current.high_water,through:audit.through,
+    proof:audit.historyCorroboration};
   });
+  if(historyProof)console.info(JSON.stringify({event:'external.full_sync.delta_history_corroborated',...historyProof}));
  }
  private async blockDeltaTransition(tx:PoolClient,cursorInvalid:boolean){
   await tx.query("UPDATE external_full_delta_policy SET phase='blocked',reason=$1,updated_at=clock_timestamp() WHERE id=1",

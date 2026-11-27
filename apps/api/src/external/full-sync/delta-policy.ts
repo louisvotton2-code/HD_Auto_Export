@@ -227,6 +227,8 @@ export async function resumeDeltaAudit(db: Database, actor: Actor, input: z.infe
       { path: 'sync.delta.resumeBoundary', before: null,
         after: { snapshotId, snapshotSha256, highWater, eventAuditCursor, checkedThrough: batch.through },
         beforePresent: false, afterPresent: true },
+      ...(batch.historyCorroboration ? [{ path: 'sync.delta.historyCorroboration', before: null,
+        after: batch.historyCorroboration, beforePresent: false, afterPresent: true }] : []),
     ]);
     return (await readDeltaPolicy(tx))!;
   });
