@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { jsonHash } from '../normalize.js';
 import { atExactTime, compareRelistCsv, positiveCny, relistProofBatch, verifyRelistArchiveEvidence,
   type ArchivedEventPageEvidence, type HistoricalRelistArchiveEvidence, type RelistArchiveEvidence,
-  type RelistCsvSample, type HistoricalPriceCorroboration } from './relist-audit-evidence.js';
+  type RelistCsvSample, type HistoricalCorroboration } from './relist-audit-evidence.js';
 import { readSupersededRelistChain } from './relist-history.js';
 
 const eventBatch = 2_000;
@@ -24,7 +24,7 @@ type EventAudit = {
 type AuditResult = {
   status: 'advance' | 'waiting' | 'blocked';
   through: string;
-  historyCorroboration?: HistoricalPriceCorroboration[];
+  historyCorroboration?: HistoricalCorroboration[];
 };
 type StoredEvent = {
   event_id: string;
@@ -200,7 +200,8 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
       ))`, [snapshotId, JSON.stringify(requests), highWater])).rows;
 }
 
-async function verifySupersededRelist(tx: PoolClient, snapshotId: string, highWater: string, eventId: string) {
+async function verifySupersededRelist(tx: PoolClient, snapshotId: string, highWater: string,
+  eventId: string, canVerifyWithdrawalHistory: boolean) {
   const cycles = await readSupersededRelistChain(tx, eventId, highWater);
   if (!cycles) return null;
   const last = cycles.at(-1)!;
@@ -243,8 +244,19 @@ async function verifySupersededRelist(tx: PoolClient, snapshotId: string, highWa
       businessAt: relist.businessAt, eventHash: relist.eventHash, responseHash: relist.responseHash,
       appliedAt: cycle.relist.applied_at, detailUpdatedAt: cycle.relist.detail_updated_at, priceCents: price.toString(),
     };
-    if (next) history.push({ ...window, outcome: cycle.relist.public_outcome, priceEventId: cycle.prices[0]?.event_id });
-    else current = { ...window, sourceUpdatedAt: live.source_updated_at };
+    if (!next) {
+      current = { ...window, sourceUpdatedAt: live.source_updated_at };
+      continue;
+    }
+    const firstPrice = cycle.prices[0];
+    const nextWithdrawal = next.withdrawal;
+    const requiresLinkedReceipts = !firstPrice && cycle.relist.public_outcome === 'not_public' &&
+      BigInt(nextWithdrawal.generation) > BigInt(cycle.relist.generation) + 1n;
+    if (requiresLinkedReceipts && !canVerifyWithdrawalHistory) return null;
+    const witness = firstPrice ? { kind: 'price' as const, eventId: firstPrice.event_id }
+      : canVerifyWithdrawalHistory ? { kind: 'withdrawal' as const, eventId: nextWithdrawal.event_id, requiresLinkedReceipts }
+      : undefined;
+    history.push({ ...window, outcome: cycle.relist.public_outcome, witness });
   }
   const missingDocuments = await verifyEventDocuments(tx, documents);
   if (!current || missingDocuments === null) return null;
@@ -343,7 +355,8 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     if (event.source_type === 'relisted' && event.member_event_id !== event.event_id) {
       // One historical chain shares a decode budget and advances only through its audited event.
       if (checked > 0) break;
-      const proof = await verifySupersededRelist(tx, snapshotId, highWater, event.event_id);
+      const proof = await verifySupersededRelist(tx, snapshotId, highWater, event.event_id,
+        recoveryAnchorCursor === null && recoveryPreviousCursor === null);
       if (!proof) return { status: 'blocked', through: after };
       const historyCorroboration = proof.historyCorroboration.filter(item => item.eventId === event.event_id);
       return { status: 'advance', through: event.event_id, ...(historyCorroboration.length ? { historyCorroboration } : {}) };

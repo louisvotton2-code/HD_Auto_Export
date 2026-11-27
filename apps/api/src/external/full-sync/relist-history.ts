@@ -106,10 +106,11 @@ export async function readSupersededRelistChain(tx: PoolClient, eventId: string,
     if (previous) {
       const preceding = previous.prices.at(-1) ?? previous.relist;
       const gap = BigInt(cycle.withdrawal.generation) - BigInt(preceding.generation);
-      // Preserve the relist-only proof when its own public receipt accounts for a generation gap.
+      // Refreshes can advance local detail generations without adding a supplier event.
+      // A price still needs an adjacent pre-state to prove its materialized amount.
       if (preceding.business_at >= cycle.withdrawal.business_at ||
           preceding.detail_updated_at > cycle.withdrawal.applied_at || gap <= 0n ||
-          (gap > 1n && (previous.prices.length > 0 || previous.relist.public_outcome !== 'effective'))) return null;
+          (gap > 1n && previous.prices.length > 0)) return null;
     }
     i += 2;
     while (rows[i]?.source_type === 'price') {

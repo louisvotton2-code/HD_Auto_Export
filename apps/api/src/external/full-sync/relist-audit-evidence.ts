@@ -25,9 +25,11 @@ type RelistDetailWindow = ArchivedEventPageEvidence & {
 };
 
 export type RelistArchiveEvidence = RelistDetailWindow & { sourceUpdatedAt: string };
+type HistoricalWitness = { kind: 'price'; eventId: string } |
+  { kind: 'withdrawal'; eventId: string; requiresLinkedReceipts: boolean };
 export type HistoricalRelistArchiveEvidence = RelistDetailWindow & {
   outcome: 'effective' | 'not_public';
-  priceEventId?: string;
+  witness?: HistoricalWitness;
 };
 
 export type RelistCsvSample = {
@@ -42,15 +44,15 @@ export type RelistCsvSample = {
 const eventTime = z.iso.datetime({ offset: true });
 const hashPattern = /^[a-f0-9]{64}$/;
 const locales = ['en', 'ru', 'zh'] as const;
-export type HistoricalPriceCorroboration = {
+export type HistoricalCorroboration = {
   eventId: string;
-  priceEventId: string;
   unavailableLocales: (typeof locales)[number][];
-};
+} & ({ priceEventId: string } | { withdrawalEventId: string; scope: 'public_before_withdrawal' });
 export const relistProofBatch = 8;
 const relatedEventLimit = 32;
 const relatedEventsPerRelist = 2;
 const historyDocumentLimit = 32;
+const historyReceiptLinkLimit = 768;
 const compressedPageLimit = 256 * 1024;
 const compressedDetailLimit = 128 * 1024;
 const decodedPageLimit = 4 * 1024 * 1024;
@@ -58,6 +60,7 @@ const decodedDetailLimit = 1024 * 1024;
 const decodedBatchLimit = 24 * 1024 * 1024;
 type DecodeBudget = { remaining: number };
 type CompletedPage = { cursor: string; nextCursor: string; eventCount: number };
+type WithdrawalInterval = { relist: ArchivedEventPageEvidence; withdrawal: ArchivedEventPageEvidence };
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -164,8 +167,39 @@ function completedPage(page: Record<string, unknown>, ids: Iterable<string>): Co
   return { cursor: String(cursor), nextCursor: String(nextCursor), eventCount };
 }
 
+async function verifyLinkedReceipts(tx: PoolClient, intervals: readonly WithdrawalInterval[],
+  responses: ReadonlyMap<string, CompletedPage>) {
+  const ranges = [];
+  for (const { relist, withdrawal } of intervals) {
+    const left = responses.get(relist.responseHash);
+    const right = responses.get(withdrawal.responseHash);
+    if (!left || !right) return false;
+    if (relist.responseHash === withdrawal.responseHash) continue;
+    if (BigInt(left.nextCursor) > BigInt(right.cursor)) return false;
+    ranges.push({ eventId: relist.eventId, start: left.nextCursor, end: right.cursor });
+  }
+  if (!ranges.length) return true;
+  // Receipts are committed after all rows on that page. Follow cursor keys between verified originals.
+  // Interior pages need only indexed receipt reads, under a fixed hop limit.
+  return (await tx.query<{ matched: boolean }>(`WITH RECURSIVE bounds AS (
+    SELECT * FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,start numeric,"end" numeric)
+  ), walk AS (
+    SELECT "eventId",start AS cursor,"end",0 AS hops FROM bounds
+    UNION ALL
+    SELECT w."eventId",r.next_cursor,w."end",w.hops+1 FROM walk w
+    JOIN LATERAL (
+      SELECT r.next_cursor FROM external_full_receipts r WHERE r.cursor_key='cursor:'||w.cursor::text
+        AND r.complete AND r.event_count BETWEEN 0 AND $3 AND r.next_cursor>w.cursor AND r.next_cursor<=w."end"
+      LIMIT 1
+    ) r ON true
+    WHERE w.cursor<w."end" AND w.hops<$2
+  ) SELECT NOT EXISTS(SELECT 1 FROM bounds b WHERE NOT EXISTS(
+    SELECT 1 FROM walk w WHERE w."eventId"=b."eventId" AND w.cursor=b."end")) AS matched`,
+  [JSON.stringify(ranges), historyReceiptLinkLimit, LIMITS.events])).rows[0]?.matched === true;
+}
+
 async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedEventPageEvidence>,
-  missingDocuments: ReadonlySet<string>, budget: DecodeBudget) {
+  missingDocuments: ReadonlySet<string>, budget: DecodeBudget, intervals: readonly WithdrawalInterval[]) {
   const pages = new Map<string, ArchivedEventPageEvidence[]>();
   for (const proof of proofs.values()) {
     const expected = pages.get(proof.responseHash);
@@ -176,7 +210,8 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
     FROM external_source_blobs WHERE hash=ANY($1::text[]) AND raw_exact AND octet_length(compressed)<=$2`,
   [[...pages.keys()], compressedPageLimit])).rows;
   if (blobs.length !== pages.size) return false;
-  const completed: CompletedPage[] = [];
+  const requiredResponses = new Set(intervals.flatMap(({ relist, withdrawal }) => [relist.responseHash, withdrawal.responseHash]));
+  const completed = new Map<string, CompletedPage>();
   for (const blob of blobs) {
     const page = decodeArchive(blob.compressed, blob.hash, decodedPageLimit, budget);
     const expected = pages.get(blob.hash);
@@ -188,6 +223,11 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
       if (!event || typeof event.id !== 'number' || !Number.isSafeInteger(event.id) || event.id < 0) return false;
       const id = String(event.id);
       if (byId.has(id)) return false;
+      // For a direct relist-to-withdrawal interval, an extra event in a verified raw page
+      // contradicts the scoped same-identity ledger.
+      if (intervals.some(({ relist, withdrawal }) => event.source === relist.source &&
+          event.vehicleId === relist.externalId && Number(relist.eventId) < Number(id) &&
+          Number(id) < Number(withdrawal.eventId))) return false;
       byId.set(id, event);
     }
     if (!expected.every(proof => {
@@ -195,20 +235,21 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedE
       return !!(event && event.type === proof.kind && event.source === proof.source &&
         event.vehicleId === proof.externalId && atExactTime(event.at, proof.businessAt) && jsonHash(event) === proof.eventHash);
     })) return false;
-    if (expected.some(proof => missingDocuments.has(proof.eventId))) {
+    if (requiredResponses.has(blob.hash) || expected.some(proof => missingDocuments.has(proof.eventId))) {
       const receipt = completedPage(page, byId.keys());
       if (!receipt) return false;
-      completed.push(receipt);
+      completed.set(blob.hash, receipt);
     }
   }
-  if (!completed.length) return true;
+  if (!completed.size) return true;
   // The response itself proves membership. The mutable receipt only corroborates the exact completed range,
   // and its creation time does not date a specific response received on a reused cursor.
-  return (await tx.query<{ matched: boolean }>(`SELECT NOT EXISTS(
+  const matched = (await tx.query<{ matched: boolean }>(`SELECT NOT EXISTS(
     SELECT 1 FROM jsonb_to_recordset($1::jsonb) AS q(cursor text,"nextCursor" numeric,"eventCount" integer)
     WHERE NOT EXISTS(SELECT 1 FROM external_full_receipts r WHERE r.cursor_key='cursor:'||q.cursor
       AND r.complete AND r.next_cursor=q."nextCursor" AND r.event_count=q."eventCount")) AS matched`,
-  [JSON.stringify(completed)])).rows[0]?.matched === true;
+  [JSON.stringify([...completed.values()])])).rows[0]?.matched === true;
+  return matched && await verifyLinkedReceipts(tx, intervals, completed);
 }
 
 async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, RelistArchiveEvidence>, budget: DecodeBudget) {
@@ -235,7 +276,7 @@ async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, Rel
 }
 
 async function verifyHistoricalDetails(tx: PoolClient, proofs: ReadonlyMap<string, HistoricalRelistArchiveEvidence>,
-  budget: DecodeBudget): Promise<HistoricalPriceCorroboration[] | null> {
+  budget: DecodeBudget): Promise<HistoricalCorroboration[] | null> {
   const rows = (await tx.query<{
     eventId: string; locale: (typeof locales)[number]; hash: string | null; sourceUpdatedAt: string | null;
     compressed: Buffer | null; candidateCount: number; observedCount: number; eventSequence: string | null;
@@ -273,15 +314,20 @@ async function verifyHistoricalDetails(tx: PoolClient, proofs: ReadonlyMap<strin
   if (rows.length !== proofs.size * locales.length ||
       new Set(rows.map(row => `${row.eventId}:${row.locale}`)).size !== rows.length) return null;
   const versions = new Map<string, string>();
-  const priceCorroboration = new Map<string, HistoricalPriceCorroboration>();
+  const corroboration = new Map<string, HistoricalCorroboration>();
   for (const row of rows) {
     const proof = proofs.get(row.eventId);
     if (!proof || row.candidateCount > historyDocumentLimit || row.observedCount > 1) return null;
     if (row.observedCount === 0) {
-      if (!proof.priceEventId) return null;
-      const existing = priceCorroboration.get(row.eventId);
+      const witness = proof.witness;
+      if (!witness) return null;
+      const existing = corroboration.get(row.eventId);
       if (existing) existing.unavailableLocales.push(row.locale);
-      else priceCorroboration.set(row.eventId, { eventId: row.eventId, priceEventId: proof.priceEventId, unavailableLocales: [row.locale] });
+      else corroboration.set(row.eventId, {
+        eventId: row.eventId, unavailableLocales: [row.locale],
+        ...(witness.kind === 'price' ? { priceEventId: witness.eventId }
+          : { withdrawalEventId: witness.eventId, scope: 'public_before_withdrawal' }),
+      });
       continue;
     }
     // A retained but invalid, ambiguous or wrong-generation original cannot be treated as missing.
@@ -295,7 +341,7 @@ async function verifyHistoricalDetails(tx: PoolClient, proofs: ReadonlyMap<strin
     if (previous !== undefined && previous !== row.sourceUpdatedAt) return null;
     versions.set(row.eventId, row.sourceUpdatedAt);
   }
-  return [...priceCorroboration.values()];
+  return [...corroboration.values()];
 }
 
 function samePageProof(a: ArchivedEventPageEvidence, b: ArchivedEventPageEvidence) {
@@ -307,7 +353,7 @@ function samePageProof(a: ArchivedEventPageEvidence, b: ArchivedEventPageEvidenc
 export async function verifyRelistArchiveEvidence(tx: PoolClient,
   proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = [],
   missingDocuments: readonly ArchivedEventPageEvidence[] = [],
-  history: readonly HistoricalRelistArchiveEvidence[] = []): Promise<{ historyCorroboration: HistoricalPriceCorroboration[] } | null> {
+  history: readonly HistoricalRelistArchiveEvidence[] = []): Promise<{ historyCorroboration: HistoricalCorroboration[] } | null> {
   if ((!proofs.length && !related.length && !missingDocuments.length) || proofs.length > relistProofBatch ||
       related.length > relatedEventLimit || missingDocuments.length > relatedEventLimit + 2 * relistProofBatch ||
       (history.length > 0 && (proofs.length !== 1 || history.length >= relistHistoryCycles))) return null;
@@ -356,16 +402,25 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient,
         proof.source !== current.source || proof.externalId !== current.externalId) return null;
     const event = pages.get(proof.eventId);
     if (!event || !samePageProof(event, proof)) return null;
-    if (proof.priceEventId) {
-      const price = pages.get(proof.priceEventId);
-      if (!price || price.kind !== 'price' || price.source !== proof.source || price.externalId !== proof.externalId ||
-          BigInt(price.eventId) <= BigInt(proof.eventId) || price.businessAt <= proof.businessAt) return null;
+    if (proof.witness) {
+      const witness = pages.get(proof.witness.eventId);
+      const kind = proof.witness.kind === 'price' ? 'price' : 'removed';
+      if (!witness || witness.kind !== kind || witness.source !== proof.source || witness.externalId !== proof.externalId ||
+          BigInt(witness.eventId) <= BigInt(proof.eventId) || witness.businessAt <= proof.businessAt) return null;
     }
     historical.set(proof.eventId, proof);
   }
   const budget = { remaining: decodedBatchLimit };
-  if (!await verifyPages(tx, pages, receiptProofs, budget) ||
-      (byId.size && !await verifyDetailHeads(tx, byId, budget))) return null;
+  if (byId.size && !await verifyDetailHeads(tx, byId, budget)) return null;
   const historyCorroboration = historical.size ? await verifyHistoricalDetails(tx, historical, budget) : [];
-  return historyCorroboration && { historyCorroboration };
+  if (!historyCorroboration) return null;
+  const missingHistory = new Set(historyCorroboration.map(item => item.eventId));
+  const intervals: WithdrawalInterval[] = [];
+  for (const proof of historical.values()) {
+    const witness = proof.witness;
+    if (witness?.kind === 'withdrawal' && (witness.requiresLinkedReceipts || missingHistory.has(proof.eventId))) {
+      intervals.push({ relist: proof, withdrawal: pages.get(witness.eventId)! });
+    }
+  }
+  return await verifyPages(tx, pages, receiptProofs, budget, intervals) ? { historyCorroboration } : null;
 }
