@@ -5,15 +5,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { test, type TestContext } from 'node:test';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { createDatabase } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
 import { FullSyncClient } from '../src/external/full-sync/client.js';
 import { armDeltaPolicy, prepareDeltaPolicy, readDeltaPolicy, requestDeltaReconciliation } from '../src/external/full-sync/delta-policy.js';
 import { configureFullSync, FullSyncWorker } from '../src/external/full-sync/engine.js';
 import { FullSyncError, type Change, type FullApply, type Locale, type Source } from '../src/external/full-sync/types.js';
-import { jsonHash } from '../src/external/normalize.js';
-import { catalogColumns } from '../src/external/sources/index.js';
+import { canonicalJson, jsonHash } from '../src/external/normalize.js';
+import { decodeSourceBlob } from '../src/external/sources/archive.js';
+import { catalogColumns, loadSourceDocumentRefs } from '../src/external/sources/index.js';
 
 const actor = { id: 'delta-policy-admin', requestId: 'delta-policy-test' };
 const archiveAt = '2024-10-04T00:00:00.000Z';
@@ -340,6 +341,182 @@ test('a pre-export price event blocks cutover when its CSV replacement advances 
     prior_public_price: 70000, generation_complete: true,
   });
   await assert.rejects(armDeltaPolicy(f.db, actor, snapshot), /SYNC_DELTA_NOT_READY/);
+});
+
+async function historicalPriceAudit(t: TestContext, publicPrice: number) {
+  const f = await fixture(t);
+  const priceAt = '2024-10-03T00:01:00.000Z';
+  const vehicleId = '702';
+  const priceEvent = {
+    ...change(2001, vehicleId, 'price', priceAt),
+    oldPrice: { cny: 70000 }, newPrice: { cny: 68000 },
+  };
+  let worker = await f.start();
+  f.details.set(vehicleId, { price: publicPrice, at: priceAt });
+  await f.ingest(worker, [change(1, '701', 'new', baseAt), change(2, vehicleId, 'new', baseAt)]);
+  assert.equal(await worker.applyEvents(), 2);
+  assert.equal(await worker.details(), 2);
+  assert.deepEqual(await f.published(vehicleId), { price: publicPrice });
+  const snapshotId = await f.seedSnapshot([[1, '701'], [2, vehicleId]]);
+  await worker.close();
+  await prepareDeltaPolicy(f.db, actor, snapshotId);
+  worker = await f.start();
+  // Model an already retained event history ahead of the two live fixture events.
+  // Both audit cursors are written only by the real worker.
+  await f.db.pool.query(`INSERT INTO external_full_events
+    (event_id,payload_hash,source,external_id,operation,business_at,document_refs,applied_at,source_type,public_outcome)
+    SELECT n,repeat('a',64),'che168',(800000+n)::text,'withdraw',$1,'[]',$1,'removed','not_public'
+    FROM generate_series(3,2000) n`, [baseAt]);
+  await f.ingest(worker, [priceEvent]);
+  assert.equal(await worker.applyEvents(), 1);
+  assert.deepEqual(await f.event(priceEvent.id), { applied: true, public_outcome: 'pending' });
+  assert.equal(await worker.details(), 1);
+  assert.deepEqual(await f.event(priceEvent.id), { applied: true, public_outcome: 'not_public' });
+  assert.equal(await worker.promoteSnapshot(snapshotId), 1);
+  await worker.tick();
+  await worker.tick();
+  assert.equal((await f.policy())?.phase, 'draining');
+  assert.equal((await f.policy())?.audit_missing, '0');
+  assert.equal((await f.policy())?.event_audit_cursor, '2000');
+  assert.equal((await f.policy())?.high_water, '2001');
+
+  const observation = async () => (await f.db.pool.query(`SELECT e.payload_hash,e.prior_public_price::int,e.was_public,
+    e.public_outcome,e.applied_at,e.detail_updated_at,e.public_effective_at,
+    l.source_updated_at,(l.source_data#>>'{price,cny}')::numeric::int AS supplier_price,c.price_cny::int AS public_price,
+    m.applied_generation=m.desired_generation AS generation_complete
+    FROM external_full_events e
+    JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id
+    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
+    JOIN external_catalog c ON c.listing_id=l.id WHERE e.event_id=$1`, [priceEvent.id])).rows[0]!;
+  const receipt = (await f.db.pool.query(`SELECT next_cursor::text,event_count,complete
+    FROM external_full_receipts WHERE cursor_key='cursor:2'`)).rows[0]!;
+  assert.deepEqual(receipt, { next_cursor: '2001', event_count: 1, complete: true });
+  const expectedPage = { cursor: 2, nextCursor: 2001, hasMore: false, changes: [priceEvent] };
+  const documentId = await f.db.transaction(async tx => {
+    const event = (await tx.query('SELECT document_refs FROM external_full_events WHERE event_id=$1', [priceEvent.id])).rows[0]!;
+    const [document] = await loadSourceDocumentRefs(tx, event.document_refs);
+    assert.ok(document);
+    assert.deepEqual(document.identity, { provider: 'chinacarapi', source: 'che168', externalId: vehicleId });
+    assert.equal(document.kind, 'event');
+    assert.equal(document.eventSequence, '2001');
+    assert.deepEqual(document.payload, priceEvent);
+    const expectedHash = raw(expectedPage).hash;
+    assert.equal(document.rawResponse?.hash, expectedHash);
+    const response = (await tx.query('SELECT hash,payload,raw_text,compressed,raw_exact FROM external_source_blobs WHERE hash=$1',
+      [expectedHash])).rows[0]!;
+    assert.deepEqual(decodeSourceBlob(response).payload, expectedPage);
+    return event.document_refs[0].id as string;
+  });
+  const original = await observation();
+  assert.equal(original.payload_hash, jsonHash(priceEvent));
+  assert.equal(original.prior_public_price, publicPrice);
+  assert.equal(original.public_price, publicPrice);
+  assert.equal(original.supplier_price, publicPrice);
+  assert.equal(original.was_public, true);
+  assert.deepEqual(original.source_updated_at, new Date(priceAt));
+  assert.equal(original.generation_complete, true);
+  assert.equal(original.public_outcome, 'not_public');
+  assert.equal(original.public_effective_at, null);
+
+  const state = async () => (await f.db.pool.query(`SELECT s.id,s.sha256,s.rows::text,s.apply_cursor::text,s.completed_at,
+    w.receive_cursor::text,w.since_at,p.high_water::text,p.audit_cursor::text
+    FROM external_full_snapshots s JOIN external_full_delta_policy p ON p.snapshot_id=s.id
+    JOIN external_full_sync w ON w.id=p.id WHERE s.id=$1`, [snapshotId])).rows[0]!;
+  const baseline = await state();
+  const resumeRequest = {
+    snapshotId, snapshotSha256: baseline.sha256 as string, highWater: '2001',
+    eventAuditCursor: '2000', evidence: 'fixture-confirmed-price-archive',
+  };
+  return { f, worker, snapshotId, documentId, observation, original, state, baseline, resumeRequest };
+}
+
+test('historical price audit accepts an archived requested price already materialized at receipt', async t => {
+  const h = await historicalPriceAudit(t, 68000);
+  await h.worker.tick();
+  const proof = await h.f.policy();
+  assert.equal(proof?.phase, 'ready');
+  assert.equal(proof?.event_audit_cursor, '2001');
+  assert.deepEqual(await h.state(), h.baseline);
+  assert.deepEqual(await h.observation(), h.original, 'Audit evidence must not rewrite historical timing');
+});
+
+test('historical price audit keeps a truly old public and supplier price blocked', async t => {
+  const h = await historicalPriceAudit(t, 70000);
+  await h.worker.tick();
+  const proof = await h.f.policy();
+  assert.equal(proof?.phase, 'blocked');
+  assert.equal(proof?.reason, 'audit_gap');
+  assert.equal(proof?.event_audit_cursor, '2000');
+  await assert.rejects(armDeltaPolicy(h.f.db, actor, h.snapshotId), /SYNC_DELTA_NOT_READY/);
+  const { resumeDeltaAudit } = await import('../src/external/full-sync/delta-policy.js');
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.deepEqual(await h.f.policy(), proof);
+  assert.deepEqual(await h.state(), h.baseline);
+  assert.deepEqual(await h.observation(), h.original);
+});
+
+test('resuming needs archived price proof and rechecks the same frontier after a worker restart', async t => {
+  const h = await historicalPriceAudit(t, 68000);
+  // Simulate a missing event archive without altering the received event or its stored hash.
+  const parked = await h.f.db.pool.query("UPDATE external_source_documents SET kind='csv' WHERE id=$1 AND kind='event'", [h.documentId]);
+  assert.equal(parked.rowCount, 1);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '2000');
+  await h.worker.close();
+
+  const { resumeDeltaAudit } = await import('../src/external/full-sync/delta-policy.js');
+  const resume = h.resumeRequest;
+  await h.f.db.pool.query("INSERT INTO staff(id,name,email,role,banned) VALUES('audit-editor','Fixture editor','audit-editor@example.invalid','editor',false)");
+  await assert.rejects(resumeDeltaAudit(h.f.db, { id: 'audit-editor', requestId: 'deny-audit' }, resume), /SYNC_ADMIN_REQUIRED/);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, { ...resume, eventAuditCursor: '1999' }), /SYNC_DELTA_STATE_CONFLICT/);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, { ...resume, highWater: '2002' }), /SYNC_DELTA_STATE_CONFLICT/);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, { ...resume, snapshotSha256: 'b'.repeat(64) }), /SYNC_DELTA_SNAPSHOT_MISMATCH/);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, resume), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.deepEqual(await h.f.policy(), blocked);
+  const resumeAudit = async () => (await h.f.db.pool.query(`SELECT actor_id,changes FROM audit_events
+    WHERE operation='external.sync.delta.resumeAudit'`)).rows;
+  assert.deepEqual(await resumeAudit(), []);
+
+  await h.f.db.pool.query("UPDATE external_source_documents SET kind='event' WHERE id=$1 AND kind='csv'", [h.documentId]);
+  const archived = (await h.f.db.pool.query<{ hash: string; compressed: Buffer }>(`
+    SELECT b.hash,b.compressed FROM external_source_documents d
+    JOIN external_source_blobs b ON b.hash=d.hash WHERE d.id=$1`, [h.documentId])).rows[0]!;
+  const originalPayload = JSON.parse(gunzipSync(archived.compressed).toString('utf8')) as Record<string, unknown>;
+  const corrupt = gzipSync(canonicalJson({ ...originalPayload, oldPrice: { cny: 69000 } }));
+  await h.f.db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [archived.hash, corrupt]);
+  try {
+    await assert.rejects(resumeDeltaAudit(h.f.db, actor, resume), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+    assert.deepEqual(await resumeAudit(), []);
+  } finally {
+    await h.f.db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [archived.hash, archived.compressed]);
+  }
+  const resumed = await resumeDeltaAudit(h.f.db, actor, resume);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '2000');
+  assert.deepEqual(await h.state(), h.baseline);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, resume), /SYNC_DELTA_STATE_CONFLICT/);
+  const audits = await resumeAudit();
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0]!.actor_id, actor.id);
+  const changes = Object.fromEntries((audits[0]!.changes as Array<{path: string; after: unknown}>).map(item => [item.path, item.after]));
+  assert.equal(changes['sync.delta.resumeEvidence'], resume.evidence);
+  assert.deepEqual(changes['sync.delta.resumeBoundary'], {
+    snapshotId: resume.snapshotId, snapshotSha256: resume.snapshotSha256, highWater: resume.highWater,
+    eventAuditCursor: '2000', checkedThrough: '2001',
+  });
+
+  const restarted = await h.f.start();
+  await restarted.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '2001');
+  assert.deepEqual(await h.state(), h.baseline);
+  assert.deepEqual(await h.observation(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
 });
 
 test('an expired cursor is recorded without discarding the active CSV or its already-received withdrawal', async t => {

@@ -23,6 +23,7 @@ import {ADMISSION_REPLAY_BATCH, checkScheduledReplayDetail, currentReplaySnapsho
 import {observeMaterialization,type DetailMaterializationObserver} from './materialization-log.js';
 import {readDeltaPolicy} from './delta-policy.js';
 import {findDeltaAuditDetails,scanDeltaSnapshotChunk,type QueuedDetail} from './delta-census.js';
+import {checkDeltaEventAudit} from './delta-event-audit.js';
 import {FullSyncError,LIMITS,type Actor,type FullApply,type Source,type Locale} from './types.js';
 const identity=(source:Source,externalId:string)=>({provider:'chinacarapi' as const,source,externalId});
 const workRef=(source:string,id:string,kind:string)=>`full:${source}:${id}:${kind}`;
@@ -30,7 +31,6 @@ const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC
 const capacityMeasurementMaxAgeMs=30_000;
 const detailMaterializationBudgetMs=5_000;
 const detailMaterializationTimeout='SYNC_DETAIL_SQL_TIMEOUT';
-const deltaEventAuditBatch=2_000;
 const deltaAuditDetailSlots=4;
 const deltaAuditBulkIdsPerLocale=25;
 type CapacitySnapshot=Parameters<typeof capacityTarget>[0]&{id:string;bytes:string};
@@ -1005,66 +1005,12 @@ export class FullSyncWorker{
     return;
    }
    if(current.high_water===null)return;
-   // Check the entire durable frontier by event ID, including outstanding
-   // work received before the CSV. Bound each tick without a wide history scan.
-   const through=(await tx.query<{cursor:string}>(`SELECT
-    (CASE WHEN count(*)<$3 THEN $2::numeric ELSE max(event_id) END)::text AS cursor FROM (
-     SELECT event_id FROM external_full_events WHERE event_id>$1 AND event_id<=$2 ORDER BY event_id LIMIT $3
-    ) boundary`,[current.event_audit_cursor,current.high_water,deltaEventAuditBatch])).rows[0]!.cursor;
-   const work=(await tx.query<{unapplied:boolean;detail_pending:boolean;detail_unresolved:boolean}>(`WITH owed AS MATERIALIZED (
-    SELECT e.source,e.external_id,coalesce(m.desired_generation,e.detail_generation) AS generation
-    FROM external_full_events e
-    LEFT JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id
-    WHERE e.applied_at IS NOT NULL AND e.event_id>$1 AND e.event_id<=$2 AND (
-     e.public_outcome='pending' OR
-     (e.operation<>'withdraw' AND e.detail_generation IS NOT NULL
-       AND e.public_outcome='superseded' AND coalesce(m.state<>'withdrawn',true)
-       AND coalesce(m.applied_generation<e.detail_generation,true)))
-    ) SELECT
-    EXISTS(SELECT 1 FROM external_full_events WHERE applied_at IS NULL AND event_id>$1 AND event_id<=$2) AS unapplied,
-    EXISTS(SELECT 1 FROM owed) AS detail_pending,
-    EXISTS(SELECT 1 FROM owed o WHERE NOT EXISTS(SELECT 1 FROM external_full_work w
-     WHERE w.source=o.source AND w.external_id=o.external_id AND w.kind='detail' AND w.generation=o.generation
-       AND w.attempts<5)) AS detail_unresolved`,[current.event_audit_cursor,through])).rows[0]!;
-   if(work.detail_unresolved){
-    await this.blockDeltaTransition(tx,false);
-    return;
-   }
-   if(work.unapplied||work.detail_pending)return;
-   // An older recovered removal may have been superseded by a later price
-   // event already in the database. Absence from the replacement is not a
-   // withdrawal by itself, so require affirmative newer evidence before arming.
-   const conflictingWithdrawal=current.recovery_anchor_cursor!==null&&(await tx.query(`SELECT EXISTS(
-    SELECT 1 FROM external_full_events e
-    JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id
-    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
-    JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask<>0
-    LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
-    WHERE e.event_id>greatest($1::numeric,$5::numeric) AND e.event_id<=least($2::numeric,$6::numeric)
-     AND e.operation='withdraw' AND e.public_outcome='superseded'
-     AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
-     AND NOT EXISTS(SELECT 1 FROM external_full_events relist WHERE relist.source=e.source AND relist.external_id=e.external_id
-      AND relist.event_id>e.event_id AND relist.business_at>=e.business_at AND relist.operation='relist'
-      AND relist.applied_at IS NOT NULL AND relist.error_code IS NULL AND m.applied_generation>=relist.detail_generation
-      AND l.source_updated_at>=relist.business_at)
-     AND NOT ($4::timestamptz>=e.business_at AND coalesce(l.source_updated_at>=e.business_at,false)
-      AND EXISTS(SELECT 1 FROM external_full_stage csv WHERE csv.snapshot_id=$3 AND csv.source=e.source AND csv.external_id=e.external_id))
-    ) AS missing`,[current.recovery_anchor_cursor,current.recovery_previous_cursor,snapshotId,snapshot.generated_at,current.event_audit_cursor,through])).rows[0]!.missing;
-   const staleEvent=(await tx.query(`SELECT EXISTS(SELECT 1 FROM external_full_events e
-    JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id AND m.event_order>=e.event_id
-    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
-    JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask=7
-    JOIN external_catalog c ON c.listing_id=l.id
-    LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
-    WHERE e.event_id>$1 AND e.event_id<=$2 AND e.public_outcome IN ('not_public','superseded') AND e.detail_generation IS NOT NULL
-     AND (e.source_type IN ('new','relisted') OR (e.source_type='price' AND e.was_public))
-     AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
-     AND (l.source_updated_at IS NULL OR l.source_updated_at<e.business_at OR
-      (e.source_type='price' AND l.source_updated_at=e.business_at AND c.price_cny IS NOT DISTINCT FROM e.prior_public_price))
-    ) AS missing`,[current.event_audit_cursor,through])).rows[0]!.missing;
-   if(conflictingWithdrawal||staleEvent)await this.blockDeltaTransition(tx,false);
-   else await tx.query(`UPDATE external_full_delta_policy SET event_audit_cursor=$1,
-    phase=CASE WHEN $1=high_water THEN 'ready' ELSE phase END,updated_at=clock_timestamp() WHERE id=1`,[through]);
+   const audit=await checkDeltaEventAudit(tx,{snapshotId,generatedAt:snapshot.generated_at,
+    after:current.event_audit_cursor,highWater:current.high_water,recoveryAnchorCursor:current.recovery_anchor_cursor,
+    recoveryPreviousCursor:current.recovery_previous_cursor});
+   if(audit.status==='blocked')await this.blockDeltaTransition(tx,false);
+   else if(audit.status==='advance')await tx.query(`UPDATE external_full_delta_policy SET event_audit_cursor=$1,
+    phase=CASE WHEN $1=high_water THEN 'ready' ELSE phase END,updated_at=clock_timestamp() WHERE id=1`,[audit.through]);
   });
  }
  private async blockDeltaTransition(tx:PoolClient,cursorInvalid:boolean){

@@ -10,13 +10,32 @@ const staffId = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 const evidenceReference = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const replayCommands = new Set(['replay-check', 'replay-prepare', 'replay-status']);
 const admissionCommands = new Set(['admission-check', 'admission-change', 'admission-receipt']);
-const deltaCommands = new Set(['delta-prepare', 'delta-arm', 'delta-status', 'delta-reconcile']);
+const deltaCommands = new Set(['delta-prepare', 'delta-arm', 'delta-status', 'delta-reconcile', 'delta-resume-audit']);
 
 function isUtcTimestamp(value) {
   if (value.startsWith('0000-') || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return false;
   const date = new Date(value);
   const [seconds, fraction = ''] = value.slice(0, -1).split('.');
   return Number.isFinite(date.getTime()) && date.toISOString() === `${seconds}.${fraction.padEnd(3, '0')}Z`;
+}
+
+function isEventCursor(value) {
+  return /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value));
+}
+
+function validDeltaArguments(command, flags) {
+  if (command === 'delta-status') return flags.length === 0;
+  if (flags[0] !== '--actor' || !staffId.test(flags[1])) return false;
+  if (command === 'delta-reconcile') {
+    return flags.length === 8 && flags[2] === '--evidence' && evidenceReference.test(flags[3]) &&
+      flags[4] === '--since' && isUtcTimestamp(flags[5]) && flags[6] === '--anchor-cursor' && isEventCursor(flags[7]);
+  }
+  if (flags[2] !== '--snapshot' || !uuid.test(flags[3])) return false;
+  if (command !== 'delta-resume-audit') return flags.length === 4;
+  return flags.length === 12 && flags[4] === '--snapshot-sha256' && /^[a-f0-9]{64}$/.test(flags[5]) &&
+    flags[6] === '--high-water' && isEventCursor(flags[7]) &&
+    flags[8] === '--event-audit-cursor' && isEventCursor(flags[9]) &&
+    flags[10] === '--evidence' && evidenceReference.test(flags[11]);
 }
 
 export function workerEnvironment(input, password, uid = process.getuid?.()) {
@@ -47,15 +66,7 @@ export function workerInvocation(args) {
   if (args[0] === 'full-sync') {
     const [, command, ...flags] = args;
     if (deltaCommands.has(command)) {
-      const actor = flags[0] === '--actor' && staffId.test(flags[1]);
-      const allowed = command === 'delta-status' ? flags.length === 0 : actor && (
-        command === 'delta-reconcile'
-          ? flags.length === 8 && flags[2] === '--evidence' && evidenceReference.test(flags[3]) &&
-            flags[4] === '--since' && isUtcTimestamp(flags[5]) && flags[6] === '--anchor-cursor' &&
-            /^(0|[1-9][0-9]{0,15})$/.test(flags[7]) && Number.isSafeInteger(Number(flags[7]))
-          : flags.length === 4 && flags[2] === '--snapshot' && uuid.test(flags[3])
-      );
-      if (!allowed) throw new Error('Incremental sync policy requires an exact operation and arguments');
+      if (!validDeltaArguments(command, flags)) throw new Error('Incremental sync policy requires an exact operation and arguments');
       return {argv: ['dist/external/full-sync/cli.js', ...args.slice(1)], formalFx: false, fullSync: false, replay: true};
     }
     if (admissionCommands.has(command)) {
