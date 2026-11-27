@@ -1153,7 +1153,7 @@ test('cross-water audit refuses a withdrawal that is itself outside the fixed bo
 });
 
 async function supersededRelistLifecycle(t: TestContext, cycles: number,
-  { freezeBeforeLastRelist = false, lastSourceNewer = false } = {}) {
+  { freezeBeforeLastRelist = false, lastSourceNewer = false, firstCyclePrices = [] as number[] } = {}) {
   const source = 'dongchedi' as const, vehicleId = '982';
   const f = await fixture(t, source);
   const upstream = (id: number, type: Change['type'], at: string) => ({ ...change(id, vehicleId, type, at), source });
@@ -1187,11 +1187,12 @@ async function supersededRelistLifecycle(t: TestContext, cycles: number,
     assert.equal(await worker.applyEvents(), 1);
   };
   const heads = new Map<number, Record<Locale, string>>();
+  const businessAt = (eventId: number) => new Date(Date.parse(archiveAt) + 1_000 * eventId).toISOString();
   let previousPrice = 70000;
+  let nextEvent = 4;
   for (let cycle = 0; cycle < cycles; cycle++) {
-    const withdrawalId = 4 + cycle * 2, relistId = withdrawalId + 1;
+    const withdrawalId = nextEvent++, relistId = nextEvent++;
     const cny = 68000 - 2000 * cycle;
-    const businessAt = (eventId: number) => new Date(Date.parse(archiveAt) + 1_000 * eventId).toISOString();
     await ingest(upstream(withdrawalId, 'removed', businessAt(withdrawalId)));
     assert.deepEqual(await f.event(withdrawalId), { applied: true, public_outcome: 'effective' });
     assert.equal(await f.published(vehicleId), undefined);
@@ -1219,8 +1220,22 @@ async function supersededRelistLifecycle(t: TestContext, cycles: number,
     ) SELECT observed.locale,observed.document_id FROM observed JOIN pins USING(document_id)`, [source, vehicleId, relistId]);
     assert.deepEqual(pinned.rows.map(row => row.locale).sort(), ['en', 'ru', 'zh']);
     heads.set(relistId, Object.fromEntries(pinned.rows.map(row => [row.locale, row.document_id])) as Record<Locale, string>);
+
+    if (cycle === 0) {
+      for (const price of firstCyclePrices) {
+        const priceId = nextEvent++;
+        const at = businessAt(priceId);
+        const event = { ...upstream(priceId, 'price', at), oldPrice: { cny: previousPrice }, newPrice: { cny: price } };
+        f.details.set(vehicleId, { price, at });
+        await ingest(event);
+        assert.equal(await worker.details(), 1);
+        assert.deepEqual(await f.event(priceId), { applied: true, public_outcome: 'effective' });
+        assert.deepEqual(await f.published(vehicleId), { price });
+        previousPrice = price;
+      }
+    }
   }
-  const receiveCursor = 3 + 2 * cycles;
+  const receiveCursor = nextEvent - 1;
   if (!freezeBeforeLastRelist) await freeze(receiveCursor);
   const highWater = String(freezeBeforeLastRelist ? receiveCursor - 1 : receiveCursor);
   const observations = async () => (await f.db.pool.query(`SELECT e.event_id::text,e.detail_generation::text,
@@ -1361,6 +1376,93 @@ test('superseded relist audit requires old details even when the current relist 
   assert.deepEqual(await h.f.sync(), received);
   assert.deepEqual(await h.f.published(h.vehicleId), published);
   assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('price-confirmed historical relist resumes across two applied prices and a newer lifecycle', async t => {
+  const h = await supersededRelistLifecycle(t, 2, {
+    freezeBeforeLastRelist: true, lastSourceNewer: true, firstCyclePrices: [68500, 69300],
+  });
+  const db = h.f.db, old = h.heads.get(5)!;
+  const received = await h.f.sync(), published = await h.f.published(h.vehicleId);
+  assert.equal(received.receive_cursor, '9');
+  assert.equal(h.resumeRequest.highWater, '8');
+  assert.deepEqual(published, { price: 66000 });
+  const priceEvidence = await pruneEventMetadata(h.f, 6);
+  const oldBlob = (await db.pool.query<{ hash: string; compressed: Buffer }>(`SELECT b.hash,b.compressed
+    FROM external_source_documents d JOIN external_source_blobs b USING(hash) WHERE d.id=$1`, [old.zh])).rows[0]!;
+  const pruneDetails = (ids: string[]) => db.transaction(async tx => {
+    await tx.query('DELETE FROM external_source_document_refs WHERE document_id=ANY($1::uuid[])', [ids]);
+    assert.equal((await tx.query('DELETE FROM external_source_documents WHERE id=ANY($1::uuid[])', [ids])).rowCount, ids.length);
+  });
+  await pruneDetails([old.en, old.ru]);
+
+  const changeOldArchive = (compressed: Buffer) =>
+    db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [oldBlob.hash, compressed]);
+  const wrongDetail = { ...JSON.parse(gunzipSync(oldBlob.compressed).toString('utf8')), price: { cny: 68100 } };
+  assert.equal((await changeOldArchive(gzipSync(canonicalJson(wrongDetail)))).rowCount, 1);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await h.worker.close();
+
+  const refuse = async () => {
+    await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refuse();
+  await changeOldArchive(oldBlob.compressed);
+  await pruneDetails([old.zh]);
+
+  const changePrior = (id: number, delta: number) => db.pool.query(`UPDATE external_full_events
+    SET prior_public_price=prior_public_price+$2 WHERE event_id=$1`, [id, delta]);
+  for (const eventId of [6, 7, 8]) {
+    assert.equal((await changePrior(eventId, 1000)).rowCount, 1);
+    await refuse();
+    await changePrior(eventId, -1000);
+  }
+
+  await db.pool.query('UPDATE external_full_events SET was_public=false WHERE event_id=7');
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET was_public=true WHERE event_id=7');
+  await db.pool.query("UPDATE external_full_events SET public_effective_at=detail_updated_at+interval '1 second' WHERE event_id=7");
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET public_effective_at=detail_updated_at WHERE event_id=7');
+  await db.pool.query('UPDATE external_full_events SET detail_generation=detail_generation+1 WHERE event_id=7');
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET detail_generation=detail_generation-1 WHERE event_id=7');
+  const { applied_at: appliedAt } = (await db.pool.query<{ applied_at: string }>(
+    'SELECT applied_at::text FROM external_full_events WHERE event_id=7')).rows[0]!;
+  await db.pool.query('UPDATE external_full_events SET applied_at=NULL WHERE event_id=7');
+  await refuse();
+  await db.pool.query('UPDATE external_full_events SET applied_at=$1 WHERE event_id=7', [appliedAt]);
+
+  const audit = async () => (await db.pool.query<{ changes: Array<{ path: string; after: unknown }> }>(`
+    SELECT changes FROM audit_events WHERE operation='external.sync.delta.resumeAudit'`)).rows;
+  assert.deepEqual(await audit(), []);
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '0');
+  const audits = await audit();
+  assert.equal(audits.length, 1);
+  assert.deepEqual(audits[0]!.changes.find(change => change.path === 'sync.delta.historyCorroboration')?.after, [
+    { eventId: '5', priceEventId: '6', unavailableLocales: ['en', 'ru', 'zh'] },
+  ]);
+
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  await restarted.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '8');
+  assert.equal(ready?.high_water, '8');
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.f.published(h.vehicleId), published);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal((await db.pool.query('SELECT 1 FROM external_source_documents WHERE id=ANY($1::uuid[])',
+    [[old.en, old.ru, old.zh, priceEvidence.id]])).rowCount, 0);
   assert.equal(h.f.exportCalls(), 0);
 });
 

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { jsonHash } from '../normalize.js';
 import { atExactTime, compareRelistCsv, positiveCny, relistProofBatch, verifyRelistArchiveEvidence,
   type ArchivedEventPageEvidence, type HistoricalRelistArchiveEvidence, type RelistArchiveEvidence,
-  type RelistCsvSample } from './relist-audit-evidence.js';
+  type RelistCsvSample, type HistoricalPriceCorroboration } from './relist-audit-evidence.js';
 import { readSupersededRelistChain } from './relist-history.js';
 
 const eventBatch = 2_000;
@@ -21,7 +21,11 @@ type EventAudit = {
   recoveryAnchorCursor: string | null;
   recoveryPreviousCursor: string | null;
 };
-type AuditResult = { status: 'advance' | 'waiting' | 'blocked'; through: string };
+type AuditResult = {
+  status: 'advance' | 'waiting' | 'blocked';
+  through: string;
+  historyCorroboration?: HistoricalPriceCorroboration[];
+};
 type StoredEvent = {
   event_id: string;
   source: string;
@@ -51,7 +55,7 @@ type RelistRow = StoredEvent & {
   withdrawal_bound: boolean;
   withdrawal: StoredEvent | null;
 };
-type EventProof = ArchivedEventPageEvidence & { documentId: string; price: bigint | null };
+type EventProof = ArchivedEventPageEvidence & { documentId: string; price: bigint | null; priorPrice?: bigint };
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
@@ -79,7 +83,7 @@ function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
     if (proof.kind === 'removed') return true;
     const oldPrice = positiveCny(object(event.oldPrice)?.cny);
     const newPrice = positiveCny(object(event.newPrice)?.cny);
-    if (oldPrice === null || newPrice !== proof.price) return false;
+    if (oldPrice === null || newPrice !== proof.price || (proof.priorPrice !== undefined && oldPrice !== proof.priorPrice)) return false;
     // This relist exception covers unchanged prices proved independently by the actual listing records.
     return proof.kind === 'relisted' ? oldPrice === newPrice : oldPrice !== newPrice;
   } catch {
@@ -198,40 +202,53 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
 
 async function verifySupersededRelist(tx: PoolClient, snapshotId: string, highWater: string, eventId: string) {
   const cycles = await readSupersededRelistChain(tx, eventId, highWater);
-  if (!cycles) return false;
+  if (!cycles) return null;
   const last = cycles.at(-1)!;
   const [live] = await readRelistPaths(tx, snapshotId, highWater, [{
     eventId: last.relist.event_id, priceEventId: null, currentWitness: true,
   }]);
-  if (!live || !live.withdrawal_bound || live.withdrawal?.event_id !== last.withdrawal.event_id) return false;
+  if (!live || !live.withdrawal_bound || live.withdrawal?.event_id !== last.withdrawal.event_id) return null;
   const livePrice = positiveCny(live.public_price);
-  if (livePrice === null || positiveCny(live.source_price) !== livePrice) return false;
+  if (livePrice === null || positiveCny(live.source_price) !== livePrice) return null;
 
   const documents: EventProof[] = [];
   const history: HistoricalRelistArchiveEvidence[] = [];
   let current: RelistArchiveEvidence | undefined;
   for (const [i, cycle] of cycles.entries()) {
     const next = cycles[i + 1];
-    // The effective next withdrawal records the public quote it actually removed.
-    const price = next ? positiveCny(next.withdrawal.prior_public_price) : livePrice;
-    if (price === null) return false;
+    // Each applied public change independently records the quote that preceded it.
+    const successor = cycle.prices[0] ?? next?.withdrawal;
+    const price = successor ? positiveCny(successor.prior_public_price) : livePrice;
+    if (price === null) return null;
     const withdrawal = eventProof(cycle.withdrawal, 'removed', null);
     const relist = eventProof(cycle.relist, 'relisted', price);
     if (!withdrawal || !relist || compareRelistCsv(live.csv_sample, relist, live.snapshot_completed_at,
-      price, next?.withdrawal.business_at) === 'conflict') return false;
+      price, successor?.business_at) === 'conflict') return null;
     documents.push(withdrawal, relist);
+
+    for (const [index, change] of cycle.prices.entries()) {
+      const following = cycle.prices[index + 1] ?? next?.withdrawal;
+      if (!following) return null;
+      const oldPrice = positiveCny(change.prior_public_price);
+      const newPrice = positiveCny(following.prior_public_price);
+      if (oldPrice === null || newPrice === null || oldPrice === newPrice) return null;
+      const proof = eventProof(change, 'price', newPrice);
+      if (!proof || compareRelistCsv(live.csv_sample, proof, live.snapshot_completed_at,
+        newPrice, following.business_at) === 'conflict') return null;
+      documents.push({ ...proof, priorPrice: oldPrice });
+    }
 
     const window = {
       eventId: relist.eventId, source: relist.source, externalId: relist.externalId, kind: 'relisted' as const,
       businessAt: relist.businessAt, eventHash: relist.eventHash, responseHash: relist.responseHash,
       appliedAt: cycle.relist.applied_at, detailUpdatedAt: cycle.relist.detail_updated_at, priceCents: price.toString(),
     };
-    if (next) history.push({ ...window, outcome: cycle.relist.public_outcome });
+    if (next) history.push({ ...window, outcome: cycle.relist.public_outcome, priceEventId: cycle.prices[0]?.event_id });
     else current = { ...window, sourceUpdatedAt: live.source_updated_at };
   }
   const missingDocuments = await verifyEventDocuments(tx, documents);
-  return !!current && missingDocuments !== null &&
-    await verifyRelistArchiveEvidence(tx, [current], documents, missingDocuments, history);
+  if (!current || missingDocuments === null) return null;
+  return verifyRelistArchiveEvidence(tx, [current], documents, missingDocuments, history);
 }
 
 /** Audit one bounded range under the caller's worker/sync lock. The cursor changes only for proven events. */
@@ -326,8 +343,10 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     if (event.source_type === 'relisted' && event.member_event_id !== event.event_id) {
       // One historical chain shares a decode budget and advances only through its audited event.
       if (checked > 0) break;
-      return await verifySupersededRelist(tx, snapshotId, highWater, event.event_id)
-        ? { status: 'advance', through: event.event_id } : { status: 'blocked', through: after };
+      const proof = await verifySupersededRelist(tx, snapshotId, highWater, event.event_id);
+      if (!proof) return { status: 'blocked', through: after };
+      const historyCorroboration = proof.historyCorroboration.filter(item => item.eventId === event.event_id);
+      return { status: 'advance', through: event.event_id, ...(historyCorroboration.length ? { historyCorroboration } : {}) };
     }
     const needsRelist = event.source_type==='relisted' || event.member_event_id!==event.event_id;
     if (needsRelist && requests.length>=relistProofBatch) break;

@@ -1,6 +1,8 @@
 import type { PoolClient } from 'pg';
 
 export const relistHistoryCycles = 4;
+const historyPriceLimit = 8;
+export const relistHistoryEventLimit = 2 * relistHistoryCycles + historyPriceLimit;
 
 export type StoredRelistHistoryEvent = {
   event_id: string;
@@ -28,9 +30,12 @@ type LedgerRow = Omit<StoredRelistHistoryEvent, 'applied_at' | 'generation'> & {
   was_public: boolean | null;
 };
 
+type MaterializedEvent = StoredRelistHistoryEvent & { detail_updated_at: string };
+
 type Cycle = {
   withdrawal: StoredRelistHistoryEvent;
-  relist: StoredRelistHistoryEvent & { detail_updated_at: string; public_outcome: 'effective' | 'not_public' };
+  relist: MaterializedEvent & { public_outcome: 'effective' | 'not_public' };
+  prices: MaterializedEvent[];
 };
 
 function isApplied(row: LedgerRow): row is LedgerRow & { applied_at: string; generation: string } {
@@ -48,7 +53,15 @@ function withdrawalThenRelist(w: LedgerRow, r: LedgerRow): Cycle | null {
   const outcome = r.public_outcome;
   if (outcome !== 'effective' && outcome !== 'not_public') return null;
   if (outcome === 'effective' ? r.public_effective_at !== r.detail_updated_at : r.public_effective_at !== null) return null;
-  return { withdrawal: w, relist: { ...r, detail_updated_at: r.detail_updated_at, public_outcome: outcome } };
+  return { withdrawal: w, relist: { ...r, detail_updated_at: r.detail_updated_at, public_outcome: outcome }, prices: [] };
+}
+
+function effectivePrice(row: LedgerRow, previous: MaterializedEvent): MaterializedEvent | null {
+  if (!isApplied(row) || row.operation !== 'upsert' || row.source_type !== 'price' || row.was_public !== true ||
+      row.public_outcome !== 'effective' || !row.detail_updated_at || row.public_effective_at !== row.detail_updated_at ||
+      row.detail_updated_at < row.applied_at || previous.detail_updated_at > row.applied_at ||
+      previous.business_at >= row.business_at || BigInt(previous.generation) + 1n !== BigInt(row.generation)) return null;
+  return { ...row, detail_updated_at: row.detail_updated_at };
 }
 
 /** Read a contiguous same-identity chain through the committed current member. */
@@ -76,22 +89,34 @@ export async function readSupersededRelistChain(tx: PoolClient, eventId: string,
       SELECT e.* FROM external_full_events e WHERE (e.source,e.external_id)=(s.source,s.external_id)
         AND e.event_id BETWEEN s.first_event AND s.event_order
       ORDER BY e.event_id LIMIT $3
-    ) e ORDER BY e.event_id`, [eventId, highWater, 2 * relistHistoryCycles + 1])).rows;
+    ) e ORDER BY e.event_id`, [eventId, highWater, relistHistoryEventLimit + 1])).rows;
   const last = rows.at(-1);
-  if (rows.length < 4 || rows.length > 2 * relistHistoryCycles || rows.length % 2 !== 0 ||
-      rows[1]?.event_id !== eventId || last?.event_id !== last?.member_event_id) return null;
+  if (rows.length < 4 || rows.length > relistHistoryEventLimit || last?.operation !== 'relist' ||
+      rows[1]?.event_id !== eventId || last.event_id !== last.member_event_id) return null;
 
   const cycles: Cycle[] = [];
-  for (let i = 0; i < rows.length; i += 2) {
-    const cycle = withdrawalThenRelist(rows[i]!, rows[i + 1]!);
+  let priceCount = 0;
+  for (let i = 0; i < rows.length;) {
+    const withdrawal = rows[i];
+    const relist = rows[i + 1];
+    if (!withdrawal || !relist || cycles.length === relistHistoryCycles) return null;
+    const cycle = withdrawalThenRelist(withdrawal, relist);
     if (!cycle) return null;
-    const previous = cycles.at(-1)?.relist;
+    const previous = cycles.at(-1);
     if (previous) {
-      const gap = BigInt(cycle.withdrawal.generation) - BigInt(previous.generation);
-      // A prior relist without its own public receipt needs the next adjacent withdrawal's recorded pre-state.
-      if (previous.business_at >= cycle.withdrawal.business_at ||
-          previous.detail_updated_at > cycle.withdrawal.applied_at || gap <= 0n ||
-          (gap > 1n && previous.public_outcome !== 'effective')) return null;
+      const preceding = previous.prices.at(-1) ?? previous.relist;
+      const gap = BigInt(cycle.withdrawal.generation) - BigInt(preceding.generation);
+      // Preserve the relist-only proof when its own public receipt accounts for a generation gap.
+      if (preceding.business_at >= cycle.withdrawal.business_at ||
+          preceding.detail_updated_at > cycle.withdrawal.applied_at || gap <= 0n ||
+          (gap > 1n && (previous.prices.length > 0 || previous.relist.public_outcome !== 'effective'))) return null;
+    }
+    i += 2;
+    while (rows[i]?.source_type === 'price') {
+      const price = effectivePrice(rows[i]!, cycle.prices.at(-1) ?? cycle.relist);
+      if (!price || ++priceCount > historyPriceLimit) return null;
+      cycle.prices.push(price);
+      i++;
     }
     cycles.push(cycle);
   }
