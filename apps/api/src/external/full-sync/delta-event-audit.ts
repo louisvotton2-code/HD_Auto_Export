@@ -159,7 +159,9 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
     WHERE s.id=$1 AND s.state='complete' AND s.archive_pruned_at IS NULL
       AND s.staged=s.rows AND s.apply_cursor=s.rows AND s.rows>0
       AND s.sha256 ~ '^[a-f0-9]{64}$' AND s.bytes>0 AND s.completed_at IS NOT NULL
-      AND e.event_id<=$3::numeric
+      -- A committed relist beyond the audit frontier can explain the current projection of an older price.
+      AND (e.event_id<=$3::numeric OR (q."priceEventId" IS NOT NULL
+        AND e.event_id<=(SELECT receive_cursor FROM external_full_sync WHERE id=1)))
       AND e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
       AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
       AND l.source_updated_at<e.business_at AND e.applied_at>=e.received_at
@@ -174,11 +176,15 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
       AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state t WHERE t.provider='chinacarapi'
         AND (t.source,t.external_id)=(e.source,e.external_id) AND t.withdrawn)
       AND (q."priceEventId" IS NULL OR (
-        old.source_type='price' AND old.operation='upsert' AND old.was_public AND old.public_outcome='not_public'
+        -- The effective withdrawal closes the historical chain inside the audit frontier.
+        old.event_id<=$3::numeric AND w.event_id<=$3::numeric
+        AND old.source_type='price' AND old.operation='upsert' AND old.was_public AND old.public_outcome='not_public'
+        AND old.public_effective_at IS NULL
         AND old.error_code IS NULL AND old.applied_at>=old.received_at
         AND old.detail_updated_at BETWEEN old.applied_at AND w.applied_at
         AND old.event_id<w.event_id AND old.business_at<w.business_at AND old.detail_generation<w.detail_generation
-        AND w.source_type='removed' AND w.public_outcome='effective' AND w.public_effective_at IS NOT NULL
+        AND w.source_type='removed' AND w.public_outcome='effective' AND w.was_public
+        AND w.public_effective_at BETWEEN w.applied_at AND e.applied_at
         AND w.detail_generation+1=e.detail_generation
         AND l.source_updated_at=old.business_at AND c.price_cny=old.prior_public_price
         AND NOT EXISTS(SELECT 1 FROM external_full_events step WHERE (step.source,step.external_id)=(e.source,e.external_id)
@@ -251,7 +257,10 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
     WHERE l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
      AND (l.source_updated_at IS NULL OR l.source_updated_at<e.business_at OR
-      (e.source_type='price' AND l.source_updated_at=e.business_at AND c.price_cny IS NOT DISTINCT FROM e.prior_public_price))
+      (e.source_type='price' AND l.source_updated_at=e.business_at AND (
+        c.price_cny IS NOT DISTINCT FROM e.prior_public_price OR (e.public_outcome='not_public' AND m.event_order>e.event_id
+          AND EXISTS(SELECT 1 FROM external_full_events successor WHERE successor.event_id=m.event_order
+            AND successor.operation='relist')))))
     ORDER BY e.event_id LIMIT $3
     ) SELECT s.event_id::text,s.source,s.external_id,s.source_type,s.payload_hash,s.document_refs,s.public_price::text,
       s.event_order::text AS member_event_id,

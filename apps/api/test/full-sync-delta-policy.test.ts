@@ -913,7 +913,8 @@ test('historical relist audit yields to a later received withdrawal outside the 
   assert.equal(await h.f.published('803'), undefined);
 });
 
-async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, pricePageHasMore = false) {
+async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, pricePageHasMore = false,
+  freezeAfter?: 'price' | 'withdrawal') {
   const source = 'dongchedi' as const;
   const f = await fixture(t, source);
   const changed = ['902', '903'];
@@ -982,6 +983,18 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
   assert.equal(await worker.promoteSnapshot(snapshotId), staged.length - 1);
   assert.equal(await worker.details(), staged.length - 1);
   await delay(Math.max(0, Date.parse(relistAt) - Date.now()));
+  const freeze = async (cursor: number) => {
+    await worker.tick();
+    const frozen = await f.policy();
+    assert.equal(frozen?.high_water, String(cursor));
+    assert.equal(frozen?.last_terminal_cursor, frozen?.high_water);
+    assert.equal(frozen?.audit_cursor, String(staged.length));
+    assert.equal(frozen?.event_audit_cursor, '0');
+  };
+  if (freezeAfter === 'price') {
+    await f.ingest(worker, []);
+    await freeze(prices.at(-1)!.id);
+  }
   const removes = relisted.map((id, i) => upstream(2003 + i, id, 'removed', withdrawalAt));
   await ingestAndRetain(worker, removes);
   assert.equal(await worker.applyEvents(), relisted.length);
@@ -989,9 +1002,11 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
     assert.deepEqual(await f.event(e.id), { applied: true, public_outcome: 'effective' });
     assert.equal(await f.published(e.vehicleId), undefined);
   }
+  if (freezeAfter === 'withdrawal') await freeze(removes.at(-1)!.id);
   const relists = relisted.map((id, i) => ({ ...upstream(2003 + removes.length + i, id, 'relisted', relistAt),
     oldPrice: { cny: 68000 }, newPrice: { cny: 68000 } }));
-  const highWater = String(relists.at(-1)!.id);
+  const receiveCursor = String(relists.at(-1)!.id);
+  const highWater = String((freezeAfter === 'price' ? prices : freezeAfter === 'withdrawal' ? removes : relists).at(-1)!.id);
   await ingestAndRetain(worker, relists);
   assert.equal(await worker.applyEvents(), relisted.length);
   assert.equal(await worker.details(), relisted.length);
@@ -1008,7 +1023,7 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
     JOIN external_listings l ON l.provider='chinacarapi' AND (l.platform_id,l.external_id)=(e.source,e.external_id)
     JOIN external_catalog c ON c.listing_id=l.id JOIN external_catalog_filter f ON f.listing_id=l.id
     WHERE e.event_id BETWEEN 2001 AND $2 AND l.formal_primary AND l.upstream_state='active' AND f.active AND f.locale_mask=7
-    ORDER BY e.event_id`, [snapshotId, highWater])).rows;
+    ORDER BY e.event_id`, [snapshotId, receiveCursor])).rows;
   const original = await observations();
   assert.deepEqual(original.map(row => row.event_id), [...prices, ...removes, ...relists].map(e => String(e.id)));
   for (const row of original) assert.equal(row.in_csv, staged.includes(row.external_id));
@@ -1034,7 +1049,7 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
     assert.equal(BigInt(relist.detail_generation), BigInt(removed.detail_generation) + 1n);
   }
 
-  await worker.tick();
+  if (!freezeAfter) await worker.tick();
   await worker.tick();
   const policy = await f.policy();
   assert.equal(policy?.phase, 'draining');
@@ -1058,6 +1073,83 @@ test('historical price audits through its proven post-snapshot withdrawal and re
   assert.equal(ready?.snapshot_id, h.resumeRequest.snapshotId);
   assert.deepEqual(await h.observations(), h.original);
   assert.equal(h.f.exportCalls(), 0);
+});
+
+test('cross-water audit uses a completed relist as evidence and only advances through the in-water withdrawal', async t => {
+  const h = await postSnapshotLifecycle(t, false, false, 'withdrawal');
+  assert.equal(h.resumeRequest.highWater, '2004');
+  const received = await h.f.sync();
+  assert.equal(received.receive_cursor, '2006');
+
+  const evidence = (await h.f.db.pool.query<{ document_id: string; applied_at: string; withdrawn_at: string }>(`SELECT
+    r.document_refs->0->>'id' AS document_id,r.applied_at::text,w.public_effective_at::text AS withdrawn_at
+    FROM external_full_events r JOIN external_full_events w ON w.event_id=2003 WHERE r.event_id=2005`)).rows[0]!;
+  await h.changeArchivedKind(evidence.document_id, 'csv');
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '2000');
+  await h.worker.close();
+  const refused = async () => {
+    await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refused();
+  await h.changeArchivedKind(evidence.document_id, 'event');
+
+  const setReceive = (cursor: string) =>
+    h.f.db.pool.query('UPDATE external_full_sync SET receive_cursor=$1 WHERE id=1', [cursor]);
+  await setReceive(h.resumeRequest.highWater);
+  await refused();
+  await setReceive(received.receive_cursor);
+
+  const setApplied = (at: string | null) =>
+    h.f.db.pool.query('UPDATE external_full_events SET applied_at=$1 WHERE event_id=2005', [at]);
+  await setApplied(null);
+  await refused();
+  await setApplied(evidence.applied_at);
+
+  await h.f.db.pool.query(`UPDATE external_full_events SET public_effective_at=applied_at-interval '1 millisecond'
+    WHERE event_id=2003`);
+  await refused();
+  await h.f.db.pool.query('UPDATE external_full_events SET public_effective_at=$1 WHERE event_id=2003', [evidence.withdrawn_at]);
+
+  const changePublicPrice = (delta: number) => h.f.db.pool.query(`UPDATE external_catalog c SET price_cny=c.price_cny+$2
+    FROM external_listings l WHERE c.listing_id=l.id AND l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id='902'`,
+  [h.source, delta]);
+  assert.equal((await changePublicPrice(5000)).rowCount, 1);
+  await refused();
+  assert.equal((await changePublicPrice(-5000)).rowCount, 1);
+
+  const resumed = await resumeDeltaAudit(h.f.db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '2000');
+  assert.equal(resumed.high_water, '2004');
+  const restarted = await h.f.start();
+  await restarted.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.high_water, '2004');
+  assert.equal(ready?.event_audit_cursor, '2004');
+  assert.equal(ready?.snapshot_id, h.resumeRequest.snapshotId);
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('cross-water audit refuses a withdrawal that is itself outside the fixed boundary', async t => {
+  const h = await postSnapshotLifecycle(t, false, false, 'price');
+  assert.equal(h.resumeRequest.highWater, '2002');
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.high_water, '2002');
+  assert.equal(blocked?.event_audit_cursor, '2000');
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal((await h.f.sync()).receive_cursor, '2006');
 });
 
 test('pruned metadata can use original archives across a price, withdrawal and relist chain', async t => {
