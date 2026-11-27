@@ -18,11 +18,19 @@ export type ArchivedEventPageEvidence = {
 
 export type RelistArchiveEvidence = ArchivedEventPageEvidence & {
   kind: 'relisted';
-  requiresCsv: boolean;
   appliedAt: string;
   detailUpdatedAt: string;
   sourceUpdatedAt: string;
   priceCents: string;
+};
+
+export type RelistCsvSample = {
+  source: unknown;
+  externalId: unknown;
+  price: unknown;
+  duplicateOf: unknown;
+  fetchedAt: unknown;
+  inBounds: boolean;
 };
 
 const eventTime = z.iso.datetime({ offset: true });
@@ -80,7 +88,7 @@ function normalizeEventPage<T extends ArchivedEventPageEvidence>(proof: T): T | 
 
 function normalizeProof(value: RelistArchiveEvidence): RelistArchiveEvidence | null {
   const proof = normalizeEventPage(value);
-  if (!proof || proof.kind !== 'relisted' || typeof proof.requiresCsv !== 'boolean') return null;
+  if (!proof || proof.kind !== 'relisted') return null;
   const appliedAt = exactTime(proof.appliedAt);
   const detailUpdatedAt = exactTime(proof.detailUpdatedAt);
   const sourceUpdatedAt = exactTime(proof.sourceUpdatedAt);
@@ -103,31 +111,19 @@ function decodeArchive(compressed: Buffer, hash: string, maxOutputLength: number
   }
 }
 
-async function verifyCsv(tx: PoolClient, snapshotId: string, proofs: ReadonlyMap<string, RelistArchiveEvidence>) {
-  const rows = (await tx.query<{
-    eventId: string; source: unknown; externalId: unknown; price: unknown; duplicateOf: unknown;
-    fetchedAt: unknown; completedAt: string;
-  }>(`SELECT q."eventId",r.payload->'source' AS source,r.payload->'id' AS "externalId",
-    r.payload->'price_cny' AS price,r.payload->'duplicate_of' AS "duplicateOf",
-    r.payload->'detail_fetched_at' AS "fetchedAt",
-    to_char(s.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "completedAt"
-    FROM external_full_snapshots s
-    CROSS JOIN jsonb_to_recordset($2::jsonb) AS q("eventId" text,source text,"externalId" text)
-    JOIN external_full_stage r ON r.snapshot_id=s.id AND r.source=q.source AND r.external_id=q."externalId"
-    WHERE s.id=$1 AND s.state='complete' AND s.staged=s.rows AND s.apply_cursor=s.rows AND s.rows>0
-      AND s.sha256 ~ '^[a-f0-9]{64}$' AND s.bytes>0 AND s.completed_at IS NOT NULL
-      AND s.archive_pruned_at IS NULL AND r.row_number BETWEEN 1 AND s.rows`,
-  [snapshotId, JSON.stringify([...proofs.values()])])).rows;
-  if (rows.length !== proofs.size || new Set(rows.map(row => row.eventId)).size !== proofs.size) return false;
-  return rows.every(row => {
-    const proof = proofs.get(row.eventId);
-    const fetched = exactTime(row.fetchedAt);
-    const completed = exactTime(row.completedAt);
-    // x-generated-at is the feed's continuation anchor, not an upper bound on source row time.
-    return !!(proof && fetched && completed && fetched > proof.detailUpdatedAt && fetched <= completed &&
-      row.source === proof.source && row.externalId === proof.externalId && row.duplicateOf === '' &&
-      positiveCny(row.price) === BigInt(proof.priceCents));
-  });
+export function compareRelistCsv(sample: RelistCsvSample | null, proof: ArchivedEventPageEvidence,
+  snapshotCompletedAt: string, price: bigint): 'corroborated' | 'unavailable' | 'conflict' {
+  if (!sample) return 'unavailable';
+  if (!sample.inBounds || sample.source !== proof.source || sample.externalId !== proof.externalId) return 'conflict';
+  if (sample.fetchedAt === '') return 'unavailable';
+  const fetched = exactTime(sample.fetchedAt);
+  const event = exactTime(proof.businessAt);
+  const completed = exactTime(snapshotCompletedAt);
+  if (!fetched || !event || !completed || fetched > completed) return 'conflict';
+  // The supplier sampled a source listing. Local materialization time only binds the three detail heads.
+  if (fetched < event) return 'unavailable';
+  if (sample.duplicateOf !== '' || positiveCny(sample.price) !== price) return 'conflict';
+  return fetched > event ? 'corroborated' : 'unavailable';
 }
 
 function completedPage(page: Record<string, unknown>, ids: Iterable<string>): CompletedPage | null {
@@ -222,14 +218,12 @@ function samePageProof(a: ArchivedEventPageEvidence, b: ArchivedEventPageEvidenc
 }
 
 /** Verify source archives, using a completed original page when event metadata has been pruned. */
-export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: string,
+export async function verifyRelistArchiveEvidence(tx: PoolClient,
   proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = [],
   missingDocuments: readonly ArchivedEventPageEvidence[] = []): Promise<boolean> {
   if ((!proofs.length && !related.length && !missingDocuments.length) || proofs.length > relistProofBatch ||
-      related.length > relatedEventLimit || missingDocuments.length > relatedEventLimit + 2 * relistProofBatch ||
-      !z.uuid().safeParse(snapshotId).success) return false;
+      related.length > relatedEventLimit || missingDocuments.length > relatedEventLimit + 2 * relistProofBatch) return false;
   const byId = new Map<string, RelistArchiveEvidence>();
-  const csvProofs = new Map<string, RelistArchiveEvidence>();
   const relationsByIdentity = new Map<string, number>();
   for (const value of proofs) {
     const proof = normalizeProof(value);
@@ -238,7 +232,6 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: st
     if (relationsByIdentity.has(identity)) return false;
     byId.set(proof.eventId, proof);
     relationsByIdentity.set(identity, 0);
-    if (proof.requiresCsv) csvProofs.set(proof.eventId, proof);
   }
   const pages = new Map<string, ArchivedEventPageEvidence>(byId);
   for (const value of related) {
@@ -267,6 +260,6 @@ export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: st
     receiptProofs.add(proof.eventId);
   }
   const budget = { remaining: decodedBatchLimit };
-  return (!csvProofs.size || await verifyCsv(tx, snapshotId, csvProofs)) && await verifyPages(tx, pages, receiptProofs, budget) &&
+  return await verifyPages(tx, pages, receiptProofs, budget) &&
     (!byId.size || await verifyDetailHeads(tx, byId, budget));
 }

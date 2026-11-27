@@ -643,7 +643,7 @@ test('resuming needs archived price proof and rechecks the same frontier after a
   assert.equal(h.f.exportCalls(), 0);
 });
 
-async function historicalRelistAudit(t: TestContext, count = 2, source: Source = 'che168') {
+async function historicalRelistAudit(t: TestContext, count = 2, source: Source = 'che168', omitLastFromSnapshot = false) {
   const f = await fixture(t, source);
   const identities = Array.from({ length: count + 1 }, (_, index) => String(801 + index));
   const relisted = identities.slice(1);
@@ -711,30 +711,31 @@ async function historicalRelistAudit(t: TestContext, count = 2, source: Source =
   }
   const csvAt = new Date(original.at(-1)!.detail_updated_at.getTime() + 2).toISOString();
   const generatedAt = new Date(Date.parse(csvAt) + 1).toISOString();
-  const snapshotId = await f.seedSnapshot(rows);
+  const snapshotRows = omitLastFromSnapshot ? rows.slice(0, -1) : rows;
+  const snapshotId = await f.seedSnapshot(snapshotRows);
   await applyPayload(snapshotId, csvAt);
   await f.db.pool.query('UPDATE external_full_snapshots SET generated_at=$2 WHERE id=$1', [snapshotId, generatedAt]);
   await worker.close();
   await prepareDeltaPolicy(f.db, actor, snapshotId);
   worker = await f.start();
   await f.ingest(worker, []);
-  assert.equal(await worker.promoteSnapshot(snapshotId), count);
-  assert.deepEqual(await f.snapshot(snapshotId), { state: 'complete', apply_cursor: String(identities.length) });
+  assert.equal(await worker.promoteSnapshot(snapshotId), snapshotRows.length - 1);
+  assert.deepEqual(await f.snapshot(snapshotId), { state: 'complete', apply_cursor: String(snapshotRows.length) });
   await worker.tick();
   await worker.tick();
 
   const before = await f.policy();
   assert.equal(before?.phase, 'draining');
-  assert.equal(before?.audit_cursor, String(identities.length));
+  assert.equal(before?.audit_cursor, String(snapshotRows.length));
   assert.equal(before?.audit_missing, '0');
   assert.equal(before?.event_audit_cursor, '2000');
   assert.equal(before?.high_water, highWater);
   assert.deepEqual(await observations(), original);
   const resumeRequest = { snapshotId, snapshotSha256: 'a'.repeat(64), eventAuditCursor: '2000',
     highWater, evidence: 'fixture-confirmed-relist-archive' };
-  const updateStage = (key: string, value: string) => f.db.pool.query(`UPDATE external_full_stage
+  const updateStage = (key: string, value: string, externalId = '803') => f.db.pool.query(`UPDATE external_full_stage
     SET payload=payload||jsonb_build_object($2::text,$3::text)
-    WHERE snapshot_id=$1 AND source='che168' AND external_id='803'`, [snapshotId, key, value]);
+    WHERE snapshot_id=$1 AND source=$4 AND external_id=$5`, [snapshotId, key, value, source, externalId]);
   return { f, worker, original, observations, resumeRequest, updateStage };
 }
 
@@ -751,6 +752,67 @@ test('historical relists prove the exact materialized generation without rewriti
   assert.equal(proof?.phase, 'ready');
   assert.equal(proof?.event_audit_cursor, '2015');
   assert.equal(proof?.high_water, '2015');
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('historical relist accepts a supplier sample between the event and local materialization', async t => {
+  const h = await historicalRelistAudit(t);
+  const materializedAt = h.original[1]!.detail_updated_at.getTime();
+  const sampledAt = materializedAt - 12_000;
+  assert.ok(Date.parse(laterAt) < sampledAt && sampledAt < materializedAt);
+  assert.equal((await h.updateStage('detail_fetched_at', new Date(sampledAt).toISOString())).rowCount, 1);
+  // The CSV is the independent corroboration when the earlier ledger withdrawal lacks an original archive reference.
+  assert.equal((await h.f.db.pool.query(`UPDATE external_full_events SET document_refs='[]'::jsonb
+    WHERE source='che168' AND external_id='803' AND operation='withdraw'`)).rowCount, 1);
+
+  await h.worker.tick();
+  const policy = await h.f.policy();
+  assert.equal(policy?.phase, 'ready');
+  assert.equal(policy?.event_audit_cursor, '2002');
+  assert.equal(policy?.high_water, h.resumeRequest.highWater);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('historical relist needs its original adjacent withdrawal when the snapshot row is older or absent', async t => {
+  const h = await historicalRelistAudit(t, 2, 'che168', true);
+  assert.equal((await h.updateStage('detail_fetched_at', changedAt, '802')).rowCount, 1);
+  assert.equal((await h.updateStage('price_cny', '69000', '802')).rowCount, 1);
+  assert.equal((await h.updateStage('price_cny', '70000')).rowCount, 0);
+  const prior = (await h.f.db.pool.query<{ event_id: string; document_refs: unknown; detail_generation: string }>(`SELECT
+    event_id::text,document_refs,detail_generation::text FROM external_full_events
+    WHERE source='che168' AND external_id='802' AND operation='withdraw'`)).rows[0]!;
+  const updateReferences = (references: unknown) => h.f.db.pool.query(`UPDATE external_full_events SET document_refs=$2
+    WHERE event_id=$1`, [prior.event_id, JSON.stringify(references)]);
+  const updateGeneration = (generation: string) => h.f.db.pool.query(`UPDATE external_full_events SET detail_generation=$2
+    WHERE event_id=$1`, [prior.event_id, generation]);
+  assert.equal((await updateReferences([])).rowCount, 1);
+
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, h.resumeRequest.eventAuditCursor);
+  await h.worker.close();
+  const refused = async () => {
+    await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refused();
+  await updateReferences(prior.document_refs);
+  await updateGeneration((BigInt(prior.detail_generation) - 1n).toString());
+  await refused();
+  await updateGeneration(prior.detail_generation);
+
+  const resumed = await resumeDeltaAudit(h.f.db, actor, h.resumeRequest);
+  assert.equal(resumed.event_audit_cursor, h.resumeRequest.eventAuditCursor);
+  assert.equal(resumed.high_water, h.resumeRequest.highWater);
+  const restarted = await h.f.start();
+  await restarted.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '2002');
   assert.deepEqual(await h.observations(), h.original);
   assert.equal(h.f.exportCalls(), 0);
 });
