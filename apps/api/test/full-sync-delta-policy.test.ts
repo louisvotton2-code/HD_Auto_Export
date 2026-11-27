@@ -1152,6 +1152,229 @@ test('cross-water audit refuses a withdrawal that is itself outside the fixed bo
   assert.equal((await h.f.sync()).receive_cursor, '2006');
 });
 
+async function supersededRelistLifecycle(t: TestContext, cycles: number,
+  { freezeBeforeLastRelist = false, lastSourceNewer = false } = {}) {
+  const source = 'dongchedi' as const, vehicleId = '982';
+  const f = await fixture(t, source);
+  const upstream = (id: number, type: Change['type'], at: string) => ({ ...change(id, vehicleId, type, at), source });
+  let worker = await f.start();
+  await f.ingest(worker, ['981', vehicleId, '983'].map((id, index) => ({ ...change(index + 1, id, 'new', baseAt), source })));
+  assert.equal(await worker.applyEvents(), 3);
+  assert.equal(await worker.details(), 3);
+  const snapshotId = await f.seedSnapshot([[1, '981'], [2, '983']]);
+  await worker.close();
+  await prepareDeltaPolicy(f.db, actor, snapshotId);
+  worker = await f.start();
+  assert.equal(await worker.promoteSnapshot(snapshotId), 1);
+  assert.equal(await worker.details(), 1);
+
+  const freeze = async (id: number) => {
+    await worker.tick();
+    const state = await f.policy();
+    assert.ok(state);
+    assert.equal(state.high_water, String(id));
+    assert.equal(state.last_terminal_cursor, state.high_water);
+    assert.equal(state.audit_cursor, '2');
+    assert.equal(state.audit_missing, '0');
+    assert.equal(state.event_audit_cursor, '0');
+  };
+  const ingest = async (event: Change) => {
+    await f.ingest(worker, [event]);
+    assert.equal((await f.db.pool.query(`INSERT INTO external_source_document_refs(document_id,kind,reference)
+      SELECT d.id,'audit','fixture-superseded-relist-event' FROM external_full_events e
+      JOIN external_source_documents d ON d.id=(e.document_refs->0->>'id')::uuid
+      WHERE e.event_id=$1 AND d.event_sequence=e.event_id AND d.kind='event'`, [event.id])).rowCount, 1);
+    assert.equal(await worker.applyEvents(), 1);
+  };
+  const heads = new Map<number, Record<Locale, string>>();
+  let previousPrice = 70000;
+  for (let cycle = 0; cycle < cycles; cycle++) {
+    const withdrawalId = 4 + cycle * 2, relistId = withdrawalId + 1;
+    const cny = 68000 - 2000 * cycle;
+    const businessAt = (eventId: number) => new Date(Date.parse(archiveAt) + 1_000 * eventId).toISOString();
+    await ingest(upstream(withdrawalId, 'removed', businessAt(withdrawalId)));
+    assert.deepEqual(await f.event(withdrawalId), { applied: true, public_outcome: 'effective' });
+    assert.equal(await f.published(vehicleId), undefined);
+    const beforeWithdrawal = (await f.db.pool.query('SELECT prior_public_price::int AS price FROM external_full_events WHERE event_id=$1',
+      [withdrawalId])).rows[0]!;
+    assert.equal(beforeWithdrawal.price, previousPrice);
+    if (freezeBeforeLastRelist && cycle === cycles - 1) await freeze(withdrawalId);
+
+    const newerSource = lastSourceNewer && cycle === cycles - 1;
+    const detailAt = newerSource ? businessAt(relistId) : new Date(Date.parse(baseAt) + 1_000 * relistId).toISOString();
+    f.details.set(vehicleId, { price: cny, at: detailAt });
+    const relistChange = { ...upstream(relistId, 'relisted', businessAt(relistId)), oldPrice: { cny }, newPrice: { cny } };
+    await ingest(relistChange);
+    assert.equal(await worker.details(), 1);
+    assert.deepEqual(await f.event(relistId), { applied: true, public_outcome: newerSource ? 'effective' : 'not_public' });
+    assert.deepEqual(await f.published(vehicleId), { price: cny });
+    previousPrice = cny;
+    const pinned = await f.db.pool.query<{ locale: Locale; document_id: string }>(`WITH observed AS MATERIALIZED (
+      SELECT h.locale,h.document_id FROM external_source_heads h JOIN external_full_events e ON e.event_id=$3
+      WHERE h.provider='chinacarapi' AND h.source=$1 AND h.external_id=$2 AND h.kind='detail'
+        AND h.observed_at BETWEEN e.applied_at AND e.detail_updated_at
+    ), pins AS (
+      INSERT INTO external_source_document_refs(document_id,kind,reference)
+      SELECT document_id,'audit','fixture-superseded-relist-'||$3::text FROM observed RETURNING document_id
+    ) SELECT observed.locale,observed.document_id FROM observed JOIN pins USING(document_id)`, [source, vehicleId, relistId]);
+    assert.deepEqual(pinned.rows.map(row => row.locale).sort(), ['en', 'ru', 'zh']);
+    heads.set(relistId, Object.fromEntries(pinned.rows.map(row => [row.locale, row.document_id])) as Record<Locale, string>);
+  }
+  const receiveCursor = 3 + 2 * cycles;
+  if (!freezeBeforeLastRelist) await freeze(receiveCursor);
+  const highWater = String(freezeBeforeLastRelist ? receiveCursor - 1 : receiveCursor);
+  const observations = async () => (await f.db.pool.query(`SELECT e.event_id::text,e.detail_generation::text,
+    e.business_at::text,e.applied_at::text,e.detail_updated_at::text,e.public_effective_at::text,e.public_outcome,
+    e.prior_public_price::text,e.document_refs,e.payload_hash,m.applied_generation::text,m.event_order::text,
+    l.source_updated_at::text,c.price_cny::text AS public_price
+    FROM external_full_events e JOIN external_full_members m USING(source,external_id)
+    JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
+    JOIN external_catalog c ON c.listing_id=l.id WHERE e.source=$1 AND e.external_id=$2 ORDER BY e.event_id`, [source, vehicleId])).rows;
+  const resumeRequest = { snapshotId, snapshotSha256: 'a'.repeat(64), eventAuditCursor: '0', highWater,
+    evidence: 'fixture-confirmed-superseded-relist-lifecycle' };
+  return { f, worker, source, vehicleId, heads, receiveCursor, resumeRequest, observations, original: await observations() };
+}
+
+test('superseded relist audit can verify cold originals from two consecutive lifecycles', async t => {
+  const h = await supersededRelistLifecycle(t, 2);
+  const withdrawal = await pruneEventMetadata(h.f, 4);
+  const relist = await pruneEventMetadata(h.f, 5);
+  const received = await h.f.sync();
+  await h.worker.tick();
+  assert.equal((await h.f.policy())?.phase, 'draining');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  await h.worker.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, h.resumeRequest.highWater);
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal((await h.f.db.pool.query('SELECT 1 FROM external_source_documents WHERE id=ANY($1::uuid[])',
+    [[withdrawal.id, relist.id]])).rowCount, 0);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('superseded relist audit verifies each historical generation and stops at the fixed withdrawal after restart', async t => {
+  const h = await supersededRelistLifecycle(t, 3, { freezeBeforeLastRelist: true });
+  const db = h.f.db;
+  const oldDetail = h.heads.get(5)!.ru, currentDetail = h.heads.get(9)!.ru;
+  const setLocale = (locale: 'ru' | 'und') => db.pool.query('UPDATE external_source_documents SET locale=$2 WHERE id=$1', [oldDetail, locale]);
+  assert.equal((await setLocale('und')).rowCount, 1);
+  const received = await h.f.sync();
+  assert.equal(received.receive_cursor, '9');
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.ok(blocked);
+  assert.equal(blocked.reason, 'audit_gap');
+  assert.equal(blocked.event_audit_cursor, '0');
+  assert.equal(blocked.high_water, '8');
+  await h.worker.close();
+  const refuse = async () => {
+    await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refuse();
+  await setLocale('ru');
+
+  const originalTimes = (await db.pool.query<{ first_seen: string; last_seen: string; response: string; observed: string }>(`
+    SELECT d.first_observed_at::text AS first_seen,d.last_observed_at::text AS last_seen,r.response_hash AS response,
+      r.observed_at::text AS observed FROM external_source_documents d JOIN external_source_responses r ON r.document_id=d.id
+    WHERE d.id=$1`, [oldDetail])).rows;
+  assert.equal(originalTimes.length, 1);
+  const { first_seen, last_seen, observed, response } = originalTimes[0]!;
+  await db.pool.query(`UPDATE external_source_documents d SET first_observed_at=e.applied_at-interval '1 microsecond',
+    last_observed_at=e.detail_updated_at+interval '1 microsecond' FROM external_full_events e WHERE d.id=$1 AND e.event_id=5`, [oldDetail]);
+  await db.pool.query(`UPDATE external_source_responses r SET observed_at=e.applied_at-interval '1 microsecond'
+    FROM external_full_events e WHERE r.document_id=$1 AND e.event_id=5`, [oldDetail]);
+  await refuse();
+  await db.pool.query('UPDATE external_source_documents SET first_observed_at=$2,last_observed_at=$3 WHERE id=$1', [oldDetail, first_seen, last_seen]);
+  await db.pool.query('UPDATE external_source_responses SET observed_at=$3 WHERE document_id=$1 AND response_hash=$2',
+    [oldDetail, response, observed]);
+
+  const currentFirst = (await db.pool.query<{ stamp: string }>('SELECT first_observed_at::text AS stamp FROM external_source_documents WHERE id=$1',
+    [currentDetail])).rows[0]!.stamp;
+  await db.pool.query('UPDATE external_source_documents SET first_observed_at=$2 WHERE id=$1', [currentDetail, first_seen]);
+  await refuse();
+  await db.pool.query('UPDATE external_source_documents SET first_observed_at=$2 WHERE id=$1', [currentDetail, currentFirst]);
+
+  const changeHistoricalQuote = (delta: number) => db.pool.query(`UPDATE external_full_events SET prior_public_price=prior_public_price+$1
+    WHERE event_id=6 AND source_type='removed'`, [delta]);
+  assert.equal((await changeHistoricalQuote(1000)).rowCount, 1);
+  await refuse();
+  await changeHistoricalQuote(-1000);
+
+  const setReceive = (cursor: string) => db.pool.query('UPDATE external_full_sync SET receive_cursor=$1 WHERE id=1', [cursor]);
+  await setReceive(h.resumeRequest.highWater);
+  await refuse();
+  await setReceive(received.receive_cursor);
+
+  await db.pool.query(`INSERT INTO external_ingestion_identity_state(provider,source,external_id,business_order,withdrawn,observed_at,business_at)
+    VALUES('chinacarapi',$1,$2,$3,true,$4,$4)`, [h.source, h.vehicleId, h.receiveCursor + 1, latestAt]);
+  await refuse();
+  await db.pool.query(`DELETE FROM external_ingestion_identity_state WHERE provider='chinacarapi' AND source=$1 AND external_id=$2`,
+    [h.source, h.vehicleId]);
+
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '0');
+  const worker = await h.f.start();
+  for (const cursor of ['5', '7', '8']) {
+    await worker.tick();
+    assert.equal((await h.f.policy())?.event_audit_cursor, cursor);
+  }
+  assert.equal((await h.f.policy())?.high_water, '8');
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('superseded relist audit requires old details even when the current relist is effective', async t => {
+  const h = await supersededRelistLifecycle(t, 2, { freezeBeforeLastRelist: true, lastSourceNewer: true });
+  const db = h.f.db, oldDetail = h.heads.get(5)!.en;
+  const received = await h.f.sync(), published = await h.f.published(h.vehicleId);
+  assert.equal(received.receive_cursor, '7');
+  assert.equal(h.resumeRequest.highWater, '6');
+  assert.deepEqual(await h.f.event(7), { applied: true, public_outcome: 'effective' });
+
+  const setLocale = (locale: 'en' | 'und') => db.pool.query('UPDATE external_source_documents SET locale=$2 WHERE id=$1', [oldDetail, locale]);
+  assert.equal((await setLocale('und')).rowCount, 1);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '0');
+  await h.worker.close();
+  await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.deepEqual(await h.f.policy(), blocked);
+  assert.equal((await setLocale('en')).rowCount, 1);
+
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '0');
+  const worker = await h.f.start();
+  await worker.tick();
+  assert.equal((await h.f.policy())?.event_audit_cursor, '5');
+  await worker.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.event_audit_cursor, '6');
+  assert.equal(ready?.high_water, '6');
+  assert.equal(ready?.phase, 'ready');
+  assert.deepEqual(await h.f.sync(), received);
+  assert.deepEqual(await h.f.published(h.vehicleId), published);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('superseded relist audit leaves excess historical cycles blocked', async t => {
+  const h = await supersededRelistLifecycle(t, 5);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked.reason, 'audit_gap');
+  assert.equal(blocked.event_audit_cursor, '0');
+  assert.equal(blocked.high_water, h.resumeRequest.highWater);
+  assert.deepEqual(await h.observations(), h.original);
+});
+
 test('pruned metadata can use original archives across a price, withdrawal and relist chain', async t => {
   const h = await postSnapshotLifecycle(t, true, true);
   const oldPrice = await pruneEventMetadata(h.f, 2001);
