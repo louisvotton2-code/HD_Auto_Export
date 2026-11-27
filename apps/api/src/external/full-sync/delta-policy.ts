@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { recordAudit } from '../../activity/service.js';
 import type { Database } from '../../db/index.js';
+import { checkDeltaEventAudit } from './delta-event-audit.js';
 import { FullSyncError, type Actor } from './types.js';
 
 export type DeltaPolicy = {
@@ -32,6 +33,15 @@ export type DeltaPolicy = {
 const operatorLimits = "SET LOCAL lock_timeout='200ms'; SET LOCAL statement_timeout='2s'";
 const evidenceReference = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const anchorDate = z.iso.datetime().regex(/^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,3}))?Z$/);
+const auditPosition = z.string().regex(/^(?:0|[1-9][0-9]{0,15})$/)
+  .refine(value => Number.isSafeInteger(Number(value)));
+const ResumeAuditRequest = z.strictObject({
+  snapshotId: z.uuid(),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  highWater: auditPosition,
+  eventAuditCursor: auditPosition,
+  evidence: z.string().regex(evidenceReference),
+});
 
 export async function readDeltaPolicy(connection: Pool | PoolClient, forUpdate = false): Promise<DeltaPolicy | undefined> {
   return (await connection.query<DeltaPolicy>(`SELECT phase,snapshot_id,retained_snapshot_id,high_water::text,
@@ -76,7 +86,7 @@ export async function readDeltaPolicyStatus(db: Database) {
 export function deltaPolicyOperationError(error: unknown): never {
   if (error && typeof error === 'object' && 'code' in error) {
     if (error.code === '42P01') throw new FullSyncError('SYNC_DELTA_MIGRATION_REQUIRED');
-    if (error.code === '55P03' || error.code === '57014') throw new FullSyncError('SYNC_DELTA_DB_BUSY');
+    if (error.code === '55P03' || error.code === '57014' || error.code === '40001') throw new FullSyncError('SYNC_DELTA_DB_BUSY');
   }
   throw error;
 }
@@ -170,6 +180,53 @@ export async function armDeltaPolicy(db: Database, actor: Actor, selectedSnapsho
     await recordAudit(tx, actor, 'external.sync.delta.arm', null, version, version + 1, [
       { path: 'sync.delta.phase', before: 'ready', after: 'delta', beforePresent: true, afterPresent: true },
       { path: 'sync.delta.activatedHighWater', before: null, after: policy.high_water, beforePresent: false, afterPresent: true },
+    ]);
+    return (await readDeltaPolicy(tx))!;
+  });
+}
+
+export async function resumeDeltaAudit(db: Database, actor: Actor, input: z.infer<typeof ResumeAuditRequest>) {
+  const request = ResumeAuditRequest.safeParse(input);
+  if (!request.success) throw new FullSyncError('SYNC_USAGE');
+  const { snapshotSha256, highWater, eventAuditCursor, evidence } = request.data;
+  const snapshotId = request.data.snapshotId.toLowerCase();
+  if (BigInt(eventAuditCursor) >= BigInt(highWater)) throw new FullSyncError('SYNC_DELTA_STATE_CONFLICT');
+
+  return db.transaction(async tx => {
+    await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    await requireOperator(tx, actor);
+    const { version } = await lockSync(tx);
+    const policy = await readDeltaPolicy(tx, true);
+    if (policy?.phase !== 'blocked' || policy.reason !== 'audit_gap' || policy.cursor_invalid ||
+        policy.recovery_pending_receive || policy.snapshot_id !== snapshotId || policy.audit_missing !== '0' ||
+        policy.high_water !== highWater || policy.event_audit_cursor !== eventAuditCursor) {
+      throw new FullSyncError('SYNC_DELTA_STATE_CONFLICT');
+    }
+    const snapshot = (await tx.query<{ generated_at: Date }>(`SELECT s.generated_at
+      FROM external_full_snapshots s CROSS JOIN external_full_sync w
+      WHERE s.id=$1 AND s.sha256=$2 AND s.state='complete' AND s.completed_at IS NOT NULL
+        AND s.archive_pruned_at IS NULL AND s.bytes>0 AND s.rows>0 AND s.staged=s.rows AND s.apply_cursor=s.rows
+        AND s.rows=$3::bigint AND w.id=1 AND w.receive_cursor>=$4::numeric AND w.since_at<=s.generated_at
+        AND s.id=(SELECT id FROM external_full_snapshots ORDER BY created_at DESC,id DESC LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM external_full_snapshots WHERE state IN ('downloading','staging','verified','applying'))`,
+    [snapshotId, snapshotSha256, policy.audit_cursor, highWater])).rows[0];
+    if (!snapshot) throw new FullSyncError('SYNC_DELTA_SNAPSHOT_MISMATCH');
+
+    const batch = await checkDeltaEventAudit(tx, {
+      snapshotId, generatedAt: snapshot.generated_at, after: eventAuditCursor, highWater,
+      recoveryAnchorCursor: policy.recovery_anchor_cursor, recoveryPreviousCursor: policy.recovery_previous_cursor,
+    });
+    if (batch.status !== 'advance') throw new FullSyncError('SYNC_DELTA_AUDIT_NOT_CLEAR');
+
+    // The worker rechecks this same batch. An operator never advances either audit cursor.
+    await tx.query("UPDATE external_full_delta_policy SET phase='draining',reason=NULL,updated_at=clock_timestamp() WHERE id=1");
+    await fencePeriodicSnapshot(tx);
+    await recordAudit(tx, actor, 'external.sync.delta.resumeAudit', null, version, version + 1, [
+      { path: 'sync.delta.phase', before: 'blocked', after: 'draining', beforePresent: true, afterPresent: true },
+      { path: 'sync.delta.resumeEvidence', before: null, after: evidence, beforePresent: false, afterPresent: true },
+      { path: 'sync.delta.resumeBoundary', before: null,
+        after: { snapshotId, snapshotSha256, highWater, eventAuditCursor, checkedThrough: batch.through },
+        beforePresent: false, afterPresent: true },
     ]);
     return (await readDeltaPolicy(tx))!;
   });
