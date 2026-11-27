@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { test, type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createDatabase } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -727,6 +728,256 @@ test('historical relist audit yields to a later received withdrawal outside the 
   assert.equal((await h.f.policy())?.event_audit_cursor, '2002');
   assert.equal((await h.f.sync()).receive_cursor, '2003');
   assert.equal(await h.f.published('803'), undefined);
+});
+
+async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false) {
+  const source = 'dongchedi' as const;
+  const f = await fixture(t, source);
+  const changed = ['902', '903'];
+  const relisted = standaloneRelists ? [...changed, '904', '905'] : changed;
+  const ids = ['901', ...relisted];
+  const staged = standaloneRelists ? ['901', '902', '904'] : ['901', '902'];
+  const priceAt = '2024-10-03T00:01:00.000Z';
+  const upstream = (eventId: number, id: string, kind: Change['type'], at: string) =>
+    ({ ...change(eventId, id, kind, at), source });
+  const ingestAndRetain = async (worker: FullSyncWorker, events: Change[]) => {
+    await f.ingest(worker, events);
+    // Keep independently retained audit evidence available through ordinary
+    // archive cleanup after live work releases its own pending references.
+    const { rows: [pinned] } = await f.db.pool.query<{ documents: number; blobs: number }>(`WITH originals AS MATERIALIZED (
+      SELECT d.id,d.hash,d.response_hash
+      FROM external_full_events e JOIN external_source_documents d ON d.id=(e.document_refs->0->>'id')::uuid
+      WHERE e.event_id=ANY($1::numeric[]) AND d.event_sequence=e.event_id AND d.kind='event'
+    ), document_pins AS (
+      INSERT INTO external_source_document_refs(document_id,kind,reference)
+      SELECT id,'audit','fixture-post-snapshot-lifecycle' FROM originals RETURNING document_id
+    ), blob_pins AS (
+      INSERT INTO external_source_blob_refs(hash,kind,reference)
+      SELECT hash,'audit','fixture-post-snapshot-lifecycle'
+      FROM (SELECT hash FROM originals UNION SELECT response_hash FROM originals) hashes RETURNING hash
+    )
+    SELECT (SELECT count(*)::int FROM document_pins) AS documents,(SELECT count(*)::int FROM blob_pins) AS blobs`,
+    [events.map(event => event.id)]);
+    assert.deepEqual(pinned, { documents: events.length, blobs: events.length + 1 });
+  };
+  const changeArchivedKind = async (doc: string, kind: 'csv' | 'event') => {
+    const updated = await f.db.pool.query('UPDATE external_source_documents SET kind=$2 WHERE id=$1', [doc, kind]);
+    assert.equal(updated.rowCount, 1, 'The negative fixture must change a retained original.');
+  };
+  let worker = await f.start();
+  for (const id of relisted) f.details.set(id, { price: 68000, at: priceAt });
+  await f.ingest(worker, ids.map((id, i) => upstream(i + 1, id, 'new', baseAt)));
+  assert.equal(await worker.applyEvents(), ids.length);
+  assert.equal(await worker.details(), ids.length);
+  await f.db.pool.query(`INSERT INTO external_full_events
+    (event_id,payload_hash,source,external_id,operation,business_at,document_refs,applied_at,source_type,public_outcome)
+    SELECT n,repeat('a',64),'che168',(800000+n)::text,'withdraw',$1,'[]',$1,'removed','not_public'
+    FROM generate_series($2::integer,2000) n`, [baseAt, ids.length + 1]);
+  const prices = changed.map((id, i) => ({ ...upstream(2001 + i, id, 'price', priceAt),
+    oldPrice: { cny: 70000 }, newPrice: { cny: 68000 } }));
+  await ingestAndRetain(worker, prices);
+  assert.equal(await worker.applyEvents(), 2);
+  assert.equal(await worker.details(), 2);
+  for (const e of prices) {
+    assert.deepEqual(await f.event(e.id), { applied: true, public_outcome: 'not_public' });
+    assert.deepEqual(await f.published(e.vehicleId), { price: 68000 });
+  }
+
+  // The fixed export is older than both successors. One identity is present
+  // with its already normalized price; the other is absent from the export.
+  const snapshotId = await f.seedSnapshot(staged.map((id, i) => [i + 1, id]));
+  const generatedAt = new Date(Date.now() + 1).toISOString();
+  const withdrawalAt = new Date(Date.parse(generatedAt) + 1).toISOString();
+  const relistAt = new Date(Date.parse(generatedAt) + 2).toISOString();
+  await f.db.pool.query('UPDATE external_full_snapshots SET generated_at=$2 WHERE id=$1', [snapshotId, generatedAt]);
+  await f.db.pool.query(`UPDATE external_full_stage SET payload=payload||jsonb_build_object(
+    'price_cny','68000','detail_fetched_at',$2::text,'duplicate_of','')
+    WHERE snapshot_id=$1 AND row_number>1`, [snapshotId, priceAt]);
+  await worker.close();
+  await prepareDeltaPolicy(f.db, actor, snapshotId);
+  worker = await f.start();
+  assert.equal(await worker.promoteSnapshot(snapshotId), staged.length - 1);
+  assert.equal(await worker.details(), staged.length - 1);
+  await delay(Math.max(0, Date.parse(relistAt) - Date.now()));
+  const removes = relisted.map((id, i) => upstream(2003 + i, id, 'removed', withdrawalAt));
+  await ingestAndRetain(worker, removes);
+  assert.equal(await worker.applyEvents(), relisted.length);
+  for (const e of removes) {
+    assert.deepEqual(await f.event(e.id), { applied: true, public_outcome: 'effective' });
+    assert.equal(await f.published(e.vehicleId), undefined);
+  }
+  const relists = relisted.map((id, i) => ({ ...upstream(2003 + removes.length + i, id, 'relisted', relistAt),
+    oldPrice: { cny: 68000 }, newPrice: { cny: 68000 } }));
+  const highWater = String(relists.at(-1)!.id);
+  await ingestAndRetain(worker, relists);
+  assert.equal(await worker.applyEvents(), relisted.length);
+  assert.equal(await worker.details(), relisted.length);
+  for (const e of relists) assert.deepEqual(await f.event(e.id), { applied: true, public_outcome: 'not_public' });
+
+  const observations = async () => (await f.db.pool.query(`SELECT e.event_id::text,e.external_id,e.detail_generation::text,e.business_at,e.applied_at,
+    e.detail_updated_at,e.public_effective_at,e.public_outcome,e.payload_hash,e.prior_public_price::int,
+    l.source_updated_at,(l.source_data#>>'{price,cny}')::numeric::int AS source_price,c.price_cny::int AS public_price,
+    m.event_order::text,m.applied_generation::text,m.desired_generation::text,
+    EXISTS(SELECT 1 FROM external_full_stage r WHERE r.snapshot_id=$1 AND (r.source,r.external_id)=(e.source,e.external_id)) AS in_csv,
+    (SELECT count(*)::integer FROM external_source_heads h WHERE h.provider=l.provider AND h.source=e.source
+      AND h.external_id=e.external_id AND h.kind='detail' AND h.observed_at BETWEEN e.applied_at AND e.detail_updated_at) AS in_generation_heads
+    FROM external_full_events e JOIN external_full_members m ON (m.source,m.external_id)=(e.source,e.external_id)
+    JOIN external_listings l ON l.provider='chinacarapi' AND (l.platform_id,l.external_id)=(e.source,e.external_id)
+    JOIN external_catalog c ON c.listing_id=l.id JOIN external_catalog_filter f ON f.listing_id=l.id
+    WHERE e.event_id BETWEEN 2001 AND $2 AND l.formal_primary AND l.upstream_state='active' AND f.active AND f.locale_mask=7
+    ORDER BY e.event_id`, [snapshotId, highWater])).rows;
+  const original = await observations();
+  assert.deepEqual(original.map(row => row.event_id), [...prices, ...removes, ...relists].map(e => String(e.id)));
+  for (const row of original) assert.equal(row.in_csv, staged.includes(row.external_id));
+  for (const [i, e] of prices.entries()) {
+    const price = original[i]!;
+    assert.ok(price.detail_updated_at >= price.applied_at);
+    assert.ok(price.detail_updated_at < new Date(generatedAt));
+    assert.equal(price.prior_public_price, 68000);
+    assert.equal(price.payload_hash, jsonHash(e));
+  }
+  for (const [i, e] of relists.entries()) {
+    const removed = original[prices.length + i]!, relist = original[prices.length + removes.length + i]!;
+    assert.ok(removed.business_at > new Date(generatedAt));
+    assert.ok(removed.business_at < relist.business_at && relist.applied_at >= relist.business_at);
+    assert.deepEqual(relist.source_updated_at, new Date(priceAt));
+    assert.equal(relist.source_price, 68000);
+    assert.equal(relist.public_price, 68000);
+    assert.equal(relist.payload_hash, jsonHash(e));
+    assert.equal(relist.event_order, String(e.id));
+    assert.equal(relist.in_generation_heads, 3);
+    assert.equal(relist.applied_generation, relist.desired_generation);
+    assert.equal(relist.applied_generation, relist.detail_generation);
+    assert.equal(BigInt(relist.detail_generation), BigInt(removed.detail_generation) + 1n);
+  }
+
+  await worker.tick();
+  await worker.tick();
+  const policy = await f.policy();
+  assert.equal(policy?.phase, 'draining');
+  assert.equal(policy?.audit_cursor, String(staged.length));
+  assert.equal(policy?.audit_missing, '0');
+  assert.equal(policy?.event_audit_cursor, '2000');
+  assert.equal(policy?.high_water, highWater);
+  assert.deepEqual(await observations(), original);
+  const resumeRequest = { snapshotId, snapshotSha256: 'a'.repeat(64), eventAuditCursor: '2000',
+    highWater, evidence: 'fixture-confirmed-post-snapshot-lifecycle' };
+  return { f, worker, resumeRequest, observations, original, source, relistAt, changeArchivedKind };
+}
+
+test('historical price audits through its proven post-snapshot withdrawal and relist', async t => {
+  const h = await postSnapshotLifecycle(t, true);
+  await h.worker.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '2010');
+  assert.equal(ready?.high_water, '2010');
+  assert.equal(ready?.snapshot_id, h.resumeRequest.snapshotId);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('post-snapshot lifecycle audit refuses mismatched or missing evidence before named resume', async t => {
+  const h = await postSnapshotLifecycle(t);
+  const docs = (await h.f.db.pool.query<{ event_id: string; document_id: string }>(`SELECT
+    event_id::text,document_refs->0->>'id' AS document_id FROM external_full_events
+    WHERE event_id IN (2001,2003,2005,2006) ORDER BY event_id`)).rows;
+  const [price, removed, relist, other] = docs;
+  assert.ok(price && removed && relist && other);
+  const changeKind = h.changeArchivedKind;
+  await changeKind(relist.document_id, 'csv');
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked?.event_audit_cursor, '2000');
+  await h.worker.close();
+  const refused = async () => {
+    await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refused();
+  await changeKind(relist.document_id, 'event');
+  await changeKind(price.document_id, 'csv');
+  await refused();
+  await changeKind(price.document_id, 'event');
+  await changeKind(removed.document_id, 'csv');
+  await refused();
+  await changeKind(removed.document_id, 'event');
+
+  const linkRelist = (document: string) => h.f.db.pool.query(`UPDATE external_full_events
+    SET document_refs=jsonb_set(document_refs,'{0,id}',to_jsonb($1::text)) WHERE event_id=2005`, [document]);
+  await linkRelist(other.document_id);
+  await refused();
+  await linkRelist(relist.document_id);
+
+  const changePublicPrice = (delta: number) => h.f.db.pool.query(`UPDATE external_catalog c
+    SET price_cny=c.price_cny+$2 FROM external_listings l
+    WHERE c.listing_id=l.id AND l.provider='chinacarapi' AND l.platform_id=$1 AND l.external_id='902'`,
+    [h.source, delta]);
+  assert.equal((await changePublicPrice(-5000)).rowCount, 1);
+  await refused();
+  assert.equal((await changePublicPrice(5000)).rowCount, 1);
+
+  const generation = h.original[4]!.detail_generation;
+  const setGeneration = (value: string) => h.f.db.pool.query(`UPDATE external_full_members
+    SET desired_generation=$2 WHERE source=$1 AND external_id='902'`, [h.source, value]);
+  await setGeneration((BigInt(generation) + 1n).toString());
+  await refused();
+  await setGeneration(generation);
+
+  const withdrawal = (await h.f.db.pool.query<{ applied_at: string }>(
+    'SELECT applied_at::text FROM external_full_events WHERE event_id=2003')).rows[0]!;
+  const setWithdrawal = (at: string | null) =>
+    h.f.db.pool.query('UPDATE external_full_events SET applied_at=$1 WHERE event_id=2003', [at]);
+  await setWithdrawal(null);
+  await refused();
+  await setWithdrawal(withdrawal.applied_at);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, { ...h.resumeRequest, highWater: '2007' }), /SYNC_DELTA_STATE_CONFLICT/);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, { ...h.resumeRequest, snapshotSha256: 'b'.repeat(64) }),
+    /SYNC_DELTA_SNAPSHOT_MISMATCH/);
+  assert.equal((await h.f.db.pool.query("SELECT 1 FROM audit_events WHERE operation='external.sync.delta.resumeAudit'")).rowCount, 0);
+
+  const resumed = await resumeDeltaAudit(h.f.db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '2000');
+  assert.equal(resumed.high_water, '2006');
+  assert.equal(resumed.snapshot_id, h.resumeRequest.snapshotId);
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '2006');
+  assert.deepEqual(await h.observations(), h.original);
+});
+
+test('post-snapshot lifecycle audit cannot revive an identity with a later received withdrawal', async t => {
+  const h = await postSnapshotLifecycle(t);
+  const withheld = (await h.f.db.pool.query<{ id: string }>(
+    "SELECT document_refs->0->>'id' AS id FROM external_full_events WHERE event_id=2006")).rows[0]!;
+  const restore = (kind: 'csv' | 'event') => h.changeArchivedKind(withheld.id, kind);
+  await restore('csv');
+  await h.worker.tick();
+  assert.equal((await h.f.policy())?.phase, 'blocked');
+  await restore('event');
+
+  const withdrawnAt = new Date(Math.max(Date.now(), Date.parse(h.relistAt) + 1)).toISOString();
+  await h.f.ingest(h.worker, [{ ...change(2007, '903', 'removed', withdrawnAt), source: h.source }]);
+  assert.equal((await h.f.sync()).receive_cursor, '2007');
+  assert.equal((await h.f.event(2007)).applied, false);
+  await assert.rejects(resumeDeltaAudit(h.f.db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+  assert.equal((await h.f.policy())?.event_audit_cursor, '2000');
+  assert.equal(await h.worker.applyEvents(true), 1);
+  assert.deepEqual(await h.f.event(2007), { applied: true, public_outcome: 'effective' });
+  assert.equal(await h.f.published('903'), undefined);
+
+  const resumed = await resumeDeltaAudit(h.f.db, actor, h.resumeRequest);
+  assert.equal(resumed.event_audit_cursor, '2000');
+  assert.equal(resumed.high_water, '2006');
+  await h.worker.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '2006');
+  assert.equal((await h.f.sync()).receive_cursor, '2007');
+  assert.equal(await h.f.published('903'), undefined);
 });
 
 test('an expired cursor is recorded without discarding the active CSV or its already-received withdrawal', async t => {

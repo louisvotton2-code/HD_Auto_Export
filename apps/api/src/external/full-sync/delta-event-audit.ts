@@ -2,7 +2,7 @@ import { gunzipSync } from 'node:zlib';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { jsonHash, sha256 } from '../normalize.js';
-import { atExactTime, positiveCny, relistProofBatch, verifyRelistArchiveEvidence, type RelistArchiveEvidence } from './relist-audit-evidence.js';
+import { atExactTime, positiveCny, relistProofBatch, verifyRelistArchiveEvidence, type ArchivedEventPageEvidence, type RelistArchiveEvidence } from './relist-audit-evidence.js';
 
 const eventBatch = 2_000;
 const proofBatch = 32;
@@ -18,64 +18,57 @@ type EventAudit = {
   recoveryPreviousCursor: string | null;
 };
 type AuditResult = { status: 'advance' | 'waiting' | 'blocked'; through: string };
-type StaleEvent = {
+type StoredEvent = {
   event_id: string;
   source: string;
   external_id: string;
   business_at: string;
   payload_hash: string;
   document_refs: unknown;
+};
+type StaleEvent = StoredEvent & {
+  source_type: string;
   public_price: string | null;
   source_price: unknown;
-  source_type: string;
-  applied_at: string | null;
-  detail_updated_at: string | null;
-  source_updated_at: string | null;
   price_eligible: boolean;
-  relist_eligible: boolean;
+  member_event_id: string;
 };
-type EventProof = {
-  eventId: string;
-  source: string;
-  externalId: string;
-  businessAt: string;
-  hash: string;
-  documentId: string;
-  responseHash: string;
-  price: bigint;
-} & ({ kind: 'price' } | { kind: 'relisted'; relist: RelistArchiveEvidence });
+type RelistRequest = { eventId: string; priceEventId: string | null };
+type RelistRow = StoredEvent & {
+  applied_at: string;
+  detail_updated_at: string;
+  source_updated_at: string;
+  price_event_id: string | null;
+  public_price: string | null;
+  source_price: unknown;
+  requires_csv: boolean;
+  withdrawal: StoredEvent | null;
+};
+type EventProof = ArchivedEventPageEvidence & { documentId: string; price: bigint | null };
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-function eventProof(event: StaleEvent): EventProof | null {
-  if ((!event.price_eligible && !event.relist_eligible) ||
-      !Array.isArray(event.document_refs) || event.document_refs.length !== 1) return null;
+function eventProof(event: StoredEvent, kind: EventProof['kind'], price: bigint | null): EventProof | null {
+  if (!Array.isArray(event.document_refs) || event.document_refs.length !== 1) return null;
   const ref = object(event.document_refs[0]);
   if (!ref || typeof ref.id !== 'string' || !z.uuid().safeParse(ref.id).success ||
       ref.eventSequence !== event.event_id || !atExactTime(ref.sourceUpdatedAt, event.business_at) ||
       typeof ref.responseHash !== 'string' || !/^[a-f0-9]{64}$/.test(ref.responseHash)) return null;
-  const price = positiveCny(event.public_price);
-  if (price === null || positiveCny(event.source_price) !== price) return null;
-  const identity = { eventId: event.event_id, source: event.source, externalId: event.external_id,
-    businessAt: event.business_at, responseHash: ref.responseHash };
-  const proof = { ...identity, hash: event.payload_hash, documentId: ref.id, price };
-  if (event.price_eligible) return { ...proof, kind: 'price' };
-  if (!event.applied_at || !event.detail_updated_at || !event.source_updated_at) return null;
-  return { ...proof, kind: 'relisted', relist: {
-    ...identity, appliedAt: event.applied_at, detailUpdatedAt: event.detail_updated_at,
-    sourceUpdatedAt: event.source_updated_at, eventHash: event.payload_hash, priceCents: price.toString(),
-  } };
+  return { eventId: event.event_id, source: event.source, externalId: event.external_id,
+    businessAt: event.business_at, eventHash: event.payload_hash, responseHash: ref.responseHash,
+    documentId: ref.id, kind, price };
 }
 
 function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(gunzipSync(compressed, { maxOutputLength: decodedEventLimit }));
-    if (sha256(raw) !== proof.hash) return false;
+    if (sha256(raw) !== proof.eventHash) return false;
     const event = object(JSON.parse(raw));
-    if (!event || jsonHash(event) !== proof.hash || typeof event.id !== 'number' ||
+    if (!event || jsonHash(event) !== proof.eventHash || typeof event.id !== 'number' ||
         !Number.isSafeInteger(event.id) || String(event.id) !== proof.eventId ||
         event.source !== proof.source || event.vehicleId !== proof.externalId || event.type !== proof.kind ||
         !atExactTime(event.at, proof.businessAt)) return false;
+    if (proof.kind === 'removed') return true;
     const oldPrice = positiveCny(object(event.oldPrice)?.cny);
     const newPrice = positiveCny(object(event.newPrice)?.cny);
     if (oldPrice === null || newPrice !== proof.price) return false;
@@ -87,8 +80,8 @@ function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
 }
 
 async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]) {
-  const refs = proofs.map(({ eventId, source, externalId, businessAt, hash, documentId, responseHash }) =>
-    ({ eventId, source, externalId, businessAt, hash, documentId, responseHash }));
+  const refs = proofs.map(({ eventId, source, externalId, businessAt, eventHash, documentId, responseHash }) =>
+    ({ eventId, source, externalId, businessAt, hash: eventHash, documentId, responseHash }));
   const rows = (await tx.query<{ eventId: string; compressed: Buffer }>(`SELECT q."eventId",b.compressed
     FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,source text,"externalId" text,"businessAt" timestamptz,
       hash text,"documentId" uuid,"responseHash" text)
@@ -104,6 +97,67 @@ async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]) {
     const compressed = bytes.get(proof.eventId);
     return compressed !== undefined && matchesProviderEvent(proof, compressed);
   });
+}
+
+/** Bind both standalone relists and the current successor of a historical price to the same lifecycle evidence. */
+async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: string, requests: RelistRequest[]) {
+  return (await tx.query<RelistRow>(`SELECT e.event_id::text,e.source,e.external_id,e.payload_hash,e.document_refs,
+    q."priceEventId" AS price_event_id,e.business_at<=s.generated_at AS requires_csv,
+    to_char(e.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS business_at,
+    to_char(e.applied_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS applied_at,
+    to_char(e.detail_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS detail_updated_at,
+    to_char(l.source_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS source_updated_at,
+    c.price_cny::text AS public_price,CASE WHEN l.source_data->>'operation'='upsert'
+      AND l.source_data->>'platformId'=e.source AND l.source_data->>'externalId'=e.external_id
+      THEN l.source_data#>'{price,cny}' END AS source_price,
+    CASE WHEN e.business_at>s.generated_at OR old.event_id IS NOT NULL THEN jsonb_build_object(
+      'event_id',w.event_id::text,'source',w.source,'external_id',w.external_id,'payload_hash',w.payload_hash,
+      'document_refs',w.document_refs,'business_at',to_char(w.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+    ) END AS withdrawal
+    FROM external_full_snapshots s
+    CROSS JOIN jsonb_to_recordset($2::jsonb) AS q("eventId" text,"priceEventId" text)
+    JOIN external_full_events e ON e.event_id=q."eventId"::numeric
+    JOIN external_full_members m ON (m.source,m.external_id)=(e.source,e.external_id)
+    JOIN external_listings l ON l.provider='chinacarapi' AND (l.platform_id,l.external_id)=(e.source,e.external_id)
+    JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask=7
+    JOIN external_catalog c ON c.listing_id=l.id
+    LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
+    LEFT JOIN external_full_events old ON old.event_id=q."priceEventId"::numeric
+      AND (old.source,old.external_id)=(e.source,e.external_id)
+    JOIN LATERAL (
+      SELECT earlier.* FROM external_full_events earlier WHERE (earlier.source,earlier.external_id)=(e.source,e.external_id)
+        AND earlier.event_id<e.event_id AND (earlier.operation IN ('withdraw','relist') OR earlier.source_type='new')
+      ORDER BY earlier.event_id DESC LIMIT 1
+    ) w ON w.operation='withdraw' AND w.business_at<e.business_at AND w.applied_at<=e.applied_at
+      AND w.error_code IS NULL AND w.public_outcome IN ('effective','unknown','not_public')
+    WHERE s.id=$1 AND s.state='complete' AND s.archive_pruned_at IS NULL
+      AND e.event_id<=$3::numeric
+      AND e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
+      AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
+      AND l.source_updated_at<e.business_at AND e.applied_at>=e.received_at
+      AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
+      AND m.state='active' AND NOT m.verification_pending AND m.event_order=e.event_id
+      AND m.business_at=e.business_at AND m.canonical_id=l.formal_canonical_id
+      AND m.desired_generation=e.detail_generation AND m.applied_generation=e.detail_generation
+      AND m.locales @> ARRAY['zh','en','ru'] AND cardinality(m.locales)=3
+      AND m.last_detail_at BETWEEN e.applied_at AND e.detail_updated_at
+      AND NOT EXISTS(SELECT 1 FROM external_full_events later WHERE (later.source,later.external_id)=(e.source,e.external_id)
+        AND later.event_id>e.event_id)
+      AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state t WHERE t.provider='chinacarapi'
+        AND (t.source,t.external_id)=(e.source,e.external_id) AND t.withdrawn)
+      AND CASE WHEN e.business_at<=s.generated_at THEN m.last_snapshot=s.id ELSE
+        w.source_type='removed' AND w.detail_generation+1=e.detail_generation AND w.applied_at>=w.received_at END
+      AND (q."priceEventId" IS NULL OR (
+        old.source_type='price' AND old.operation='upsert' AND old.was_public AND old.public_outcome='not_public'
+        AND old.error_code IS NULL AND old.applied_at>=old.received_at
+        AND old.detail_updated_at BETWEEN old.applied_at AND w.applied_at
+        AND old.event_id<w.event_id AND old.business_at<w.business_at AND old.detail_generation<w.detail_generation
+        AND w.source_type='removed' AND w.public_outcome='effective' AND w.public_effective_at IS NOT NULL
+        AND w.detail_generation+1=e.detail_generation
+        AND l.source_updated_at=old.business_at AND c.price_cny=old.prior_public_price
+        AND NOT EXISTS(SELECT 1 FROM external_full_events step WHERE (step.source,step.external_id)=(e.source,e.external_id)
+          AND step.event_id>old.event_id AND step.event_id<e.event_id AND step.event_id<>w.event_id)
+      ))`, [snapshotId, JSON.stringify(requests), highWater])).rows;
 }
 
 /** Audit one bounded range under the caller's worker/sync lock. The cursor changes only for proven events. */
@@ -150,42 +204,19 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     ) AS missing`, [recoveryAnchorCursor, recoveryPreviousCursor, snapshotId, generatedAt, after, through])).rows[0]!.missing;
   if (conflictingWithdrawal) return { status: 'blocked', through: after };
 
-  // Use the same timestamps and current generation that the worker recorded on successful materialization.
-  // A fresh fetch alone does not establish that an old content version was actually relisted.
   const staleEvents = (await tx.query<StaleEvent>(`WITH suspect AS MATERIALIZED (
-    SELECT event_id,source,external_id,business_at,source_type,operation,received_at,applied_at,error_code,detail_generation,
-      detail_updated_at,public_effective_at,public_outcome,prior_public_price,payload_hash,document_refs,was_public
+    SELECT event_id,source,external_id,business_at,source_type,operation,applied_at,error_code,detail_generation,
+      public_outcome,prior_public_price,payload_hash,document_refs
     FROM external_full_events WHERE event_id>$1 AND event_id<=$2 AND public_outcome IN ('not_public','superseded')
       AND detail_generation IS NOT NULL AND (source_type IN ('new','relisted') OR (source_type='price' AND was_public))
     ), stale AS MATERIALIZED (
-    SELECT e.event_id,e.source,e.external_id,e.business_at,e.source_type,e.applied_at,e.detail_updated_at,l.source_updated_at,
-      e.payload_hash,e.document_refs,c.price_cny AS public_price,l.id AS listing_id,
+    SELECT e.event_id,e.source,e.external_id,e.business_at,e.source_type,e.payload_hash,e.document_refs,
+      c.price_cny AS public_price,l.id AS listing_id,m.event_order,
       coalesce(e.source_type='price' AND e.operation='upsert' AND e.public_outcome='not_public'
        AND e.applied_at IS NOT NULL AND e.error_code IS NULL AND l.source_updated_at=e.business_at
        AND c.price_cny IS NOT NULL AND c.price_cny=e.prior_public_price
-       AND m.event_order=e.event_id AND m.state='active' AND m.last_detail_at IS NOT NULL
-       AND m.applied_generation=m.desired_generation AND m.applied_generation>=e.detail_generation,false) AS price_eligible,
-      CASE WHEN e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
-        AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
-        AND l.source_updated_at<e.business_at AND e.applied_at>=e.received_at
-        AND m.state='active' AND NOT m.verification_pending AND m.last_snapshot=$4::uuid
-        AND m.event_order=e.event_id AND m.business_at=e.business_at AND m.canonical_id=l.formal_canonical_id
-        AND m.desired_generation=e.detail_generation AND m.applied_generation=e.detail_generation
-        AND m.locales @> ARRAY['zh','en','ru'] AND cardinality(m.locales)=3
-        AND m.last_detail_at BETWEEN e.applied_at AND e.detail_updated_at
-        THEN coalesce((
-          SELECT earlier.operation='withdraw' AND earlier.business_at<e.business_at AND earlier.applied_at<=e.applied_at
-            AND earlier.error_code IS NULL AND earlier.public_outcome IN ('effective','unknown','not_public')
-          FROM external_full_events earlier WHERE earlier.source=e.source AND earlier.external_id=e.external_id
-            AND earlier.event_id<e.event_id AND (earlier.operation IN ('withdraw','relist') OR earlier.source_type='new')
-          ORDER BY earlier.event_id DESC LIMIT 1
-        ),false) AND NOT EXISTS (
-          SELECT 1 FROM external_full_events later WHERE later.source=e.source AND later.external_id=e.external_id
-            AND later.event_id>e.event_id
-        ) AND NOT EXISTS (
-          SELECT 1 FROM external_ingestion_identity_state t WHERE t.provider='chinacarapi' AND t.source=e.source
-            AND t.external_id=e.external_id AND t.withdrawn
-        ) ELSE false END AS relist_eligible
+       AND m.state='active' AND m.last_detail_at IS NOT NULL
+       AND m.applied_generation=m.desired_generation AND m.applied_generation>=e.detail_generation,false) AS price_eligible
     FROM suspect e
     JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id AND m.event_order>=e.event_id
     JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
@@ -197,30 +228,69 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
       (e.source_type='price' AND l.source_updated_at=e.business_at AND c.price_cny IS NOT DISTINCT FROM e.prior_public_price))
     ORDER BY e.event_id LIMIT $3
     ) SELECT s.event_id::text,s.source,s.external_id,s.source_type,s.payload_hash,s.document_refs,s.public_price::text,
+      s.event_order::text AS member_event_id,
       to_char(s.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS business_at,
-      to_char(s.applied_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS applied_at,
-      to_char(s.detail_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS detail_updated_at,
-      to_char(s.source_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS source_updated_at,
-      CASE WHEN (s.price_eligible OR s.relist_eligible) AND l.source_data->>'operation'='upsert'
+      CASE WHEN s.price_eligible AND l.source_data->>'operation'='upsert'
         AND l.source_data->>'platformId'=s.source AND l.source_data->>'externalId'=s.external_id
-        THEN l.source_data#>'{price,cny}' END AS source_price,
-      s.price_eligible,s.relist_eligible
+        THEN l.source_data#>'{price,cny}' END AS source_price,s.price_eligible
     FROM stale s JOIN external_listings l ON l.id=s.listing_id ORDER BY s.event_id`,
-  [after, through, proofBatch + 1, snapshotId])).rows;
+  [after, through, proofBatch + 1])).rows;
   if (!staleEvents.length) return { status: 'advance', through };
-  const proofs: EventProof[] = [];
-  const relists: RelistArchiveEvidence[] = [];
+
+  const documents = new Map<string, EventProof>();
+  const requests: RelistRequest[] = [];
+  const related = new Map<string, ArchivedEventPageEvidence>();
+  const relists = new Map<string, RelistArchiveEvidence>();
+  let checked = 0;
   for (const event of staleEvents.slice(0, proofBatch)) {
-    if (event.source_type === 'relisted' && relists.length >= relistProofBatch) break;
-    const proof = eventProof(event);
-    if (!proof) return { status: 'blocked', through: after };
-    proofs.push(proof);
-    if (proof.kind === 'relisted') relists.push(proof.relist);
+    const needsRelist = event.source_type==='relisted' || event.member_event_id!==event.event_id;
+    if (needsRelist && requests.length>=relistProofBatch) break;
+    if (event.source_type==='relisted') {
+      requests.push({ eventId: event.event_id, priceEventId: null });
+    } else {
+      const price = positiveCny(event.public_price);
+      if (!event.price_eligible || price===null || positiveCny(event.source_price)!==price) {
+        return { status: 'blocked', through: after };
+      }
+      const proof = eventProof(event,'price',price);
+      if (!proof) return { status: 'blocked', through: after };
+      documents.set(proof.eventId, proof);
+      if (needsRelist) {
+        requests.push({ eventId: event.member_event_id, priceEventId: proof.eventId });
+        related.set(proof.eventId, proof);
+      }
+    }
+    checked++;
   }
-  if (!await verifyEventDocuments(tx, proofs) ||
-      (relists.length && !await verifyRelistArchiveEvidence(tx, snapshotId, relists))) {
+  if (requests.length) {
+    const paths = await readRelistPaths(tx,snapshotId,highWater,requests);
+    if (paths.length!==requests.length) return { status: 'blocked', through: after };
+    for (const path of paths) {
+      const price = positiveCny(path.public_price);
+      const historical = path.price_event_id===null ? undefined : documents.get(path.price_event_id);
+      if (price===null || positiveCny(path.source_price)!==price || (path.price_event_id!==null && historical?.price!==price)) {
+        return { status: 'blocked', through: after };
+      }
+      const relist = eventProof(path,'relisted',price);
+      const withdrawal = path.withdrawal && eventProof(path.withdrawal,'removed',null);
+      if (!relist || ((!path.requires_csv || historical) && !withdrawal)) return { status: 'blocked', through: after };
+      documents.set(relist.eventId,relist);
+      relists.set(relist.eventId,{
+        eventId: relist.eventId, source: relist.source, externalId: relist.externalId, kind: 'relisted',
+        businessAt: relist.businessAt, eventHash: relist.eventHash, responseHash: relist.responseHash,
+        appliedAt: path.applied_at, detailUpdatedAt: path.detail_updated_at, sourceUpdatedAt: path.source_updated_at,
+        requiresCsv: path.requires_csv, priceCents: price.toString(),
+      });
+      if (withdrawal) {
+        documents.set(withdrawal.eventId,withdrawal);
+        related.set(withdrawal.eventId,withdrawal);
+      }
+    }
+  }
+  if (!await verifyEventDocuments(tx,[...documents.values()]) ||
+      (relists.size && !await verifyRelistArchiveEvidence(tx,snapshotId,[...relists.values()],[...related.values()]))) {
     return { status: 'blocked', through: after };
   }
   // Stop at the last proved event when more evidence would exceed this batch's budget.
-  return { status: 'advance', through: staleEvents.length > proofs.length ? proofs.at(-1)!.eventId : through };
+  return { status: 'advance', through: staleEvents.length>checked ? staleEvents[checked-1]!.event_id : through };
 }
