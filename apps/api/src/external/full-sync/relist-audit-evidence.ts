@@ -1,20 +1,27 @@
+import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { MoneySchema } from '@hd/contracts/public';
-import { jsonHash, sha256 } from '../normalize.js';
+import { jsonHash } from '../normalize.js';
 import { LIMITS } from './types.js';
 
-export type RelistArchiveEvidence = {
+export type ArchivedEventPageEvidence = {
   eventId: string;
   source: string;
   externalId: string;
   businessAt: string;
+  eventHash: string;
+  responseHash: string;
+  kind: 'price' | 'relisted' | 'removed';
+};
+
+export type RelistArchiveEvidence = ArchivedEventPageEvidence & {
+  kind: 'relisted';
+  requiresCsv: boolean;
   appliedAt: string;
   detailUpdatedAt: string;
   sourceUpdatedAt: string;
-  eventHash: string;
-  responseHash: string;
   priceCents: string;
 };
 
@@ -22,6 +29,8 @@ const eventTime = z.iso.datetime({ offset: true });
 const hashPattern = /^[a-f0-9]{64}$/;
 const locales = ['en', 'ru', 'zh'] as const;
 export const relistProofBatch = 8;
+const relatedEventLimit = 32;
+const relatedEventsPerRelist = 2;
 const compressedPageLimit = 256 * 1024;
 const compressedDetailLimit = 128 * 1024;
 const decodedPageLimit = 4 * 1024 * 1024;
@@ -59,18 +68,24 @@ export function atExactTime(value: unknown, databaseTime: string): boolean {
   return exact !== null && exact === databaseTime;
 }
 
-function normalizeProof(proof: RelistArchiveEvidence): RelistArchiveEvidence | null {
+function normalizeEventPage<T extends ArchivedEventPageEvidence>(proof: T): T | null {
   const businessAt = exactTime(proof.businessAt);
+  if (!businessAt || !/^[1-9][0-9]{0,15}$/.test(proof.eventId) || !Number.isSafeInteger(Number(proof.eventId)) ||
+      (proof.source !== 'che168' && proof.source !== 'dongchedi') || !/^\d{1,100}$/.test(proof.externalId) ||
+      !hashPattern.test(proof.eventHash) || !hashPattern.test(proof.responseHash) ||
+      (proof.kind !== 'price' && proof.kind !== 'relisted' && proof.kind !== 'removed')) return null;
+  return { ...proof, businessAt };
+}
+
+function normalizeProof(value: RelistArchiveEvidence): RelistArchiveEvidence | null {
+  const proof = normalizeEventPage(value);
+  if (!proof || proof.kind !== 'relisted' || typeof proof.requiresCsv !== 'boolean') return null;
   const appliedAt = exactTime(proof.appliedAt);
   const detailUpdatedAt = exactTime(proof.detailUpdatedAt);
   const sourceUpdatedAt = exactTime(proof.sourceUpdatedAt);
-  if (!businessAt || !appliedAt || !detailUpdatedAt || !sourceUpdatedAt ||
-      businessAt > appliedAt || appliedAt > detailUpdatedAt ||
-      !/^[1-9][0-9]{0,15}$/.test(proof.eventId) || !Number.isSafeInteger(Number(proof.eventId)) ||
-      (proof.source !== 'che168' && proof.source !== 'dongchedi') || !/^\d{1,100}$/.test(proof.externalId) ||
-      !/^[1-9][0-9]{0,15}$/.test(proof.priceCents) ||
-      !hashPattern.test(proof.eventHash) || !hashPattern.test(proof.responseHash)) return null;
-  return { ...proof, businessAt, appliedAt, detailUpdatedAt, sourceUpdatedAt };
+  if (!appliedAt || !detailUpdatedAt || !sourceUpdatedAt ||
+      proof.businessAt > appliedAt || appliedAt > detailUpdatedAt || !/^[1-9][0-9]{0,15}$/.test(proof.priceCents)) return null;
+  return { ...proof, appliedAt, detailUpdatedAt, sourceUpdatedAt };
 }
 
 function decodeArchive(compressed: Buffer, hash: string, maxOutputLength: number, budget: DecodeBudget) {
@@ -79,8 +94,9 @@ function decodeArchive(compressed: Buffer, hash: string, maxOutputLength: number
   try {
     const bytes = gunzipSync(compressed, { maxOutputLength: limit });
     budget.remaining -= bytes.length;
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) return null;
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    return sha256(text) === hash ? object(JSON.parse(text)) : null;
+    return object(JSON.parse(text));
   } catch {
     return null;
   }
@@ -113,8 +129,8 @@ async function verifyCsv(tx: PoolClient, snapshotId: string, proofs: ReadonlyMap
   });
 }
 
-async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, RelistArchiveEvidence>, budget: DecodeBudget) {
-  const pages = new Map<string, RelistArchiveEvidence[]>();
+async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, ArchivedEventPageEvidence>, budget: DecodeBudget) {
+  const pages = new Map<string, ArchivedEventPageEvidence[]>();
   for (const proof of proofs.values()) {
     const expected = pages.get(proof.responseHash);
     if (expected) expected.push(proof);
@@ -139,7 +155,7 @@ async function verifyPages(tx: PoolClient, proofs: ReadonlyMap<string, RelistArc
     }
     return expected.every(proof => {
       const event = byId.get(proof.eventId);
-      return !!(event && event.type === 'relisted' && event.source === proof.source &&
+      return !!(event && event.type === proof.kind && event.source === proof.source &&
         event.vehicleId === proof.externalId && atExactTime(event.at, proof.businessAt) && jsonHash(event) === proof.eventHash);
     });
   });
@@ -168,18 +184,43 @@ async function verifyDetailHeads(tx: PoolClient, proofs: ReadonlyMap<string, Rel
   });
 }
 
-/** Verify raw archive, its current-generation source heads, and the later bound export. */
+/** Verify original event pages and the current source heads. In-snapshot relists also need a later matching export row. */
 export async function verifyRelistArchiveEvidence(tx: PoolClient, snapshotId: string,
-  proofs: readonly RelistArchiveEvidence[]): Promise<boolean> {
-  if (!proofs.length || proofs.length > relistProofBatch || !z.uuid().safeParse(snapshotId).success) return false;
+  proofs: readonly RelistArchiveEvidence[], related: readonly ArchivedEventPageEvidence[] = []): Promise<boolean> {
+  if ((!proofs.length && !related.length) || proofs.length > relistProofBatch || related.length > relatedEventLimit ||
+      !z.uuid().safeParse(snapshotId).success) return false;
   const byId = new Map<string, RelistArchiveEvidence>();
-  const identities = new Set<string>();
+  const csvProofs = new Map<string, RelistArchiveEvidence>();
+  const relationsByIdentity = new Map<string, number>();
   for (const value of proofs) {
     const proof = normalizeProof(value);
-    if (!proof || byId.has(proof.eventId) || identities.has(`${proof.source}:${proof.externalId}`)) return false;
+    if (!proof || byId.has(proof.eventId)) return false;
+    const identity = `${proof.source}:${proof.externalId}`;
+    if (relationsByIdentity.has(identity)) return false;
     byId.set(proof.eventId, proof);
-    identities.add(`${proof.source}:${proof.externalId}`);
+    relationsByIdentity.set(identity, 0);
+    if (proof.requiresCsv) csvProofs.set(proof.eventId, proof);
+  }
+  const pages = new Map<string, ArchivedEventPageEvidence>(byId);
+  for (const value of related) {
+    const proof = normalizeEventPage(value);
+    if (!proof) return false;
+    const previous = pages.get(proof.eventId);
+    if (previous) {
+      if (previous.kind !== proof.kind || previous.source !== proof.source || previous.externalId !== proof.externalId ||
+          previous.businessAt !== proof.businessAt || previous.eventHash !== proof.eventHash ||
+          previous.responseHash !== proof.responseHash) return false;
+      continue;
+    }
+    const identity = `${proof.source}:${proof.externalId}`;
+    const count = relationsByIdentity.get(identity);
+    if (count !== undefined) {
+      if (count === relatedEventsPerRelist) return false;
+      relationsByIdentity.set(identity, count + 1);
+    }
+    pages.set(proof.eventId, proof);
   }
   const budget = { remaining: decodedBatchLimit };
-  return await verifyCsv(tx, snapshotId, byId) && await verifyPages(tx, byId, budget) && await verifyDetailHeads(tx, byId, budget);
+  return (!csvProofs.size || await verifyCsv(tx, snapshotId, csvProofs)) && await verifyPages(tx, pages, budget) &&
+    (!byId.size || await verifyDetailHeads(tx, byId, budget));
 }
