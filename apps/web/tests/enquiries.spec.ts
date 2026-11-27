@@ -31,10 +31,10 @@ test('a thirty-second prompt closes, restores scrolling and observes the repeat 
   await expect(page.getByTestId('saved-parts-filter')).toBeVisible();
   await page.clock.fastForward(60_000);
   await expect(dialog).not.toBeVisible();
-  await page.locator('header a[aria-haspopup="dialog"]').click();
+  await page.getByTestId('footer-enquiry-trigger').click();
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Close contact window', exact: true }).click();
-  await expect(page.locator('header a[aria-haspopup="dialog"]')).toBeFocused();
+  await expect(page.getByTestId('footer-enquiry-trigger')).toBeFocused();
 });
 
 test('an active form and a vehicle consultation defer the automatic prompt', async ({ page }) => {
@@ -56,7 +56,7 @@ test('an active form and a vehicle consultation defer the automatic prompt', asy
   await expect(page.locator('main[data-public-vehicle-detail]')).toBeVisible();
   await page.clock.fastForward(60_000);
   await expect(dialog).not.toBeVisible();
-  await page.locator('header a[aria-haspopup="dialog"]').click();
+  await page.getByTestId('footer-enquiry-trigger').click();
   await expect(dialog).toBeVisible();
 });
 
@@ -71,7 +71,7 @@ test('contact icons open the configured social destinations without collecting d
     },
   );
   await page.goto('/en/parts/');
-  await page.locator('header a[aria-haspopup="dialog"]').click();
+  await page.getByTestId('footer-enquiry-trigger').click();
   const dialog = page.getByRole('dialog', { name: labels.en });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('form, input, textarea, select')).toHaveCount(0);
@@ -100,7 +100,7 @@ test('the contact trigger reaches the footer when JavaScript is disabled', async
   try {
     const page = await context.newPage();
     await page.goto('/en/parts/');
-    await page.locator('header a[aria-haspopup="dialog"]').click();
+    await page.getByTestId('footer-enquiry-trigger').click();
     await expect(page).toHaveURL(/#contact$/);
     const contacts = page.locator('footer#contact');
     await expect(contacts.getByRole('link', { name: /WhatsApp/ })).toBeVisible();
@@ -113,7 +113,7 @@ for (const locale of ['zh', 'en', 'ru'] as const) {
   test(`${locale}: 320px contact window keeps the icons and close action within the screen`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 740 });
     await page.goto(`/${locale}/parts/`);
-    await page.locator('header a[aria-haspopup="dialog"]').click();
+    await page.getByTestId('footer-enquiry-trigger').click();
     const dialog = page.getByRole('dialog', { name: labels[locale] });
     await expect(dialog).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);

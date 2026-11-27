@@ -6,7 +6,7 @@ import { buildSitemapXml, type SitemapEntry } from '@/shared/lib/public-sitemap'
 
 export const dynamic = 'force-dynamic';
 
-const basePages = ['/', '/cars/', '/buy/', '/about/', ...countries.map((country) => `/calculator/${country.slug}/`)];
+const basePages = ['/', '/cars/', '/buy/', '/about/', '/market-prices/', ...countries.map((country) => `/calculator/${country.slug}/`)];
 const unavailable = () => new Response(null, { status: 503, headers: { 'Cache-Control': 'no-store', 'Retry-After': '60' } });
 
 export async function GET() {

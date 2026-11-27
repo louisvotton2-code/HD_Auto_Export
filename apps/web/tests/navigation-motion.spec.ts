@@ -30,7 +30,7 @@ test('the logo returns to the top of the localized home without reloading the do
   expect(await page.evaluate(() => Reflect.get(window, '__hdNavigationDocument'))).toBe('original');
 
   // Same-route activation works for both anchored and plain homepage URLs.
-  await page.locator('header a.nav-utility[href="#contact"]:visible').click();
+  await page.locator('footer nav a[href="#contact"]:visible').click();
   await expect(page).toHaveURL(/\/zh\/#contact$/);
   await expect.poll(scrollY).toBeGreaterThan(600);
   await logo.click();
@@ -351,7 +351,7 @@ for (const touch of [false, true]) {
       const header = page.locator('.hd-header');
       if (touch) await header.locator('[aria-controls="site-mobile-nav"]').click();
       const utilities = header.locator('.main-nav:visible .nav-utility');
-      await expect(utilities).toHaveCount(2);
+      await expect(utilities).toHaveCount(1);
       for (const link of await utilities.all()) {
         await expect(link).not.toHaveAttribute('aria-current');
         const initialColor = await link.evaluate((node) => getComputedStyle(node).color);
@@ -362,12 +362,11 @@ for (const touch of [false, true]) {
           'none',
         );
       }
+      if (touch) await header.locator('[aria-controls="site-mobile-nav"]').click();
       await page.evaluate(() => window.scrollTo(0, 900));
       await expect.poll(() => header.evaluate((node) => node.getBoundingClientRect().top)).toBe(0);
       await expect(header).toBeInViewport();
-      const contact = header.locator(
-        touch ? '#site-mobile-nav a[href="#contact"]' : '.main-nav:visible a[href="#contact"]',
-      );
+      const contact = page.locator('footer nav a[href="#contact"]');
       if (touch) await contact.tap();
       else await contact.click();
       await expect(page).toHaveURL(/#contact$/);
@@ -377,11 +376,12 @@ for (const touch of [false, true]) {
         )
         .toBeGreaterThan(await header.evaluate((node) => node.getBoundingClientRect().bottom));
       if (touch) await header.locator('[aria-controls="site-mobile-nav"]').click();
-      await contact.focus();
+      const market = header.locator('.main-nav:visible a[href="/ru/market-prices/"]');
+      await market.focus();
       await page.keyboard.press('Tab');
       await page.keyboard.press('Shift+Tab');
-      await expect(contact).toBeFocused();
-      await expect(contact).toHaveCSS('outline-style', 'solid');
+      await expect(market).toBeFocused();
+      await expect(market).toHaveCSS('outline-style', 'solid');
       await expect(header.locator('.main-nav:visible [aria-current="page"]')).toHaveText(
         /Как купить/,
       );

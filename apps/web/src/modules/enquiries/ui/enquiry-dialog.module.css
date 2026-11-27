@@ -4,19 +4,20 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-width: 38px;
-  min-height: 38px;
-  padding: 9px 14px;
-  border: 1px solid #b6774966;
-  border-radius: 24px;
-  background: #9d6037;
-  color: #fff;
-  font-size: 12px;
+  min-height: 44px;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px solid #b6774959;
+  border-radius: 12px;
+  background: #b6774917;
+  color: #f5f0eb;
+  font-size: 13px;
   font-weight: 600;
   transition: background .2s ease;
 }
 
-.trigger:hover { background: #b67749; }
+.trigger:hover { background: #b6774933; }
 
 .trigger:focus-visible,
 .dialog :is(a, button):focus-visible {
@@ -131,11 +132,6 @@
 @keyframes appear {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
-}
-
-@media (max-width: 1279px) {
-  .trigger { padding: 9px; }
-  .trigger > span { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

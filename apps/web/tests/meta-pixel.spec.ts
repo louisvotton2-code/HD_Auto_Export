@@ -219,7 +219,7 @@ test('vehicle targeting limits detail views and channel contacts to eligible veh
       await expect.poll(() => sessions).toContainEqual(expect.objectContaining({ type: 'page_view', vehicleId: selectedId }));
     expect(contacts).toEqual([unselectedContact, catalogContact]);
 
-    await page.locator('header a[aria-haspopup="dialog"]:visible').click();
+    await page.getByTestId('footer-enquiry-trigger').click();
     await expect(page.locator('dialog[open][aria-labelledby="site-enquiry-title"]')).toBeVisible();
     await page.keyboard.press('Escape');
     expect(events()).toEqual(['PageView', 'ViewContent']);
@@ -319,7 +319,7 @@ test('footer and enquiry links stay site-wide even on a selected vehicle', async
   const siteContacts = () => sessions.filter(event => event.type === 'contact_click');
   const vehicleData = { content_type: 'product', content_ids: [selectedId] };
   const dialog = page.getByRole('dialog', { name: 'Contact us' });
-  const openDialog = page.locator('header a[aria-haspopup="dialog"]:visible');
+  const openDialog = page.getByTestId('footer-enquiry-trigger');
   await resetPublicFixture(request);
   try {
     await setPublicFixtureState(request, { importedPublished: true, importedPixelEnabled: true });

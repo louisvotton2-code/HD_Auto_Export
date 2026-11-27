@@ -1,0 +1,122 @@
+.screen {
+  width: min(100% - 2.25rem, 76rem);
+  min-width: 0;
+  min-height: min(76vh, 47rem);
+  margin-inline: auto;
+  padding-block: clamp(2.5rem, 7vw, 5.25rem) clamp(4rem, 8vw, 7rem);
+}
+
+.intro {
+  margin-block-end: clamp(1.75rem, 4vw, 2.75rem);
+  max-width: 46rem;
+}
+
+.intro h1 {
+  margin: 0 0 0.85rem;
+  color: var(--site-fg, #f8f2eb);
+  font-size: clamp(2rem, 5vw, 4.125rem);
+  font-weight: 730;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.intro p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--site-muted, #b6ada3);
+  font-size: clamp(0.94rem, 1.55vw, 1.1rem);
+  line-height: 1.65;
+}
+
+.resultRegion {
+  margin-block-start: clamp(1.4rem, 4vw, 2.6rem);
+  min-width: 0;
+  scroll-margin-block-start: 6rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: end;
+  gap: 0.55rem 0.9rem;
+  margin-block-end: 0.8rem;
+  min-width: 0;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem 1rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid #393027;
+  border-radius: 0.8rem;
+  background: #181512;
+  color: #f3e5d6;
+}
+
+.status p {
+  margin: 0;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 44px;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid #60452f;
+  border-radius: 0.55rem;
+  background: #201912;
+  color: #f5d3b3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: start;
+}
+
+.action:hover {
+  background: #322317;
+  border-color: #a7754c;
+}
+
+.action:focus-visible {
+  outline: 2px solid #e9aa72;
+  outline-offset: 3px;
+}
+
+.shareNotice {
+  color: var(--site-muted, #b6ada3);
+  font-size: 0.83rem;
+}
+
+.shareInput {
+  width: 100%;
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid #60452f;
+  border-radius: 0.55rem;
+  color: inherit;
+  background: #1b1713;
+  font: inherit;
+}
+
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #6b533f;
+  border-top-color: #f2b989;
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(1turn); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}

@@ -8,7 +8,10 @@ import { FooterPayment } from './footer-payment';
 import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
-export async function SiteFooter({ privacyAction }: { privacyAction?: ReactNode }) {
+export async function SiteFooter({ enquiryAction, privacyAction }: {
+  enquiryAction?: ReactNode;
+  privacyAction?: ReactNode;
+}) {
   const t = await getTranslations();
   const year = new Intl.DateTimeFormat('en', { year: 'numeric', timeZone: 'Asia/Shanghai' }).format(
     new Date(),
@@ -67,6 +70,7 @@ export async function SiteFooter({ privacyAction }: { privacyAction?: ReactNode 
           >
             <h2 id="contact-title">{t('Contacts.title')}</h2>
             <ContactLinks />
+            {enquiryAction}
             <FooterPayment
               title={t('Contacts.payment')}
               bankTransfer={t('Contacts.bankTransfer')}
