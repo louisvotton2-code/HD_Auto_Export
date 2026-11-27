@@ -412,13 +412,11 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
   const relists = new Map<string, RelistArchiveEvidence>();
   let checked = 0;
   for (const event of staleEvents.slice(0, proofBatch)) {
-    const historical = event.member_event_id !== event.event_id;
-    if (historical && (event.source_type === 'relisted' || event.source_type === 'price')) {
-      // Finish any ordinary prefix before a single historical event that may need a chain.
+    if (event.member_event_id !== event.event_id &&
+        (event.source_type === 'relisted' || (event.source_type === 'price' && !event.price_eligible))) {
+      // Finish a normally verifiable prefix before checking a bounded history chain.
       if (checked > 0) break;
-      if (event.source_type === 'relisted' || !event.price_eligible) {
-        return await auditHistoricalEvent(tx, audit, event.event_id) ?? { status: 'blocked', through: after };
-      }
+      return await auditHistoricalEvent(tx, audit, event.event_id) ?? { status: 'blocked', through: after };
     }
     const needsRelist = event.source_type==='relisted' || event.member_event_id!==event.event_id;
     if (needsRelist && requests.length>=relistProofBatch) break;
@@ -438,17 +436,26 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
       }
     }
     checked++;
-    if (historical && event.source_type === 'price') break;
   }
   if (requests.length) {
-    const paths = await readRelistPaths(tx,snapshotId,highWater,requests);
+    let paths = await readRelistPaths(tx,snapshotId,highWater,requests);
     if (paths.length!==requests.length) {
-      const first = staleEvents[0]!;
-      if (first.source_type === 'price' && first.member_event_id !== first.event_id &&
-          !paths.some(path => path.price_event_id === first.event_id)) {
-        return await auditHistoricalEvent(tx, audit, first.event_id) ?? { status: 'blocked', through: after };
+      const byRequest = new Set(paths.map(path => path.price_event_id ?? path.event_id));
+      const missingIndex = staleEvents.slice(0, checked).findIndex(event =>
+        (event.source_type === 'relisted' || event.member_event_id !== event.event_id) && !byRequest.has(event.event_id));
+      const missing = staleEvents[missingIndex];
+      if (!missing || missing.source_type !== 'price' || missing.member_event_id === missing.event_id) {
+        return { status: 'blocked', through: after };
       }
-      return { status: 'blocked', through: after };
+      const historical = await auditHistoricalEvent(tx, audit, missing.event_id);
+      if (!historical) return { status: 'blocked', through: after };
+      if (missingIndex === 0) return historical;
+      // A later price needing a chain does not invalidate the fully provable prefix.
+      checked = missingIndex;
+      const prefix = new Set(staleEvents.slice(0, checked).map(event => event.event_id));
+      paths = paths.filter(path => prefix.has(path.price_event_id ?? path.event_id));
+      for (const id of documents.keys()) if (!prefix.has(id)) documents.delete(id);
+      for (const id of related.keys()) if (!prefix.has(id)) related.delete(id);
     }
     for (const path of paths) {
       const price = positiveCny(path.public_price);
