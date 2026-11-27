@@ -1,14 +1,13 @@
 import { gunzipSync } from 'node:zlib';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { MoneySchema } from '@hd/contracts/public';
 import { jsonHash, sha256 } from '../normalize.js';
+import { atExactTime, positiveCny, relistProofBatch, verifyRelistArchiveEvidence, type RelistArchiveEvidence } from './relist-audit-evidence.js';
 
 const eventBatch = 2_000;
-const priceProofBatch = 32;
+const proofBatch = 32;
 const compressedEventLimit = 64 * 1024;
 const decodedEventLimit = 256 * 1024;
-const eventTime = z.iso.datetime({ offset: true });
 
 type EventAudit = {
   snapshotId: string;
@@ -28,9 +27,14 @@ type StaleEvent = {
   document_refs: unknown;
   public_price: string | null;
   source_price: unknown;
-  proof_eligible: boolean;
+  source_type: string;
+  applied_at: string | null;
+  detail_updated_at: string | null;
+  source_updated_at: string | null;
+  price_eligible: boolean;
+  relist_eligible: boolean;
 };
-type PriceProof = {
+type EventProof = {
   eventId: string;
   source: string;
   externalId: string;
@@ -39,62 +43,52 @@ type PriceProof = {
   documentId: string;
   responseHash: string;
   price: bigint;
-};
+} & ({ kind: 'price' } | { kind: 'relisted'; relist: RelistArchiveEvidence });
 const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-function positiveCny(value: unknown) {
-  if (typeof value !== 'string' && typeof value !== 'number') return null;
-  if (typeof value === 'number' && !Number.isInteger(value) && value > Number.MAX_SAFE_INTEGER / 100) return null;
-  const amount = MoneySchema.shape.amount.safeParse(String(value));
-  if (!amount.success) return null;
-  const [whole, fraction = ''] = amount.data.split('.');
-  const cents = BigInt(whole!) * 100n + BigInt(fraction.padEnd(2, '0'));
-  return cents > 0n ? cents : null;
-}
-
-function atExactTime(value: unknown, databaseTime: string) {
-  if (typeof value !== 'string' || !eventTime.safeParse(value).success) return false;
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return false;
-  // PostgreSQL preserves six fractional digits. Date alone loses evidence below milliseconds.
-  const fraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/.exec(value)?.[1] ?? '';
-  if (/[1-9]/.test(fraction.slice(6))) return false;
-  const seconds = new Date(parsed).toISOString().slice(0, -5);
-  return `${seconds}.${fraction.slice(0, 6).padEnd(6, '0')}Z` === databaseTime;
-}
-
-function priceProof(event: StaleEvent): PriceProof | null {
-  if (!event.proof_eligible || !Array.isArray(event.document_refs) || event.document_refs.length !== 1) return null;
+function eventProof(event: StaleEvent): EventProof | null {
+  if ((!event.price_eligible && !event.relist_eligible) ||
+      !Array.isArray(event.document_refs) || event.document_refs.length !== 1) return null;
   const ref = object(event.document_refs[0]);
   if (!ref || typeof ref.id !== 'string' || !z.uuid().safeParse(ref.id).success ||
       ref.eventSequence !== event.event_id || !atExactTime(ref.sourceUpdatedAt, event.business_at) ||
       typeof ref.responseHash !== 'string' || !/^[a-f0-9]{64}$/.test(ref.responseHash)) return null;
   const price = positiveCny(event.public_price);
   if (price === null || positiveCny(event.source_price) !== price) return null;
-  return { eventId: event.event_id, source: event.source, externalId: event.external_id,
-    businessAt: event.business_at, hash: event.payload_hash, documentId: ref.id, responseHash: ref.responseHash, price };
+  const identity = { eventId: event.event_id, source: event.source, externalId: event.external_id,
+    businessAt: event.business_at, responseHash: ref.responseHash };
+  const proof = { ...identity, hash: event.payload_hash, documentId: ref.id, price };
+  if (event.price_eligible) return { ...proof, kind: 'price' };
+  if (!event.applied_at || !event.detail_updated_at || !event.source_updated_at) return null;
+  return { ...proof, kind: 'relisted', relist: {
+    ...identity, appliedAt: event.applied_at, detailUpdatedAt: event.detail_updated_at,
+    sourceUpdatedAt: event.source_updated_at, eventHash: event.payload_hash, priceCents: price.toString(),
+  } };
 }
 
-function matchesProviderPriceChange(proof: PriceProof, compressed: Buffer) {
+function matchesProviderEvent(proof: EventProof, compressed: Buffer) {
   try {
     const raw = new TextDecoder('utf-8', { fatal: true }).decode(gunzipSync(compressed, { maxOutputLength: decodedEventLimit }));
     if (sha256(raw) !== proof.hash) return false;
     const event = object(JSON.parse(raw));
     if (!event || jsonHash(event) !== proof.hash || typeof event.id !== 'number' ||
         !Number.isSafeInteger(event.id) || String(event.id) !== proof.eventId ||
-        event.source !== proof.source || event.vehicleId !== proof.externalId || event.type !== 'price' ||
+        event.source !== proof.source || event.vehicleId !== proof.externalId || event.type !== proof.kind ||
         !atExactTime(event.at, proof.businessAt)) return false;
     const oldPrice = positiveCny(object(event.oldPrice)?.cny);
     const newPrice = positiveCny(object(event.newPrice)?.cny);
-    return oldPrice !== null && newPrice === proof.price && oldPrice !== newPrice;
+    if (oldPrice === null || newPrice !== proof.price) return false;
+    // This relist exception covers unchanged prices proved independently by the actual listing records.
+    return proof.kind === 'relisted' ? oldPrice === newPrice : oldPrice !== newPrice;
   } catch {
     return false;
   }
 }
 
-async function verifyPriceChanges(tx: PoolClient, proofs: PriceProof[]) {
-  const refs = proofs.map(({ price: _price, ...ref }) => ref);
+async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]) {
+  const refs = proofs.map(({ eventId, source, externalId, businessAt, hash, documentId, responseHash }) =>
+    ({ eventId, source, externalId, businessAt, hash, documentId, responseHash }));
   const rows = (await tx.query<{ eventId: string; compressed: Buffer }>(`SELECT q."eventId",b.compressed
     FROM jsonb_to_recordset($1::jsonb) AS q("eventId" text,source text,"externalId" text,"businessAt" timestamptz,
       hash text,"documentId" uuid,"responseHash" text)
@@ -108,7 +102,7 @@ async function verifyPriceChanges(tx: PoolClient, proofs: PriceProof[]) {
   const bytes = new Map(rows.map(row => [row.eventId, row.compressed]));
   return proofs.every(proof => {
     const compressed = bytes.get(proof.eventId);
-    return compressed !== undefined && matchesProviderPriceChange(proof, compressed);
+    return compressed !== undefined && matchesProviderEvent(proof, compressed);
   });
 }
 
@@ -156,18 +150,42 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     ) AS missing`, [recoveryAnchorCursor, recoveryPreviousCursor, snapshotId, generatedAt, after, through])).rows[0]!.missing;
   if (conflictingWithdrawal) return { status: 'blocked', through: after };
 
+  // Use the same timestamps and current generation that the worker recorded on successful materialization.
+  // A fresh fetch alone does not establish that an old content version was actually relisted.
   const staleEvents = (await tx.query<StaleEvent>(`WITH suspect AS MATERIALIZED (
-    SELECT event_id,source,external_id,business_at,source_type,operation,applied_at,error_code,detail_generation,
-      public_outcome,prior_public_price,payload_hash,document_refs
+    SELECT event_id,source,external_id,business_at,source_type,operation,received_at,applied_at,error_code,detail_generation,
+      detail_updated_at,public_effective_at,public_outcome,prior_public_price,payload_hash,document_refs,was_public
     FROM external_full_events WHERE event_id>$1 AND event_id<=$2 AND public_outcome IN ('not_public','superseded')
       AND detail_generation IS NOT NULL AND (source_type IN ('new','relisted') OR (source_type='price' AND was_public))
     ), stale AS MATERIALIZED (
-    SELECT e.event_id,e.source,e.external_id,e.business_at,e.payload_hash,e.document_refs,c.price_cny AS public_price,l.id AS listing_id,
+    SELECT e.event_id,e.source,e.external_id,e.business_at,e.source_type,e.applied_at,e.detail_updated_at,l.source_updated_at,
+      e.payload_hash,e.document_refs,c.price_cny AS public_price,l.id AS listing_id,
       coalesce(e.source_type='price' AND e.operation='upsert' AND e.public_outcome='not_public'
        AND e.applied_at IS NOT NULL AND e.error_code IS NULL AND l.source_updated_at=e.business_at
        AND c.price_cny IS NOT NULL AND c.price_cny=e.prior_public_price
        AND m.event_order=e.event_id AND m.state='active' AND m.last_detail_at IS NOT NULL
-       AND m.applied_generation=m.desired_generation AND m.applied_generation>=e.detail_generation,false) AS proof_eligible
+       AND m.applied_generation=m.desired_generation AND m.applied_generation>=e.detail_generation,false) AS price_eligible,
+      CASE WHEN e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
+        AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
+        AND l.source_updated_at<e.business_at AND e.applied_at>=e.received_at
+        AND m.state='active' AND NOT m.verification_pending AND m.last_snapshot=$4::uuid
+        AND m.event_order=e.event_id AND m.business_at=e.business_at AND m.canonical_id=l.formal_canonical_id
+        AND m.desired_generation=e.detail_generation AND m.applied_generation=e.detail_generation
+        AND m.locales @> ARRAY['zh','en','ru'] AND cardinality(m.locales)=3
+        AND m.last_detail_at BETWEEN e.applied_at AND e.detail_updated_at
+        THEN coalesce((
+          SELECT earlier.operation='withdraw' AND earlier.business_at<e.business_at AND earlier.applied_at<=e.applied_at
+            AND earlier.error_code IS NULL AND earlier.public_outcome IN ('effective','unknown','not_public')
+          FROM external_full_events earlier WHERE earlier.source=e.source AND earlier.external_id=e.external_id
+            AND earlier.event_id<e.event_id AND (earlier.operation IN ('withdraw','relist') OR earlier.source_type='new')
+          ORDER BY earlier.event_id DESC LIMIT 1
+        ),false) AND NOT EXISTS (
+          SELECT 1 FROM external_full_events later WHERE later.source=e.source AND later.external_id=e.external_id
+            AND later.event_id>e.event_id
+        ) AND NOT EXISTS (
+          SELECT 1 FROM external_ingestion_identity_state t WHERE t.provider='chinacarapi' AND t.source=e.source
+            AND t.external_id=e.external_id AND t.withdrawn
+        ) ELSE false END AS relist_eligible
     FROM suspect e
     JOIN external_full_members m ON m.source=e.source AND m.external_id=e.external_id AND m.event_order>=e.event_id
     JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
@@ -178,21 +196,31 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
      AND (l.source_updated_at IS NULL OR l.source_updated_at<e.business_at OR
       (e.source_type='price' AND l.source_updated_at=e.business_at AND c.price_cny IS NOT DISTINCT FROM e.prior_public_price))
     ORDER BY e.event_id LIMIT $3
-    ) SELECT s.event_id::text,s.source,s.external_id,s.payload_hash,s.document_refs,s.public_price::text,
+    ) SELECT s.event_id::text,s.source,s.external_id,s.source_type,s.payload_hash,s.document_refs,s.public_price::text,
       to_char(s.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS business_at,
-      CASE WHEN s.proof_eligible AND l.source_data->>'operation'='upsert' AND l.source_data->>'platformId'=s.source
-        AND l.source_data->>'externalId'=s.external_id THEN l.source_data#>'{price,cny}' END AS source_price,
-      s.proof_eligible
+      to_char(s.applied_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS applied_at,
+      to_char(s.detail_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS detail_updated_at,
+      to_char(s.source_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS source_updated_at,
+      CASE WHEN (s.price_eligible OR s.relist_eligible) AND l.source_data->>'operation'='upsert'
+        AND l.source_data->>'platformId'=s.source AND l.source_data->>'externalId'=s.external_id
+        THEN l.source_data#>'{price,cny}' END AS source_price,
+      s.price_eligible,s.relist_eligible
     FROM stale s JOIN external_listings l ON l.id=s.listing_id ORDER BY s.event_id`,
-  [after, through, priceProofBatch + 1])).rows;
+  [after, through, proofBatch + 1, snapshotId])).rows;
   if (!staleEvents.length) return { status: 'advance', through };
-  const proofs: PriceProof[] = [];
-  for (const event of staleEvents.slice(0, priceProofBatch)) {
-    const proof = priceProof(event);
+  const proofs: EventProof[] = [];
+  const relists: RelistArchiveEvidence[] = [];
+  for (const event of staleEvents.slice(0, proofBatch)) {
+    if (event.source_type === 'relisted' && relists.length >= relistProofBatch) break;
+    const proof = eventProof(event);
     if (!proof) return { status: 'blocked', through: after };
     proofs.push(proof);
+    if (proof.kind === 'relisted') relists.push(proof.relist);
   }
-  if (!await verifyPriceChanges(tx, proofs)) return { status: 'blocked', through: after };
-  // A later unexamined row stays ahead of the checkpoint, even if this pricing path could clear it.
-  return { status: 'advance', through: staleEvents.length > priceProofBatch ? proofs.at(-1)!.eventId : through };
+  if (!await verifyEventDocuments(tx, proofs) ||
+      (relists.length && !await verifyRelistArchiveEvidence(tx, snapshotId, relists))) {
+    return { status: 'blocked', through: after };
+  }
+  // Stop at the last proved event when more evidence would exceed this batch's budget.
+  return { status: 'advance', through: staleEvents.length > proofs.length ? proofs.at(-1)!.eventId : through };
 }
