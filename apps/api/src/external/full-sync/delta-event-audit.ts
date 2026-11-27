@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { jsonHash } from '../normalize.js';
-import { atExactTime, positiveCny, relistProofBatch, verifyRelistArchiveEvidence, type ArchivedEventPageEvidence, type RelistArchiveEvidence } from './relist-audit-evidence.js';
+import { atExactTime, compareRelistCsv, positiveCny, relistProofBatch, verifyRelistArchiveEvidence,
+  type ArchivedEventPageEvidence, type RelistArchiveEvidence, type RelistCsvSample } from './relist-audit-evidence.js';
 
 const eventBatch = 2_000;
 const proofBatch = 32;
@@ -42,7 +43,10 @@ type RelistRow = StoredEvent & {
   price_event_id: string | null;
   public_price: string | null;
   source_price: unknown;
-  requires_csv: boolean;
+  csv_lineage: boolean;
+  csv_sample: RelistCsvSample | null;
+  snapshot_completed_at: string;
+  withdrawal_bound: boolean;
   withdrawal: StoredEvent | null;
 };
 type EventProof = ArchivedEventPageEvidence & { documentId: string; price: bigint | null };
@@ -116,7 +120,14 @@ async function verifyEventDocuments(tx: PoolClient, proofs: EventProof[]): Promi
 /** Bind both standalone relists and the current successor of a historical price to the same lifecycle evidence. */
 async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: string, requests: RelistRequest[]) {
   return (await tx.query<RelistRow>(`SELECT e.event_id::text,e.source,e.external_id,e.payload_hash,e.document_refs,
-    q."priceEventId" AS price_event_id,e.business_at<=s.generated_at AS requires_csv,
+    q."priceEventId" AS price_event_id,e.business_at<=s.generated_at AND m.last_snapshot=s.id AS csv_lineage,
+    coalesce(w.source_type='removed' AND w.detail_generation+1=e.detail_generation,false) AS withdrawal_bound,
+    to_char(s.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS snapshot_completed_at,
+    CASE WHEN r.snapshot_id IS NOT NULL THEN jsonb_build_object(
+      'source',r.payload->'source','externalId',r.payload->'id','price',r.payload->'price_cny',
+      'duplicateOf',r.payload->'duplicate_of','fetchedAt',r.payload->'detail_fetched_at',
+      'inBounds',r.row_number BETWEEN 1 AND s.rows
+    ) END AS csv_sample,
     to_char(e.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS business_at,
     to_char(e.applied_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS applied_at,
     to_char(e.detail_updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS detail_updated_at,
@@ -124,10 +135,10 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
     c.price_cny::text AS public_price,CASE WHEN l.source_data->>'operation'='upsert'
       AND l.source_data->>'platformId'=e.source AND l.source_data->>'externalId'=e.external_id
       THEN l.source_data#>'{price,cny}' END AS source_price,
-    CASE WHEN e.business_at>s.generated_at OR old.event_id IS NOT NULL THEN jsonb_build_object(
+    jsonb_build_object(
       'event_id',w.event_id::text,'source',w.source,'external_id',w.external_id,'payload_hash',w.payload_hash,
       'document_refs',w.document_refs,'business_at',to_char(w.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
-    ) END AS withdrawal
+    ) AS withdrawal
     FROM external_full_snapshots s
     CROSS JOIN jsonb_to_recordset($2::jsonb) AS q("eventId" text,"priceEventId" text)
     JOIN external_full_events e ON e.event_id=q."eventId"::numeric
@@ -135,6 +146,7 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
     JOIN external_listings l ON l.provider='chinacarapi' AND (l.platform_id,l.external_id)=(e.source,e.external_id)
     JOIN external_catalog_filter f ON f.listing_id=l.id AND f.active AND f.locale_mask=7
     JOIN external_catalog c ON c.listing_id=l.id
+    LEFT JOIN external_full_stage r ON r.snapshot_id=s.id AND r.source=e.source AND r.external_id=e.external_id
     LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
     LEFT JOIN external_full_events old ON old.event_id=q."priceEventId"::numeric
       AND (old.source,old.external_id)=(e.source,e.external_id)
@@ -142,9 +154,11 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
       SELECT earlier.* FROM external_full_events earlier WHERE (earlier.source,earlier.external_id)=(e.source,e.external_id)
         AND earlier.event_id<e.event_id AND (earlier.operation IN ('withdraw','relist') OR earlier.source_type='new')
       ORDER BY earlier.event_id DESC LIMIT 1
-    ) w ON w.operation='withdraw' AND w.business_at<e.business_at AND w.applied_at<=e.applied_at
+    ) w ON w.operation='withdraw' AND w.business_at<e.business_at AND w.applied_at BETWEEN w.received_at AND e.applied_at
       AND w.error_code IS NULL AND w.public_outcome IN ('effective','unknown','not_public')
     WHERE s.id=$1 AND s.state='complete' AND s.archive_pruned_at IS NULL
+      AND s.staged=s.rows AND s.apply_cursor=s.rows AND s.rows>0
+      AND s.sha256 ~ '^[a-f0-9]{64}$' AND s.bytes>0 AND s.completed_at IS NOT NULL
       AND e.event_id<=$3::numeric
       AND e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
       AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
@@ -159,8 +173,6 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
         AND later.event_id>e.event_id)
       AND NOT EXISTS(SELECT 1 FROM external_ingestion_identity_state t WHERE t.provider='chinacarapi'
         AND (t.source,t.external_id)=(e.source,e.external_id) AND t.withdrawn)
-      AND CASE WHEN e.business_at<=s.generated_at THEN m.last_snapshot=s.id ELSE
-        w.source_type='removed' AND w.detail_generation+1=e.detail_generation AND w.applied_at>=w.received_at END
       AND (q."priceEventId" IS NULL OR (
         old.source_type='price' AND old.operation='upsert' AND old.was_public AND old.public_outcome='not_public'
         AND old.error_code IS NULL AND old.applied_at>=old.received_at
@@ -286,14 +298,19 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
         return { status: 'blocked', through: after };
       }
       const relist = eventProof(path,'relisted',price);
-      const withdrawal = path.withdrawal && eventProof(path.withdrawal,'removed',null);
-      if (!relist || ((!path.requires_csv || historical) && !withdrawal)) return { status: 'blocked', through: after };
+      if (!relist) return { status: 'blocked', through: after };
+      const csv = compareRelistCsv(path.csv_sample,relist,path.snapshot_completed_at,price);
+      if (csv==='conflict') return { status: 'blocked', through: after };
+      // The complete withdrawal-to-relist chain can prove either side of the export anchor.
+      const useCsv = !historical && path.csv_lineage && csv==='corroborated';
+      const withdrawal = !useCsv && path.withdrawal_bound && path.withdrawal && eventProof(path.withdrawal,'removed',null);
+      if (!useCsv && !withdrawal) return { status: 'blocked', through: after };
       documents.set(relist.eventId,relist);
       relists.set(relist.eventId,{
         eventId: relist.eventId, source: relist.source, externalId: relist.externalId, kind: 'relisted',
         businessAt: relist.businessAt, eventHash: relist.eventHash, responseHash: relist.responseHash,
         appliedAt: path.applied_at, detailUpdatedAt: path.detail_updated_at, sourceUpdatedAt: path.source_updated_at,
-        requiresCsv: path.requires_csv, priceCents: price.toString(),
+        priceCents: price.toString(),
       });
       if (withdrawal) {
         documents.set(withdrawal.eventId,withdrawal);
@@ -303,7 +320,7 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
   }
   const missingDocuments = await verifyEventDocuments(tx,[...documents.values()]);
   if (missingDocuments === null || ((relists.size || missingDocuments.length) &&
-      !await verifyRelistArchiveEvidence(tx,snapshotId,[...relists.values()],[...related.values()],missingDocuments))) {
+      !await verifyRelistArchiveEvidence(tx,[...relists.values()],[...related.values()],missingDocuments))) {
     return { status: 'blocked', through: after };
   }
   // Stop at the last proved event when more evidence would exceed this batch's budget.
