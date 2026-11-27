@@ -4,7 +4,9 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { jsonHash } from '../normalize.js';
 import { atExactTime, compareRelistCsv, positiveCny, relistProofBatch, verifyRelistArchiveEvidence,
-  type ArchivedEventPageEvidence, type RelistArchiveEvidence, type RelistCsvSample } from './relist-audit-evidence.js';
+  type ArchivedEventPageEvidence, type HistoricalRelistArchiveEvidence, type RelistArchiveEvidence,
+  type RelistCsvSample } from './relist-audit-evidence.js';
+import { readSupersededRelistChain } from './relist-history.js';
 
 const eventBatch = 2_000;
 const proofBatch = 32;
@@ -35,7 +37,7 @@ type StaleEvent = StoredEvent & {
   price_eligible: boolean;
   member_event_id: string;
 };
-type RelistRequest = { eventId: string; priceEventId: string | null };
+type RelistRequest = { eventId: string; priceEventId: string | null; currentWitness?: true };
 type RelistRow = StoredEvent & {
   applied_at: string;
   detail_updated_at: string;
@@ -140,7 +142,7 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
       'document_refs',w.document_refs,'business_at',to_char(w.business_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
     ) AS withdrawal
     FROM external_full_snapshots s
-    CROSS JOIN jsonb_to_recordset($2::jsonb) AS q("eventId" text,"priceEventId" text)
+    CROSS JOIN jsonb_to_recordset($2::jsonb) AS q("eventId" text,"priceEventId" text,"currentWitness" boolean)
     JOIN external_full_events e ON e.event_id=q."eventId"::numeric
     JOIN external_full_members m ON (m.source,m.external_id)=(e.source,e.external_id)
     JOIN external_listings l ON l.provider='chinacarapi' AND (l.platform_id,l.external_id)=(e.source,e.external_id)
@@ -159,12 +161,14 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
     WHERE s.id=$1 AND s.state='complete' AND s.archive_pruned_at IS NULL
       AND s.staged=s.rows AND s.apply_cursor=s.rows AND s.rows>0
       AND s.sha256 ~ '^[a-f0-9]{64}$' AND s.bytes>0 AND s.completed_at IS NOT NULL
-      -- A committed relist beyond the audit frontier can explain the current projection of an older price.
-      AND (e.event_id<=$3::numeric OR (q."priceEventId" IS NOT NULL
+      -- A committed relist beyond the audit frontier can explain the current projection.
+      AND (e.event_id<=$3::numeric OR ((q."priceEventId" IS NOT NULL OR q."currentWitness")
         AND e.event_id<=(SELECT receive_cursor FROM external_full_sync WHERE id=1)))
-      AND e.source_type='relisted' AND e.operation='relist' AND e.public_outcome='not_public'
-      AND NOT e.was_public AND e.public_effective_at IS NULL AND e.error_code IS NULL
-      AND l.source_updated_at<e.business_at AND e.applied_at>=e.received_at
+      AND e.source_type='relisted' AND e.operation='relist' AND NOT e.was_public
+      AND e.error_code IS NULL AND e.applied_at>=e.received_at
+      AND ((e.public_outcome='not_public' AND e.public_effective_at IS NULL AND l.source_updated_at<e.business_at)
+        OR (q."currentWitness" AND e.public_outcome='effective' AND e.public_effective_at=e.detail_updated_at
+          AND l.source_updated_at>=e.business_at))
       AND l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
       AND m.state='active' AND NOT m.verification_pending AND m.event_order=e.event_id
       AND m.business_at=e.business_at AND m.canonical_id=l.formal_canonical_id
@@ -190,6 +194,44 @@ async function readRelistPaths(tx: PoolClient, snapshotId: string, highWater: st
         AND NOT EXISTS(SELECT 1 FROM external_full_events step WHERE (step.source,step.external_id)=(e.source,e.external_id)
           AND step.event_id>old.event_id AND step.event_id<e.event_id AND step.event_id<>w.event_id)
       ))`, [snapshotId, JSON.stringify(requests), highWater])).rows;
+}
+
+async function verifySupersededRelist(tx: PoolClient, snapshotId: string, highWater: string, eventId: string) {
+  const cycles = await readSupersededRelistChain(tx, eventId, highWater);
+  if (!cycles) return false;
+  const last = cycles.at(-1)!;
+  const [live] = await readRelistPaths(tx, snapshotId, highWater, [{
+    eventId: last.relist.event_id, priceEventId: null, currentWitness: true,
+  }]);
+  if (!live || !live.withdrawal_bound || live.withdrawal?.event_id !== last.withdrawal.event_id) return false;
+  const livePrice = positiveCny(live.public_price);
+  if (livePrice === null || positiveCny(live.source_price) !== livePrice) return false;
+
+  const documents: EventProof[] = [];
+  const history: HistoricalRelistArchiveEvidence[] = [];
+  let current: RelistArchiveEvidence | undefined;
+  for (const [i, cycle] of cycles.entries()) {
+    const next = cycles[i + 1];
+    // The effective next withdrawal records the public quote it actually removed.
+    const price = next ? positiveCny(next.withdrawal.prior_public_price) : livePrice;
+    if (price === null) return false;
+    const withdrawal = eventProof(cycle.withdrawal, 'removed', null);
+    const relist = eventProof(cycle.relist, 'relisted', price);
+    if (!withdrawal || !relist || compareRelistCsv(live.csv_sample, relist, live.snapshot_completed_at,
+      price, next?.withdrawal.business_at) === 'conflict') return false;
+    documents.push(withdrawal, relist);
+
+    const window = {
+      eventId: relist.eventId, source: relist.source, externalId: relist.externalId, kind: 'relisted' as const,
+      businessAt: relist.businessAt, eventHash: relist.eventHash, responseHash: relist.responseHash,
+      appliedAt: cycle.relist.applied_at, detailUpdatedAt: cycle.relist.detail_updated_at, priceCents: price.toString(),
+    };
+    if (next) history.push({ ...window, outcome: cycle.relist.public_outcome });
+    else current = { ...window, sourceUpdatedAt: live.source_updated_at };
+  }
+  const missingDocuments = await verifyEventDocuments(tx, documents);
+  return !!current && missingDocuments !== null &&
+    await verifyRelistArchiveEvidence(tx, [current], documents, missingDocuments, history);
 }
 
 /** Audit one bounded range under the caller's worker/sync lock. The cursor changes only for proven events. */
@@ -257,6 +299,9 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
     LEFT JOIN external_listing_overrides o ON o.listing_id=l.id
     WHERE l.formal_primary AND l.upstream_state='active' AND NOT coalesce((o.data->>'hidden')::boolean,false)
      AND (l.source_updated_at IS NULL OR l.source_updated_at<e.business_at OR
+      (e.source_type='relisted' AND e.public_outcome='not_public' AND m.event_order>e.event_id
+        AND EXISTS(SELECT 1 FROM external_full_events successor WHERE successor.event_id=m.event_order
+          AND successor.operation='relist')) OR
       (e.source_type='price' AND l.source_updated_at=e.business_at AND (
         c.price_cny IS NOT DISTINCT FROM e.prior_public_price OR (e.public_outcome='not_public' AND m.event_order>e.event_id
           AND EXISTS(SELECT 1 FROM external_full_events successor WHERE successor.event_id=m.event_order
@@ -278,6 +323,12 @@ export async function checkDeltaEventAudit(tx: PoolClient, audit: EventAudit): P
   const relists = new Map<string, RelistArchiveEvidence>();
   let checked = 0;
   for (const event of staleEvents.slice(0, proofBatch)) {
+    if (event.source_type === 'relisted' && event.member_event_id !== event.event_id) {
+      // One historical chain shares a decode budget and advances only through its audited event.
+      if (checked > 0) break;
+      return await verifySupersededRelist(tx, snapshotId, highWater, event.event_id)
+        ? { status: 'advance', through: event.event_id } : { status: 'blocked', through: after };
+    }
     const needsRelist = event.source_type==='relisted' || event.member_event_id!==event.event_id;
     if (needsRelist && requests.length>=relistProofBatch) break;
     if (event.source_type==='relisted') {
