@@ -458,9 +458,130 @@ test('historical price audit keeps a truly old public and supplier price blocked
   assert.deepEqual(await h.observation(), h.original);
 });
 
+type StoredChangePage = { cursor: number; nextCursor: number; hasMore: boolean; changes: Change[] };
+
+async function pruneEventMetadata(f: Awaited<ReturnType<typeof fixture>>, eventId: number) {
+  return f.db.transaction(async tx => {
+    const evidence = (await tx.query<{ id: string; event_hash: string; response_hash: string;
+      canonical: Buffer; original_page: Buffer; refs: unknown }>(`SELECT d.id,e.payload_hash AS event_hash,d.response_hash,
+      b.compressed AS canonical,p.compressed AS original_page,e.document_refs AS refs
+      FROM external_full_events e JOIN external_source_documents d ON d.id=(e.document_refs->0->>'id')::uuid
+      JOIN external_source_blobs b ON b.hash=e.payload_hash AND b.hash=d.hash
+      JOIN external_source_blobs p ON p.hash=d.response_hash AND p.raw_exact
+      WHERE e.event_id=$1 AND e.applied_at>=e.received_at AND e.error_code IS NULL
+        AND d.event_sequence=e.event_id AND d.kind='event'`, [eventId])).rows[0];
+    assert.ok(evidence);
+    const canonical = gunzipSync(evidence.canonical);
+    const original = gunzipSync(evidence.original_page);
+    const page = JSON.parse(original.toString('utf8')) as StoredChangePage;
+    assert.equal(createHash('sha256').update(canonical).digest('hex'), evidence.event_hash);
+    assert.equal(createHash('sha256').update(original).digest('hex'), evidence.response_hash);
+    assert.deepEqual(page.changes.find(event => event.id === eventId), JSON.parse(canonical.toString('utf8')));
+    const cursorKey = `cursor:${page.cursor}`;
+    const receipt = (await tx.query(`SELECT next_cursor::text,event_count,complete FROM external_full_receipts WHERE cursor_key=$1`,
+      [cursorKey])).rows[0];
+    assert.deepEqual(receipt, { next_cursor: String(page.nextCursor), event_count: page.changes.length, complete: true });
+
+    // Reproduce retention removing the document row while the two independent blobs survive.
+    const pin = `fixture-orphan-audit:${eventId}`;
+    await tx.query(`INSERT INTO external_source_blob_refs(hash,kind,reference)
+      SELECT hash,'audit',$2 FROM external_source_blobs WHERE hash=ANY($1::text[])`,
+    [[evidence.event_hash, evidence.response_hash], pin]);
+    await tx.query('DELETE FROM external_source_document_refs WHERE document_id=$1', [evidence.id]);
+    assert.equal((await tx.query('DELETE FROM external_source_documents WHERE id=$1', [evidence.id])).rowCount, 1);
+    return { ...evidence, page, cursorKey, pin };
+  });
+}
+
+test('a historical price with pruned metadata needs both original blobs and a completed receipt', async t => {
+  const h = await historicalPriceAudit(t, 68000);
+  const db = h.f.db;
+  const eventId = 2001;
+  const evidence = await pruneEventMetadata(h.f, eventId);
+  const receipt = (complete: boolean) => db.pool.query('UPDATE external_full_receipts SET complete=$2 WHERE cursor_key=$1',
+    [evidence.cursorKey, complete]);
+  assert.equal((await receipt(false)).rowCount, 1);
+  await h.worker.tick();
+  const blocked = await h.f.policy();
+  assert.equal(blocked?.phase, 'blocked');
+  assert.equal(blocked?.reason, 'audit_gap');
+  assert.equal(blocked.event_audit_cursor, '2000');
+  await h.worker.close();
+
+  const refuse = async () => {
+    await assert.rejects(resumeDeltaAudit(db, actor, h.resumeRequest), /SYNC_DELTA_AUDIT_NOT_CLEAR/);
+    assert.deepEqual(await h.f.policy(), blocked);
+  };
+  await refuse();
+  await receipt(true);
+  for (const field of ['next_cursor', 'event_count'] as const) {
+    const adjust = (delta: number) => db.pool.query(`UPDATE external_full_receipts SET ${field}=${field}+$2
+      WHERE cursor_key=$1`, [evidence.cursorKey, delta]);
+    assert.equal((await adjust(1)).rowCount, 1);
+    await refuse();
+    assert.equal((await adjust(-1)).rowCount, 1);
+  }
+  const renamedCursorKey = `${evidence.cursorKey}:inaccessible`;
+  const moveReceipt = (from: string, to: string) =>
+    db.pool.query('UPDATE external_full_receipts SET cursor_key=$2 WHERE cursor_key=$1', [from, to]);
+  assert.equal((await moveReceipt(evidence.cursorKey, renamedCursorKey)).rowCount, 1);
+  await refuse();
+  await moveReceipt(renamedCursorKey, evidence.cursorKey);
+
+  const loseBlob = async (hash: string) => {
+    const absent = await db.transaction(async tx => {
+      await tx.query('DELETE FROM external_source_blob_refs WHERE hash=$1 AND reference=$2', [hash, evidence.pin]);
+      return (await tx.query<{ compressed: Buffer; raw_exact: boolean; created_at: string }>(`DELETE FROM external_source_blobs
+        WHERE hash=$1 RETURNING compressed,raw_exact,created_at::text`, [hash])).rows[0];
+    });
+    assert.ok(absent);
+    await refuse();
+    await db.transaction(async tx => {
+      await tx.query(`INSERT INTO external_source_blobs(hash,compressed,raw_exact,created_at) VALUES($1,$2,$3,$4)`,
+        [hash, absent.compressed, absent.raw_exact, absent.created_at]);
+      await tx.query(`INSERT INTO external_source_blob_refs(hash,kind,reference) VALUES($1,'audit',$2)`, [hash, evidence.pin]);
+    });
+  };
+  await loseBlob(evidence.event_hash);
+  await loseBlob(evidence.response_hash);
+
+  const updateBlob = (hash: string, content: Buffer) =>
+    db.pool.query('UPDATE external_source_blobs SET compressed=$2 WHERE hash=$1', [hash, content]);
+  for (const [hash, original] of [[evidence.event_hash, evidence.canonical], [evidence.response_hash, evidence.original_page]] as const) {
+    const invalidGzip = Buffer.from(original);
+    invalidGzip[invalidGzip.length - 8] = invalidGzip[invalidGzip.length - 8]! ^ 1;
+    assert.equal((await updateBlob(hash, invalidGzip)).rowCount, 1);
+    await refuse();
+    await updateBlob(hash, original);
+  }
+
+  const wrongMember = raw({ ...evidence.page, changes: evidence.page.changes.map(event => ({ ...event, vehicleId: '999' })) });
+  await db.pool.query('INSERT INTO external_source_blobs(hash,compressed,raw_exact) VALUES($1,$2,true)',
+    [wrongMember.hash, gzipSync(wrongMember.body)]);
+  const linkPage = (hash: string) => db.pool.query(`UPDATE external_full_events
+    SET document_refs=jsonb_set(document_refs,'{0,responseHash}',to_jsonb($2::text)) WHERE event_id=$1`, [eventId, hash]);
+  assert.equal((await linkPage(wrongMember.hash)).rowCount, 1);
+  await refuse();
+  await linkPage(evidence.response_hash);
+
+  const resumed = await resumeDeltaAudit(db, actor, h.resumeRequest);
+  assert.equal(resumed.phase, 'draining');
+  assert.equal(resumed.event_audit_cursor, '2000');
+  const restarted = await h.f.start();
+  await restarted.tick();
+  assert.equal((await h.f.policy())?.phase, 'ready');
+  assert.equal((await h.f.policy())?.event_audit_cursor, '2001');
+  assert.equal((await db.pool.query('SELECT 1 FROM external_source_documents WHERE id=$1', [evidence.id])).rowCount, 0);
+  assert.deepEqual((await db.pool.query('SELECT document_refs FROM external_full_events WHERE event_id=$1', [eventId])).rows[0]?.document_refs,
+    evidence.refs);
+  assert.deepEqual(await h.state(), h.baseline);
+  assert.deepEqual(await h.observation(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
 test('resuming needs archived price proof and rechecks the same frontier after a worker restart', async t => {
   const h = await historicalPriceAudit(t, 68000);
-  // Simulate a missing event archive without altering the received event or its stored hash.
+  // A retained document of the wrong kind is a conflict, even if both blobs survive.
   const parked = await h.f.db.pool.query("UPDATE external_source_documents SET kind='csv' WHERE id=$1 AND kind='event'", [h.documentId]);
   assert.equal(parked.rowCount, 1);
   await h.worker.tick();
@@ -730,7 +851,7 @@ test('historical relist audit yields to a later received withdrawal outside the 
   assert.equal(await h.f.published('803'), undefined);
 });
 
-async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false) {
+async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, pricePageHasMore = false) {
   const source = 'dongchedi' as const;
   const f = await fixture(t, source);
   const changed = ['902', '903'];
@@ -740,8 +861,8 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false) 
   const priceAt = '2024-10-03T00:01:00.000Z';
   const upstream = (eventId: number, id: string, kind: Change['type'], at: string) =>
     ({ ...change(eventId, id, kind, at), source });
-  const ingestAndRetain = async (worker: FullSyncWorker, events: Change[]) => {
-    await f.ingest(worker, events);
+  const ingestAndRetain = async (worker: FullSyncWorker, events: Change[], hasMore = false) => {
+    await f.ingest(worker, events, hasMore);
     // Keep independently retained audit evidence available through ordinary
     // archive cleanup after live work releases its own pending references.
     const { rows: [pinned] } = await f.db.pool.query<{ documents: number; blobs: number }>(`WITH originals AS MATERIALIZED (
@@ -775,7 +896,7 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false) 
     FROM generate_series($2::integer,2000) n`, [baseAt, ids.length + 1]);
   const prices = changed.map((id, i) => ({ ...upstream(2001 + i, id, 'price', priceAt),
     oldPrice: { cny: 70000 }, newPrice: { cny: 68000 } }));
-  await ingestAndRetain(worker, prices);
+  await ingestAndRetain(worker, prices, pricePageHasMore);
   assert.equal(await worker.applyEvents(), 2);
   assert.equal(await worker.details(), 2);
   for (const e of prices) {
@@ -873,6 +994,28 @@ test('historical price audits through its proven post-snapshot withdrawal and re
   assert.equal(ready?.event_audit_cursor, '2010');
   assert.equal(ready?.high_water, '2010');
   assert.equal(ready?.snapshot_id, h.resumeRequest.snapshotId);
+  assert.deepEqual(await h.observations(), h.original);
+  assert.equal(h.f.exportCalls(), 0);
+});
+
+test('pruned metadata can use original archives across a price, withdrawal and relist chain', async t => {
+  const h = await postSnapshotLifecycle(t, true, true);
+  const oldPrice = await pruneEventMetadata(h.f, 2001);
+  assert.equal(oldPrice.page.hasMore, true, 'An original nonterminal change page can still have a completed local receipt.');
+  // Applying a withdrawal publishes its event archive as a source head, so retention keeps it.
+  assert.equal((await h.f.db.pool.query(`SELECT 1 FROM external_full_events e JOIN external_source_heads head
+    ON head.document_id=(e.document_refs->0->>'id')::uuid WHERE e.event_id=2003 AND head.kind='event'`)).rowCount, 1);
+  const relist = await pruneEventMetadata(h.f, 2007);
+  const standaloneRelist = await pruneEventMetadata(h.f, 2009);
+
+  await h.worker.tick();
+  const ready = await h.f.policy();
+  assert.equal(ready?.phase, 'ready');
+  assert.equal(ready?.event_audit_cursor, '2010');
+  assert.equal(ready?.high_water, '2010');
+  assert.equal(ready?.snapshot_id, h.resumeRequest.snapshotId);
+  assert.equal((await h.f.db.pool.query('SELECT 1 FROM external_source_documents WHERE id=ANY($1::uuid[])',
+    [[oldPrice.id, relist.id, standaloneRelist.id]])).rowCount, 0);
   assert.deepEqual(await h.observations(), h.original);
   assert.equal(h.f.exportCalls(), 0);
 });
