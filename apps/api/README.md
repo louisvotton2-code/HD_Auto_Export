@@ -257,7 +257,7 @@ node dist/external/full-sync/cli.js control --action pause --version CURRENT_VER
 
 必要环境：`DATABASE_URL_FILE`、`CHINACARAPI_KEY_FILE` 指向只读私有凭据文件；`FULL_SYNC_ARCHIVE_ROOT` 是新数据盘内的绝对持久目录，不是系统临时目录。进程内部连接池2、网络并发1、总速率至多2请求/秒并持久遵守Retry-After；部署另限制0.5 CPU/512MiB。bulk从500开始，超时/响应过大递归减半，成功分批即入库。原文先压缩共享存档，事件/工作只保存引用；整页持久后才推进接收游标，实际应用独立计数。CSV先流式校验完整性，单次缺行只触发核查；明确撤回优先处理，有效备用来源可接替代表，稳定挂牌ID和人工覆盖不搬移。
 
-容量检查区分CSV暂存与业务详情样本：下载/暂存始终受70%磁盘硬限制；首批最多1万条的三语详情与报告实际完成后才能申请扩量。样本满额等待报告/判定时停止推进CSV快照和获取新身份详情，继续撤回及被增量事件更新的已有样本补齐。进入 `capacity_pending` 后，仅允许SQL筛选为已有样本的详情/报告任务（至多500详情及20报告/轮）及所需当日账户额度刷新；匹配裁决通过后的下一轮恢复新增身份和快照。此路径仍受管理员暂停、70%硬限制及供应商配额约束，不把报告未查当无报告。
+容量检查区分CSV暂存与业务详情样本：下载/暂存始终受独立实盘硬限制（默认 70%）；首批最多1万条的三语详情与报告实际完成后才能申请扩量。样本满额等待报告/判定时停止推进CSV快照和获取新身份详情，继续撤回及被增量事件更新的已有样本补齐。进入 `capacity_pending` 后，仅允许SQL筛选为已有样本的详情/报告任务（至多500详情及20报告/轮）及所需当日账户额度刷新；匹配裁决通过后的下一轮恢复新增身份和快照。此路径仍受管理员暂停、实盘硬限制及供应商配额约束，不把报告未查当无报告。
 
 `external_full_sync.capacity_estimate` 仅供内部测量与裁决绑定，不进入公开API。`snapshotId/targetRows` 取最新已完整验证的CSV；`sampleRows/detailSampleRows` 是首批固定样本数，首次放行后新增身份不再加入，撤回不补替身。门槛为CSV目标与1万的较小值。`detailSampleRows=activeDetailSampleRows+withdrawnSampleRows`；撤回单列终态，不计入 `threeLocaleCompleted/reportCompleted/confirmedNoReport`，重新挂牌须重新补齐三语及报告。`distinctProcessed` 是全库取得过详情的身份数，供后续增长时计算真实业务均值，不能一直用1万除增长后的全库大小。
 
@@ -267,17 +267,20 @@ node dist/external/full-sync/cli.js control --action pause --version CURRENT_VER
 
 ### 容量裁决文件与证据绑定
 
+`FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT` 控制 worker 当前实盘暂停线，支持 70 和 80，默认 70。`FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT` 控制预测峰值，支持 70、80 和 90，默认与实盘线相同。宿主根配置分别读取 `heavyWorkPausePercent` 和 `projectedPeakPausePercent`，两侧有效门槛必须一致。生产批准的 80/90 配置下，当前实盘达到 80% 或预计峰值达到 90% 均暂停。60% 告警、独立 I/O、备份、绝对字节预算照旧。旧原生回执省略峰值字段时按实盘线读取。宿主使用独立门槛时必须写入 `projectedPeakPausePercent`，旧 worker 会拒绝这种形状。
+
+
 OPS每60秒有锁测量并原子替换宿主 `/srv/hd-auto/data/full-sync-capacity/decision.json`；整个目录只读挂载至worker的 `/private/capacity`，设置 `FULL_SYNC_CAPACITY_DECISION_FILE=/private/capacity/decision.json`。worker只读，不创建/修改裁决。文件须为私有普通文件（建议0600或0640，禁止组写/其他用户权限和符号链接），不超过64KiB。原子替换目录挂载可让每次读取看到完整的新/旧文件；不能挂载单个被替换的inode。
 
-JSON严格字段：`schemaVersion:1`、`model:"hd-ext07-peak-v1"`、`snapshotId`（UUID）、`targetRows/sampleRows`、`evidenceHash`（64位小写SHA-256）、UTC `measuredAt/expiresAt`、`decision:"allow"|"wait"|"blocked"`、`reason`、`projectedPeakBytes`（证据不足可为null）、`diskTotalBytes/currentUsedBytes`、`components`。所有字节/数量是非负安全整数，磁盘总量必须为正且与worker实际盘相同；非null峰值不得小于当前实占。`reason` 严格采用OPS控制器四个大写固定枚举：allow对应 `SYNC_CAPACITY_VERIFIED`，blocked对应 `SYNC_CAPACITY_LIMIT`，wait对应 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE` 或 `SYNC_CAPACITY_WAITING_MEASUREMENT`；未知码、大小写变化和状态不匹配均拒绝。`components` 为至多64项的平面键值，键至多64字符且字母开头，值只接受非负安全整数或至多64字符的小写字母开头的字母/数字/下划线/连字符模型代码，不接收正文、车辆信息、URL或凭据。JSON不接受额外字段。
+JSON严格字段：`schemaVersion:1`、`model:"hd-ext07-peak-v1"`、`snapshotId`（UUID）、`targetRows/sampleRows`、`evidenceHash`（64位小写SHA-256）、UTC `measuredAt/expiresAt`、`decision:"allow"|"wait"|"blocked"`、`reason`、`projectedPeakBytes`（证据不足可为null）、`diskTotalBytes/currentUsedBytes`、可选 `heavyWorkPausePercent/projectedPeakPausePercent`、`components`。所有字节/数量是非负安全整数，磁盘总量必须为正且与worker实际盘相同；非null峰值不得小于当前实占。`reason` 严格采用OPS控制器四个大写固定枚举：allow对应 `SYNC_CAPACITY_VERIFIED`，blocked对应 `SYNC_CAPACITY_LIMIT`，wait对应 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE` 或 `SYNC_CAPACITY_WAITING_MEASUREMENT`；未知码、大小写变化和状态不匹配均拒绝。`components` 为至多64项的平面键值，键至多64字符且字母开头，值只接受非负安全整数或至多64字符的小写字母开头的字母/数字/下划线/连字符模型代码，不接收正文、车辆信息、URL或凭据。JSON不接受额外字段。
 
 BE 唯一生成 `evidenceHash`，OPS 原样回写。SQL 按 `source,external_id COLLATE "C"` 取固定样本，最多 10001 行，多一行用于拒绝超量。每个身份 `[source,external_id]` 及容量状态 `[source,external_id,canonical_id,state,sortedLocales,report_state]` 使用 PostgreSQL JSONB 文本、UTF-8 和 SHA-256，再依身份 C 顺序拼接定长摘要并计算 `cohortHash/stateHash`。集合、实际语言和报告状态参与绑定，来源业务序号、任务代次、同状态详情／报告复查时间保留业务用途。外层以仓库 `jsonHash` 对 `{model:"hd-ext07-evidence-v2",snapshotId,targetRows,cohortHash,stateHash,lifecycleEpoch,history}` 计算摘要。`history` 保留原有可信实测基线字段。抽样身份实际撤回或重挂时在同一事务更新持久 `lifecycleEpoch`。更换快照、目标、样本身份、容量状态或生命周期仍需对应裁决。切换本协议及回退到旧版时，worker 先生成匹配本版的新估算再等待 OPS 原样回签，旧哈希在此期间无法放行。
 
-首次披露和恢复放行继续校验真实三语、报告观察及固定样本。新详情仍确认同一在售挂牌有报告，且上一份是实际有时间记录的终态时，保留上一份报告观察，照常排队复查。首次确认、状态不明或重挂后需要重新核实。等待分支先检查当前样本与裁决，报告或三语确实未齐时才进入受限修复。一次物理测量在同一有效绑定下最多复用 30 秒，复用时独立重读裁决文件、时效、当前磁盘和批准预算，保留原物理测量时间。真实状态变化、超过观察期限或可信基线变化会触发重新测量。现有 OPS 峰值模型及容量、备份和 70% 实盘门槛保持使用。
+首次披露和恢复放行继续校验真实三语、报告观察及固定样本。新详情仍确认同一在售挂牌有报告，且上一份是实际有时间记录的终态时，保留上一份报告观察，照常排队复查。首次确认、状态不明或重挂后需要重新核实。等待分支先检查当前样本与裁决，报告或三语确实未齐时才进入受限修复。一次物理测量在同一有效绑定下最多复用 30 秒，复用时独立重读裁决文件、时效、当前磁盘和批准预算，保留原物理测量时间。真实状态变化、超过观察期限或可信基线变化会触发重新测量。现场使用原 OPS 峰值公式、配置的实盘门槛和独立备份保护。
 
-裁决最长有效10分钟，未来时差最多60秒；每次重任务前重新读取核对时效、快照和样本绑定，不永久缓存allow。下一每日CSV尚未完整验证时仍绑定上一已验证快照，相关暂存峰值由OPS预留；新CSV验证后立即重新绑定，未取得新裁决不推进业务扩量。只有合法匹配的allow且 `projectedPeakBytes < diskTotalBytes*0.7`、当前真实磁盘占用<70%、未人工暂停且额度可用时才放行。
+裁决最长有效10分钟，未来时差最多60秒；每次重任务前重新读取核对时效、快照和样本绑定，不永久缓存allow。下一每日CSV尚未完整验证时仍绑定上一已验证快照，相关暂存峰值由OPS预留；新CSV验证后立即重新绑定，未取得新裁决不推进业务扩量。只有合法匹配的 allow 且预计峰值和当前真实磁盘占用分别低于各自门槛、未人工暂停且额度可用时才放行。
 
-错误区分：样本/历史不足为 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE`；缺文件、非法JSON、过期、错批次/hash或wait/blocked为 `SYNC_CAPACITY_AWAITING_DECISION`；真实预测或当前磁盘达到70%为 `SYNC_CAPACITY_LIMIT`；额外峰值上限不足为 `SYNC_CAPACITY_BUDGET_CAP`。已有pending阻断一般重任务为 `SYNC_CAPACITY_PENDING`，人工暂停/当前磁盘守卫仍可能返回 `SYNC_HEAVY_PAUSED`。新的匹配allow能自动恢复，无需重启或修改环境。等待期间仍保持上述受控样本修复与撤回。
+错误区分：样本/历史不足为 `SYNC_CAPACITY_INSUFFICIENT_SAMPLE`；缺文件、非法JSON、过期、错批次/hash或wait/blocked为 `SYNC_CAPACITY_AWAITING_DECISION`；真实预测或当前磁盘达到各自门槛为 `SYNC_CAPACITY_LIMIT`；额外峰值上限不足为 `SYNC_CAPACITY_BUDGET_CAP`。已有pending阻断一般重任务为 `SYNC_CAPACITY_PENDING`，人工暂停/当前磁盘守卫仍可能返回 `SYNC_HEAVY_PAUSED`。新的匹配allow能自动恢复，无需重启或修改环境。等待期间仍保持上述受控样本修复与撤回。
 
 组合回归 `test/full-sync-capacity-ops.test.ts` 必须在包含BE与OPS控制器的集成版本、提供Python 3的隔离检查环境执行。它直接导入仓库 `deploy/runtime/production/capacity-decision.py` 的纯判定/原子写文件函数，用合成测量生成真实控制器输出，再交BE读取；覆盖allow、70%限制、样本不足和测量失败，不调用生产main/测量器或外部来源。不复制控制器/输出样例，也不在缺少控制器时跳过。测量失败的空绑定/零磁盘结果按等待处理，不能沿用旧allow。
 

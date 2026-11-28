@@ -4,9 +4,11 @@ Controller only: `capacity-decision.py` calls sibling `capacity-measure.py::meas
 
 Input is the PM decision binding (`snapshotId`, `targetRows`, `sampleRows`, `evidenceHash`) plus `sampleEvidenceSufficient`, `projectedPeakBytes`, `diskTotalBytes`, `currentUsedBytes`, and a flat `components` dictionary of byte-valued safe integers (names ending in `Bytes`). The measurement implementation must obtain fresh data, not return a prior cached decision. Hash is copied from BE, never reconstructed here. The controller checks the heavy-work boundary and publishes only whitelisted fields, valid for at most ten minutes.
 
-同步裁决和数据盘告警服务共用 root 所有的 `/etc/hd-auto/capacity.json`。`heavyWorkPausePercent` 默认 `70`，允许显式设置 `80`。告警自 `60%` 起生效。启用 `80` 时，重任务 worker 与一次性补录容器使用 `FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT=80`，原生回执同时携带 `heavyWorkPausePercent: 80`。备份写入限制由下方的独立流程检查。
+同步裁决和数据盘告警服务共用 root 所有的 `/etc/hd-auto/capacity.json`。`heavyWorkPausePercent` 控制实际磁盘用量，默认 `70`，允许显式设置 `80`。回执中的实测用量按 worker 可用空间扣减，包含文件系统保留块。`projectedPeakPausePercent` 控制估算峰值，允许设为 `70`、`80` 或 `90`，默认与实际门槛相同。达到任一门槛时，原生裁决拒绝放行。实际用量告警自 `60%` 起生效，I/O 和备份保护继续独立执行。
 
-`capacity-measure.py::measure(prospective_target_rows=…)` 用同一次采样的宿主实测、数据库组件与备份保留口径重算拟议目标。前瞻结果与当前原生回执分别保存，投影本身不会生成授权。改变累计准入上限后，仅接受原生计时器为当前快照和新目标生成的有效回执。
+实际 `80%`、估算 `90%` 时，重任务 worker 和一次性操作容器同时使用 `FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT=80` 与 `FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT=90`。宿主配置及容器策略须与同一次采样的原生回执匹配。回执只在两个门槛不同时增加 `projectedPeakPausePercent`。旧 worker 会拒绝含独立门槛的回执。宿主测量与裁决脚本按同一版一起安装。变更时先部署支持新字段的单 worker，在原门槛下核验，再切换宿主与容器的峰值配置。回退旧 worker 前先恢复共用门槛，并取得同代、同目标的兼容回执。
+
+`capacity-measure.py::measure(prospective_target_rows=…)` 用同一次采样的宿主实测、数据库组件与备份保留口径重算拟议目标。前瞻结果的外层同时返回宿主实际使用的两个门槛。前瞻结果与当前原生回执分别保存，投影本身不会生成授权。改变累计准入上限后，仅接受原生计时器为当前快照和新目标生成的有效回执。
 
 OPS provision `/srv/hd-auto/data/full-sync-capacity` root-owned, group equal to worker APP_GID, mode 0750. Decision files are root/group 0640, atomically replaced with file/directory fsync; worker mounts the directory read-only. Keep source directory root-controlled. Install/enable the matching systemd service and minute timer after the measurement function is present. Timer timeout leaves any old decision bounded by its expiry; the worker independently enforces expiry and live disk limits.
 

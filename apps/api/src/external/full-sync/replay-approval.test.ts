@@ -16,7 +16,9 @@ const forecast = { kind: 'replay-prospective-capacity-v1', release, batch, prefl
   quota: { requiredInitialDetailIds: 6, operatorApprovedRetryIds: 2, verifiedRemainingDetailIds: 8,
     accountCheckedAt: '2026-11-23T12:59:30+00:00' } };
 
-function receipts(estimate:typeof forecast&{heavyWorkPausePercent?:unknown}=forecast) {
+function receipts(estimate:typeof forecast&{
+  heavyWorkPausePercent?:unknown; projectedPeakPausePercent?:unknown; currentUsedBytes?:unknown;
+}=forecast) {
   const raw = JSON.stringify(estimate)+'\n';
   const proof = { kind: 'replay-prewrite-checked-v1', release, batch, prospectiveReceiptSha256: sha(raw),
     checkedAt: '2026-11-23T12:59:50Z' };
@@ -64,5 +66,24 @@ test('raised replay approval binds the same explicit pause threshold and rejects
   const current=receipts(estimate);
   assert.throws(()=>validateReplayApproval(current.plan,release,current.raw,JSON.stringify(current.proof),now,80),
    {code:'SYNC_REPLAY_APPROVAL_INVALID'});
+ }
+});
+
+test('split replay proof requires a physical reading and binds the independent forecast limit',()=>{
+ const split={...forecast,heavyWorkPausePercent:80,projectedPeakPausePercent:90,currentUsedBytes:79,estimatedPeakBytes:89};
+ const approval=(estimate:Parameters<typeof receipts>[0],expectedPeak:80|90=90)=>{
+  const {plan,raw,proof}=receipts(estimate);
+  return validateReplayApproval(plan,release,raw,JSON.stringify(proof),now,80,expectedPeak);
+ };
+ assert.deepEqual(approval(split),{workerFence:'7',expiresAt:Date.parse('2026-11-23T13:00:40Z'),
+  heavyWorkPausePercent:80,projectedPeakPausePercent:90});
+ const invalid={code:'SYNC_REPLAY_APPROVAL_INVALID'};
+ assert.throws(()=>approval(split,80),invalid);
+ assert.throws(()=>approval({...forecast,heavyWorkPausePercent:80,estimatedPeakBytes:79}),invalid);
+ for(const changed of [
+  {currentUsedBytes:undefined},{currentUsedBytes:80},{currentUsedBytes:'79'},
+  {estimatedPeakBytes:90},{estimatedPeakBytes:78},{projectedPeakPausePercent:91},
+ ]) {
+  assert.throws(()=>approval({...split,...changed}),invalid);
  }
 });

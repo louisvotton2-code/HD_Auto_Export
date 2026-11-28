@@ -172,12 +172,16 @@ export async function prepareAdmissionReplay(db:Database,actor:Actor,request:Adm
     await tx.query('SELECT pg_advisory_xact_lock(78291332)');
     if(!await physicalCleanupAllowed(tx))throw new FullSyncError('SYNC_REPLAY_BACKUP_ACTIVE');
     const state=(await tx.query(`SELECT enabled,paused,disk_paused,capacity_pending,last_capacity_sample,worker_fence::text,
-      capacity_estimate->'heavyWorkPausePercent' AS heavy_work_pause_percent
+      capacity_estimate->'heavyWorkPausePercent' AS heavy_work_pause_percent,
+      capacity_estimate->'projectedPeakPausePercent' AS projected_peak_pause_percent
       FROM external_full_sync WHERE id=1 FOR UPDATE`)).rows[0]!;
     if(!state.enabled||state.paused||state.disk_paused||state.capacity_pending||Number(state.last_capacity_sample)<=0)
       throw new FullSyncError('SYNC_REPLAY_CAPACITY_NOT_READY');
     if(approval&&state.worker_fence!==approval.workerFence)throw new FullSyncError('SYNC_REPLAY_WORKER_CHANGED');
-    if(approval&&(state.heavy_work_pause_percent??defaultHeavyWorkPausePercent)!==approval.heavyWorkPausePercent)
+    const actualPercent=state.heavy_work_pause_percent??defaultHeavyWorkPausePercent;
+    const projectedPercent=state.projected_peak_pause_percent??actualPercent;
+    if(approval&&(actualPercent!==approval.heavyWorkPausePercent||
+      projectedPercent!==(approval.projectedPeakPausePercent??approval.heavyWorkPausePercent)))
       throw new FullSyncError('SYNC_REPLAY_CAPACITY_NOT_READY');
     const admission=(await tx.query<AdmissionState>(`${admissionStateSql} FOR UPDATE`)).rows[0]!;
     if((await tx.query("SELECT 1 FROM external_full_admission_replays WHERE state IN ('pending','scheduled')")).rowCount)

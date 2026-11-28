@@ -106,6 +106,10 @@ export function checkWorkerMode(input, operation) {
       !['70', '80'].includes(input.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT)) {
     throw new Error('Unsupported full-sync disk policy');
   }
+  if (input.FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT !== undefined &&
+      !['70', '80', '90'].includes(input.FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT)) {
+    throw new Error('Unsupported full-sync projected peak policy');
+  }
   if ((input.HD_FULL_REPLAY_OPS !== undefined && input.HD_FULL_REPLAY_OPS !== 'true') ||
       Boolean(operation.replay) !== (input.HD_FULL_REPLAY_OPS === 'true')) {
     throw new Error('Replay requires the dedicated one-shot service');

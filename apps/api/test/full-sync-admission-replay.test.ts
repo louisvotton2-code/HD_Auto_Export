@@ -116,6 +116,15 @@ test('replay is fenced, bound to a verified generation and never publishes from 
     const approval={workerFence:String((await worker.state()).worker_fence),expiresAt:Date.now()+60_000};
     await assert.rejects(prepareAdmissionReplay(db,actor,input,{...approval,heavyWorkPausePercent:80}),
       /SYNC_REPLAY_CAPACITY_NOT_READY/);
+    const splitApproval={...approval,heavyWorkPausePercent:80 as const,projectedPeakPausePercent:90 as const};
+    const setPolicy=(policy:Record<string,number>)=>db.pool.query(
+      'UPDATE external_full_sync SET capacity_estimate=$1::jsonb WHERE id=1',[JSON.stringify(policy)]);
+    await setPolicy({heavyWorkPausePercent:80});
+    await assert.rejects(prepareAdmissionReplay(db,actor,input,splitApproval),/SYNC_REPLAY_CAPACITY_NOT_READY/);
+    await setPolicy({heavyWorkPausePercent:80,projectedPeakPausePercent:90});
+    await assert.rejects(prepareAdmissionReplay(db,actor,input,{...approval,heavyWorkPausePercent:80}),
+      /SYNC_REPLAY_CAPACITY_NOT_READY/);
+    await setPolicy({});
     const prepared=await prepareAdmissionReplay(db,actor,input,{...approval,heavyWorkPausePercent:70});
     assert.deepEqual(prepared.items,{pending:8});
     assert.deepEqual((await prepareAdmissionReplay(db,actor,input)).items,{pending:8});

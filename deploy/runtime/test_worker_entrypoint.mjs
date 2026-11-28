@@ -85,6 +85,20 @@ test('one-shot replay accepts only the fixed plan and the exact argument shape',
 });
 
 
+test('worker entrypoint distinguishes the actual disk limit and projected peak', () => {
+  const operation = workerInvocation(['full-sync', 'serve']);
+  const base = {FULL_SYNC_ARCHIVE_ROOT: '/private/full-sync', FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT: '80'};
+  for (const peak of [undefined, '70', '80', '90']) {
+    assert.doesNotThrow(() => checkWorkerMode({...base, FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT: peak}, operation));
+  }
+  for (const peak of ['', '90.0', '91', 90]) {
+    assert.throws(() => checkWorkerMode({...base, FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT: peak}, operation),
+      /projected peak policy/);
+  }
+  assert.throws(() => checkWorkerMode({...base, FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT: '90',
+    FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT: '90'}, operation), /full-sync disk policy/);
+});
+
 test('formal admission is restricted to the private database-only service and fixed input files', () => {
   const plan = '/private/admission/plan.json', receipt = '/private/admission/receipt.json';
   for (const args of [['admission-check', '--plan', plan],

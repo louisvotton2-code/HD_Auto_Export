@@ -11,7 +11,7 @@ import {FullSyncWorker,configureFullSync} from './engine.js';
 import {fullSyncStatus,setFullSyncPaused} from './status.js';
 import {AdmissionReplayRequest,admissionReplayStatus,inspectAdmissionReplay,prepareAdmissionReplay,requireAdmissionReplayMigration} from './admission-replay.js';
 import {readReplayApproval} from './replay-approval.js';
-import {readHeavyWorkPausePercent} from './disk-policy.js';
+import {readHeavyWorkPausePercent,readProjectedPeakPausePercent} from './disk-policy.js';
 import {AdmissionChangeRequest,admissionOperationError,changeAdmissionLimit,inspectAdmissionChange,validateAdmissionApproval} from './admission-operations.js';
 import {AdmissionBatchReceiptRequest,readAdmissionBatchReceipt} from './admission-receipt.js';
 import {armDeltaPolicy,deltaPolicyOperationError,prepareDeltaPolicy,readDeltaPolicyStatus,requestDeltaReconciliation,resumeDeltaAudit} from './delta-policy.js';
@@ -31,6 +31,7 @@ async function main(){
  if(production&&(replay||admission||delta)!==(env.HD_FULL_REPLAY_OPS==='true'))
    throw new FullSyncError('SYNC_REPLAY_OPS_REQUIRED');
  const heavyWorkPausePercent=readHeavyWorkPausePercent(env.FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT);
+ const projectedPeakPausePercent=readProjectedPeakPausePercent(env.FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT,heavyWorkPausePercent);
  const db=createDatabase(env.DATABASE_URL,2);let worker:FullSyncWorker|undefined;
  try{
   if(delta){
@@ -72,7 +73,8 @@ async function main(){
     if(!request.success)throw new FullSyncError('SYNC_ADMISSION_PLAN_INVALID');
     const result=write?await changeAdmissionLimit(db,request.data,need('--actor'),()=>{
      try{return validateAdmissionApproval(readLocalSecret('/private/admission/approval.json',65_536,true),
-      request.data,env.HD_RELEASE_ID,heavyWorkPausePercent,Number(env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0));}
+      request.data,env.HD_RELEASE_ID,heavyWorkPausePercent,Number(env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0),
+      undefined,projectedPeakPausePercent);}
      catch{throw new FullSyncError('SYNC_ADMISSION_CAPACITY_APPROVAL_INVALID');}
     }).catch(admissionOperationError):await inspectAdmissionChange(db,request.data).catch(admissionOperationError);
     console.log(JSON.stringify(result));
@@ -87,7 +89,7 @@ async function main(){
    if(!request.success)throw new FullSyncError('SYNC_REPLAY_PLAN_INVALID');
    const result=command==='replay-check'?await inspectAdmissionReplay(db,request.data):
     await prepareAdmissionReplay(db,{id:need('--actor'),requestId:'full-sync:replay-prepare'},request.data,
-     production?readReplayApproval(request.data,env.HD_RELEASE_ID,heavyWorkPausePercent):undefined);
+     production?readReplayApproval(request.data,env.HD_RELEASE_ID,heavyWorkPausePercent,projectedPeakPausePercent):undefined);
    console.log(JSON.stringify(result));
    return;
   }else if(command==='replay-status'){console.log(JSON.stringify(await admissionReplayStatus(db,need('--replay-id'))));return;
@@ -114,7 +116,7 @@ async function main(){
     beforeBulk:(count,source)=>reserveBulkQuota(db,count,source),
     onBulkAttempt:observation=>console.info(JSON.stringify({event:'external.full_sync.bulk_attempt',...observation}))
    });
-   worker=new FullSyncWorker(db,client,directory,undefined,observation=>console.info(JSON.stringify(observation)),heavyWorkPausePercent);
+   worker=new FullSyncWorker(db,client,directory,undefined,observation=>console.info(JSON.stringify(observation)),heavyWorkPausePercent,projectedPeakPausePercent);
    if(!await worker.acquire()){process.exitCode=75;return;}
    let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});
    const max=Number(flags.get('--max-ticks')??1);if(!Number.isInteger(max)||max<1||max>10000)throw new FullSyncError('SYNC_USAGE');

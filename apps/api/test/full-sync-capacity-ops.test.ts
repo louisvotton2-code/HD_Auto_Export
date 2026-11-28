@@ -7,10 +7,11 @@ import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {readCapacityDecision} from '../src/external/full-sync/capacity.js';
+import {readHeavyWorkPausePercent,readProjectedPeakPausePercent} from '../src/external/full-sync/disk-policy.js';
 
 // Run on the integrated BE + OPS checkout. No copied controller, fallback output or skipped missing producer.
 // Import only decision/atomic_write; never main(), live measurement, production paths or supplier calls.
-test('BE consumes actual OPS controller output for allow, limit, insufficient sample and failed measurement',async()=>{
+test('BE consumes actual OPS output for both policies and fails closed across mixed settings',async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'hd-capacity-ops-'));
  const controller=fileURLToPath(new URL('../../../deploy/runtime/production/capacity-decision.py',import.meta.url));
  const now=Date.parse('2026-11-14T00:00:00Z');
@@ -35,6 +36,12 @@ for name, value in [
     ('limit', {**measurement, 'projectedPeakBytes': 700000000}),
     ('insufficient', {**measurement, 'sampleEvidenceSufficient': False}),
     ('failed', None),
+    ('legacy80', {**measurement, 'heavyWorkPausePercent': 80, 'projectedPeakBytes': 799999999}),
+    ('explicit80', {**measurement, 'heavyWorkPausePercent': 80, 'projectedPeakPausePercent': 80, 'projectedPeakBytes': 799999999}),
+    ('split', {**measurement, 'heavyWorkPausePercent': 80, 'projectedPeakPausePercent': 90, 'projectedPeakBytes': 899999999}),
+    ('split_actual', {**measurement, 'heavyWorkPausePercent': 80, 'projectedPeakPausePercent': 90,
+                      'currentUsedBytes': 800000000, 'projectedPeakBytes': 899999999}),
+    ('split_peak', {**measurement, 'heavyWorkPausePercent': 80, 'projectedPeakPausePercent': 90, 'projectedPeakBytes': 900000000}),
 ]:
     controller.atomic_write(Path(sys.argv[2]) / (name + '.json'), controller.decision(value, now), os.getgid())
 `,controller,directory,JSON.stringify(measurement)],{timeout:10000,maxBuffer:65536});
@@ -53,5 +60,33 @@ for name, value in [
    // Missing measurement carries null identity/hash and zero disk: it must fail closed, never reuse the old allow.
    if(fixture.parsed)assert.deepEqual(result.decision,generated);else assert.equal(result.decision,null);
   }
+  const legacy=path.join(directory,'legacy80.json'),explicitLegacy=path.join(directory,'explicit80.json');
+  const split=path.join(directory,'split.json'),splitActual=path.join(directory,'split_actual.json'),splitPeak=path.join(directory,'split_peak.json');
+  assert.deepEqual(JSON.parse(await readFile(legacy,'utf8')),JSON.parse(await readFile(explicitLegacy,'utf8')));
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(legacy,'utf8')),'projectedPeakPausePercent'),false);
+  assert.equal((await readCapacityDecision(legacy,binding,disk,0,now,80)).allowed,true);
+  assert.equal((await readCapacityDecision(legacy,binding,disk,0,now,80,90)).code,'SYNC_CAPACITY_AWAITING_DECISION');
+  assert.equal((await readCapacityDecision(split,binding,disk,0,now,80)).code,'SYNC_CAPACITY_AWAITING_DECISION');
+  const liveBelow={...disk,available:200000001,used:.799999999};
+  const liveAt={...disk,available:200000000,used:.8};
+  const allow=await readCapacityDecision(split,binding,liveBelow,899999999,now,80,90);
+  assert.equal(allow.allowed,true);
+  assert.equal(allow.decision?.heavyWorkPausePercent,80);
+  assert.equal(allow.decision?.projectedPeakPausePercent,90);
+  assert.equal((await readCapacityDecision(split,binding,liveAt,0,now,80,90)).code,'SYNC_CAPACITY_LIMIT');
+  assert.equal((await readCapacityDecision(splitActual,binding,liveBelow,0,now,80,90)).code,'SYNC_CAPACITY_LIMIT');
+  assert.equal((await readCapacityDecision(splitPeak,binding,liveBelow,0,now,80,90)).code,'SYNC_CAPACITY_LIMIT');
+  assert.equal((await readCapacityDecision(split,binding,liveBelow,899999998,now,80,90)).code,'SYNC_CAPACITY_BUDGET_CAP');
+  assert.equal((await readCapacityDecision(split,{...binding,evidenceHash:'0'.repeat(64)},disk,0,now,80,90)).allowed,false);
+  assert.equal((await readCapacityDecision(split,binding,disk,0,now+600_001,80,90)).allowed,false);
  }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+test('forecast percentage defaults to physical and cannot set the physical pause to 90',()=>{
+ assert.equal(readProjectedPeakPausePercent(undefined,70),70);
+ assert.equal(readProjectedPeakPausePercent(undefined,80),80);
+ assert.equal(readProjectedPeakPausePercent('90',80),90);
+ for(const invalid of ['', '090', '89', '91', '90.0', ' 90'])
+  assert.throws(()=>readProjectedPeakPausePercent(invalid,80),{code:'SYNC_PROJECTED_PEAK_PAUSE_PERCENT_INVALID'});
+ assert.throws(()=>readHeavyWorkPausePercent('90'),{code:'SYNC_HEAVY_WORK_PAUSE_PERCENT_INVALID'});
 });
