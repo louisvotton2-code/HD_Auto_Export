@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, mock, test } from 'node:test';
+import type { PoolClient } from 'pg';
 import { makePublicVehicleFixture, makeVehicleDraftFixture } from '@hd/contracts/fixtures';
 import { MarketPriceResponseSchema, SalesVehicleListResponseSchema, SalesVehicleLookupResponseSchema } from '@hd/contracts/public';
 import { buildApp } from '../src/app.js';
@@ -508,7 +509,7 @@ test('market includes qualifying rows across cursor pages and shares the full sn
   assert.equal(whole.asOf, tail.asOf);
 });
 
-test('quote preparation resumes across equal timestamps and captures rows that move behind the cursor', async () => {
+test('quote preparation resumes across ties, moved rows and rolled-back verification', async () => {
   const scope = { database: databaseName, make: 'seed-make', model: 'seed-model' };
   await db.pool.query(`WITH identities AS (
     INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,
@@ -532,9 +533,79 @@ test('quote preparation resumes across equal timestamps and captures rows that m
   const resumed = await maintainMarketProjection(db, { ...target, action: 'seed' });
   assert.ok('phase' in resumed && resumed.phase === 'preparing' && resumed.seedMask === 2 && resumed.processed === 1);
   for (let mask = 2; mask <= 7; mask++) await maintainMarketProjection(db, { ...target, action: 'seed' });
-  for (const size of [128, 128, 1]) {
-    const step = await maintainMarketProjection(db, { ...target, action: 'step' });
-    assert.ok('phase' in step && step.processed === size && step.phase === (size < 128 ? 'verified' : 'filling'));
+  const checkpoint = async () => (await db.pool.query<{ phase: string; generation: string; updated: string;
+    pending: string[]; quotes: Record<string, unknown>[] }>(`SELECT m.phase,m.generation,m.updated_at::text AS updated,
+    (SELECT coalesce(jsonb_agg(p.listing_id ORDER BY p.listing_id),'[]'::jsonb)
+      FROM external_market_quote_pending p WHERE (p.make_id,p.model_id,p.generation)=(m.make_id,m.model_id,m.generation)) AS pending,
+    (SELECT coalesce(jsonb_agg(to_jsonb(q) ORDER BY q.listing_id),'[]'::jsonb)
+      FROM external_market_quote_rows q WHERE (q.make_id,q.model_id,q.generation)=(m.make_id,m.model_id,m.generation)) AS quotes
+    FROM external_market_quote_models m WHERE m.make_id=$1 AND m.model_id=$2`, [scope.make,scope.model])).rows[0]!;
+  const original = await checkpoint();
+  assert.equal(original.phase, 'filling');
+  assert.equal(original.pending.length, 257);
+  assert.equal(original.quotes.length, 1);
+
+  await assert.rejects(maintainMarketProjection(db, { ...target, database: 'wrong_db', action: 'step', batchSize: 8 }),
+    /database target does not match/);
+  await assert.rejects(maintainMarketProjection(db, { ...target, generation: randomUUID(), action: 'step', batchSize: 8 }),
+    /generation does not match/);
+  await db.transaction(async tx => {
+    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+    assert.deepEqual(await maintainMarketProjection(db, { ...target, action: 'step', batchSize: 8 }), { status: 'busy' });
+  });
+  assert.deepEqual(await checkpoint(), original);
+
+  const faultAtVerification = (fault: (tx: PoolClient, ids: string[]) => Promise<void>) => ({
+    ...db,
+    transaction<T>(work: (tx: PoolClient) => Promise<T>) {
+      return db.transaction(tx => {
+        const realQuery = tx.query.bind(tx);
+        const client = Object.create(tx) as PoolClient;
+        client.query = (async (sql: string, values?: unknown[]) => {
+          if (/verify_external_market_quote_batch|desired_external_market_quote/.test(sql)) {
+            await fault(tx, values![0] as string[]);
+          }
+          return realQuery(sql, values);
+        }) as PoolClient['query'];
+        return work(client);
+      });
+    },
+  });
+  let timeoutAttempts = 0;
+  const timeoutDb = faultAtVerification(async (tx, ids) => {
+    timeoutAttempts++;
+    assert.deepEqual(ids, original.pending.slice(0,128));
+    const staged = await tx.query(`SELECT listing_id FROM external_market_quote_rows
+      WHERE generation=$1 AND listing_id=ANY($2::uuid[]) ORDER BY listing_id`, [target.generation,ids]);
+    assert.deepEqual(staged.rows.map(row => row.listing_id), ids);
+    assert.equal((await tx.query('SHOW statement_timeout')).rows[0].statement_timeout, '1200ms');
+    // PostgreSQL itself cancels the query at the production statement limit.
+    await tx.query('SELECT pg_sleep(2)').catch((error: unknown) => {
+      assert.ok(error && typeof error === 'object' && 'code' in error && error.code === '57014');
+      throw error;
+    });
+  });
+  await assert.rejects(maintainMarketProjection(timeoutDb, { ...target, action: 'step' }),
+    { phase: 'verify', batchSize: 128 });
+  assert.equal(timeoutAttempts, 1);
+  assert.deepEqual(await checkpoint(), original);
+
+  const mismatchDb = faultAtVerification(async (tx, ids) => {
+    assert.deepEqual(ids, original.pending.slice(0,8));
+    await tx.query('UPDATE external_market_quote_rows SET price_cny=price_cny+1 WHERE listing_id=$1', [ids[0]]);
+  });
+  await assert.rejects(maintainMarketProjection(mismatchDb, { ...target, action: 'step', batchSize: 8 }),
+    /batch differs from authoritative data/);
+  assert.deepEqual(await checkpoint(), original);
+
+  let processed = 0;
+  for (const [batchSize, expected] of [[32,32], [8,8], [1,1], [undefined,128], [undefined,88]] as const) {
+    const step = await maintainMarketProjection(db, { ...target, action: 'step', batchSize });
+    processed += expected;
+    const pending = original.pending.slice(processed);
+    assert.ok('phase' in step && step.processed === expected && step.generation === target.generation &&
+      step.phase === (pending.length ? 'filling' : 'verified'));
+    assert.deepEqual((await checkpoint()).pending, pending);
   }
   const ready = await maintainMarketProjection(db, { ...target, action: 'activate' });
   assert.ok('phase' in ready && ready.phase === 'ready');

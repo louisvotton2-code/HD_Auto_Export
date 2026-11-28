@@ -358,12 +358,12 @@ OPS容量模型同时接受 `hd-ext07-peak-v1` 和 `hd-ext09-daily-two-v1`，样
 ```text
 begin --make MAKE --model MODEL --database DATABASE
 seed --make MAKE --model MODEL --database DATABASE --generation UUID
-step --make MAKE --model MODEL --database DATABASE --generation UUID
+step --make MAKE --model MODEL --database DATABASE --generation UUID [--batch-size 1..128]
 status --make MAKE --model MODEL --database DATABASE
 activate --make MAKE --model MODEL --database DATABASE --generation UUID
 disable --make MAKE --model MODEL --database DATABASE --generation UUID
 ```
 
-`begin` 返回代号。重复 `seed` 到 `filling`，每次按车型索引取至多 256 个现有挂牌 ID。重复 `step` 到 `verified`，每批核证至多 128 个挂牌的轻量字段。同一流程可按代号继续，退出 75 表示原同步写入锁正在使用，按原资源节奏后移。每批有事务和语句上限。原有同步、磁盘和 I/O 保护继续由运维负责。只准备已定位的车型，不启动第二个同步进程，也不取得供应商详情。
+`begin` 返回代号。重复 `seed` 到 `filling`，每次按车型索引取至多 256 个现有挂牌 ID。重复 `step` 到 `verified`，每批核证至多 128 个挂牌的轻量字段。同一流程可按代号继续，退出 75 表示原同步写入锁正在使用，按原资源节奏后移。每批保持 1.2 秒语句、3 秒事务和 220 毫秒锁上限。默认批量 128，可在已核对同代状态并经过原磁盘和 I/O 检查后，逐次手工以 32、8 或更小批量续跑。若步骤内语句被 PostgreSQL 取消，标准错误给出 `status:"query-cancelled"`、`phase`（select、refresh、verify 或 finish）和 `batchSize`，退出 1。失败事务不提交报价、待办移除或进度变化。退出 75 仍专用于原同步写入锁忙。最小批次仍被取消时停止并核对现场。只准备已定位的车型，不启动第二个同步进程，也不取得供应商详情。
 
 `activate` 需要已核完成的代号。在同一只读快照比对完整样本和极值，并测量无应用缓存的真实读和同步负载后逐车型启用。其它车型、未就绪或已停用代次使用准确的旧查询。已缓存统计最多保留 10 分钟，极值车辆和汇率仍用当次真实公开状态复核。紧急回退可运行同代 `disable`，并保留 0058 账本和新版备份助手。重复停用可分批清理遗留队列。首方恢复默认没有已启用车型，再按需要重建。
