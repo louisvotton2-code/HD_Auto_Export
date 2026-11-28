@@ -73,9 +73,9 @@ export default async function LocaleLayout({
                 ? 'К основному содержимому'
                 : 'Skip to content'}
           </a>
-          <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} enquiryAction={<EnquiryTrigger />} />
+          <SiteHeader favoriteAction={<VehicleFavorites locale={locale} />} />
           {children}
-          <SiteFooter privacyAction={
+          <SiteFooter enquiryAction={<EnquiryTrigger locale={locale} />} privacyAction={
             <TrackingConsentControls locale={locale} />
           } />
           <InteractionMotion />

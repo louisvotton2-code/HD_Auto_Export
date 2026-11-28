@@ -38,7 +38,7 @@ test('manual contact opens Telegram', async ({ page, context }) => {
   await context.route('https://t.me/HD_Auto_CN', route =>
     route.fulfill({ contentType: 'text/plain', body: 'Contact link intercepted locally' }));
   await page.goto('/en/parts/');
-  const contact = page.locator('header a[aria-haspopup="dialog"]:visible');
+  const contact = page.getByTestId('footer-enquiry-trigger');
   const dialog = page.getByRole('dialog', { name: 'Contact us' });
   await contact.click();
   await expect(dialog).toBeVisible();

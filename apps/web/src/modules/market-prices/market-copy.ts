@@ -1,0 +1,43 @@
+import type { Locale } from '@/i18n/routing';
+
+export const marketCopy = {
+  zh: {
+    title: '中国二手车行情查询',
+    intro: '按品牌和车型比较当前车源的挂牌价格。你可以按年款、里程等条件缩小范围。',
+    loading: '正在查询行情…',
+    failure: '暂时无法获取行情，请稍后重试。',
+    rateLimited: '查询过于频繁，请稍后再试。',
+    invalid: '查询条件无效，请检查后重新查询。',
+    retry: '重试',
+    share: '复制查询链接',
+    copied: '查询链接已复制',
+    manualCopy: '请手动复制查询链接。',
+    year: '年款', mileage: '里程', km: '公里',
+  },
+  en: {
+    title: 'Used Car Market Prices in China',
+    intro: 'Compare current asking prices by make and model. Narrow the search by model year, mileage and other filters.',
+    loading: 'Checking market prices…',
+    failure: 'Market prices are temporarily unavailable. Please try again.',
+    rateLimited: 'Too many searches. Please try again shortly.',
+    invalid: 'Review your filters and submit the search again.',
+    retry: 'Try again',
+    share: 'Copy search link',
+    copied: 'Search link copied',
+    manualCopy: 'Copy the search link manually.',
+    year: 'Model year', mileage: 'Mileage', km: 'km',
+  },
+  ru: {
+    title: 'Цены на автомобили с пробегом в Китае',
+    intro: 'Сравните цены в актуальных объявлениях по марке и модели. Уточните поиск по году выпуска, пробегу и другим параметрам.',
+    loading: 'Загружаем цены…',
+    failure: 'Рыночные цены временно недоступны. Попробуйте ещё раз.',
+    rateLimited: 'Слишком много запросов. Повторите попытку чуть позже.',
+    invalid: 'Проверьте параметры и повторите поиск.',
+    retry: 'Повторить',
+    share: 'Скопировать ссылку',
+    copied: 'Ссылка на поиск скопирована',
+    manualCopy: 'Скопируйте ссылку вручную.',
+    year: 'Модельный год', mileage: 'Пробег', km: 'км',
+  },
+} as const satisfies Record<Locale, Record<string, string>>;

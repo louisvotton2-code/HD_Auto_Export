@@ -23,6 +23,11 @@ export function formatDisplayAmount(value: string, locale: string, minimumDecima
   return `${rounded.sign}${whole}${separator}${decimal}`;
 }
 
+/** Discard the fractional part before formatting without changing the source amount. */
+export function formatTruncatedDisplayAmount(value: string, locale: string): string {
+  return formatDisplayAmount(value.replace(/^(-?\d+)\.\d+$/, '$1'), locale);
+}
+
 /** Editable inputs use an ASCII decimal point and retain their exact value in state. */
 export function formatDecimalInput(value: string, precision: number): string {
   const rounded = roundedDecimal(value, precision);

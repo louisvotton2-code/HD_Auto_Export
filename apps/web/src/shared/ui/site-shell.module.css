@@ -159,7 +159,6 @@
   background: #b677491a;
   color: #c88858;
 }
-.contactButton,
 .menuButton {
   width: 38px;
   height: 38px;
@@ -433,10 +432,6 @@
     color: #f5f0eb;
     background: #ffffff0f;
   }
-  .contactButton:hover {
-    background: #b6774926;
-    transform: scale(1.06);
-  }
   .footer:global(.hd-footer) .footerNav > a:hover,
   .footerContacts :global(.hd-contact-item):hover strong {
     color: #c88858;
@@ -518,7 +513,6 @@
     width: 16px;
     height: 12px;
   }
-  .contactButton,
   .menuButton {
     width: 34px;
     height: 34px;
@@ -560,11 +554,6 @@
     display: none;
   }
 }
-@media (max-width: 359px) {
-  .contactButton {
-    display: none;
-  }
-}
 @keyframes menu-enter {
   from {
     opacity: 0;
@@ -583,7 +572,6 @@
   .header:global(.hd-header),
   .header:global(.hd-header) .mainNav,
   .languageMenu > summary > svg:last-child,
-  .contactButton,
   .menuButton,
   .footerNav > a {
     transition: none;

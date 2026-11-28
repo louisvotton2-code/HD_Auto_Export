@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { hasLocale, useLocale, useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
 import { usePathname } from '@/i18n/navigation';
 import { NavigationLink as Link } from '@/shared/ui/navigation-link';
 import { routing, type Locale } from '@/i18n/routing';
@@ -12,12 +13,38 @@ import { Icon } from './icon';
 import styles from './site-shell.module.css';
 
 const languageFlags = { zh: 'CN', en: 'GB', ru: 'RU' } as const satisfies Record<Locale, FlagCountryCode>;
+const marketPath = '/market-prices/';
 
 function scrollToTop() {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?: ReactNode; enquiryAction?: ReactNode }) {
+type LanguageOptionsProps = { href: string; locale: string; onClick: () => void };
+
+function LanguageOptions({ href, locale, onClick }: LanguageOptionsProps) {
+  return routing.locales.map((language) => (
+    <Link
+      key={language}
+      href={href}
+      locale={language}
+      hrefLang={language === 'zh' ? 'zh-Hans' : language}
+      aria-current={locale === language ? 'page' : undefined}
+      lang={language}
+      className={locale === language ? 'selected' : undefined}
+      onClick={onClick}
+    >
+      <CountryFlag countryCode={languageFlags[language]} className={styles.languageFlag} />
+      {language === 'zh' ? '中文' : language.toUpperCase()}
+    </Link>
+  ));
+}
+
+function MarketLanguageOptions(props: Omit<LanguageOptionsProps, 'href'>) {
+  const search = useSearchParams()?.toString() ?? '';
+  return <LanguageOptions {...props} href={search ? `${marketPath}?${search}` : marketPath} />;
+}
+
+export function SiteHeader({ favoriteAction }: { favoriteAction?: ReactNode }) {
   const locale = useLocale();
   const t = useTranslations();
   const pathname = usePathname();
@@ -33,6 +60,8 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
   const buyActive = pathname.replace(/\/$/, '') === '/buy';
   const aboutActive = pathname.replace(/\/$/, '') === '/about';
   const partsActive = pathname === '/parts' || pathname.startsWith('/parts/');
+  const languagePath = `${pathname.replace(/\/$/, '')}/`;
+  const marketActive = languagePath === marketPath;
 
   useEffect(() => {
     const update = () => setScrolled(window.scrollY > 16);
@@ -99,9 +128,14 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
       >
         {t('Nav.about')}
       </Link>
-      <a className="nav-utility" href="#contact" onClick={closeMenu}>
-        {t('Nav.contact')}
-      </a>
+      <Link
+        href={marketPath}
+        className={marketActive ? 'nav-active' : undefined}
+        aria-current={marketActive ? 'page' : undefined}
+        onClick={closeMenu}
+      >
+        {t('Nav.marketPrices')}
+      </Link>
     </>
   );
 
@@ -169,48 +203,14 @@ export function SiteHeader({ favoriteAction, enquiryAction }: { favoriteAction?:
                 <Icon name="chevron" size={13} />
               </summary>
               <div className={styles.languageOptions}>
-                {routing.locales.map((language) => (
-                  <Link
-                    key={language}
-                    href={`${pathname.replace(/\/$/, '')}/`}
-                    locale={language}
-                    hrefLang={language === 'zh' ? 'zh-Hans' : language}
-                    aria-current={locale === language ? 'page' : undefined}
-                    lang={language}
-                    className={locale === language ? 'selected' : undefined}
-                    onClick={closeMenu}
-                  >
-                    <CountryFlag countryCode={languageFlags[language]} className={styles.languageFlag} />
-                    {language === 'zh' ? '中文' : language.toUpperCase()}
-                  </Link>
-                ))}
+                {marketActive ? (
+                  <Suspense fallback={<LanguageOptions href={marketPath} locale={locale} onClick={closeMenu} />}>
+                    <MarketLanguageOptions locale={locale} onClick={closeMenu} />
+                  </Suspense>
+                ) : <LanguageOptions href={languagePath} locale={locale} onClick={closeMenu} />}
               </div>
             </details>
           </nav>
-          {enquiryAction ?? <a
-            className={styles.contactButton}
-            href={siteConfig.contacts.whatsapp.href}
-            data-analytics-contact="whatsapp"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={t('Contacts.whatsapp')}
-          >
-            <svg
-              width="19"
-              height="19"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              aria-hidden="true"
-            >
-              <path d="M20.8 11.5a8.8 8.8 0 0 1-13 7.8L3 21l1.6-4.7a8.8 8.8 0 1 1 16.2-4.8Z" />
-              <path
-                d="M8.2 7.2c-.8 1.1.2 3.8 2 5.5s4.2 2.5 5.4 1.7l.7-1.3-2.2-1.2-.9.8a7.8 7.8 0 0 1-3-3l.8-.9-1.2-2.2-1.6.6Z"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </a>}
           <details
             ref={mobileMenu}
             className={styles.mobileMenu}

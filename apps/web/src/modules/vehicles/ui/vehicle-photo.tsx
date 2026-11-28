@@ -58,6 +58,7 @@ export function VehiclePhoto({
   compact = false,
   layout = 'catalog',
   priority = false,
+  reportRemoteFailure = true,
 }: {
   image: Photo | null;
   locale: Locale;
@@ -65,9 +66,11 @@ export function VehiclePhoto({
   compact?: boolean;
   layout?: Layout;
   priority?: boolean;
+  reportRemoteFailure?: boolean;
 }) {
   if (!image) return <VehiclePhotoFallback locale={locale} compact={compact} />;
-  return <PhotoResource key={`${image.id}:${image.url}:${image.remote?.revision ?? 0}`} image={image} locale={locale} alt={alt} compact={compact} layout={layout} priority={priority} />;
+  return <PhotoResource key={`${image.id}:${image.url}:${image.remote?.revision ?? 0}`} image={image} locale={locale}
+    alt={alt} compact={compact} layout={layout} priority={priority} reportRemoteFailure={reportRemoteFailure} />;
 }
 
 function PhotoResource({
@@ -77,6 +80,7 @@ function PhotoResource({
   compact,
   layout,
   priority,
+  reportRemoteFailure,
 }: {
   image: Photo;
   locale: Locale;
@@ -84,6 +88,7 @@ function PhotoResource({
   compact: boolean;
   layout: Layout;
   priority: boolean;
+  reportRemoteFailure: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [originalOnly, setOriginalOnly] = useState(false);
@@ -97,7 +102,7 @@ function PhotoResource({
       return;
     }
     setFailed(true);
-    reportExternalPhotoFailure(image);
+    if (reportRemoteFailure) reportExternalPhotoFailure(image);
   }
   if (failed) return <VehiclePhotoFallback locale={locale} compact={compact} />;
   return (
@@ -115,7 +120,7 @@ function PhotoResource({
       fetchPriority={priority ? 'high' : undefined}
       width={image.width ?? undefined}
       height={image.height ?? undefined}
-      referrerPolicy={image.url.startsWith('https:') ? 'no-referrer' : undefined}
+      referrerPolicy={/^https:/i.test(image.url) ? 'no-referrer' : undefined}
       onError={(event) => fail(event.currentTarget)}
     />
   );

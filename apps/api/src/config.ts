@@ -23,6 +23,9 @@ const Env = z.object({
   ANALYTICS_IP_VISIT_PEERS: z.string().max(2048).optional(),
   ANALYTICS_IP_VISIT_GATEWAY_SECRET_FILE: z.string().max(1024).optional(),
   ANALYTICS_IP_VISIT_HASH_SECRET_FILE: z.string().max(1024).optional(),
+  SALES_API_TOKEN_FILE: z.string().max(1024).refine(path.isAbsolute).optional(),
+  SALES_API_PREVIOUS_TOKEN_FILE: z.string().max(1024).refine(path.isAbsolute).optional(),
+  SALES_API_SITE_ORIGIN: z.string().max(200).url().default('https://hongdingauto.com'),
   PUBLIC_SEO_ENABLED: z.enum(['false','true']).default('false'),
   MEDIA_ROOT: z.string().default('.data/media'),
   MEDIA_DELIVERY: z.enum(['direct', 'nginx']).default('direct'),
@@ -198,6 +201,17 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
   if (providerAccountKey !== undefined && !/^[\x21-\x7e]+$/.test(providerAccountKey)) {
     throw new Error('Invalid ChinaCarAPI account key');
   }
+  const site = new URL(e.SALES_API_SITE_ORIGIN);
+  const loopbackHttp = e.NODE_ENV !== 'production' && site.protocol === 'http:' && ['127.0.0.1','localhost','[::1]'].includes(site.hostname);
+  if(site.origin !== e.SALES_API_SITE_ORIGIN || (site.protocol !== 'https:' && !loopbackHttp)) {
+    throw new Error('SALES_API_SITE_ORIGIN must be an exact trusted origin');
+  }
+  if(e.SALES_API_PREVIOUS_TOKEN_FILE && !e.SALES_API_TOKEN_FILE) throw new Error('Sales API token rotation requires a current secret');
+  const salesTokens = [e.SALES_API_TOKEN_FILE, e.SALES_API_PREVIOUS_TOKEN_FILE].flatMap(file => file ? [readLocalSecret(file,128)] : []);
+  const otherSecrets = [e.AUTH_SECRET, ssrService?.secret, analyticsGatewaySecret, ipVisitService?.gatewaySecret, ipVisitService?.hashSecret, providerAccountKey];
+  if(new Set(salesTokens).size !== salesTokens.length || salesTokens.some(token => !/^[0-9a-f]{64}$/.test(token) || otherSecrets.includes(token))) {
+    throw new Error('Sales API requires distinct 32-byte hex secrets');
+  }
   return {
     servingModeFile:e.API_SERVING_MODE_FILE, environment: e.NODE_ENV, deployment, ssrService, host: e.HOST, port: e.PORT, databaseUrl: e.DATABASE_URL,
     ipVisitService,ipVisitsMisconfigured:e.ANALYTICS_IP_VISITS_ENABLED==='true'&&!ipVisitService,
@@ -216,6 +230,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env, options: {runti
         username: e.EXTERNAL_REDIS_USER!, passwordFile: e.EXTERNAL_REDIS_PASSWORD_FILE! } : undefined,
     },
     providerAccountKey,
+    salesIntegration: { tokens: salesTokens, siteOrigin: site.origin },
     translation: {provider:e.TRANSLATION_PROVIDER,accessKeyId:e.ALI_MT_ACCESS_KEY_ID,accessKeySecret:e.ALI_MT_ACCESS_KEY_SECRET,
       libreUrl:e.LIBRETRANSLATE_URL,libreApiKey:e.LIBRETRANSLATE_API_KEY,libreEngineVersion:e.LIBRETRANSLATE_ENGINE_VERSION,
       securityToken:e.ALI_MT_SECURITY_TOKEN,region:e.ALI_MT_REGION,configVersion:e.ALI_MT_CONFIG_VERSION,maxCharactersPerHour:e.TRANSLATION_MAX_CHARACTERS_PER_HOUR},

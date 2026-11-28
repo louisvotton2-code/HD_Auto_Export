@@ -33,7 +33,10 @@ try {
   for(const audience of ['public','admin'] as const) {
     const copy=structuredClone(document);
     copy.paths=Object.fromEntries(Object.entries(copy.paths??{}).filter(([path])=>audience==='admin'?path.startsWith('/api/v1/admin/'):path.startsWith('/api/v1/')&&!path.startsWith('/api/v1/admin/')));
-    if(audience==='public' && 'components' in copy && copy.components) delete copy.components.securitySchemes;
+    if('components' in copy && copy.components?.securitySchemes) {
+      if(audience==='public') delete copy.components.securitySchemes.staffSession;
+      else delete copy.components.securitySchemes.salesService;
+    }
     await writeFile(`${directory}/${audience}.json`,`${JSON.stringify(copy,null,2)}\n`);
   }
 } finally {await app.close();}

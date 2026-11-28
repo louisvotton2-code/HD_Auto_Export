@@ -15,25 +15,22 @@ import styles from './enquiry-dialog.module.css';
 const EnquiryContext = createContext<((trigger?: HTMLElement) => void) | null>(null);
 const platforms = ['whatsapp', 'telegram', 'instagram', 'facebook', 'tiktok'] as const;
 
-export function EnquiryTrigger() {
+export function EnquiryTrigger({ locale }: { locale: Locale }) {
   const open = useContext(EnquiryContext);
-  const contacts = useTranslations('Contacts');
   if (!open) return null;
-  const title = contacts('title');
   return (
     <a
       href="#contact"
       className={styles.trigger}
       aria-haspopup="dialog"
-      aria-label={title}
-      title={title}
+      data-testid="footer-enquiry-trigger"
       onClick={(event) => {
         event.preventDefault();
         open(event.currentTarget);
       }}
     >
       <Icon name="chat" size={18} />
-      <span>{title}</span>
+      <span>{enquiryContent[locale].action}</span>
     </a>
   );
 }
@@ -72,7 +69,7 @@ export function EnquiryProvider({ locale, children }: { locale: Locale; children
 
   useEffect(() => {
     close();
-    // Keep vehicle and part consultations uninterrupted. The header trigger remains available.
+    // Keep vehicle and part consultations uninterrupted. The footer trigger remains available.
     if (/^\/(cars|parts)\/[^/]+\/?$/.test(pathname)) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     function prompt() {

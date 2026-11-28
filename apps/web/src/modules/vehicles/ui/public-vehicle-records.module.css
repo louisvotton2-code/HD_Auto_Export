@@ -1,4 +1,4 @@
-.section { min-width:0; scroll-margin-top:100px; }
+.section { min-width:0; scroll-margin-block-start:14px; }
 .body { padding:0 20px 20px; }
 .status { margin:0; color:#b9afa6; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
 .status p { margin:0 0 10px; }
@@ -16,6 +16,21 @@
 .history th:first-child { width:44%; }
 .history th:last-child { width:24%; }
 .history td { color:#e1d5ca; }
+.chart { display:grid; gap:7px; margin:0 0 14px; padding:12px clamp(8px,2vw,16px) 9px; border:1px solid #e5c05b2b; border-radius:12px; background:#1b1815; }
+.chartCaption,.chartDates { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; padding-inline:4px; font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+.chartCaption { color:#e1d5ca; }
+.chartCaption bdi { color:#dfb878; font-weight:650; }
+.chartAxes { display:grid; grid-template-columns:auto minmax(0,1fr); gap:4px; }
+.chartAmounts,.chartDates { color:#b9afa6; font-size:12px; font-variant-numeric:tabular-nums; }
+.chartAmounts { display:flex; flex-direction:column; justify-content:space-between; align-items:end; padding-block:5px; max-width:min(30vw,100px); text-align:end; overflow-wrap:anywhere; }
+.chartAmounts > :only-child { margin-block:auto; }
+.chartDates { grid-column:2; }
+.chartNote { margin:2px 4px 0; color:#b9afa6; font-size:12px; line-height:1.5; }
+.chartPlot { display:block; width:100%; height:auto; min-height:78px; }
+.chartGuide,.chartLine { fill:none; vector-effect:non-scaling-stroke; }
+.chartGuide { stroke:#e5c05b2b; stroke-width:1px; }
+.chartLine { stroke:#b7875d; stroke-width:1.5px; stroke-dasharray:4 4; stroke-linecap:round; }
+.chartPoint { fill:#201810; stroke:#ebbf82; stroke-width:2px; vector-effect:non-scaling-stroke; }
 .controls { display:flex; flex-direction:column; align-items:flex-start; gap:10px; padding-top:14px; }
 .inspection { display:grid; gap:10px; min-width:0; margin:0; font-size:13px; line-height:1.7; }
 .inspection > div { min-width:0; padding:12px; border:1px solid #ffffff0d; border-radius:10px; background:#ffffff03; }

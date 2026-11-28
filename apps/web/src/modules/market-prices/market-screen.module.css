@@ -1,0 +1,128 @@
+.screen {
+  --market-surface: #171614;
+  --market-ink: #f6efe7;
+  --market-muted: #c3b6a9;
+  --market-line: #41362d;
+  --market-accent: #ebbf91;
+  --market-radius: 1.15rem;
+
+  width: min(100% - 2 * clamp(1rem, 3.4vw, 2.75rem), 73rem);
+  min-width: 0;
+  min-height: min(76vh, 47rem);
+  margin-inline: auto;
+  padding-block: clamp(1.8rem, 5vw, 4.15rem) clamp(3.25rem, 8vw, 6.4rem);
+}
+
+.intro {
+  margin-block-end: clamp(1.35rem, 3.6vw, 2.5rem);
+  max-width: 53rem;
+}
+
+.intro h1 {
+  margin: 0 0 0.7rem;
+  color: var(--market-ink);
+  font-size: clamp(2rem, 4.25vw, 3.9rem);
+  font-weight: 690;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  text-wrap: pretty;
+}
+
+.intro p {
+  max-width: 66ch;
+  margin: 0;
+  color: var(--market-muted);
+  font-size: clamp(0.925rem, 1.42vw, 1.06rem);
+  line-height: 1.58;
+}
+
+.resultRegion {
+  margin-block-start: clamp(1.65rem, 4vw, 3rem);
+  min-width: 0;
+  scroll-margin-block-start: 6rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.55rem 0.9rem;
+  min-width: 0;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem 1rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--market-line);
+  border-radius: var(--market-radius);
+  background: var(--market-surface);
+  color: var(--market-ink);
+}
+
+.status p {
+  margin: 0;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 44px;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--market-line);
+  border-radius: 999px;
+  background: var(--market-surface);
+  color: var(--market-accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: start;
+}
+
+.action:hover {
+  background: #211b16;
+  border-color: #8f6749;
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--market-accent);
+  outline-offset: 3px;
+}
+
+.shareNotice {
+  color: var(--market-muted);
+  font-size: 0.83rem;
+}
+
+.shareInput {
+  width: 100%;
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid #60452f;
+  border-radius: 0.55rem;
+  color: inherit;
+  background: #1b1713;
+  font: inherit;
+}
+
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #6b533f;
+  border-top-color: #f2b989;
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(1turn); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}

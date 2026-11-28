@@ -9,6 +9,7 @@ export {
   parseCatalogPageQuery,
   PublicApiError,
   publicRetryAfter,
+  readPublicJson,
 } from './infrastructure/public-api';
 export {
   createSsrCatalogVersionScope as createCatalogVersionScope,
