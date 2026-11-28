@@ -51,6 +51,14 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   const defer = () => migrateDatabase(db, '--defer-han-pair-index');
   const complete = () => migrateDatabase(db, '--complete-han-pair-index');
   const applyDeltaPolicy = () => migrateDatabase(db, '--apply-delta-policy');
+  const applyMarketIndexes = (database = db) => migrateDatabase(database, '--apply-market-price-indexes');
+  const prebuildDomesticQuotes = (database: typeof db) => database.pool.query(`CREATE INDEX CONCURRENTLY
+    external_catalog_market_domestic_idx ON public.external_catalog (listing_id) INCLUDE (price_cny)
+    WHERE coalesce(facts#>>'{location,country}','CN')='CN'`);
+  const prebuildFormalQuotes = (database: typeof db) => database.pool.query(`CREATE INDEX CONCURRENTLY
+    external_listings_market_formal_idx ON public.external_listings (id)
+    WHERE provider='chinacarapi' AND platform_id IN ('che168','dongchedi')
+      AND external_id ~ '^[0-9]{1,100}$' AND upstream_state='active' AND formal_canonical_id IS NOT NULL AND formal_primary`);
   const runMigrationCli = (mode: '--defer-han-pair-index' | '--complete-han-pair-index') =>
     promisify(execFile)(process.execPath, ['--import', 'tsx', 'src/db/migrate.ts', mode], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), env: { DATABASE_URL: address.href },
@@ -143,6 +151,7 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   assert.deepEqual(await ledger('id'), pendingWithExpansion);
   assert.deepEqual(await cursors(), beforeCursors);
 
+  await assert.rejects(applyMarketIndexes(), /Expected the exact 0056 ledger/);
   const deltaPolicy = { created_at: String(files[56]!.folderMillis), hash: files[56]!.hash };
   await Promise.all([applyDeltaPolicy(), applyDeltaPolicy()]);
   const pendingWithDeltaPolicy = [...pendingWithExpansion, deltaPolicy];
@@ -154,13 +163,28 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   await defer();
   assert.deepEqual(await ledger('id'), pendingWithDeltaPolicy);
   await assert.rejects(migrateDatabase(db), /Migration 0050 is pending/);
+  await assert.rejects(applyMarketIndexes(), /Market quote indexes must be prebuilt/);
+  assert.deepEqual(await ledger('id'), pendingWithDeltaPolicy);
+  await db.pool.query('CREATE INDEX CONCURRENTLY external_catalog_market_domestic_idx ON public.external_catalog (listing_id)');
+  await prebuildFormalQuotes(db);
+  await assert.rejects(applyMarketIndexes(), /Market quote index definitions do not match/);
+  assert.deepEqual(await ledger('id'), pendingWithDeltaPolicy);
+  await db.pool.query('DROP INDEX CONCURRENTLY external_catalog_market_domestic_idx');
+  await prebuildDomesticQuotes(db);
+  await Promise.all([applyMarketIndexes(), applyMarketIndexes()]);
+  const market = { created_at: String(files[57]!.folderMillis), hash: files[57]!.hash };
+  assert.deepEqual(await ledger('id'), [...pendingWithDeltaPolicy, market]);
+  assert.deepEqual(await cursors(), beforeCursors);
+  await applyDeltaPolicy();
+  await defer();
   await db.transaction(tx => tx.query(files[50]!.sql[0]!));
   await db.pool.query(`CREATE INDEX CONCURRENTLY external_catalog_search_zh_han_pairs_idx ON public.external_catalog_search
     USING gin (public.external_catalog_han_pairs(search_document)) WHERE locale='zh'`);
   const [, completedCli] = await Promise.all([complete(), runMigrationCli('--complete-han-pair-index')]);
   assert.match(completedCli.stdout, /Database migrations applied/);
-  const completedById = [...pendingWithDeltaPolicy, history[50]];
-  const completedByTimestamp = [...history, keyword, expansion, deltaPolicy];
+  const completedById = [...pendingWithDeltaPolicy, market, history[50]];
+  const completeThroughDelta = [...history, keyword, expansion, deltaPolicy];
+  const completedByTimestamp = [...completeThroughDelta, market];
   assert.deepEqual(await ledger('id'), completedById);
   assert.deepEqual(await ledger('created_at'), completedByTimestamp);
   assert.deepEqual(await cursors(), beforeCursors);
@@ -191,11 +215,15 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
       VALUES ($1,'2026-11-25T00:00:00Z','applying','synthetic.csv',6,6,3)`, [randomUUID()]);
     const completedBefore = await cursors(completedDb);
     const completedLedger = () => completedDb.pool.query('SELECT created_at::text, hash FROM drizzle.__drizzle_migrations ORDER BY id');
-    assert.deepEqual((await completedLedger()).rows, completedByTimestamp.slice(0, -1));
+    assert.deepEqual((await completedLedger()).rows, completeThroughDelta.slice(0, -1));
     await migrateDatabase(completedDb, '--apply-delta-policy');
     await migrateDatabase(completedDb, '--apply-delta-policy');
     await migrateDatabase(completedDb, '--apply-keyword-match');
     await migrateDatabase(completedDb, '--apply-formal-expansion');
+    assert.deepEqual((await completedLedger()).rows, completeThroughDelta);
+    await prebuildDomesticQuotes(completedDb);
+    await prebuildFormalQuotes(completedDb);
+    await applyMarketIndexes(completedDb);
     assert.deepEqual((await completedLedger()).rows, completedByTimestamp);
     assert.equal((await completedDb.pool.query('SELECT 1 FROM external_full_delta_policy')).rowCount, 0);
     assert.deepEqual(await cursors(completedDb), completedBefore);

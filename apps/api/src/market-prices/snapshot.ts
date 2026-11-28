@@ -67,3 +67,5 @@ export function summarizeModel(snapshot: ModelSnapshot, query: MarketPriceQuery)
     max_id: last?.id ?? null,
   };
 }
+
+export type MarketCohort = ReturnType<typeof summarizeModel>;
