@@ -38,11 +38,15 @@ import { createVehicleTranslator, type VehicleTranslator } from './vehicles/tran
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
 import { createPublicCatalogCache, PublicCatalogUnavailableError, type CacheProtocol, type CatalogRevisionProof, type PublicBrowseRoute, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
+import { MarketPriceService } from './market-prices/service.js';
+import { SalesVehicleService } from './sales/service.js';
+import { salesAccess, salesVehiclesPath, salesVehicleLookupPath } from './sales/access.js';
 
 const IdParams=z.strictObject({id:z.uuid()});
 const VersionedMediaId=z.templateLiteral([z.uuid(), '_', z.string().regex(/^[A-Za-z0-9_-]{43}$/)]);
 const PublicMediaParams=z.strictObject({id:z.union([z.uuid(),VersionedMediaId])});
 const staffPath='/api/v1/admin/staff';
+const marketPricesPath='/api/v1/public/market-prices';
 const staffVehiclePixelPath='/api/v1/admin/vehicles/:id/pixel';
 const externalVehiclePixelPath='/api/v1/admin/external/listings/:id/pixel';
 const enabledPixelVehiclesPath='/api/v1/admin/vehicle-pixel/enabled';
@@ -77,6 +81,7 @@ function rateLimitKey(request:FastifyRequest) {
     route===analyticsEventsPath?'public-analytics':route===analyticsContactPath?'anonymous-contact':route===analyticsIpVisitPath?'internal-ip-visits':
     request.method==='POST'&&route===externalBatchPath?'external-import':request.method==='POST'&&route===externalTrialPath?'external-trial':
     upload?'admin-upload':translate?'admin-translation':
+    route===salesVehiclesPath||route===salesVehicleLookupPath?'sales-integration':route===marketPricesPath?'market-prices':
     route==='/api/v1/media/:id'?'public-media':
     route.startsWith('/api/v1/admin/')?'admin':route.startsWith('/health/')?'health':
       route.startsWith('/api/auth/')?'auth':'public-json';
@@ -129,6 +134,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   const loginAccounts=new LoginAccountLimiter(config.authSecret);
   const mediaStore=new LocalMediaStore(config.mediaRoot);
   const inventory=new InventoryService(db,config.externalCatalog,mediaStore,config.publicSeoEnabled);
+  const marketPrices=new MarketPriceService(db,config.externalCatalog,inventory);
+  const sales=new SalesVehicleService(db,config.externalCatalog,config.salesIntegration.siteOrigin);
+  const salesGate=salesAccess(config.salesIntegration.tokens);
   const translator=options.translator??createVehicleTranslator(config.translation,new PgTranslationBudget(db));
   const translationPlans=new TranslationPlanService(db,translator,(id,who,scope)=>inventory.translationPlanInput(id,who,scope));
   const media=new MediaService(db,mediaStore);
@@ -144,7 +152,8 @@ export async function buildApp(config:Config=readConfig(), options:{
   };});
   app.setValidatorCompiler(validatorCompiler);app.setSerializerCompiler(serializerCompiler);
   await app.register(swagger,{openapi:{openapi:'3.0.3',info:{title:'HD Auto API',version:pub.CONTRACT_VERSION},
-    components:{securitySchemes:{staffSession:{type:'apiKey',in:'cookie',name:config.environment==='production'?'__Secure-hd-auto.session_token':'hd-auto.session_token'}}}},transform:jsonSchemaTransform});
+    components:{securitySchemes:{staffSession:{type:'apiKey',in:'cookie',name:config.environment==='production'?'__Secure-hd-auto.session_token':'hd-auto.session_token'},
+      salesService:{type:'http',scheme:'bearer'}}}},transform:jsonSchemaTransform});
   await app.register(rateLimit,{max:(_request,key)=>key.startsWith('admin-translation:')?20:120,timeWindow:60_000,
     keyGenerator:rateLimitKey,
     errorResponseBuilder:()=>({statusCode:429,code:'RATE_LIMITED',message:'Request rate exceeded.'})});
@@ -239,7 +248,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.addHook('preValidation',async(request)=>{
     // Query strings use decimal integers only. Other representations remain invalid.
     const query=request.query as Record<string,unknown>;
-    if(query && typeof query==='object') for(const key of ['page','pageSize','mileageMin','mileageMax','yearMin','yearMax']) {
+    const salesNumbers=request.routeOptions.url===salesVehiclesPath?['limit']:
+      request.routeOptions.url===salesVehicleLookupPath?['configurationLimit']:[];
+    if(query && typeof query==='object') for(const key of ['page','pageSize','mileageMin','mileageMax','yearMin','yearMax',...salesNumbers]) {
       if(typeof query[key]==='string' && /^(?:0|[1-9]\d*)$/.test(query[key])) query[key]=Number(query[key]);
     }
   });
@@ -301,6 +312,20 @@ export async function buildApp(config:Config=readConfig(), options:{
   app.addHook('onClose',async()=>{try{await fullSyncHints.close();await catalogCache.close();}finally{await db.close();}});
   const actor=(request:{id:string}):Actor=>({id:staff.get(request)!.id,requestId:request.id});
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
+  app.get(marketPricesPath, { config:{rateLimit:{max:30}}, schema:schema('public','getMarketPrices',{
+    querystring:pub.MarketPriceQuerySchema,response:{200:pub.MarketPriceResponseSchema,...errorResponses},
+  })}, async request => response(await marketPrices.read(request.query as pub.MarketPriceQuery),request));
+
+  const salesRoute = { config:{rateLimit:{max:30}}, exposeHeadRoute:false,
+    onRequest: async (request:FastifyRequest,reply:FastifyReply) => salesGate.authenticate(request,reply) };
+  app.get(salesVehiclesPath,{ ...salesRoute,schema:schema('sales integration','listSalesVehicles',{
+    security:[{salesService:[]}],querystring:pub.SalesVehicleQuerySchema,
+    response:{200:pub.SalesVehicleListResponseSchema,...errorResponses},
+  })}, async (request,reply) => response(await salesGate.read(reply,()=>sales.feed(request.query as pub.SalesVehicleQuery)),request));
+  app.get(salesVehicleLookupPath,{ ...salesRoute,schema:schema('sales integration','lookupSalesVehicle',{
+    security:[{salesService:[]}],querystring:pub.SalesVehicleLookupQuerySchema,
+    response:{200:pub.SalesVehicleLookupResponseSchema,...errorResponses},
+  })}, async (request,reply) => response(await salesGate.read(reply,()=>sales.lookup(request.query as pub.SalesVehicleLookupQuery)),request));
   const cacheProtocol=(request:object)=>longCacheRequests.has(request)?2:1;
   function homepageProtocol(request:FastifyRequest,reply:FastifyReply,eligible:boolean):CacheProtocol {
     // The private prefix is authenticated before a resource can negotiate protocol 3.

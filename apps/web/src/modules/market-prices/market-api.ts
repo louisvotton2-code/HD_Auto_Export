@@ -40,10 +40,12 @@ function amount(value: MarketStatistics['min']): MarketMoney | null {
 function toExtreme(extreme: MarketPriceResponse['data']['extremes']['min'], price: MarketMoney | null): MarketExtreme | undefined {
   if (!extreme || !price) return undefined;
   const { vehicle, detailPath } = extreme;
-  if (detailPath !== vehicle.detailPath) throw new Error('Mismatched market vehicle link');
+  const expectedPath = `/${vehicle.content.title.requestedLocale}/cars/${vehicle.id}/`;
+  if (detailPath !== vehicle.detailPath || detailPath !== expectedPath) throw new Error('Mismatched market vehicle link');
   const image = eligibleCover(publicVehicleCover(vehicle));
   const localizedTrim = vehicle.display?.trim;
   return {
+    id: vehicle.id,
     href: detailPath,
     title: vehicle.content.title.text,
     trim: localizedTrim?.text ?? vehicle.facts.trim?.name ?? null,

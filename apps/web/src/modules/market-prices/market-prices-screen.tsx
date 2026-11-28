@@ -16,6 +16,7 @@ import { useMarketRequest } from './use-market-request';
 import styles from './market-screen.module.css';
 
 const parseOptions = (body: unknown) => PublicVehicleFiltersSchema.parse(body).data;
+const marketPriceTimeoutMs = 24_000;
 
 function useMarketOptions(locale: Locale, scope: 'makes' | 'models' | 'trims', make = '', model = ''): MarketOptionsGroup {
   const enabled = scope === 'makes' || (IdSchema.safeParse(make).success && (scope === 'models' || IdSchema.safeParse(model).success));
@@ -100,7 +101,11 @@ export function MarketPricesScreen({ locale }: { locale: Locale }) {
   const trims = useMarketOptions(locale, 'trims', draft.make, draft.model);
   const labels = publicVehicleMessages(locale).powertrains;
   const powertrains = PowertrainSchema.options.map(value => ({ value, label: labels[value] }));
-  const { state, retry } = useMarketRequest(committed && validUrl ? marketPriceEndpoint(locale, canonical) : null, parseMarketPriceResult);
+  const { state, retry } = useMarketRequest(
+    committed && validUrl ? marketPriceEndpoint(locale, canonical) : null,
+    parseMarketPriceResult,
+    marketPriceTimeoutMs,
+  );
   const sameMake = fromUrl.make === draft.make;
   const names = {
     make: optionName(makes.options, fromUrl.make) ?? current.names.make,
@@ -135,11 +140,9 @@ export function MarketPricesScreen({ locale }: { locale: Locale }) {
               {state.status === 'error' && state.code !== 400 && <button type="button" className={styles.action} onClick={retry}>{copy.retry}</button>}
             </MarketStatus>
           )}
-          {state.status === 'ready' && <>
-            <MarketLinkShare key={canonical} locale={locale} query={canonical} />
-            <MarketResults locale={locale} result={state.value}
-              filters={submittedFilters(locale, fromUrl, names, powertrains, state.value)} />
-          </>}
+          {state.status === 'ready' && <MarketResults locale={locale} result={state.value}
+            filters={submittedFilters(locale, fromUrl, names, powertrains, state.value)}
+            share={<MarketLinkShare key={canonical} locale={locale} query={canonical} />} />}
         </section>
       )}
     </>

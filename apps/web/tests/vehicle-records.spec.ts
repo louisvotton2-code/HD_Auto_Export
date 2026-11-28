@@ -63,7 +63,7 @@ test('detail renders same-response inspection states without probing and keeps c
   const prices = page.locator('[data-public-price-history]');
   await prices.getByRole('button', { name: 'Посмотреть историю цены', exact: true }).click();
   await expect(prices.locator('[data-price-history-item]')).toHaveCount(1);
-  await expect(prices.locator('tbody td').nth(1)).toHaveText(/74\s000,5/);
+  await expect(prices.locator('tbody td').nth(1)).toHaveText(/^74\s000$/);
   await expect(prices.locator('tbody td').nth(2)).toHaveText('CNY');
   await expect(prices.locator('time')).toHaveAttribute('datetime', '2026-10-01T00:00:00.000Z');
   expect(priceReads).toBe(1);

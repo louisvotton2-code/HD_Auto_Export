@@ -24,7 +24,7 @@ import {emptyLocalization,syncLocalization,applyLocalizationInput,projectDisplay
 import type { LocalMediaStore } from '../media/storage.js';
 import { attachVersionedMediaUrls } from '../media/versions.js';
 import { preparePublication, currentConfirmation, publicationReadiness, requirePublicationReady, checkPreviewProof, requirePublicationActor } from './publication.js';
-import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchMode, getExternalPublic, isScopedShortKeywordSearch, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
+import { aggregateCatalogFacets, canCountExternalSearchPage, catalogModelScope, eligibleExternalHomeIds, facetLabelOrder, countExternal, externalFacets, externalKeywordMatchMode, getExternalPublic, isScopedShortKeywordSearch, listExternalPage, listingUuid, preferIndexedHanPair, readExternalHomeModelPairs, readExternalHomeVehicles, readExternalMarketCards, type CatalogFacetRow, type CatalogAnchor, type CatalogModelPair, type SupplierFacetPhase } from '../external/catalog.js';
 import { getStaffReport } from '../external/reports.js';
 import { publicExternalDisplay, publicExternalSource } from '../external/public-source.js';
 import { catalogOrder, catalogSeek, numericSort, usdSortAmount } from '../external/cursor.js';
@@ -448,6 +448,20 @@ function decodeCursor(value:string,binding:string,version:CatalogVersion,fx?:str
   return item;
 }
 export class InventoryService {
+  async readMarketVehicleCards(tx: PoolClient, ids: readonly string[], locale: Locale, quote: FxQuote|null, time: number): Promise<PublicVehicleCard[]> {
+    const manual = [...new Set(ids.filter(id => !id.startsWith('ext-')))];
+    const supplier = [...new Set(ids.filter(id => id.startsWith('ext-')).map(listingUuid))];
+    const values: unknown[] = [manual];
+    const staff = manual.length ? (await tx.query<Row>(`${staffCardSelect(locale,values)}
+      WHERE v.id=ANY($1::uuid[]) AND v.deleted_at IS NULL AND v.publication_state='published'
+      AND v.availability='available' AND p.data#>>'{source,kind}'='manual'`,values)).rows : [];
+    const cards = staff.filter(row => hasTranslationText(row.publication_data!.content.title.translations[locale]))
+      .map(row => toCard(row,locale,'localized','usd',quote));
+    await attachVersionedMediaUrls(tx,cards.flatMap(card => card.images));
+    if (supplier.length) cards.push(...await readExternalMarketCards(tx,supplier,locale,time,quote));
+    return cards;
+  }
+
   constructor(private db: Database, private externalCatalog=false, private mediaStore?: Pick<LocalMediaStore, 'prepareDelivery'>, private publicSeoEnabled=false) {}
 
   async getTranslationBundle(id:string,actor:Actor) {

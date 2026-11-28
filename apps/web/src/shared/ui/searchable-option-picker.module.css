@@ -1,0 +1,85 @@
+.fallback[hidden] {
+  display: none;
+}
+.picker {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.control {
+  position: relative;
+}
+.control > input[role="combobox"] {
+  box-sizing: border-box;
+  padding-inline-start: 34px;
+  padding-inline-end: 30px;
+}
+.control > input[role="combobox"]::placeholder {
+  color: #f5f0eb;
+  opacity: .82;
+}
+.control svg {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #b9afa6;
+  pointer-events: none;
+}
+.searchIcon {
+  inset-inline-start: 10px;
+}
+.chevron {
+  inset-inline-end: 10px;
+}
+.menu {
+  position: absolute;
+  z-index: 6;
+  inset-inline: 0;
+  top: calc(100% + 4px);
+  background: #202020;
+  border: 1px solid #6e5948;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px #0008;
+}
+.menu ul {
+  max-height: min(240px, 42vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+.menu li {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: #eee;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.menu li:is([data-active], [aria-selected='true'], :hover) {
+  color: #ffe0b5;
+  background: #36291d;
+}
+.menu p {
+  margin: 0;
+  padding: 8px 12px 12px;
+  color: #c0c0c0;
+  font-size: 13px;
+}
+@media (pointer: coarse) {
+  .control > input[role="combobox"],
+  .fallback > select[name] {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .menu li { min-height: 44px; }
+}
+.control > input:disabled {
+  cursor: not-allowed;
+  opacity: .72;
+}

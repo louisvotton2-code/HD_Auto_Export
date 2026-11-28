@@ -337,17 +337,26 @@ async function coverPhotos(tx: Queryable, ids: string[], time: number) {
   return new Map(result.rows.map(photo => [photo.listing_id, [photo]]));
 }
 
-export async function readExternalHomeVehicles(tx: PoolClient, ids: string[], locale: Locale, time: number,
-  priceView?: 'usd', quote: FxQuote | null = null): Promise<PublicVehicle[]> {
+async function readExternalPublishedCards(tx: PoolClient, ids: string[], locale: Locale, time: number,
+  priceView: 'usd' | undefined, quote: FxQuote | null, scope: 'home' | 'market') {
   if (!ids.length) return [];
   const result = await tx.query<CatalogRow>(`SELECT ${cardColumns},c.issues ${from}
-    WHERE c.listing_id=ANY($2::uuid[]) AND ${homeExternalVisible}`, [locale, ids]);
+    WHERE c.listing_id=ANY($2::uuid[]) AND ${scope==='home' ? homeExternalVisible :
+      "l.upstream_state='active' AND (o.data->'hidden') IS DISTINCT FROM 'true'::jsonb"}`, [locale, ids]);
   if (!result.rows.length) return [];
   const covers = await coverPhotos(tx, result.rows.map(row => row.listing_id), time);
-  return result.rows.map(row => {
-    const card = toCard(row, covers.get(row.listing_id) ?? [], locale, priceView, quote);
-    return PublicVehicleSchema.parse({ ...card, content: { ...card.content, description: null }, external: { issues: row.issues } });
-  });
+  return result.rows.map(row => ({ card: toCard(row, covers.get(row.listing_id) ?? [], locale, priceView, quote), issues: row.issues }));
+}
+
+export async function readExternalHomeVehicles(tx: PoolClient, ids: string[], locale: Locale, time: number,
+  priceView?: 'usd', quote: FxQuote | null = null): Promise<PublicVehicle[]> {
+  return (await readExternalPublishedCards(tx,ids,locale,time,priceView,quote,'home')).map(({card,issues}) =>
+    PublicVehicleSchema.parse({ ...card, content: { ...card.content, description: null }, external: { issues } }));
+}
+
+export async function readExternalMarketCards(tx: PoolClient, ids: string[], locale: Locale, time: number,
+  quote: FxQuote | null): Promise<PublicVehicleCard[]> {
+  return (await readExternalPublishedCards(tx,ids,locale,time,'usd',quote,'market')).map(({card}) => card);
 }
 
 export async function readExternalHomeModelPairs(tx: PoolClient, ids: string[], locale: Locale, time: number) {

@@ -189,7 +189,9 @@ const catalogQueryFields={
   sort:z.enum(['newest','price_asc','price_desc','mileage_asc','year_desc']).optional(),
 };
 const cents=(value:string)=>{const [whole,fraction='']=value.split('.');return BigInt(whole!)*100n+BigInt(fraction.padEnd(2,'0'));};
-function validateCatalogQuery(value:z.infer<z.ZodObject<typeof catalogQueryFields>>,ctx:z.RefinementCtx) {
+type CatalogRangeValidation = Pick<z.infer<z.ZodObject<typeof catalogQueryFields>>, 'view'|'priceView'|'priceCurrency'|
+  'priceMin'|'priceMax'|'yearMin'|'yearMax'|'mileageMin'|'mileageMax'|'trim'|'generation'|'make'|'model'>;
+function validateCatalogQuery(value:CatalogRangeValidation,ctx:z.RefinementCtx) {
   if(value.priceView && value.view!=='localized')ctx.addIssue({code:'custom',path:['priceView'],message:'USD display requires localized view'});
   if(value.priceView==='usd' && value.priceCurrency && value.priceCurrency!=='USD')ctx.addIssue({code:'custom',path:['priceCurrency'],message:'USD display ranges use USD'});
   if((value.priceMin!==undefined||value.priceMax!==undefined)&&!value.priceCurrency)ctx.addIssue({code:'custom',path:['priceCurrency'],message:'Price ranges require an explicit currency'});
@@ -281,6 +283,78 @@ export type PublicVehicleCard=z.infer<typeof PublicVehicleCardSchema>;
 export const PublicVehicleCardListSchema=PublicVehicleListSchema.extend({data:PublicVehicleListSchema.shape.data.extend({items:z.array(PublicVehicleCardSchema).max(48)})});
 export type PublicVehicleCardList=z.infer<typeof PublicVehicleCardListSchema>;
 
+const vehicleRangeFields = {
+  locale: catalogQueryFields.locale,
+  make: catalogQueryFields.make,
+  model: catalogQueryFields.model,
+  trim: catalogQueryFields.trim,
+  yearMin: catalogQueryFields.yearMin,
+  yearMax: catalogQueryFields.yearMax,
+  mileageMin: catalogQueryFields.mileageMin,
+  mileageMax: catalogQueryFields.mileageMax,
+  powertrain: catalogQueryFields.powertrain,
+};
+
+export const MarketPriceQuerySchema = z.strictObject({
+  ...vehicleRangeFields, make: IdSchema, model: IdSchema,
+}).superRefine(validateCatalogQuery);
+export type MarketPriceQuery = z.infer<typeof MarketPriceQuerySchema>;
+const MarketPriceAmountSchema = z.strictObject({
+  usd: MoneySchema.extend({ currency: z.literal('USD') }).nullable(),
+  cny: MoneySchema.extend({ currency: z.literal('CNY') }),
+});
+const MarketExtremeSchema = z.strictObject({
+  vehicle: PublicVehicleCardSchema, detailPath: PublicVehicleSchema.shape.detailPath,
+});
+export const MarketPriceResponseSchema = responseSchema(z.strictObject({
+  sampleCount: z.number().int().nonnegative(),
+  asOf: TimestampSchema,
+  fx: z.strictObject({ asOf: TimestampSchema, source: z.enum(['exchange_rate_api', 'synthetic']) }).nullable(),
+  statistics: z.strictObject({
+    min: MarketPriceAmountSchema.nullable(), max: MarketPriceAmountSchema.nullable(),
+    mean: MarketPriceAmountSchema.nullable(), median: MarketPriceAmountSchema.nullable(),
+    p25: MarketPriceAmountSchema.nullable(), p75: MarketPriceAmountSchema.nullable(),
+  }),
+  extremes: z.strictObject({ min: MarketExtremeSchema.nullable(), max: MarketExtremeSchema.nullable() }),
+}));
+export type MarketPriceResponse = z.infer<typeof MarketPriceResponseSchema>;
+
+export const SalesVehicleQuerySchema = z.strictObject({
+  ...vehicleRangeFields,
+  drivetrain: z.enum([...DrivetrainSchema.options, 'four_wheel']).optional(),
+  priceMin: MoneySchema.shape.amount.optional(), priceMax: MoneySchema.shape.amount.optional(),
+  priceCurrency: z.enum(['CNY', 'USD']).optional(),
+  limit: z.number().int().min(1).max(20).default(5), cursor: PublicCatalogCursorSchema.optional(),
+}).superRefine(validateCatalogQuery);
+export type SalesVehicleQuery = z.infer<typeof SalesVehicleQuerySchema>;
+
+export const SalesVehicleLookupQuerySchema = z.strictObject({
+  locale: LocaleSchema.default('ru'),
+  stockCode: z.string().min(1).max(24).regex(/^(?:HD-[0-9]{6,19}|HX[1-9][0-9]{0,18})$/i).optional(),
+  detailUrl: SafeHttpUrlSchema.optional(),
+  configurationLimit: z.number().int().min(1).max(50).default(20),
+  configurationCursor: PublicCatalogCursorSchema.optional(),
+}).superRefine((value, ctx) => {
+  if ((value.stockCode === undefined) === (value.detailUrl === undefined)) {
+    ctx.addIssue({ code: 'custom', path: ['stockCode'], message: 'Provide exactly one stock code or detail URL' });
+  }
+});
+export type SalesVehicleLookupQuery = z.infer<typeof SalesVehicleLookupQuerySchema>;
+
+export const SalesVehicleSchema = z.strictObject({
+  id: IdSchema, stockCode: PublicVehicleSchema.shape.stockCode, detailPath: PublicVehicleSchema.shape.detailPath,
+  sourceKind: z.enum(['manual', 'external']), title: PublicTextSchema,
+  facts: VehicleFactsSchema.pick({ make: true, model: true, trim: true, modelYear: true, mileageKm: true, powertrain: true })
+    .extend({ drivetrain: DrivetrainSchema.nullable() }).strict(),
+  price: PublicPriceSchema, displayPrice: PublicUsdPriceSchema.nullable(), availability: AvailabilitySchema,
+  sourceUpdatedAt: TimestampSchema.nullable(), publishedAt: TimestampSchema,
+});
+export type SalesVehicle = z.infer<typeof SalesVehicleSchema>;
+export const SalesVehicleListResponseSchema = responseSchema(z.strictObject({
+  items: z.array(SalesVehicleSchema).max(20), nextCursor: PublicCatalogCursorSchema.nullable(), asOf: TimestampSchema,
+}));
+export type SalesVehicleListResponse = z.infer<typeof SalesVehicleListResponseSchema>;
+
 
 export const PublicHomeSectionSchema = z.strictObject({
   id: IdSchema, title: z.string().min(1).max(120).regex(/\S/, 'Section title cannot be blank'), vehicles: z.array(PublicVehicleSchema).min(1).max(30),
@@ -326,6 +400,14 @@ export const PublicVehicleConfigurationResponseSchema = responseSchema(z.strictO
   ...segmentFields, items: z.array(PublicConfigurationEntrySchema).max(100),
 }));
 export type PublicVehicleConfigurationResponse = z.infer<typeof PublicVehicleConfigurationResponseSchema>;
+export const SalesVehicleLookupResponseSchema = responseSchema(z.strictObject({
+  vehicle: SalesVehicleSchema, asOf: TimestampSchema,
+  configuration: z.strictObject({
+    items: z.array(PublicConfigurationEntrySchema).max(50), total: z.number().int().nonnegative(),
+    nextCursor: PublicCatalogCursorSchema.nullable(),
+  }),
+}));
+export type SalesVehicleLookupResponse = z.infer<typeof SalesVehicleLookupResponseSchema>;
 
 export const PublicVehicleInspectionResponseSchema=responseSchema(z.strictObject({...segmentFields,status:InspectionStatusSchema,summary:PublicInspectionSummarySchema.optional(),conclusions:z.array(PublicInspectionConclusionSchema).max(30).optional(),items:z.array(PublicInspectionEntrySchema).max(100)}));
 export type PublicVehicleInspectionResponse=z.infer<typeof PublicVehicleInspectionResponseSchema>;

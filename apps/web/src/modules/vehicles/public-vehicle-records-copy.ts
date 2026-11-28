@@ -20,6 +20,9 @@ type RecordsCopy = {
   unknownDate: string;
   enableDetails: string;
   originalCurrency: string;
+  priceTrend: string;
+  priceTrendNote: string;
+  priceTrendPending: string;
   loading: string;
   loadMore: string;
   retry: string;
@@ -50,6 +53,9 @@ export const publicVehicleRecordsCopy = {
     unknownDate: '记录时间未提供',
     enableDetails: '启用 JavaScript 后可读取更多车辆资料。',
     originalCurrency: '历史报价使用记录时的原始币种，未按当前汇率折算。',
+    priceTrend: '历史报价（UTC）',
+    priceTrendNote: '标记对应有报价的时间。连线仅表示变动方向。',
+    priceTrendPending: '还有报价记录未加载。',
     loading: '正在加载…',
     loadMore: '继续加载',
     retry: '重试',
@@ -78,6 +84,9 @@ export const publicVehicleRecordsCopy = {
     unknownDate: 'Recording time not provided',
     enableDetails: 'Enable JavaScript to load more vehicle information.',
     originalCurrency: 'Historical quotes retain their original currency and are not converted using current exchange rates.',
+    priceTrend: 'Recorded prices (UTC)',
+    priceTrendNote: 'Each marker is a recorded quote. The line indicates the direction of change.',
+    priceTrendPending: 'More price records are available.',
     loading: 'Loading…',
     loadMore: 'Load more',
     retry: 'Retry',
@@ -106,6 +115,9 @@ export const publicVehicleRecordsCopy = {
     unknownDate: 'Время записи не указано',
     enableDetails: 'Включите JavaScript, чтобы загрузить дополнительные данные автомобиля.',
     originalCurrency: 'Исторические цены указаны в исходной валюте без пересчёта по текущему курсу.',
+    priceTrend: 'Записи о ценах (UTC)',
+    priceTrendNote: 'Каждая точка отмечает зафиксированную цену. Линия показывает направление изменения.',
+    priceTrendPending: 'Доступны дополнительные записи о ценах.',
     loading: 'Загрузка…',
     loadMore: 'Загрузить ещё',
     retry: 'Повторить',

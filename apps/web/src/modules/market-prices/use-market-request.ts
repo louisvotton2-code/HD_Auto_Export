@@ -6,7 +6,7 @@ type RequestState<T> = { status: 'idle' | 'loading' }
   | { status: 'ready'; value: T }
   | { status: 'error'; code: number };
 
-export function useMarketRequest<T>(url: string | null, parse: (data: unknown) => T) {
+export function useMarketRequest<T>(url: string | null, parse: (data: unknown) => T, timeoutMs = 10_000) {
   const [attempt, setAttempt] = useState(0);
   const [settled, setSettled] = useState<{ key: string; state: RequestState<T> } | null>(null);
   const key = `${attempt}:${url ?? ''}`;
@@ -14,7 +14,7 @@ export function useMarketRequest<T>(url: string | null, parse: (data: unknown) =
     const requestUrl = url;
     if (!requestUrl) return;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 10_000);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     let current = true;
     async function load(requestUrl: string) {
       try {
@@ -35,7 +35,7 @@ export function useMarketRequest<T>(url: string | null, parse: (data: unknown) =
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [key, parse, url]);
+  }, [key, parse, timeoutMs, url]);
   const state: RequestState<T> = !url ? { status: 'idle' }
     : settled?.key === key ? settled.state : { status: 'loading' };
   return { state, retry: () => setAttempt(value => value + 1) };

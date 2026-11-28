@@ -7,10 +7,10 @@ export function MarketPricesFrame({ locale, children }: { locale: Locale; childr
   const copy = marketCopy[locale];
   return (
     <main id="main" className={styles.screen} data-testid="market-prices-page">
-      <div className={styles.intro}>
+      <header className={styles.intro}>
         <h1>{copy.title}</h1>
         <p>{copy.intro}</p>
-      </div>
+      </header>
       {children}
     </main>
   );

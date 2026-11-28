@@ -1,70 +1,124 @@
 .form {
+  container: market-query / inline-size;
   display: grid;
-  gap: 18px;
+  gap: 11px;
   min-width: 0;
-  padding: clamp(16px, 4vw, 28px);
-  border: 1px solid #3b312a;
-  border-radius: 20px;
-  background: linear-gradient(145deg, #211b17, #181719 56%);
+  padding: clamp(14px, 2.2vw, 22px);
+  border: 1px solid var(--market-line, #342b25);
+  border-radius: var(--market-radius, 20px);
+  background: var(--market-surface, #151413);
 }
 
-.fields {
+.primaryFields,
+.optionalFields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 195px), 1fr));
   align-items: start;
-  gap: 15px 14px;
+  gap: 12px;
+}
+
+.optional {
+  min-width: 0;
+  border-top: 1px solid var(--market-line, #342b25);
+}
+
+.optionalToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+  margin-bottom: -4px;
+  border-radius: 5px;
+  color: var(--market-muted, #b8ada2);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  list-style: none;
+  cursor: pointer;
+}
+
+.optionalToggle > span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.optionalToggle::-webkit-details-marker {
+  display: none;
+}
+
+.optionalChevron {
+  margin-inline-start: auto;
+  transition: transform 160ms ease;
+}
+
+.optional[open] > .optionalToggle .optionalChevron {
+  transform: rotate(180deg);
+}
+
+.filterCount {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--market-line, #342b25);
+  border-radius: 100px;
+  background-color: #211c17;
+  color: var(--market-accent, #ebbf91);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .optionalFields {
-  padding-top: 17px;
-  border-top: 1px solid #3a3029;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 8px;
 }
 
 .field {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
 .field label,
 .rangeField legend {
-  color: #efe5dc;
+  color: var(--market-ink, #f5ece3);
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .rangeField legend {
-  margin-bottom: 7px;
+  margin-bottom: 6px;
 }
 
 .rangeControls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
 }
 
 .form :is(select, input) {
   display: block;
-  max-width: 100%;
   width: 100%;
-  min-height: 46px;
-  padding-block: 10px;
-  padding-inline-start: 12px;
-  border: 1px solid #44382f;
-  border-radius: 10px;
-  background-color: #211e1d;
-  color: #f7f0e9;
+  max-width: 100%;
+  min-height: 44px;
+  padding-block: 8px;
+  padding-inline-start: 10px;
+  border: 1px solid var(--market-line, #3b3129);
+  border-radius: 9px;
+  background-color: #1e1b18;
+  color: var(--market-ink, #f5ece3);
   transition: border-color 160ms ease, background-color 160ms ease;
   text-overflow: ellipsis;
 }
 
-.form input {
-  padding-inline-end: 12px;
+.rangeControls input {
+  padding-inline: 7px;
 }
 
-.form :is(input::placeholder, select[data-empty], select:disabled) {
-  color: #b6aca5;
+.form input::placeholder,
+.form select[data-empty],
+.form select:disabled {
+  color: var(--market-muted, #b8ada2);
 }
 
 .form select:not(:disabled) {
@@ -73,13 +127,12 @@
 
 .form select:disabled {
   cursor: not-allowed;
-  opacity: 0.72;
+  opacity: .72;
 }
 
 .form :is(select, input):focus-visible,
-.submit:focus-visible,
-.optionError button:focus-visible {
-  outline: 2px solid #dfa46f;
+.form :is(button, summary):focus-visible {
+  outline: 2px solid var(--market-accent, #ebbf91);
   outline-offset: 2px;
 }
 
@@ -98,38 +151,41 @@
 }
 
 .optionError button {
-  min-height: 36px;
-  padding: 0 3px;
-  border-radius: 3px;
+  min-height: 44px;
+  padding: 0 4px;
+  border-radius: 4px;
   background: transparent;
-  color: #f1c097;
+  color: var(--market-accent, #ebbf91);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
 .actions {
-  display: flex;
-  justify-content: flex-start;
+  min-width: 0;
 }
 
 .submit {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  min-height: 47px;
-  padding: 11px 22px;
-  border: 1px solid #cf9563;
-  border-radius: 10px;
-  background: #dfa46f;
-  color: #281b11;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 18px;
+  border-radius: 100px;
+  background: var(--market-accent, #ebbf91);
+  color: #271a10;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.25;
   transition: background-color 160ms ease, opacity 160ms ease;
 }
 
+.submit > span {
+  overflow-wrap: anywhere;
+}
+
 .submit:disabled {
-  opacity: 0.76;
+  opacity: .76;
 }
 
 .spinner {
@@ -140,23 +196,63 @@
   to { transform: rotate(360deg); }
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .form :is(input, select):not(:disabled):hover {
-    border-color: #8f6247;
-  }
-
-  .submit:not(:disabled):hover {
-    background: #edb685;
+@container market-query (max-width: 280px) {
+  .rangeField {
+    grid-column: 1 / -1;
   }
 }
 
-@media (max-width: 520px) {
+@container market-query (min-width: 32rem) {
+  .primaryFields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .actions {
+    grid-column: 1 / -1;
+  }
+
+  .rangeControls {
+    gap: 8px;
+  }
+
+  .rangeControls input {
+    padding-inline: 10px;
+  }
+}
+
+@container market-query (min-width: 42rem) {
+  .primaryFields {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(9rem, max-content);
+  }
+
+  .actions {
+    grid-column: auto;
+    /* Match the shared picker's 13px label and 8px control gap. */
+    padding-top: calc(13px * 1.35 + 8px);
+  }
+
+  .optionalFields {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px), (pointer: coarse) {
   .form :is(input, select) {
     font-size: 16px;
   }
+}
 
-  .submit {
-    width: 100%;
+@media (hover: hover) and (pointer: fine) {
+  .form :is(input, select):not(:disabled):hover {
+    border-color: #7b5a42;
+  }
+
+  .submit:not(:disabled):hover {
+    background: #f5cba2;
+  }
+
+  .optionalToggle:hover {
+    color: var(--market-ink, #f5ece3);
   }
 }
 
@@ -166,6 +262,7 @@
   }
 
   .form :is(select, input),
+  .optionalChevron,
   .submit {
     transition: none;
   }
