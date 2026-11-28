@@ -27,6 +27,14 @@ export function hasMarketFilters(query: MarketPriceQuery) {
   return filterColumns.some(([key]) => query[key] !== undefined);
 }
 
+export async function readMarketProjectionGeneration(tx: PoolClient, query: MarketPriceQuery, externalCatalog: boolean) {
+  if (!externalCatalog) return null;
+  const { rows: [model] } = await tx.query<{ generation: string }>(`SELECT generation
+    FROM public.external_market_quote_models WHERE make_id=$1 AND model_id=$2 AND phase='ready'`,
+  [query.make, query.model]);
+  return model?.generation ?? null;
+}
+
 function parameters() {
   const values: unknown[] = [];
   return { values, bind: (value: unknown) => '$' + values.push(value) };
@@ -98,8 +106,23 @@ function supplierCandidates(query: MarketPriceQuery, picks?: readonly string[], 
     ) eligible` };
 }
 
+function projectedSupplierCandidates(query: MarketPriceQuery, generation: string, { bind, values } = parameters()) {
+  const args = [
+    `${bind(query.make)}::text`, `${bind(query.model)}::text`, `${bind(generation)}::uuid`, `${bind(query.locale)}::text`,
+    `${bind(query.trim ?? null)}::text`, `${bind(query.yearMin ?? null)}::integer`, `${bind(query.yearMax ?? null)}::integer`,
+    `${bind(query.mileageMin ?? null)}::integer`, `${bind(query.mileageMax ?? null)}::integer`,
+    `${bind(query.powertrain ?? null)}::text`,
+  ];
+  return { values, text: `SELECT 'ext-'||q.listing_id::text AS id,q.price_cny::text AS price,
+    q.trim_id AS trim,q.powertrain,q.model_year AS year,q.mileage_km AS mileage
+    FROM public.read_external_market_quote_rows(${args.join(',')}) q` };
+}
+
+export type MarketRowPhase = 'market_read_manual' | 'market_declare' | 'market_fetch';
+
 export async function readComparableRows(tx: PoolClient, query: MarketPriceQuery, externalCatalog: boolean,
-  quote: FxQuote | null, picks?: readonly string[]) {
+  quote: FxQuote | null, picks?: readonly string[], phase?: (stage: MarketRowPhase) => void, projectionGeneration?: string | null) {
+  phase?.('market_read_manual');
   const manualIds = picks?.filter(id => !id.startsWith('ext-'));
   const manual = manualQuotes(query, quote, manualIds);
   const rows = manualIds?.length === 0 ? [] : (await tx.query<ModelRow>(`${manual.text} LIMIT ${modelRowLimit + 1}`, manual.values)).rows;
@@ -108,11 +131,22 @@ export async function readComparableRows(tx: PoolClient, query: MarketPriceQuery
 
   const supplierIds = picks?.filter(id => id.startsWith('ext-')).map(id => id.slice(4));
   if (supplierIds?.length === 0) return rows;
+  // Picks are a live price and eligibility check. Only use the projection to build a cohort.
+  if (!supplierIds && projectionGeneration) {
+    const supplier = projectedSupplierCandidates(query, projectionGeneration);
+    const limit = modelRowLimit + 1 - rows.length;
+    phase?.('market_fetch');
+    const { rows: projected } = await tx.query<ModelRow>(`${supplier.text} LIMIT ${limit}`, supplier.values);
+    if (rows.length + projected.length > modelRowLimit) throw new PublicCatalogUnavailableError('load-capacity');
+    return rows.concat(projected);
+  }
   const supplier = supplierCandidates(query, supplierIds);
   if (supplierIds) {
     return rows.concat((await tx.query<ModelRow>(supplier.text, supplier.values)).rows);
   }
+  phase?.('market_declare');
   await tx.query(`DECLARE market_candidates NO SCROLL CURSOR FOR ${supplier.text}`, supplier.values);
+  phase?.('market_fetch');
   for (;;) {
     const page = (await tx.query<ModelRow>(`FETCH FORWARD ${supplierBatchSize} FROM market_candidates`)).rows;
     rows.push(...page);
@@ -121,13 +155,21 @@ export async function readComparableRows(tx: PoolClient, query: MarketPriceQuery
   }
 }
 
-// An upper bound uses only the narrow supplier filter and qualified staff rows.
-// Once it crosses the row-cache limit, compute exact totals without moving the
-// cohort into Node. Potential supplier exclusions can only lower the real count.
+// Count qualified staff rows and possible supplier rows up to the cache limit.
+// Legacy eligibility can only reduce this upper bound.
 export async function shouldAggregateMarket(tx: PoolClient, query: MarketPriceQuery, externalCatalog: boolean,
-  quote: FxQuote | null) {
+  quote: FxQuote | null, projectionGeneration?: string | null) {
   const params = parameters();
-  const supplier = externalCatalog ? `SELECT 1 FROM external_catalog_filter f WHERE ${supplierScope(query, params.bind)} UNION ALL` : '';
+  const { bind } = params;
+  let supplier = '';
+  if (externalCatalog && projectionGeneration) {
+    const conditions = [`f.make_id=${bind(query.make)}`, `f.model_id=${bind(query.model)}`,
+      `f.generation=${bind(projectionGeneration)}::uuid`, `(f.locale_mask & ${bind(localeMask[query.locale])}::smallint)<>0`,
+      'f.price_cny>0', ...filterRange(query, bind, 'supplier')];
+    supplier = `SELECT 1 FROM public.external_market_quote_rows f WHERE ${conditions.join(' AND ')} UNION ALL`;
+  } else if (externalCatalog) {
+    supplier = `SELECT 1 FROM external_catalog_filter f WHERE ${supplierScope(query, bind)} UNION ALL`;
+  }
   const manual = manualQuotes(query, quote, undefined, params);
   const { rows: [probe] } = await tx.query<{ oversized: boolean }>(`SELECT EXISTS (
     SELECT 1 FROM (${supplier} SELECT 1 FROM (${manual.text}) manual)
@@ -144,10 +186,12 @@ function quartile(rank: 1 | 3) {
   )/4,2)::text END`;
 }
 
-export async function aggregateMarket(tx: PoolClient, query: MarketPriceQuery, externalCatalog: boolean, quote: FxQuote | null) {
+export async function aggregateMarket(tx: PoolClient, query: MarketPriceQuery, externalCatalog: boolean,
+  quote: FxQuote | null, projectionGeneration?: string | null) {
   const params = parameters();
   const manual = manualQuotes(query, quote, undefined, params);
-  const supplier = externalCatalog ? supplierCandidates(query, undefined, params) : null;
+  const supplier = externalCatalog ? (projectionGeneration ? projectedSupplierCandidates(query, projectionGeneration, params) :
+    supplierCandidates(query, undefined, params)) : null;
   const { rows: [cohort] } = await tx.query<MarketCohort>(`WITH comparable AS (
     ${manual.text}${supplier ? ` UNION ALL SELECT * FROM (${supplier.text}) supplier` : ''}
   ), ranked AS (

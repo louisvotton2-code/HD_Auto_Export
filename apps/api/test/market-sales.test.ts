@@ -17,6 +17,7 @@ import type { Source } from '../src/external/full-sync/types.js';
 import { chinaCarSampleProfile } from '../src/external/profiles.js';
 import type { SourceDocument } from '../src/external/sources/index.js';
 import { ExternalStore } from '../src/external/store.js';
+import { maintainMarketProjection } from '../src/market-prices/projection-maintenance.js';
 
 const maintenanceUrl = new URL(process.env.API_TEST_DATABASE_URL ?? 'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
 assert.ok(['postgres:', 'postgresql:'].includes(maintenanceUrl.protocol) && maintenanceUrl.hostname === '127.0.0.1' &&
@@ -277,6 +278,42 @@ test('mixed market counts one canonical supplier quote, and exact HX lookup resp
     url: `${sales}/lookup?locale=en&detailUrl=${encodeURIComponent(`${origin}/en/cars/ext-${id}/`)}`, headers,
   });
   const legacy = await supplierListing('che168', 'legacy');
+  const scope = { database: databaseName, make: 'cca-make-31001', model: 'cca-model-41001' };
+  const overrideSql = 'INSERT INTO external_listing_overrides(listing_id,data) VALUES($1,$2::jsonb)';
+  // A direct override that observed the old empty market registry must finish
+  // before the first enrollment takes a snapshot of existing public facts.
+  const direct = await db.pool.connect();
+  try {
+    await direct.query('BEGIN');
+    await direct.query(overrideSql, [legacy.id, { hidden: true }]);
+    assert.deepEqual(await maintainMarketProjection(db, { ...scope, action: 'begin' }), { status: 'busy' });
+  } finally {
+    await direct.query('ROLLBACK');
+    direct.release();
+  }
+  // A transaction that had already fixed an older snapshot cannot obtain a
+  // stale no-op by ignoring the generation created by another connection.
+  const oldSnapshot = await db.pool.connect();
+  let enrollment: Awaited<ReturnType<typeof maintainMarketProjection>>;
+  try {
+    await oldSnapshot.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    await oldSnapshot.query('SELECT FROM external_market_quote_models');
+    enrollment = await maintainMarketProjection(db, { ...scope, action: 'begin' });
+    await assert.rejects(oldSnapshot.query(overrideSql, [legacy.id, { hidden: true }]), { code: '0A000' });
+  } finally {
+    await oldSnapshot.query('ROLLBACK');
+    oldSnapshot.release();
+  }
+  assert.ok('generation' in enrollment && enrollment.generation);
+  const target = { ...scope, generation: enrollment.generation };
+  await assert.rejects(maintainMarketProjection(db, { ...target, action: 'activate' }), /successful verification/);
+  let enqueued = 0;
+  for (let mask = 1; mask <= 7; mask++) {
+    const seeded = await maintainMarketProjection(db, { ...target, action: 'seed' });
+    assert.ok('phase' in seeded && seeded.phase === (mask < 7 ? 'preparing' : 'filling'));
+    enqueued += seeded.processed ?? 0;
+  }
+  assert.equal(enqueued, 1);
   const lookupLegacy = () => Promise.all([exact(legacy.inquiry_number), byLink(legacy.id)]);
   for (const response of await lookupLegacy()) {
     assert.equal(response.statusCode, 200, response.body);
@@ -287,6 +324,19 @@ test('mixed market counts one canonical supplier quote, and exact HX lookup resp
   assert.equal(legacyMarket.extremes.max?.vehicle.id, `ext-${legacy.id}`);
   const primary = await supplierListing('che168');
   const backup = await supplierListing('dongchedi');
+  // The signed worker added its formal rows after the enumeration transaction.
+  // One-shot processing the legacy ID must retain those exact trigger-written rows.
+  const verified = await maintainMarketProjection(db, { ...target, action: 'step' });
+  assert.ok('phase' in verified && verified.phase === 'verified' && verified.processed === 1);
+  const liveQuoteRows = async (locale: string) => (await db.pool.query<{ listing_id: string; price: string }>(
+    'SELECT listing_id, price_cny::text AS price FROM public.read_external_market_quote_rows($1,$2,$3,$4,NULL,NULL,NULL,NULL,NULL,NULL)',
+    [scope.make, scope.model, target.generation, locale],
+  )).rows;
+  const beforeActive = await maintainMarketProjection(db, { ...target, action: 'activate' });
+  assert.ok('phase' in beforeActive && beforeActive.phase === 'ready');
+  for (const locale of ['zh', 'en', 'ru']) {
+    assert.deepEqual(await liveQuoteRows(locale), [{ listing_id: primary.id, price: '70000.00' }]);
+  }
   const initial = await readMarket();
   assert.equal(initial.sampleCount, 2);
   assert.equal(initial.extremes.min?.vehicle.id, mixedManual);
@@ -312,9 +362,22 @@ test('mixed market counts one canonical supplier quote, and exact HX lookup resp
       randomUUID(), { id: operator, requestId: randomUUID() });
   };
   await setHidden(true);
+  assert.deepEqual(await liveQuoteRows('en'), []);
   assert.equal((await exact(primary.inquiry_number)).statusCode, 404);
   assert.deepEqual((await lookupLegacy()).map(response => response.statusCode), [404, 404], 'hidden formal listing');
   await setHidden(false);
+  // An override-only maintenance write leaves the published source projection
+  // intact. The quote still has to track both IDs when that override moves.
+  const moveHidden = 'UPDATE external_listing_overrides SET listing_id=$2 WHERE listing_id=$1';
+  await db.pool.query(`UPDATE external_listing_overrides SET data=jsonb_set(data,'{hidden}','true')
+    WHERE listing_id=$1`, [primary.id]);
+  assert.deepEqual(await liveQuoteRows('en'), []);
+  await db.pool.query(moveHidden, [primary.id, backup.id]);
+  assert.deepEqual(await liveQuoteRows('en'), [{ listing_id: primary.id, price: '70000.00' }]);
+  await db.pool.query(moveHidden, [backup.id, primary.id]);
+  assert.deepEqual(await liveQuoteRows('en'), []);
+  await setHidden(false);
+  assert.deepEqual(await liveQuoteRows('en'), [{ listing_id: primary.id, price: '70000.00' }]);
   assert.equal((await exact(primary.inquiry_number)).statusCode, 200);
   assert.deepEqual((await lookupLegacy()).map(response => response.statusCode), [404, 404], 'formal listing owns this source identity');
 
@@ -329,6 +392,38 @@ test('mixed market counts one canonical supplier quote, and exact HX lookup resp
     assert.equal(vehicle.availability, 'unknown');
   }
   assert.equal((await readMarket()).extremes.max?.vehicle.id, `ext-${backup.id}`);
+  assert.deepEqual(await liveQuoteRows('en'), [{ listing_id: backup.id, price: '70000.00' }]);
+
+  // A normal projected price update and an overlapping withdrawal are ordered
+  // by the same rows. Before COMMIT another connection sees the prior sample.
+  let releaseUpdate!: () => void;
+  let priceStaged!: () => void;
+  const staged = new Promise<void>(resolve => { priceStaged = resolve; });
+  const finishPrice = new Promise<void>(resolve => { releaseUpdate = resolve; });
+  const priceChange = db.transaction(async tx => {
+    await tx.query('SELECT pg_advisory_xact_lock(78291332)');
+    await tx.query("UPDATE external_catalog SET price_cny=71000 WHERE listing_id=$1", [backup.id]);
+    priceStaged();
+    await finishPrice;
+  });
+  await Promise.race([staged,priceChange]);
+  try {
+    assert.deepEqual(await liveQuoteRows('en'), [{ listing_id: backup.id, price: '70000.00' }]);
+    const withdrawing = supplierListing('dongchedi', 'withdraw');
+    releaseUpdate();
+    await Promise.all([priceChange, withdrawing]);
+  } finally {
+    releaseUpdate();
+    await priceChange;
+  }
+  assert.deepEqual(await liveQuoteRows('en'), []);
+  assert.equal((await readMarket()).sampleCount, 1);
+  const disabled = await maintainMarketProjection(db, { ...target, action: 'disable' });
+  assert.ok('phase' in disabled && disabled.phase === 'disabled');
+  assert.equal((await readMarket()).sampleCount, 1);
+  const next = await maintainMarketProjection(db, { ...scope, action: 'begin' });
+  assert.ok('generation' in next && next.generation !== target.generation);
+  await assert.rejects(maintainMarketProjection(db, { ...target, action: 'activate' }), /generation does not match/);
 });
 
 test('market converts historical bare USD asking prices and omits them when no rate can compare them', async () => {
@@ -411,6 +506,51 @@ test('market includes qualifying rows across cursor pages and shares the full sn
   assert.equal(tail.statistics.min?.cny.amount, '10255.00');
   assert.equal(tail.statistics.max?.cny.amount, '10257.00');
   assert.equal(whole.asOf, tail.asOf);
+});
+
+test('quote preparation resumes across equal timestamps and captures rows that move behind the cursor', async () => {
+  const scope = { database: databaseName, make: 'seed-make', model: 'seed-model' };
+  await db.pool.query(`WITH identities AS (
+    INSERT INTO external_listings(id,provider,platform_id,external_id,source_revision,source_hash,source_data,
+      upstream_state,fetched_at,published_at)
+    SELECT gen_random_uuid(),'chinacarapi-sample','che168',(920000+n)::text,1,'fixture','{}','active',
+      now(),'2026-11-25T00:00:00.123456Z' FROM generate_series(1,258) n RETURNING id
+  )
+  INSERT INTO external_catalog(listing_id,published_at,platform_name,listing_url,facts,price_cny,issues,localized,details)
+  SELECT id,'2026-11-25T00:00:00.123456Z','Fixture','https://example.invalid/',
+    '{"make":{"id":"seed-make"},"model":{"id":"seed-model"}}',70000,'[]','{"zh":{}}','{}' FROM identities`);
+  const enrollment = await maintainMarketProjection(db, { ...scope, action: 'begin' });
+  assert.ok('generation' in enrollment && enrollment.generation);
+  const target = { ...scope, generation: enrollment.generation };
+  const page = await maintainMarketProjection(db, { ...target, action: 'seed' });
+  assert.ok('phase' in page && page.phase === 'preparing' && page.seedMask === 1 && page.processed === 256);
+  const { rows: [next] } = await db.pool.query<{ listing_id: string }>(`SELECT listing_id
+    FROM external_catalog_filter WHERE make_id=$1 AND model_id=$2 ORDER BY listing_id DESC LIMIT 1`, [scope.make,scope.model]);
+  // This was the last UUID at the old timestamp. Its newer timestamp moves it
+  // outside the resumed range and the normal catalogue trigger must cover it.
+  await db.pool.query("UPDATE external_catalog SET published_at='2026-11-25T00:00:00.123457Z' WHERE listing_id=$1", [next!.listing_id]);
+  const resumed = await maintainMarketProjection(db, { ...target, action: 'seed' });
+  assert.ok('phase' in resumed && resumed.phase === 'preparing' && resumed.seedMask === 2 && resumed.processed === 1);
+  for (let mask = 2; mask <= 7; mask++) await maintainMarketProjection(db, { ...target, action: 'seed' });
+  for (const size of [128, 128, 1]) {
+    const step = await maintainMarketProjection(db, { ...target, action: 'step' });
+    assert.ok('phase' in step && step.processed === size && step.phase === (size < 128 ? 'verified' : 'filling'));
+  }
+  const ready = await maintainMarketProjection(db, { ...target, action: 'activate' });
+  assert.ok('phase' in ready && ready.phase === 'ready');
+  const rows = await db.pool.query(`SELECT listing_id FROM external_market_quote_rows
+    WHERE make_id=$1 AND model_id=$2 AND generation=$3`, [scope.make,scope.model,target.generation]);
+  assert.equal(rows.rowCount, 258);
+  assert.ok(rows.rows.some(row => row.listing_id === next!.listing_id));
+  await assert.rejects(db.transaction(async tx => {
+    await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    await tx.query('DELETE FROM external_catalog_filter WHERE listing_id=$1', [next!.listing_id]);
+  }), { code: '0A000' });
+  await assert.rejects(db.pool.query('UPDATE external_catalog SET listing_id=$1 WHERE listing_id=$2',
+    [randomUUID(), next!.listing_id]), { code: '55000' });
+  await db.pool.query('TRUNCATE external_market_quote_rows');
+  const fallback = await maintainMarketProjection(db, { ...scope, action: 'status' });
+  assert.ok('phase' in fallback && fallback.phase === 'disabled');
 });
 
 test('cold Mercedes E-Class returns an exact default and a scoped result beyond the row-cache cap', async () => {

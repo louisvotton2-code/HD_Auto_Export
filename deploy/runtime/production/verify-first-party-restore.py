@@ -14,11 +14,14 @@ import stat
 import subprocess
 import tarfile
 
-from first_party_data import BACKUP_SCHEMA_SQL, SCOPE, analytics_restore_retention_sql, backup_schema, fingerprint_sql
+from first_party_data import (
+    BACKUP_SCHEMA_SQL, MARKET_PROJECTION_TABLES, SCOPE, analytics_restore_retention_sql, backup_schema, fingerprint_sql,
+)
 
 HERE = Path(__file__).resolve().parent
 COMPONENTS = {'database.dump', 'media.tar.gz', 'first-party.sql', 'controls.tar.gz'}
 UUID = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+MARKET_PROJECTION_MIGRATION = 1794182400058
 SAFETY_SQL = """
 SELECT jsonb_build_object(
   'workerDisabled', (SELECT NOT enabled AND receive_cursor IS NULL AND since_at IS NULL
@@ -105,6 +108,19 @@ def verify_media(archive, expected, required):
     return len(originals)
 
 
+def verify_empty_market_projection(read):
+    relations = ','.join(f"to_regclass('public.{table}')" for table in MARKET_PROJECTION_TABLES)
+    actual = json.loads(read(f"""SELECT jsonb_build_object(
+      'migrated', EXISTS (SELECT FROM drizzle.__drizzle_migrations WHERE created_at={MARKET_PROJECTION_MIGRATION}),
+      'tables', (SELECT count(oid) FROM unnest(ARRAY[{relations}]) AS relation(oid)))"""))
+    need(actual == {'migrated': False, 'tables': 0}
+         or actual == {'migrated': True, 'tables': len(MARKET_PROJECTION_TABLES)},
+         'Unexpected market projection schema in first-party restore')
+    if actual['migrated']:
+        empty = ' AND '.join(f'NOT EXISTS (SELECT FROM public.{table})' for table in MARKET_PROJECTION_TABLES)
+        need(read('SELECT ' + empty).strip() == b't', 'The first-party restore contains supplier market projection data')
+
+
 def verify_database(point, container, user, manifest):
     need(re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', container)
          and re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,62}', user)
@@ -142,6 +158,7 @@ def verify_database(point, container, user, manifest):
         if read("SELECT to_regclass('public.external_catalog_overview_groups') IS NOT NULL").strip() == b't':
             need(read('SELECT NOT EXISTS (SELECT FROM public.external_catalog_overview_groups)').strip() == b't',
                  'The first-party restore contains supplier overview groups')
+        verify_empty_market_projection(read)
         read(analytics_restore_retention_sql())
         return retained, safety
     finally:

@@ -1,6 +1,7 @@
 """Check first-party backup scope and restore retention across schema versions."""
 
 import json
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +11,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent / 'production'))
 import first_party_data as data
+restore_spec = spec_from_file_location('first_party_restore', Path(__file__).parent / 'production/verify-first-party-restore.py')
+restore = module_from_spec(restore_spec)
+restore_spec.loader.exec_module(restore)
 
 
 class FirstPartyAnalytics(unittest.TestCase):
@@ -53,6 +57,48 @@ class FirstPartySupplierKeywordMatch(unittest.TestCase):
                 self.assertIn(f"'{table}'", schema_gate)
                 self.assertIn(f"'{table}'", measurement)
                 self.assertNotIn(table, supplement)
+
+
+class FirstPartyMarketProjection(unittest.TestCase):
+    TABLES = ('external_market_quote_models', 'external_market_quote_pending', 'external_market_quote_rows')
+
+    def test_market_projection_schema_remains_without_certified_data(self):
+        options = [option for option in data.dump_options() if 'external_market_quote_' in option]
+        self.assertCountEqual(options, [f'--exclude-table-data=public.{table}' for table in self.TABLES])
+        for table in self.TABLES:
+            with self.subTest(table=table):
+                self.assertIn(f"'{table}'", data._validate_supplier_tables_sql())
+                self.assertIn(f"'{table}'", data.measurement_sql())
+                self.assertNotIn(table, data._supplement_sql(True, seo_selection=True))
+                self.assertNotIn(table, data.fingerprint_sql(restored=True))
+
+    def test_restores_verify_the_market_projection_only_when_0058_is_present(self):
+        for migrated in (False, True):
+            with self.subTest(migrated=migrated):
+                calls = []
+
+                def read(sql):
+                    calls.append(sql)
+                    if len(calls) == 1:
+                        self.assertIn('created_at=1794182400058', sql)
+                        for table in self.TABLES:
+                            self.assertIn(f"to_regclass('public.{table}')", sql)
+                        return json.dumps({'migrated': migrated, 'tables': 3 if migrated else 0}).encode()
+                    for table in self.TABLES:
+                        self.assertIn(f'NOT EXISTS (SELECT FROM public.{table})', sql)
+                    return b't\n'
+
+                restore.verify_empty_market_projection(read)
+                self.assertEqual(len(calls), 2 if migrated else 1)
+
+    def test_restore_rejects_an_incomplete_schema_or_leaked_supplier_projection(self):
+        for migrated, tables in ((False, 1), (False, 3), (True, 0), (True, 1), (True, 2)):
+            facts = json.dumps({'migrated': migrated, 'tables': tables}).encode()
+            with self.subTest(migrated=migrated, tables=tables), self.assertRaisesRegex(ValueError, 'Unexpected market'):
+                restore.verify_empty_market_projection(lambda _sql: facts)
+        results = iter((b'{"migrated":true,"tables":3}', b'f\n'))
+        with self.assertRaisesRegex(ValueError, 'contains supplier market projection data'):
+            restore.verify_empty_market_projection(lambda _sql: next(results))
 
 
 class FirstPartyPixelSettings(unittest.TestCase):
