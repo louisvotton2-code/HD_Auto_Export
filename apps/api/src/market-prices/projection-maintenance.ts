@@ -10,7 +10,8 @@ const actions = ['begin', 'seed', 'step', 'activate', 'disable', 'status'] as co
 type Action = typeof actions[number];
 type Phase = 'preparing' | 'filling' | 'verified' | 'ready' | 'disabled';
 type ModelScope = { make: string; model: string; database: string };
-type Maintenance = ModelScope & { action: Action; generation?: string };
+type Maintenance = ModelScope & { action: Action; generation?: string; batchSize?: number };
+type StepPhase = 'select' | 'refresh' | 'verify' | 'finish';
 type ModelState = {
   generation: string; phase: Phase; updated_at: Date; pending: boolean;
   seed_mask: number; seed_published_at: string | null; seed_listing_id: string | null;
@@ -20,17 +21,24 @@ const batchSize = 128;
 const seedPageSize = 256;
 const databaseName = /^[A-Za-z0-9_]{1,63}$/;
 const generationId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const usage = 'Expected begin, seed, step, activate, disable or status with --make, --model and --database. Set --generation for seed, step, activate and disable.';
+const usage = 'Expected begin, seed, step, activate, disable or status with --make, --model and --database. Set --generation for seed, step, activate and disable. A step may set --batch-size (1–128).';
 const pendingWhere = 'make_id=$1 AND model_id=$2 AND generation=$3::uuid';
 
 class MarketMaintenanceError extends Error {}
 
+export class MarketProjectionStepCancelled extends MarketMaintenanceError {
+  constructor(readonly phase: StepPhase, readonly batchSize: number) {
+    super('Market projection step statement cancelled.');
+  }
+}
+
 function validate(input: Maintenance) {
-  const { action, database, generation, make, model } = input;
+  const { action, database, generation, make, model, batchSize: size } = input;
   const needsGeneration = action !== 'begin' && action !== 'status';
   if (!actions.includes(action) || !databaseName.test(database)
       || !IdSchema.safeParse(make).success || !IdSchema.safeParse(model).success
-      || (needsGeneration ? !generation || !generationId.test(generation) : generation !== undefined)) {
+      || (needsGeneration ? !generation || !generationId.test(generation) : generation !== undefined)
+      || (size !== undefined && (action !== 'step' || !Number.isInteger(size) || size < 1 || size > batchSize))) {
     throw new MarketMaintenanceError(usage);
   }
 }
@@ -141,23 +149,48 @@ async function step(tx: PoolClient, input: Maintenance, state: ModelState) {
   if (state.phase === 'verified' || state.phase === 'ready') return report(input, state, { processed: 0 });
   if (state.phase !== 'filling') throw new MarketMaintenanceError('Seed this generation before refreshing it.');
   const scope = [input.make, input.model, input.generation];
-  const { rows } = await tx.query<{ listing_id: string }>(`SELECT listing_id
-    FROM public.external_market_quote_pending WHERE ${pendingWhere} ORDER BY listing_id LIMIT $4`, [...scope, batchSize]);
-  const ids = rows.map(row => row.listing_id);
-  if (ids.length) {
-    await tx.query(`SELECT public.refresh_external_market_quote(target.listing_id)
-      FROM unnest($1::uuid[]) AS target(listing_id)`, [ids]);
-    const { rows: [verification] } = await tx.query<{ matches: boolean }>(
-      'SELECT public.verify_external_market_quote_batch($1::uuid[]) AS matches', [ids]);
-    if (verification?.matches !== true) throw new MarketMaintenanceError('Market projection batch differs from authoritative data.');
-    const deleted = await tx.query(`DELETE FROM public.external_market_quote_pending
-      WHERE ${pendingWhere} AND listing_id=ANY($4::uuid[])`, [...scope, ids]);
-    if (deleted.rowCount !== ids.length) throw new MarketMaintenanceError('Market projection batch changed during verification.');
+  const size = input.batchSize ?? batchSize;
+  let phase: StepPhase = 'select';
+  try {
+    const { rows } = await tx.query<{ listing_id: string }>(`SELECT listing_id
+      FROM public.external_market_quote_pending WHERE ${pendingWhere} ORDER BY listing_id LIMIT $4`, [...scope, size]);
+    const ids = rows.map(row => row.listing_id);
+    if (ids.length) {
+      phase = 'refresh';
+      await tx.query(`SELECT public.refresh_external_market_quote(target.listing_id)
+        FROM unnest($1::uuid[]) AS target(listing_id)`, [ids]);
+      phase = 'verify';
+      // Preserve the 0058 composite equality, including absent rows on either
+      // side. Keep each probe correlated so the batch cannot flatten into a
+      // wide join and scan the catalogue or quote tables to certify a few IDs.
+      const { rows: [verification] } = await tx.query<{ matches: boolean }>(`SELECT NOT EXISTS (
+        SELECT FROM unnest($1::uuid[]) AS target(id)
+        LEFT JOIN LATERAL (
+          SELECT stored AS quote FROM public.external_market_quote_rows stored
+          WHERE stored.listing_id=target.id OFFSET 0
+        ) q ON true
+        LEFT JOIN LATERAL (
+          SELECT desired AS quote FROM public.desired_external_market_quote(target.id) desired OFFSET 0
+        ) expected ON true
+        WHERE q.quote IS DISTINCT FROM expected.quote
+      ) AS matches`, [ids]);
+      if (verification?.matches !== true) throw new MarketMaintenanceError('Market projection batch differs from authoritative data.');
+      phase = 'finish';
+      const deleted = await tx.query(`DELETE FROM public.external_market_quote_pending
+        WHERE ${pendingWhere} AND listing_id=ANY($4::uuid[])`, [...scope, ids]);
+      if (deleted.rowCount !== ids.length) throw new MarketMaintenanceError('Market projection batch changed during verification.');
+    }
+    phase = 'finish';
+    const after = await readModel(tx, input);
+    if (!after) throw new MarketMaintenanceError('Market projection enrollment changed during the batch.');
+    await setPhase(tx, input, after.pending ? 'filling' : 'verified');
+    return report(input, await readModel(tx, input), { processed: ids.length });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === '57014') {
+      throw new MarketProjectionStepCancelled(phase, size);
+    }
+    throw error;
   }
-  const after = await readModel(tx, input);
-  if (!after) throw new MarketMaintenanceError('Market projection enrollment changed during the batch.');
-  await setPhase(tx, input, after.pending ? 'filling' : 'verified');
-  return report(input, await readModel(tx, input), { processed: ids.length });
 }
 
 export async function maintainMarketProjection(db: Database, input: Maintenance) {
@@ -201,13 +234,17 @@ export async function maintainMarketProjection(db: Database, input: Maintenance)
 async function run() {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
-    options: { make: { type: 'string' }, model: { type: 'string' }, database: { type: 'string' }, generation: { type: 'string' } },
+    options: { make: { type: 'string' }, model: { type: 'string' }, database: { type: 'string' },
+      generation: { type: 'string' }, 'batch-size': { type: 'string' } },
   });
   const action = actions.find(value => value === positionals[0]);
   if (!action || positionals.length !== 1 || !values.make || !values.model || !values.database) {
     throw new MarketMaintenanceError(usage);
   }
-  const input = { action, make: values.make, model: values.model, database: values.database, generation: values.generation };
+  const rawSize = values['batch-size'];
+  if (rawSize !== undefined && !/^[1-9][0-9]{0,2}$/.test(rawSize)) throw new MarketMaintenanceError(usage);
+  const input = { action, make: values.make, model: values.model, database: values.database,
+    generation: values.generation, batchSize: rawSize === undefined ? undefined : Number(rawSize) };
   validate(input);
   const env = readDatabaseEnvironment();
   const address = new URL(env.DATABASE_URL ?? '');
@@ -228,7 +265,11 @@ async function run() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void run().catch(error => {
-    console.error(error instanceof MarketMaintenanceError ? error.message : 'Market projection maintenance failed.');
+    if (error instanceof MarketProjectionStepCancelled) {
+      console.error(JSON.stringify({ status: 'query-cancelled', phase: error.phase, batchSize: error.batchSize }));
+    } else {
+      console.error(error instanceof MarketMaintenanceError ? error.message : 'Market projection maintenance failed.');
+    }
     process.exitCode = 1;
   });
 }
