@@ -11,7 +11,9 @@ import {FullSyncWorker,configureFullSync} from '../src/external/full-sync/engine
 import type {DetailMaterializationObservation} from '../src/external/full-sync/materialization-log.js';
 import type {FullSyncClient} from '../src/external/full-sync/client.js';
 import {FullSyncError} from '../src/external/full-sync/types.js';
-import type {Change,Source} from '../src/external/full-sync/types.js';
+import type {Change,Locale,Source} from '../src/external/full-sync/types.js';
+import {applyFullSource} from '../src/external/full-sync/apply.js';
+import {archiveSourceDocuments} from '../src/external/sources/index.js';
 import {fullSyncTimings,recordDetailTiming,recordWithdrawalTiming} from '../src/external/full-sync/timing.js';
 import {applyFormalCandidate,ExternalStore} from '../src/external/store.js';
 import {jsonHash} from '../src/external/normalize.js';
@@ -397,6 +399,143 @@ test('sync priority, fairness and five-stage observations persist without confus
   });
   assert.equal(forbidden.mock.callCount(),0);
  }finally{await worker?.close();await db?.close();try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}"`);}finally{await maintenance.close();await rm(directory,{recursive:true,force:true});forbidden.mock.restore();}}
+});
+
+test('an ordered prefix of archived public prices can publish before slower supplier detail fetches',async t=>{
+ const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
+ if(!['postgres:','postgresql:'].includes(url.protocol)||url.hostname!=='127.0.0.1'||url.pathname!=='/postgres'||url.search||url.hash)throw new Error('Isolated loopback maintenance DB required');
+ const maintenance=createDatabase(url.href,1),name=`hd_sync_ready_prices_${randomBytes(8).toString('hex')}`;
+ const directory=await mkdtemp(path.join(tmpdir(),'hd-sync-ready-prices-'));
+ let db:Database|undefined,worker:FullSyncWorker|undefined,created=false;
+ const prepared=Array.from({length:16},(_,i)=>String(94001+i)),missing='94017',withdrawn='94018',otherSource='94019';
+ const scope=[...prepared,missing,withdrawn],locales=['zh','en','ru'] as const;
+ const at='2026-11-14T01:00:00.000Z',changedAt='2026-11-14T01:01:00.000Z',withdrawalAt='2026-11-14T01:02:00.000Z';
+ const actor={id:'ready-price-admin',requestId:'ready-price-test'};
+ const requests:{source:Source;ids:string[];locale:Locale}[]=[],applied:string[]=[],observations:DetailMaterializationObservation[]=[];
+ let feed:Change[]=[],sourceAt=at,price=70000,failBeforeArchive=false;
+ const response=(payload:unknown)=>{
+  const body=JSON.stringify(payload);
+  return {body,hash:createHash('sha256').update(body).digest('hex')};
+ };
+ const detail=(source:Source,id:string,locale:Locale)=>({
+  id,source,status:'active',updatedAt:sourceAt,
+  url:source==='che168'?`https://www.che168.com/dealer/1/${id}.html`:`https://www.dongchedi.com/usedcar/${id}`,
+  title:locale==='zh'?'测试改价':locale==='ru'?'Тест изменения цены':'Synthetic price test',
+  make:{id:'fixture-make',name:'Example',nameZh:'示例'},model:{id:'fixture-model',name:'Model',nameZh:'测试车型'},
+  price:{cny:price},modelYear:2024,mileageKm:10000,fuel:'Petrol',transmission:'Automatic',
+  photos:['https://erscglobal2.autoimg.cn/synthetic-sync-timing.jpg'],hasInspectionReport:false,
+ });
+ const client={
+  changes:async()=>{const payload={changes:feed,cursor:0,nextCursor:feed.at(-1)?.id??0,hasMore:false};return {...payload,rawResponse:response(payload)};},
+  bulk:async function*(source:Source,ids:string[],locale:Locale){
+   requests.push({source,ids,locale});
+   if(failBeforeArchive)throw new FullSyncError('SYNC_RATE_LIMITED');
+   const payload={results:ids.map(id=>detail(source,id,locale)),notFound:[]};
+   yield {...payload,rawResponse:response(payload)};
+  },
+ } as unknown as FullSyncClient;
+ try{
+  await maintenance.pool.query(`CREATE DATABASE "${name}"`);created=true;url.pathname=`/${name}`;
+  db=createDatabase(url.href,2);const database=db;await migrateDatabase(database);
+  await database.pool.query("INSERT INTO staff(id,name,email,role,banned) VALUES($1,'Test','ready-price@example.invalid','admin',false)",[actor.id]);
+  await configureFullSync(database,actor,'continuous');
+  const sync=new FullSyncWorker(database,client,directory,async(tx,input)=>{
+   applied.push(`${input.operation}:${input.externalId}`);
+   await applyFullSource(tx,input);
+  },observation=>observations.push(observation));
+  worker=sync;assert.equal(await sync.acquire(),true);sync.space=async()=>({used:0,total:1e12,available:1e12});
+  const setTurn=(turn:number)=>database.pool.query('UPDATE external_full_sync SET detail_turn=$1 WHERE id=1',[turn]);
+  await database.pool.query('UPDATE external_full_sync SET since_at=$1 WHERE id=1',[at]);
+  feed=scope.map((vehicleId,i)=>({id:1000+i,source:'che168',vehicleId,type:'new',at}));
+  await sync.receiveDelta();assert.equal(await sync.applyEvents(),scope.length);
+  await setTurn(1);
+  assert.equal(await sync.details(),scope.length);
+  const publicIds=(await database.pool.query<{id:string;external_id:string}>(`SELECT id,external_id FROM external_listings
+   WHERE provider='chinacarapi' AND platform_id='che168' AND external_id=ANY($1::text[])`,[scope])).rows;
+  const publicId=(id:string)=>`ext-${publicIds.find(row=>row.external_id===id)!.id}`;
+  const inventory=new InventoryService(database,true);
+  assert.equal((await inventory.getPublic(publicId(prepared[0]!),'en','localized')).price.money?.amount,'70000.00');
+
+  sourceAt=changedAt;price=65000;
+  feed=[...[...prepared,missing].map((vehicleId,i)=>({id:2000+i,source:'che168' as const,vehicleId,type:'price' as const,at:changedAt})),
+   {id:2020,source:'dongchedi',vehicleId:otherSource,type:'new',at:changedAt}];
+  await sync.receiveDelta();assert.equal(await sync.applyEvents(),prepared.length+2);
+  const observedAt=new Date().toISOString();
+  await database.transaction(async tx=>{
+   for(const id of prepared){
+    const refs=await archiveSourceDocuments(tx,locales.map(locale=>({identity:{provider:'chinacarapi',source:'che168',externalId:id},
+     kind:'detail',locale,observedAt,sourceUpdatedAt:changedAt,payload:detail('che168',id,locale)})),`full:che168:${id}:detail`);
+    await tx.query(`UPDATE external_full_work SET locales=$2,document_refs=$3,queued_at=$4
+     WHERE source='che168' AND external_id=$1 AND kind='detail'`,[id,locales,JSON.stringify(refs),at]);
+   }
+   await tx.query("UPDATE external_full_work SET queued_at=$2 WHERE source='che168' AND external_id=$1",[missing,changedAt]);
+   await tx.query("UPDATE external_full_work SET priority=0,queued_at=$2 WHERE source='dongchedi' AND external_id=$1",[otherSource,'2026-11-14T00:00:00.000Z']);
+  });
+  const queued=()=>
+   database.pool.query(`SELECT external_id,locales,document_refs,generation,attempts FROM external_full_work
+    WHERE kind='detail' ORDER BY source,external_id`).then(({rows})=>rows);
+  const before=await queued();applied.length=0;requests.length=0;
+  const expectOrdinaryFetch=async(turn=0)=>{
+   requests.length=0;await setTurn(turn);
+   await assert.rejects(sync.details(),{code:'SYNC_RATE_LIMITED'});
+   assert.deepEqual(requests,[{source:'che168',ids:[missing],locale:'zh'}]);
+   assert.deepEqual(await queued(),before);
+   assert.deepEqual(applied,[]);
+  };
+  await t.test('an event from the wrong generation leaves the ordinary fetch and retry state intact',async()=>{
+   failBeforeArchive=true;
+   try{
+    await database.pool.query('UPDATE external_full_events SET detail_generation=detail_generation+1 WHERE event_id=2000');
+    await expectOrdinaryFetch();
+   }finally{
+    await database.pool.query('UPDATE external_full_events SET detail_generation=detail_generation-1 WHERE event_id=2000');
+    failBeforeArchive=false;
+   }
+  });
+  await t.test('an earlier missing-language job is not skipped to reach a prepared prefix',async()=>{
+   failBeforeArchive=true;
+   try{
+    await database.pool.query("UPDATE external_full_work SET queued_at=$2 WHERE source='che168' AND external_id=$1",[missing,'2026-11-14T00:00:00.000Z']);
+    await expectOrdinaryFetch();
+   }finally{
+    await database.pool.query("UPDATE external_full_work SET queued_at=$2 WHERE source='che168' AND external_id=$1",[missing,changedAt]);
+    failBeforeArchive=false;
+   }
+  });
+  await t.test('the ordinary turn on the same archive remains subject to the supplier fetch',async()=>{
+   failBeforeArchive=true;
+   await expectOrdinaryFetch(1);
+   assert.equal((await inventory.getPublic(publicId(prepared[0]!),'en','localized')).price.money?.amount,'70000.00');
+  });
+
+  feed=[{id:2030,source:'che168',vehicleId:withdrawn,type:'removed',at:withdrawalAt}];await sync.receiveDelta();
+  requests.length=0;observations.length=0;await setTurn(0);
+  assert.equal(await sync.details(),16);
+  assert.deepEqual(requests,[]);
+  assert.deepEqual(applied,[`withdraw:${withdrawn}`,...prepared.map(id=>`upsert:${id}`)]);
+  assert.equal((await inventory.getPublic(publicId(prepared[0]!),'en','localized')).price.money?.amount,'65000.00');
+  assert.equal((await inventory.getPublic(publicId(missing),'en','localized')).price.money?.amount,'70000.00');
+  await assert.rejects(inventory.getPublic(publicId(withdrawn),'en','localized'));
+  assert.deepEqual((await database.pool.query(`SELECT source_type,public_outcome,count(*)::int AS n
+   FROM external_full_events WHERE event_id BETWEEN 2000 AND 2016 OR event_id=2030
+    GROUP BY source_type,public_outcome ORDER BY source_type,public_outcome`)).rows,
+  [{source_type:'price',public_outcome:'effective',n:16},{source_type:'price',public_outcome:'pending',n:1},
+   {source_type:'removed',public_outcome:'effective',n:1}]);
+  failBeforeArchive=false;
+  assert.equal(await sync.details(),1);
+  assert.deepEqual(observations.flatMap(item=>item.event==='external.full_sync.materialization_slice'?[item.readyPricePrefix]:[]),
+   [true,undefined]);
+  assert.deepEqual(requests,locales.map(locale=>({source:'che168',ids:[missing],locale})));
+  assert.equal((await inventory.getPublic(publicId(missing),'en','localized')).price.money?.amount,'65000.00');
+
+  await setTurn(3);requests.length=0;
+  assert.equal(await sync.details(),1);
+  assert.deepEqual(requests,locales.map(locale=>({source:'dongchedi',ids:[otherSource],locale})));
+  assert.deepEqual(await queued(),[]);
+ }finally{
+  await worker?.close();await db?.close();
+  try{if(created)await maintenance.pool.query(`DROP DATABASE "${name}"`);}finally{await maintenance.close();await rm(directory,{recursive:true,force:true});}
+ }
 });
 
 test('a saturated source defers only new rotation for the tick, then CSV and rotation resume',async t=>{

@@ -31,11 +31,15 @@ const errorCode=(error:unknown)=>error instanceof FullSyncError?error.code:'SYNC
 const capacityMeasurementMaxAgeMs=30_000;
 const detailMaterializationBudgetMs=5_000;
 const detailMaterializationTimeout='SYNC_DETAIL_SQL_TIMEOUT';
+const readyPriceBatchMinimum=16;
+const detailLocales=['zh','en','ru'] as const;
+const hasAllDetailLocales=(job:QueuedDetail)=>detailLocales.every(locale=>job.locales.includes(locale));
 const deltaAuditDetailSlots=4;
 const deltaAuditBulkIdsPerLocale=25;
 type CapacitySnapshot=Parameters<typeof capacityTarget>[0]&{id:string;bytes:string};
 type CapacityMeasurement={state:Record<string,any>;disk:CapacityDisk;sample:CapacitySample;snapshot:CapacitySnapshot|undefined};
 type DetailJobKey={source:Source;external_id:string;generation:string;replay_id?:string|null};
+type DetailCandidate=QueuedDetail&{desired_generation:string};
 function completeCapacitySample(snapshot:CapacitySnapshot|undefined,sample:CapacitySample) {
  return !!snapshot&&capacityTarget(snapshot)>0&&sample.details>0&&sample.details<=10000&&sample.details>=capacitySampleTarget(snapshot)
   &&sample.three_locales===sample.active_details&&sample.reports+sample.no_report===sample.active_details;
@@ -653,6 +657,30 @@ export class FullSyncWorker{
   candidates.splice(1,candidates.length-1,...promoted,...rest.filter(job=>!replace.has(job.external_id)));
   return true;
  }
+ private async readyPricePrefix(source:Source,candidates:DetailCandidate[]){
+  if(candidates.every(hasAllDetailLocales))return [];
+  const end=candidates.findIndex(job=>job.priority<100||job.replay_id||
+   job.generation!==job.desired_generation||job.locales.length!==detailLocales.length||!hasAllDetailLocales(job));
+  const prefix=end<0?candidates:candidates.slice(0,end);
+  if(prefix.length<readyPriceBatchMinimum)return [];
+  try{
+   const size=await this.db.transaction(async tx=>{
+    await tx.query("SET LOCAL statement_timeout='250ms'");
+    const result=await tx.query<{size:number}>(`SELECT coalesce(min(job.position)-1,cardinality($2::text[]))::integer AS size
+     FROM unnest($2::text[],$3::bigint[]) WITH ORDINALITY AS job(external_id,generation,position)
+     LEFT JOIN LATERAL (SELECT true AS found FROM external_full_events e
+      WHERE e.source=$1 AND e.external_id=job.external_id AND e.detail_generation=job.generation
+       AND e.public_outcome='pending' AND e.operation='upsert' AND e.source_type='price' AND e.was_public
+       AND e.applied_at IS NOT NULL LIMIT 1) evidence ON true WHERE evidence.found IS NULL`,
+     [source,prefix.map(job=>job.external_id),prefix.map(job=>job.generation)]);
+    return result.rows[0]!.size;
+   });
+   return size>=readyPriceBatchMinimum?prefix.slice(0,size):[];
+  }catch(error){
+   if(classifyCapacityFailure(error).code==='SQL_STATEMENT_CANCELLED')return [];
+   throw error;
+  }
+ }
  async details(sampleOnly=false){
   sampleOnly=sampleOnly||(await this.state()).capacity_pending;
   await this.heavy(sampleOnly);const remaining=await this.sampleRemaining(),restrictToSample=sampleOnly||remaining===0;
@@ -664,16 +692,20 @@ export class FullSyncWorker{
      AND item.detail_generation=w.generation AND item.state='scheduled'
    WHERE w.kind='detail' AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
      AND ($1=false OR m.sampled) ORDER BY CASE WHEN $2 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT 1`,[restrictToSample,oldest])).rows[0];
-  if(!selected)return 0;const candidates=(await this.db.pool.query<QueuedDetail>(`SELECT w.source,w.external_id,w.generation,w.locales,w.priority,item.replay_id
+  if(!selected)return 0;const candidates=(await this.db.pool.query<DetailCandidate>(`SELECT w.source,w.external_id,w.generation,w.locales,w.priority,item.replay_id,m.desired_generation
    FROM external_full_work w JOIN external_full_members m USING(source,external_id)
    LEFT JOIN external_full_admission_replay_items item ON item.source=w.source AND item.external_id=w.external_id
      AND item.detail_generation=w.generation AND item.state='scheduled'
    WHERE w.kind='detail' AND w.source=$3 AND w.attempts<5 AND w.due_at<=now() AND (m.state<>'withdrawn' OR item.replay_id IS NOT NULL)
      AND ($2=false OR m.sampled) ORDER BY CASE WHEN $4 THEN 0 ELSE w.priority END DESC,w.queued_at,w.due_at,w.source,w.external_id LIMIT $1`,[restrictToSample?500:Math.min(500,remaining),restrictToSample,selected.source,oldest])).rows;
-  // Keep every other existing oldest-first turn and all priority turns unchanged.
+  // On one priority turn, publish a substantial ready prefix before any bulk fetch.
+  // Never jump over the first job that needs fetching, replay or a different projection.
+  const readyPrices=!restrictToSample&&turn%4===1?await this.readyPricePrefix(selected.source,candidates):[];
+  // Refresh the guard if a withdrawal was applied, which can change the capacity cohort.
+  if(readyPrices.length&&(await this.applyEvents(true))>0)await this.heavy();
   const auditAssist=!restrictToSample&&turn%8===0&&await this.preferDeltaAuditDetails(selected.source,candidates);
   const jobs=[];
-  for(const job of candidates){
+  for(const job of readyPrices.length?readyPrices:candidates){
    if(!job.replay_id){jobs.push(job);continue;}
    const usable=await this.transaction(async tx=>{
     await tx.query('SELECT pg_advisory_xact_lock(78291332)');
@@ -692,7 +724,7 @@ export class FullSyncWorker{
    failed.add(key);
    if(await this.failDetail(job,code))stoppedReplay.add(key);
   };
-  for(const source of ['che168','dongchedi'] as const)for(const locale of ['zh','en','ru'] as const){
+  for(const source of ['che168','dongchedi'] as const)for(const locale of detailLocales){
    const wanted=jobs.filter(j=>j.source===source&&!j.locales.includes(locale)&&!stoppedReplay.has(jobKey(j)));if(!wanted.length)continue;
    if(wanted.some(job=>job.replay_id))await this.heavy();
    const outstanding=new Map<string,DetailJobKey>(wanted.map(job=>[job.external_id,job]));
@@ -742,7 +774,7 @@ export class FullSyncWorker{
   // Archived responses survive the tick. Check the elapsed budget only between
   // vehicle transactions; a transaction already started can finish normally.
   const materializationDeadline=performance.now()+detailMaterializationBudgetMs;
-  const observation=this.materializationObserver&&observeMaterialization(this.materializationObserver,this.fence,jobs.length);
+  const observation=this.materializationObserver&&observeMaterialization(this.materializationObserver,this.fence,jobs.length,readyPrices.length>0);
   let applied=0,replayFlush=0;
   let stop:'complete'|'budget'|'statement_timeout'|'error'='error';
   try{
