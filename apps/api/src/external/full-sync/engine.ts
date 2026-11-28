@@ -160,15 +160,29 @@ export class FullSyncWorker{
    if(replay&&BigInt(page.cursor)>BigInt(policy.recovery_anchor_cursor!))throw new FullSyncError('SYNC_DELTA_OVERLAP_INVALID');
    const key=cursor===null?`since:${since}`:`cursor:${cursor}`;
   await this.transaction(async tx=>{await persistSourceResponse(tx,page.rawResponse);await protectSourceBlob(tx,page.rawResponse.hash,{kind:'pending',reference:`full-page:${key}`});});
-  for(let offset=0;offset<page.changes.length;offset+=LIMITS.dbBatch){await this.alive();await this.transaction(async tx=>{
-   for(const e of page.changes.slice(offset,offset+LIMITS.dbBatch)){
-    const existing=(await tx.query('SELECT payload_hash FROM external_full_events WHERE event_id=$1',[e.id])).rows[0];if(existing){if(existing.payload_hash!==jsonHash(e))throw new FullSyncError('SYNC_EVENT_CONFLICT');continue;}
-    const ref=`full-event:${e.id}`,docs:SourceDocument[]=[{identity:identity(e.source,e.vehicleId),kind:'event',locale:'und',observedAt:new Date().toISOString(),sourceUpdatedAt:e.at,eventSequence:String(e.id),payload:e,rawResponse:{hash:page.rawResponse.hash}}];
-    const refs=await archiveSourceDocuments(tx,docs,ref);
-    await tx.query('INSERT INTO external_full_events(event_id,source,external_id,operation,business_at,document_refs,payload_hash,source_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[e.id,e.source,e.vehicleId,e.type==='removed'?'withdraw':e.type==='relisted'?'relist':'upsert',e.at,JSON.stringify(refs),jsonHash(e),e.type]);
-    await tx.query('UPDATE external_full_sync SET received_events=received_events+1 WHERE id=1');
-   }
-  });}
+  for(let offset=0;offset<page.changes.length;offset+=LIMITS.dbBatch){
+   const chunk=page.changes.slice(offset,offset+LIMITS.dbBatch);
+   await this.transaction(async tx=>{
+    const {rows}=await tx.query<{event_id:string;payload_hash:string}>(
+     'SELECT event_id::text,payload_hash FROM external_full_events WHERE event_id=ANY($1::numeric[])',
+     [chunk.map(event=>event.id)]);
+    const known=new Map(rows.map(row=>[row.event_id,row.payload_hash]));
+    let received=0;
+    for(const e of chunk){
+     const id=String(e.id),hash=jsonHash(e),prior=known.get(id);
+     if(prior!==undefined){
+      if(prior!==hash)throw new FullSyncError('SYNC_EVENT_CONFLICT');
+      continue;
+     }
+     const ref=`full-event:${id}`,docs:SourceDocument[]=[{identity:identity(e.source,e.vehicleId),kind:'event',locale:'und',observedAt:new Date().toISOString(),sourceUpdatedAt:e.at,eventSequence:id,payload:e,rawResponse:{hash:page.rawResponse.hash}}];
+     const refs=await archiveSourceDocuments(tx,docs,ref);
+     await tx.query('INSERT INTO external_full_events(event_id,source,external_id,operation,business_at,document_refs,payload_hash,source_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[e.id,e.source,e.vehicleId,e.type==='removed'?'withdraw':e.type==='relisted'?'relist':'upsert',e.at,JSON.stringify(refs),hash,e.type]);
+     known.set(id,hash);
+     received++;
+    }
+    if(received)await tx.query('UPDATE external_full_sync SET received_events=received_events+$1 WHERE id=1',[received]);
+   });
+  }
   await this.transaction(async tx=>{
    const current=(await tx.query('SELECT receive_cursor,since_at FROM external_full_sync WHERE id=1 FOR UPDATE')).rows[0]!;
    if(String(current.receive_cursor)!==String(s.receive_cursor)||new Date(current.since_at).getTime()!==new Date(s.since_at).getTime())throw new FullSyncError('SYNC_CURSOR_CONFLICT');
@@ -209,8 +223,21 @@ export class FullSyncWorker{
  }
  async applyEvents(withdrawOnly=false){
   await this.alive();
-  const events=(await this.db.pool.query(`WITH boundary AS (
-   SELECT (SELECT high_water FROM external_full_delta_policy WHERE id=1 AND phase='draining' AND NOT $1) AS high_water
+  // Withdrawal checks run between detail and report batches. Ranking the
+  // withdrawal lane needs only admission identity, never the public catalogue.
+  const events=(await this.db.pool.query(withdrawOnly?`WITH withdrawals AS (
+   SELECT e.*,a.found IS TRUE AS admitted
+   FROM external_full_events e
+   LEFT JOIN LATERAL (
+    SELECT true AS found FROM external_formal_admissions a WHERE (a.source,a.external_id)=(e.source,e.external_id) LIMIT 1
+   ) a ON true
+   WHERE e.applied_at IS NULL AND (e.operation='withdraw')=true
+    AND EXISTS(SELECT 1 FROM external_formal_admission_state WHERE id=1)
+   ), ranked AS (
+    SELECT *,row_number() OVER(PARTITION BY admitted ORDER BY event_id) AS lane_row FROM withdrawals
+   ) SELECT * FROM ranked ORDER BY
+    CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,event_id LIMIT 100`:`WITH boundary AS (
+   SELECT (SELECT high_water FROM external_full_delta_policy WHERE id=1 AND phase='draining') AS high_water
    ), eligible AS (SELECT e.*,a.external_id IS NOT NULL AS admitted,
    coalesce(e.event_id<=boundary.high_water,false) AS in_boundary,
    coalesce((e.operation='upsert' AND f.active AND f.locale_mask=7) OR (e.operation='relist' AND l.published_at IS NOT NULL),false) AS urgent,
@@ -219,10 +246,10 @@ export class FullSyncWorker{
    LEFT JOIN external_formal_admissions a USING(source,external_id)
    LEFT JOIN external_listings l ON l.provider='chinacarapi' AND l.platform_id=e.source AND l.external_id=e.external_id
    LEFT JOIN external_catalog_filter f ON f.listing_id=l.id
-   WHERE admission.id=1 AND e.applied_at IS NULL AND ($1=false OR e.operation='withdraw')
+   WHERE admission.id=1 AND e.applied_at IS NULL
     ), ranked AS (SELECT *,row_number() OVER(PARTITION BY admitted,operation='withdraw' ORDER BY in_boundary DESC,urgent DESC,event_id) AS lane_row FROM eligible)
    SELECT * FROM ranked ORDER BY (operation='withdraw') DESC,
-   CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,in_boundary DESC,urgent DESC,event_id LIMIT 100`,[withdrawOnly])).rows;
+   CASE WHEN admitted AND lane_row<=90 THEN 0 WHEN NOT admitted THEN 1 ELSE 2 END,in_boundary DESC,urgent DESC,event_id LIMIT 100`)).rows;
   let expansionAllowed:boolean|undefined,completed=0;
   for(const event of events){
    const withdraw=event.operation==='withdraw';
@@ -260,18 +287,19 @@ export class FullSyncWorker{
      excluded=!admitted;
     }
     if(admitted){
-     const member=await ensureMember(tx,event.source,event.external_id);
+     const member=await lockMember(tx,event.source,event.external_id)??await ensureMember(tx,event.source,event.external_id);
      outcome='superseded';
      const newer=BigInt(event.event_id)>BigInt(member.event_order)&&at>=new Date(member.business_at);
      if(newer){
       const canActivate=member.state!=='withdrawn'||event.operation==='relist';
-      await tx.query(`UPDATE external_full_members SET event_order=$3,business_at=$4,desired_generation=desired_generation+1,verification_pending=false,
+      const {rows:[next]}=await tx.query<{desired_generation:string;canonical_id:string}>(`UPDATE external_full_members SET event_order=$3,business_at=$4,desired_generation=desired_generation+1,verification_pending=false,
         state=CASE WHEN $5 THEN 'withdrawn' WHEN $6 THEN 'pending' ELSE state END,locales=CASE WHEN $5 THEN locales ELSE '{}'::text[] END,
         has_report=CASE WHEN $7 THEN false ELSE has_report END,report_state=CASE WHEN $7 THEN 'unknown' ELSE report_state END,
-        report_checked_at=CASE WHEN $7 THEN NULL ELSE report_checked_at END WHERE source=$1 AND external_id=$2`,
+        report_checked_at=CASE WHEN $7 THEN NULL ELSE report_checked_at END WHERE source=$1 AND external_id=$2
+        RETURNING desired_generation,canonical_id`,
        [event.source,event.external_id,event.event_id,event.business_at,withdraw,canActivate,event.operation==='relist']);
       if(member.sampled&&(event.operation==='relist'||withdraw&&member.state!=='withdrawn'))await advanceCapacitySampleLifecycle(tx);
-      const next=(await tx.query('SELECT * FROM external_full_members WHERE source=$1 AND external_id=$2',[event.source,event.external_id])).rows[0]!;
+      if(!next)throw new FullSyncError('SYNC_MEMBER_MISSING');
       generation=String(next.desired_generation);outcome=withdraw||canActivate?'pending':'not_public';
       await supersedeTiming(tx,event.source,event.external_id,generation);
       if(withdraw){const docs=await loadSourceDocumentRefs(tx,event.document_refs);await this.apply(tx,{source:event.source,externalId:event.external_id,canonicalId:next.canonical_id,operation:'withdraw',documents:docs,at:at.toISOString(),batchId:randomUUID()});

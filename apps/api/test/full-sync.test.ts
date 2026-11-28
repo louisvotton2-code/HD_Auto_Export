@@ -10,7 +10,7 @@ import {FullSyncWorker,configureFullSync} from '../src/external/full-sync/engine
 import {FullSyncClient} from '../src/external/full-sync/client.js';
 import {fullSyncStatus,setFullSyncPaused} from '../src/external/full-sync/status.js';
 import {catalogColumns,persistSourceDocument} from '../src/external/sources/index.js';
-import type {Change,FullApply} from '../src/external/full-sync/types.js';
+import {LIMITS,type Change,type FullApply} from '../src/external/full-sync/types.js';
 
 test('formal full synchronization has durable independent receipt/application and safe control',async t=>{
  const url=new URL(process.env.API_TEST_DATABASE_URL??'postgresql://hd_local:local-development-only@127.0.0.1:55432/postgres');
@@ -569,6 +569,64 @@ test('formal full synchronization has durable independent receipt/application an
    assert.equal((await database.pool.query("SELECT payload->>'image' AS image FROM external_full_stage WHERE snapshot_id=$1 AND external_id=$2",[id,externalId])).rows[0].image,image);
    await applySnapshot('71000',image);
    assert.equal((await database.pool.query("SELECT count(*)::integer AS jobs FROM external_full_work WHERE source='che168' AND external_id=$1 AND kind='detail'",[externalId])).rows[0].jobs,1);
+  });
+  await t.test('mixed replay keeps committed receipt chunks and rolls back the conflicting chunk',async()=>{
+   const cursor=9_000_000,base=cursor+1;
+   const page=Array.from({length:LIMITS.dbBatch+3},(_,offset):Change=>{
+    const id=base+offset;
+    return {id,source:'che168',vehicleId:String(id),type:'price',at};
+   });
+   const existing=page[20]!,late=page[LIMITS.dbBatch+1]!;
+   const setCursor=()=>database.pool.query('UPDATE external_full_sync SET receive_cursor=$1 WHERE id=1',[cursor]);
+   const state=async()=>(await database.pool.query(`SELECT receive_cursor::text,received_events::text,applied_events::text,last_receive_at
+    FROM external_full_sync WHERE id=1`)).rows[0]!;
+   const receipt=async()=>(await database.pool.query(`SELECT next_cursor::text,event_count,complete,created_at
+    FROM external_full_receipts WHERE cursor_key=$1`,[`cursor:${cursor}`])).rows[0]!;
+   const staged=async()=>(await database.pool.query(`SELECT e.event_id::integer AS id,e.payload_hash,e.document_refs,
+    EXISTS(SELECT FROM external_source_documents d
+     JOIN external_source_document_refs r ON r.document_id=d.id AND r.kind='pending' AND r.reference='full-event:'||e.event_id::text
+     JOIN external_source_blob_refs b ON b.hash=d.hash AND b.kind=r.kind AND b.reference=r.reference
+     JOIN external_source_blob_refs p ON p.hash=e.document_refs->0->>'responseHash' AND p.kind=r.kind AND p.reference=r.reference
+     WHERE d.id=(e.document_refs->0->>'id')::uuid AND d.kind='event' AND d.event_sequence=e.event_id) AS protected
+    FROM external_full_events e WHERE e.event_id BETWEEN $1 AND $2 ORDER BY e.event_id`,[base,page.at(-1)!.id])).rows;
+   const previous=await state();
+   feed=[existing,late];
+   await database.pool.query('UPDATE external_full_sync SET since_at=$1 WHERE id=1',[at]);
+   await setCursor();
+   await worker!.receiveDelta();
+   const seeded=await state(),oldReceipt=await receipt(),oldEvents=await staged();
+   assert.equal(Number(seeded.received_events),Number(previous.received_events)+2);
+   assert.deepEqual(oldEvents.map(event=>event.id),[existing.id,late.id]);
+   assert.equal(oldReceipt.complete,true);
+
+   // Replay from the old checkpoint. A new event is staged in the second
+   // transaction before the conflicting duplicate, so that chunk must unwind.
+   feed=page.map(event=>event.id===late.id?{...event,vehicleId:String(cursor)}:event);
+   await setCursor();
+   await assert.rejects(worker!.receiveDelta(),/SYNC_EVENT_CONFLICT/);
+   const after=await state(),committed=await staged();
+   assert.deepEqual(after,{...seeded,receive_cursor:String(cursor),
+    received_events:String(Number(seeded.received_events)+LIMITS.dbBatch-1)});
+   assert.deepEqual(await receipt(),oldReceipt);
+   assert.deepEqual(committed.map(event=>event.id),[...page.slice(0,LIMITS.dbBatch).map(event=>event.id),late.id]);
+   assert.deepEqual(committed.filter(event=>event.id===existing.id||event.id===late.id),oldEvents);
+   assert.ok(committed.every(event=>event.protected));
+
+   feed=page;
+   await worker!.receiveDelta();
+   const finished=await state(),full=await staged(),newReceipt=await receipt();
+   assert.equal(finished.receive_cursor,String(page.at(-1)!.id));
+   assert.equal(Number(finished.received_events),Number(previous.received_events)+page.length);
+   assert.equal(finished.applied_events,previous.applied_events);
+   assert.deepEqual(full.map(event=>event.id),page.map(event=>event.id));
+   assert.deepEqual(full.filter(event=>committed.some(prior=>prior.id===event.id)),committed);
+   assert.ok(full.every(event=>event.protected));
+   assert.deepEqual(newReceipt,{...oldReceipt,next_cursor:finished.receive_cursor,event_count:page.length});
+   await setCursor();
+   await worker!.receiveDelta();
+   assert.equal((await state()).received_events,finished.received_events);
+   assert.deepEqual(await receipt(),newReceipt);
+   assert.deepEqual(await staged(),full);
   });
   await t.test('report 404 uses the report transaction and retry boundary',async()=>{
    const failed='812345',healthy='812346',missing='812347',retired='812348',replaced='812349',stale='812350',leaseLost='812351';
