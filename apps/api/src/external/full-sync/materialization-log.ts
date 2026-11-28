@@ -10,7 +10,7 @@ type Breakdown=Partial<Record<Stage,number>>;
 export type DetailMaterializationObservation={
  event:'external.full_sync.materialization_slice';workerFence:string|null;elapsedMs:number;
  prepared:number;attempted:number;applied:number;failed:number;stop:'complete'|'budget'|'statement_timeout'|'error';
- stageMs:Breakdown;
+ stageMs:Breakdown;readyPricePrefix?:true;
 }|{
  event:'external.full_sync.materialization_attempt';workerFence:string|null;generation:string;listingToken:string;
  backendPid:number|null;startedAt:string;elapsedMs:number;stage:Stage;stageMs:Breakdown;
@@ -21,7 +21,7 @@ type Attempt={backendPid:number|null;enter:(stage:Stage)=>void;finish:(result:Re
 const elapsed=(value:number)=>Math.round(value*10)/10;
 const tokenKey=randomBytes(32);
 
-export function observeMaterialization(sink:DetailMaterializationObserver,workerFence:string|null,prepared:number) {
+export function observeMaterialization(sink:DetailMaterializationObserver,workerFence:string|null,prepared:number,readyPricePrefix:boolean) {
  const started=performance.now();
  const counts={attempted:0,applied:0,failed:0};
  const totals:Breakdown={};
@@ -59,7 +59,7 @@ export function observeMaterialization(sink:DetailMaterializationObserver,worker
   },
   finish(stop:Extract<DetailMaterializationObservation,{prepared:number}>['stop']) {
    if(counts.attempted)emit({event:'external.full_sync.materialization_slice',workerFence,elapsedMs:elapsed(performance.now()-started),
-    prepared,...counts,stop,stageMs:rounded(totals)});
+    prepared,...counts,stop,stageMs:rounded(totals),...(readyPricePrefix?{readyPricePrefix:true}:{})});
   },
  };
 }
