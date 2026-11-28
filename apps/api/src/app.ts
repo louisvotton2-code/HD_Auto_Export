@@ -38,7 +38,7 @@ import { createVehicleTranslator, type VehicleTranslator } from './vehicles/tran
 import { externalBatchPath, externalBulkVisibilityPath, externalMediaFailurePath, externalOverridesPath, externalTrialPath, registerExternalRoutes } from './external/routes.js';
 import { createPublicCatalogCache, PublicCatalogUnavailableError, type CacheProtocol, type CatalogRevisionProof, type PublicBrowseRoute, type PublicCacheReadPhase, type PublicCacheRoute, type PublicCatalogRevision } from './external/public-cache.js';
 import { createSsrServiceIdentity, SSR_CATALOG_PREFIX, SSR_CATALOG_VERSION_PATH, SsrOriginLimiter } from './ssr-service.js';
-import { MarketPriceService } from './market-prices/service.js';
+import { MarketPriceService, type MarketReadPhase } from './market-prices/service.js';
 import { SalesVehicleService } from './sales/service.js';
 import { salesAccess, salesVehiclesPath, salesVehicleLookupPath } from './sales/access.js';
 
@@ -160,9 +160,9 @@ export async function buildApp(config:Config=readConfig(), options:{
   const staff=new WeakMap<object,adm.StaffMe>();
   const requestSignals=new WeakMap<object,AbortSignal>();
   const longCacheRequests=new WeakSet<object>();
-  type CatalogReadPhase=HomeModelFilterPhase|PublicListReadPhase|PublicCacheReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
+  type CatalogReadPhase=MarketReadPhase|HomeModelFilterPhase|PublicListReadPhase|PublicCacheReadPhase|'cache_lookup_or_shared'|'cache_validate'|'response';
   type CatalogReadTiming={
-    kind:'home-models'|'overview'|'overview-models'|'list'|'filters'|'catalog-page'; phase:CatalogReadPhase; started:number;
+    kind:'market-price'|'home-models'|'overview'|'overview-models'|'list'|'filters'|'catalog-page'; phase:CatalogReadPhase; started:number;
     stageMs:Partial<Record<CatalogReadPhase,number>>; backendPid?:number;
   };
   const catalogReadTimings=new WeakMap<FastifyRequest,CatalogReadTiming>();
@@ -182,6 +182,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     const {kind,phase,stageMs,started,backendPid}=timing;
     const elapsed={...stageMs,[phase]:Math.round((stageMs[phase]??0)+performance.now()-started)};
     const database=backendPid===undefined?{}:{databaseBackendPid:backendPid};
+    if(kind==='market-price')return {marketPhase:phase,marketStageMs:elapsed};
     if(kind==='home-models')return {projection:kind,homeModelsPhase:phase,homeModelsStageMs:elapsed,...database};
     if(kind==='overview'||kind==='overview-models')return {projection:kind,facetsPhase:phase,facetsStageMs:elapsed,...database};
     if(kind==='catalog-page')return {catalogPhase:phase,catalogStageMs:elapsed};
@@ -258,7 +259,7 @@ export async function buildApp(config:Config=readConfig(), options:{
     serving.response(request);
     if(request.routeOptions.url===analyticsContactPath||request.routeOptions.url===analyticsIpVisitPath)return;
     app.log.info({requestId:request.id,method:request.method,route:request.routeOptions.url,statusCode:reply.statusCode,elapsedMs:reply.elapsedTime,
-      ...(reply.statusCode<400&&reply.elapsedTime>=750?catalogReadDiagnostics(request):{}),
+      ...(reply.statusCode<400&&(reply.elapsedTime>=750||request.routeOptions.url===marketPricesPath)?catalogReadDiagnostics(request):{}),
     },'Request completed');
   });
   app.setErrorHandler((error,request,reply)=>{
@@ -314,7 +315,12 @@ export async function buildApp(config:Config=readConfig(), options:{
   const response=<T>(data:T,request:{id:string})=>({data,meta:{requestId:request.id}});
   app.get(marketPricesPath, { config:{rateLimit:{max:30}}, schema:schema('public','getMarketPrices',{
     querystring:pub.MarketPriceQuerySchema,response:{200:pub.MarketPriceResponseSchema,...errorResponses},
-  })}, async request => response(await marketPrices.read(request.query as pub.MarketPriceQuery),request));
+  })}, async request => {
+    const phase=beginCatalogTiming(request,'market-price');
+    const data=await marketPrices.read(request.query as pub.MarketPriceQuery,phase);
+    phase('response');
+    return response(data,request);
+  });
 
   const salesRoute = { config:{rateLimit:{max:30}}, exposeHeadRoute:false,
     onRequest: async (request:FastifyRequest,reply:FastifyReply) => salesGate.authenticate(request,reply) };

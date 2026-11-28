@@ -51,6 +51,7 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   const defer = () => migrateDatabase(db, '--defer-han-pair-index');
   const complete = () => migrateDatabase(db, '--complete-han-pair-index');
   const applyDeltaPolicy = () => migrateDatabase(db, '--apply-delta-policy');
+  const applyMarketProjection = (database = db) => migrateDatabase(database, '--apply-market-quote-projection');
   const applyMarketIndexes = (database = db) => migrateDatabase(database, '--apply-market-price-indexes');
   const prebuildDomesticQuotes = (database: typeof db) => database.pool.query(`CREATE INDEX CONCURRENTLY
     external_catalog_market_domestic_idx ON public.external_catalog (listing_id) INCLUDE (price_cny)
@@ -151,6 +152,7 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   assert.deepEqual(await ledger('id'), pendingWithExpansion);
   assert.deepEqual(await cursors(), beforeCursors);
 
+  await assert.rejects(applyMarketProjection(), /Expected the exact 0057 ledger/);
   await assert.rejects(applyMarketIndexes(), /Expected the exact 0056 ledger/);
   const deltaPolicy = { created_at: String(files[56]!.folderMillis), hash: files[56]!.hash };
   await Promise.all([applyDeltaPolicy(), applyDeltaPolicy()]);
@@ -174,6 +176,19 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
   await Promise.all([applyMarketIndexes(), applyMarketIndexes()]);
   const market = { created_at: String(files[57]!.folderMillis), hash: files[57]!.hash };
   assert.deepEqual(await ledger('id'), [...pendingWithDeltaPolicy, market]);
+  const marketProjection = { created_at: String(files[58]!.folderMillis), hash: files[58]!.hash };
+  await db.transaction(async tx => {
+    await tx.query('LOCK TABLE external_catalog IN ROW EXCLUSIVE MODE');
+    await assert.rejects(applyMarketProjection(), { code: '55P03' });
+    assert.deepEqual((await tx.query('SELECT created_at::text, hash FROM drizzle.__drizzle_migrations ORDER BY id')).rows,
+      [...pendingWithDeltaPolicy, market]);
+    assert.equal((await tx.query("SELECT to_regclass('public.external_market_quote_models') AS relation")).rows[0].relation, null);
+  });
+  await Promise.all([applyMarketProjection(), applyMarketProjection()]);
+  await applyMarketIndexes();
+  assert.deepEqual(await ledger('id'), [...pendingWithDeltaPolicy, market, marketProjection]);
+  assert.equal((await db.pool.query('SELECT FROM external_market_quote_models')).rowCount, 0);
+  assert.equal((await db.pool.query('SELECT FROM external_market_quote_rows')).rowCount, 0);
   assert.deepEqual(await cursors(), beforeCursors);
   await applyDeltaPolicy();
   await defer();
@@ -182,9 +197,9 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
     USING gin (public.external_catalog_han_pairs(search_document)) WHERE locale='zh'`);
   const [, completedCli] = await Promise.all([complete(), runMigrationCli('--complete-han-pair-index')]);
   assert.match(completedCli.stdout, /Database migrations applied/);
-  const completedById = [...pendingWithDeltaPolicy, market, history[50]];
+  const completedById = [...pendingWithDeltaPolicy, market, marketProjection, history[50]];
   const completeThroughDelta = [...history, keyword, expansion, deltaPolicy];
-  const completedByTimestamp = [...completeThroughDelta, market];
+  const completedByTimestamp = [...completeThroughDelta, market, marketProjection];
   assert.deepEqual(await ledger('id'), completedById);
   assert.deepEqual(await ledger('created_at'), completedByTimestamp);
   assert.deepEqual(await cursors(), beforeCursors);
@@ -224,6 +239,8 @@ test('0050 can be deferred and completed with the original SQL, unchanged cursor
     await prebuildDomesticQuotes(completedDb);
     await prebuildFormalQuotes(completedDb);
     await applyMarketIndexes(completedDb);
+    await applyMarketProjection(completedDb);
+    await applyMarketProjection(completedDb);
     assert.deepEqual((await completedLedger()).rows, completedByTimestamp);
     assert.equal((await completedDb.pool.query('SELECT 1 FROM external_full_delta_policy')).rowCount, 0);
     assert.deepEqual(await cursors(completedDb), completedBefore);

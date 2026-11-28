@@ -7,12 +7,19 @@ import { PublicCatalogUnavailableError } from '../external/public-cache.js';
 import type { InventoryService } from '../vehicles/service.js';
 import { projectUsdPrice, usdSourceRange } from '../vehicles/usd-price.js';
 import { prepareModelRows, summarizeModel, type MarketCohort, type ModelSnapshot } from './snapshot.js';
-import { aggregateMarket, hasMarketFilters, marketScopeKey, readComparableRows, shouldAggregateMarket } from './queries.js';
+import { aggregateMarket, hasMarketFilters, marketScopeKey, readComparableRows, readMarketProjectionGeneration, shouldAggregateMarket, type MarketRowPhase } from './queries.js';
 
 type MarketData = MarketPriceResponse['data'];
 type Cohort = MarketCohort;
-type MarketSnapshot = ModelSnapshot | { cohort: Cohort; expiresAt: number; quoteVersion: string | null };
+type MarketSnapshot = (ModelSnapshot | { cohort: Cohort; expiresAt: number; quoteVersion: string | null }) & {
+  projectionGeneration: string | null;
+};
 type Projection = Pick<InventoryService, 'readMarketVehicleCards'>;
+export type MarketReadPhase = MarketRowPhase | 'market_queue' | 'market_shared' | 'market_sample_pool' | 'market_sample_fx' |
+  'market_projection' | 'market_scope_probe' | 'market_read_rows' | 'market_aggregate' | 'market_summarize' | 'market_verify_pool' |
+  'market_verify_fx' | 'market_verify_extrema' | 'market_cards';
+type MarketTiming = (phase: MarketReadPhase) => void;
+
 
 const cacheTtlMs = 600_000;
 const cacheLimit = 24;
@@ -91,11 +98,15 @@ export class MarketPriceService {
   private cachedRows = 0;
   constructor(private readonly db: Database, private readonly externalCatalog: boolean, private readonly inventory: Projection) {}
 
-  read(query: MarketPriceQuery): Promise<MarketData> {
+  read(query: MarketPriceQuery, phase?: MarketTiming): Promise<MarketData> {
     const key = marketScopeKey(query);
     const existing = this.loads.get(key);
-    if (existing) return existing;
-    const load = this.schedule(() => this.load(query)).finally(() => { this.loads.delete(key); });
+    if (existing) {
+      phase?.('market_shared');
+      return existing;
+    }
+    phase?.('market_queue');
+    const load = this.schedule(() => this.load(query, phase)).finally(() => { this.loads.delete(key); });
     this.loads.set(key, load);
     return load;
   }
@@ -133,7 +144,7 @@ export class MarketPriceService {
     this.models.delete(key);
   }
 
-  private modelSnapshot(key: string, scope: MarketPriceQuery, deadline: number): Promise<MarketSnapshot> {
+  private modelSnapshot(key: string, scope: MarketPriceQuery, deadline: number, phase?: MarketTiming): Promise<MarketSnapshot> {
     const cached = this.models.get(key);
     this.removeModel(key);
     if (cached && cached.expiresAt > performance.now()) {
@@ -142,22 +153,34 @@ export class MarketPriceService {
       return Promise.resolve(cached);
     }
     const existing = this.modelLoads.get(key);
-    if (existing) return existing;
+    if (existing) {
+      phase?.('market_shared');
+      return existing;
+    }
+    phase?.('market_sample_pool');
     const load = this.db.transaction<MarketSnapshot>(async tx => {
       const started = performance.now();
       const reader = boundedMarketClient(tx, Math.min(deadline, started + snapshotReadMs));
+      phase?.('market_sample_fx');
       await tx.query(marketReadTransaction);
       const quote = await marketQuote(reader);
+      phase?.('market_projection');
+      const projectionGeneration = await readMarketProjectionGeneration(reader, scope, this.externalCatalog);
       const expiration = {
+        projectionGeneration,
         expiresAt: Math.min(started + cacheTtlMs, quote ? performance.now() + Date.parse(quote.expiresAt) - Date.now() : Infinity),
         quoteVersion: quote?.version ?? null,
       };
-      if (await shouldAggregateMarket(reader, scope, this.externalCatalog, quote)) {
-        const cohort = await aggregateMarket(reader, scope, this.externalCatalog, quote);
+      phase?.('market_scope_probe');
+      if (await shouldAggregateMarket(reader, scope, this.externalCatalog, quote, projectionGeneration)) {
+        phase?.('market_aggregate');
+        const cohort = await aggregateMarket(reader, scope, this.externalCatalog, quote, projectionGeneration);
         return { cohort, ...expiration };
       }
+      phase?.('market_read_rows');
       const [clock] = (await reader.query<{ as_of: Date }>('SELECT transaction_timestamp() AS as_of')).rows;
-      const rows = await readComparableRows(reader, scope, this.externalCatalog, quote);
+      const rows = await readComparableRows(reader, scope, this.externalCatalog, quote, undefined, phase, projectionGeneration);
+      phase?.('market_summarize');
       return { asOf: clock!.as_of, rows: prepareModelRows(rows), ...expiration };
     }).then(sample => {
       if (sample.expiresAt <= performance.now()) return sample;
@@ -172,18 +195,18 @@ export class MarketPriceService {
     return load;
   }
 
-  private async snapshotFor(query: MarketPriceQuery, deadline: number) {
+  private async snapshotFor(query: MarketPriceQuery, deadline: number, phase?: MarketTiming) {
     const model = { locale: query.locale, make: query.make, model: query.model };
     const modelKey = marketScopeKey(model);
     const key = marketScopeKey(query);
-    if (!hasMarketFilters(query)) return { key, sample: await this.modelSnapshot(key, model, deadline) };
+    if (!hasMarketFilters(query)) return { key, sample: await this.modelSnapshot(key, model, deadline, phase) };
     const full = this.models.get(modelKey);
     if (full && 'rows' in full && full.expiresAt > performance.now())
-      return { key: modelKey, sample: await this.modelSnapshot(modelKey, model, deadline) };
+      return { key: modelKey, sample: await this.modelSnapshot(modelKey, model, deadline, phase) };
     const scoped = this.models.get(key);
     if ((!scoped || scoped.expiresAt <= performance.now()) && this.modelLoads.has(modelKey)) {
       try {
-        const sample = await this.modelSnapshot(modelKey, model, deadline);
+        const sample = await this.modelSnapshot(modelKey, model, deadline, phase);
         if ('rows' in sample) return { key: modelKey, sample };
       } catch (error) {
         // A simultaneous unfiltered request may exceed the budget. A narrow scope
@@ -193,25 +216,36 @@ export class MarketPriceService {
         if (!bounded && !(error && typeof error === 'object' && 'code' in error && error.code === '57014')) throw error;
       }
     }
-    return { key, sample: await this.modelSnapshot(key, query, deadline) };
+    return { key, sample: await this.modelSnapshot(key, query, deadline, phase) };
   }
 
-  private async load(query: MarketPriceQuery): Promise<MarketData> {
+  private async load(query: MarketPriceQuery, phase?: MarketTiming): Promise<MarketData> {
     const deadline = performance.now() + activeReadMs;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (performance.now() >= deadline) throw new PublicCatalogUnavailableError('deadline');
-        const { key, sample } = await this.snapshotFor(query, deadline);
+        const { key, sample } = await this.snapshotFor(query, deadline, phase);
+        phase?.('market_summarize');
         const cohort = 'rows' in sample ? summarizeModel(sample, query) : sample.cohort;
         // The cohort is disposable and contains no cached cards or media URLs.
         // Recheck FX, current eligibility, price and cards in one fresh snapshot.
+        phase?.('market_verify_pool');
         const data = await this.db.transaction(async connection => {
+          phase?.('market_verify_fx');
           await connection.query(marketReadTransaction);
           const tx = boundedMarketClient(connection, deadline);
           const quote = await marketQuote(tx);
-          if (sample.expiresAt <= performance.now() || sample.quoteVersion !== (quote?.version ?? null) ||
-              !await extremesStillComparable(tx, query, this.externalCatalog, quote, cohort)) return null;
+          if (sample.expiresAt <= performance.now() || sample.quoteVersion !== (quote?.version ?? null)) return null;
+          // A ready generation is disposable. Even an unchanged pair of extrema
+          // cannot certify an old projection after disable or re-enrolment.
+          if (sample.projectionGeneration !== null) {
+            phase?.('market_projection');
+            if (sample.projectionGeneration !== await readMarketProjectionGeneration(tx, query, this.externalCatalog)) return null;
+          }
+          phase?.('market_verify_extrema');
+          if (!await extremesStillComparable(tx, query, this.externalCatalog, quote, cohort)) return null;
           const ids = cohortIds(cohort);
+          phase?.('market_cards');
           const cards = await this.inventory.readMarketVehicleCards(tx, ids, query.locale, quote, Date.now());
           if (sample.expiresAt <= performance.now() || cards.length !== ids.length) return null;
           return marketData(cohort, cards, quote);

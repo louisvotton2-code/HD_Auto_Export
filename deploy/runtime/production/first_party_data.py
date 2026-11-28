@@ -19,6 +19,8 @@ def scope(value):
     return value
 
 
+MARKET_PROJECTION_TABLES = ('external_market_quote_models', 'external_market_quote_pending', 'external_market_quote_rows')
+
 _SUPPLIER_TABLES = tuple('''
     external_canonical_bindings external_catalog external_catalog_filter external_catalog_search external_catalog_overview_groups
     external_catalog_keyword_match external_catalog_keyword_match_en external_catalog_keyword_match_ru
@@ -39,7 +41,7 @@ _SUPPLIER_TABLES = tuple('''
     external_translation_reservations external_translation_simulation_results external_translation_trials
     external_translation_work external_trim_documents external_vehicle_evidence external_vehicle_evidence_sets
     external_vehicle_extras
-'''.split())
+'''.split()) + MARKET_PROJECTION_TABLES
 
 _ANALYTICS_TRANSIENT = (
     'analytics_event_receipts', 'analytics_ip_keys', 'analytics_ip_visit_keys',
