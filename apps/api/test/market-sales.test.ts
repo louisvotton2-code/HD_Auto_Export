@@ -205,7 +205,9 @@ test('a model snapshot keeps ties and half-cent rounding exact and reloads when 
   assert.equal(narrowRefresh.extremes.max?.vehicle.id, lower[1]);
   const fullRefresh = await readMarket();
   assert.equal(fullRefresh.sampleCount, 3);
-  assert.equal(fullRefresh.asOf, narrowRefresh.asOf);
+  // The narrow request can refill its own scope after the retired model snapshot.
+  // A full refresh still observes the sale and reports its own snapshot time.
+  assert.ok(Date.parse(fullRefresh.asOf) >= Date.parse(narrowRefresh.asOf));
   assert.equal(fullRefresh.extremes.min?.vehicle.id, lower[1]);
   assert.equal(fullRefresh.extremes.max?.vehicle.id, upper[1]);
 });
@@ -409,4 +411,68 @@ test('market includes qualifying rows across cursor pages and shares the full sn
   assert.equal(tail.statistics.min?.cny.amount, '10255.00');
   assert.equal(tail.statistics.max?.cny.amount, '10257.00');
   assert.equal(whole.asOf, tail.asOf);
+});
+
+test('cold Mercedes E-Class returns an exact default and a scoped result beyond the row-cache cap', async () => {
+  await db.transaction(async tx => {
+    await tx.query(`CREATE TEMP TABLE market_large_model ON COMMIT DROP AS
+      SELECT n,gen_random_uuid() AS vehicle_id,gen_random_uuid() AS publication_id
+      FROM generate_series(1,8194) n`);
+    await tx.query(`INSERT INTO vehicles(id,availability,availability_checked_at)
+      SELECT vehicle_id,'available',now() FROM market_large_model`);
+    await tx.query(`INSERT INTO vehicle_publications(id,vehicle_id,data)
+      SELECT f.publication_id,f.vehicle_id,jsonb_set(jsonb_set(jsonb_set(jsonb_set(p.data,
+        '{facts,make,id}','"mercedes-benz"'), '{facts,model,id}','"cca-model-214"'),
+        '{facts,modelYear}',to_jsonb(CASE WHEN f.n>8190 THEN 2024 ELSE 2018 END)),
+        '{price,money,amount}',to_jsonb((10000+f.n)::text))
+      FROM market_large_model f CROSS JOIN vehicle_publications p WHERE p.vehicle_id=$1`, [available[0]]);
+    await tx.query(`UPDATE vehicles v SET published_revision_id=f.publication_id,publication_state='published',published_at=now()
+      FROM market_large_model f WHERE v.id=f.vehicle_id`);
+  });
+
+  const url = '/api/v1/public/market-prices?make=mercedes-benz&model=cca-model-214&locale=zh';
+  const [broad, narrow] = await Promise.all([
+    runtime.app.inject({ url, remoteAddress: '127.0.0.5' }),
+    runtime.app.inject({ url: url + '&yearMin=2024', remoteAddress: '127.0.0.5' }),
+  ]);
+  assert.equal(broad.statusCode, 200, broad.body);
+  const full = MarketPriceResponseSchema.parse(broad.json()).data;
+  assert.equal(full.sampleCount, 8194);
+  assert.equal(full.statistics.min?.cny.amount, '10001.00');
+  assert.equal(full.statistics.max?.cny.amount, '18194.00');
+  assert.equal(full.statistics.mean?.cny.amount, '14097.50');
+  assert.equal(full.statistics.median?.cny.amount, '14097.50');
+  assert.equal(full.statistics.p25?.cny.amount, '12049.25');
+  assert.equal(full.statistics.p75?.cny.amount, '16145.75');
+  assert.equal(narrow.statusCode, 200, narrow.body);
+  const result = MarketPriceResponseSchema.parse(narrow.json()).data;
+  assert.equal(result.sampleCount, 4);
+  assert.equal(result.statistics.min?.cny.amount, '18191.00');
+  assert.equal(result.statistics.median?.cny.amount, '18192.50');
+  assert.equal(result.statistics.max?.cny.amount, '18194.00');
+  assert.equal(result.statistics.p25, null);
+  assert.equal(result.extremes.max?.vehicle.id, full.extremes.max?.vehicle.id);
+  assert.notEqual(result.extremes.min?.vehicle.id, full.extremes.min?.vehicle.id);
+  const read = async (query = url) => {
+    const response = await runtime.app.inject({ url: query, remoteAddress: '127.0.0.5' });
+    assert.equal(response.statusCode, 200, response.body);
+    return MarketPriceResponseSchema.parse(response.json()).data;
+  };
+  assert.deepEqual(await read(), full);
+  const sellMax = async (data: typeof full) => {
+    await db.pool.query("UPDATE vehicles SET availability='sold',availability_checked_at=now() WHERE id=$1",
+      [data.extremes.max!.vehicle.id]);
+  };
+  await sellMax(full);
+  const stillOversized = await read();
+  assert.equal(stillOversized.sampleCount, 8193);
+  assert.equal(stillOversized.statistics.max?.cny.amount, '18193.00');
+  await sellMax(stillOversized);
+  const rowSnapshot = await read();
+  assert.equal(rowSnapshot.sampleCount, 8192);
+  assert.equal(rowSnapshot.statistics.max?.cny.amount, '18192.00');
+  assert.equal(rowSnapshot.statistics.p25?.cny.amount, '12048.75');
+  const narrowedAfterSales = await read(url + '&yearMin=2024');
+  assert.equal(narrowedAfterSales.sampleCount, 2);
+  assert.equal(narrowedAfterSales.extremes.max?.vehicle.id, rowSnapshot.extremes.max?.vehicle.id);
 });
