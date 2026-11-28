@@ -4,7 +4,8 @@ import {z} from 'zod';
 import type {Database} from '../../db/index.js';
 import {DEFAULT_FORMAL_LISTING_LIMIT} from '../formal-admission.js';
 import {jsonHash} from '../normalize.js';
-import {heavyWorkPausePercentSchema,reachedHeavyWorkPause,type HeavyWorkPausePercent} from './disk-policy.js';
+import {heavyWorkPausePercentSchema,projectedPeakPausePercentSchema,reachedDiskPercent,reachedHeavyWorkPause,
+ type HeavyWorkPausePercent,type ProjectedPeakPausePercent} from './disk-policy.js';
 import {FullSyncError} from './types.js';
 
 const sha256=z.string().regex(/^[a-f0-9]{64}$/);
@@ -28,19 +29,23 @@ const admissionApproval=z.strictObject({
  kind:z.literal('formal-admission-capacity-v1'),release:z.string().regex(/^[a-f0-9]{40}$/),request:AdmissionChangeRequest,
  sourceEvidenceHash:sha256,sourceTargetRows:rows,sampleRows:z.number().int().min(1).max(10_000),
  measuredAt:isoTime,sourceNativeExpiresAt:isoTime,heavyWorkPausePercent:heavyWorkPausePercentSchema,
+ projectedPeakPausePercent:projectedPeakPausePercentSchema.optional(),
  currentUsedBytes:uint,diskTotalBytes:uint.min(1),projectedPeakBytes:uint.min(1),ioSafe:z.literal(true),
 });
 
 export function validateAdmissionApproval(raw:string,input:AdmissionChangeRequest,release:string|undefined,
- percent:HeavyWorkPausePercent,byteBudget:number,now=Date.now()) {
+ percent:HeavyWorkPausePercent,byteBudget:number,now=Date.now(),
+ projectedPeakPausePercent:ProjectedPeakPausePercent=percent) {
  try {
   const proof=admissionApproval.parse(JSON.parse(raw));
   const measuredAt=Date.parse(proof.measuredAt);
   const expiresAt=Math.min(measuredAt+60_000,Date.parse(proof.sourceNativeExpiresAt));
   if(input.rollbackOf===null&&proof.release===release&&jsonHash(proof.request)===jsonHash(input)&&
-    proof.heavyWorkPausePercent===percent&&measuredAt<=now&&now<expiresAt&&
-    proof.currentUsedBytes<=proof.projectedPeakBytes&&
-    !reachedHeavyWorkPause(proof.projectedPeakBytes,proof.diskTotalBytes,percent)&&
+    proof.heavyWorkPausePercent===percent&&
+    (proof.projectedPeakPausePercent??proof.heavyWorkPausePercent)===projectedPeakPausePercent&&
+    measuredAt<=now&&now<expiresAt&&proof.currentUsedBytes<=proof.projectedPeakBytes&&
+    !reachedHeavyWorkPause(proof.currentUsedBytes,proof.diskTotalBytes,percent)&&
+    !reachedDiskPercent(proof.projectedPeakBytes,proof.diskTotalBytes,projectedPeakPausePercent)&&
     Number.isSafeInteger(byteBudget)&&byteBudget>=0&&(byteBudget===0||proof.projectedPeakBytes<=byteBudget)) {
    return {hash:createHash('sha256').update(raw).digest('hex'),expiresAt,projectedPeakBytes:proof.projectedPeakBytes,
     sourceEvidenceHash:proof.sourceEvidenceHash,sourceTargetRows:proof.sourceTargetRows,sampleRows:proof.sampleRows};

@@ -74,6 +74,19 @@ class Peak(unittest.TestCase):
                 self.calculate(self.data(),**values)
 
 class BoundedAdmission(unittest.TestCase):
+    def test_host_config_validates_independent_projected_peak_policy(self):
+        c = {'database': 'hd_release_'+'a'*16, 'filesystemUuid': 'fixture', 'heavyWorkPausePercent': 80}
+        for percent in (70, 80, 90):
+            with self.subTest(percent=percent), patch.object(m, 'private_json', return_value={
+                **c, 'projectedPeakPausePercent': percent
+            }), patch.object(m.subprocess, 'check_output', return_value='fixture\n'):
+                self.assertEqual(m.config()['projectedPeakPausePercent'], percent)
+        for invalid in (None, True, '90', 90.0, 89, 91):
+            with self.subTest(invalid=invalid), patch.object(m, 'private_json', return_value={
+                **c, 'projectedPeakPausePercent': invalid
+            }), self.assertRaisesRegex(ValueError, 'projected peak'):
+                m.config()
+
     def test_host_config_accepts_finite_expansion_only_within_database_ceiling(self):
         for value in (150_000, 459_009, m.MAX_ADMISSION_TARGET_ROWS):
             with self.subTest(value=value), patch.object(m, 'private_json', return_value={
@@ -95,8 +108,10 @@ class BoundedAdmission(unittest.TestCase):
             run.assert_not_called()
 
     def test_bounded_target_reads_normal_backups_without_starting_probe(self):
-        e = Peak().data() | {'targetRows': 100_000, 'evidenceHash': 'a'*64}
-        c = {'database': 'hd_release_'+'a'*16, 'admissionTargetRows': 100_000, 'mediaRoots': [], 'controlRoots': []}
+        e = Peak().data() | {'targetRows': 100_000, 'evidenceHash': 'a'*64,
+                             'heavyWorkPausePercent': 70, 'projectedPeakPausePercent': 90}
+        c = {'database': 'hd_release_'+'a'*16, 'admissionTargetRows': 100_000,
+             'mediaRoots': [], 'controlRoots': [], 'heavyWorkPausePercent': 80}
         with patch.object(m,'config',return_value=c), patch.object(m,'evidence',return_value=e), \
              patch.object(m,'backup_policy',return_value={}), \
              patch.object(m,'sql',return_value={'database':30_000_000,'walOnDisk':100000,'walConfigured':1024**3}), \
@@ -108,12 +123,24 @@ class BoundedAdmission(unittest.TestCase):
             disk.return_value.f_frsize=1024
             result=m.measure()
             forecast=m.measure(prospective_target_rows=1_000_000)
+            c['projectedPeakPausePercent'] = 90
+            split=m.measure(prospective_target_rows=1_000_000)
             run.assert_not_called()
         self.assertEqual(result['targetRows'],100_000)
         self.assertEqual(result['components']['filesystemReservedBytes'],4*1024**3)
+        for observation in (result, forecast['incumbent'], forecast['prospective'],
+                            split['incumbent'], split['prospective']):
+            self.assertEqual(observation['currentUsedBytes'], 54*1024**3)
         self.assertEqual(result['components']['recoveryDumpBytes'],40_000_000)
         self.assertEqual(forecast['incumbent']['evidenceHash'],e['evidenceHash'])
         self.assertEqual(forecast['incumbent']['targetRows'],100_000)
+        for output in (result, forecast, forecast['incumbent'], split, split['incumbent']):
+            self.assertEqual(output['heavyWorkPausePercent'], 80)
+        for output in (result, forecast, forecast['incumbent']):
+            self.assertEqual(output['projectedPeakPausePercent'], 80)
+        for output in (split, split['incumbent']):
+            self.assertEqual(output['projectedPeakPausePercent'], 90)
+        self.assertEqual(split['prospective'], forecast['prospective'])
         self.assertEqual(forecast['prospectiveTargetRows'],1_000_000)
         self.assertNotIn('evidenceHash',forecast['prospective'])
         self.assertGreater(forecast['prospective']['projectedPeakBytes'],result['projectedPeakBytes'])

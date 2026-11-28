@@ -44,3 +44,20 @@ test('binds the exact JSON receipt, target, release, policy and freshness',()=>{
   assert.throws(()=>validateAdmissionApproval(JSON.stringify({...receipt,...changed}),request,release,80,0,now),invalid);
  }
 });
+
+test('split admission approval enforces current disk, projected peak, and byte budget separately',()=>{
+ const approved={...receipt,currentUsedBytes:79,projectedPeakBytes:89,projectedPeakPausePercent:90};
+ const validate=(estimate:unknown,byteBudget=0,expectedPeak:80|90=90)=>
+  validateAdmissionApproval(JSON.stringify(estimate),request,release,80,byteBudget,now,expectedPeak);
+ assert.equal(validate(approved,89).projectedPeakBytes,89);
+ const invalid={code:'SYNC_ADMISSION_CAPACITY_APPROVAL_INVALID'};
+ assert.throws(()=>validate(approved,88),invalid);
+ assert.throws(()=>validate(approved,0,80),invalid);
+ assert.throws(()=>validate(receipt),invalid);
+ for(const changed of [
+  {currentUsedBytes:80}, {projectedPeakBytes:90}, {currentUsedBytes:79,projectedPeakBytes:78},
+  {projectedPeakPausePercent:'90'}, {projectedPeakPausePercent:91}, {ioSafe:false},
+ ]) {
+  assert.throws(()=>validate({...approved,...changed}),invalid);
+ }
+});

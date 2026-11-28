@@ -45,9 +45,12 @@ def config():
     target = c.get('admissionTargetRows')
     if target is not None and (type(target) is not int or not 1 <= target <= MAX_ADMISSION_TARGET_ROWS):
         raise ValueError('Invalid bounded admission target')
-    stop_percent = c.get('heavyWorkPausePercent',70)
-    if type(stop_percent) is not int or stop_percent not in (70,80):
+    stop_percent = c.get('heavyWorkPausePercent', 70)
+    if type(stop_percent) is not int or stop_percent not in (70, 80):
         raise ValueError('Invalid heavy-work pause threshold')
+    peak_percent = c.get('projectedPeakPausePercent', stop_percent)
+    if type(peak_percent) is not int or peak_percent not in (70, 80, 90):
+        raise ValueError('Invalid projected peak pause threshold')
     if subprocess.check_output(['findmnt','--mountpoint',str(ROOT/'data'),'-no','UUID'],text=True).strip() != c['filesystemUuid']:
         raise ValueError('Unexpected filesystem')
     return c
@@ -213,13 +216,21 @@ def measure(*, prospective_target_rows=None):
     if (not bounded_evidence(c, latest) or latest['evidenceHash'] != e['evidenceHash'] or
             backup_policy(c) != policy):
         return None
-    stop_percent = c.get('heavyWorkPausePercent',70)
+    # The physical cutoff uses blocks available to the worker, including the
+    # filesystem reserve. project() already reserves these bytes separately.
+    used_for_worker = used + measured['available_reserve']
+    result['currentUsedBytes'] = used_for_worker
+    stop_percent = c.get('heavyWorkPausePercent', 70)
+    policy_limits = dict(heavyWorkPausePercent=stop_percent,
+                         projectedPeakPausePercent=c.get('projectedPeakPausePercent', stop_percent))
+    incumbent = {**e, **result, **policy_limits}
     if prospective_target_rows is not None:
         proposed = project({**e, 'targetRows':prospective_target_rows}, **measured)
+        proposed['currentUsedBytes'] = used_for_worker
         # This surface has neither an allow decision nor a hash that purports to bind the proposed target.
-        return {'incumbent':{**e, **result}, 'prospectiveTargetRows':prospective_target_rows,
-                'prospective':proposed, 'heavyWorkPausePercent':stop_percent}
-    return {**e, **result, 'heavyWorkPausePercent':stop_percent}
+        return {'incumbent':incumbent, 'prospectiveTargetRows':prospective_target_rows,
+                'prospective':proposed, **policy_limits}
+    return incumbent
 
 
 def dump_command(c, image, name, extra):

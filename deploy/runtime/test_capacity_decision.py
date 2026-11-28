@@ -42,6 +42,29 @@ class CapacityDecisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.decision({**self.input, 'heavyWorkPausePercent':81}, self.now)
 
+    def test_equal_projection_policy_preserves_receipt_shape(self):
+        for percent in (70, 80):
+            combined = {**self.input, 'heavyWorkPausePercent': percent}
+            self.assertEqual(m.decision(combined, self.now),
+                             m.decision({**combined, 'projectedPeakPausePercent': percent}, self.now))
+            self.assertNotIn('projectedPeakPausePercent', m.decision(combined, self.now))
+
+    def test_split_policy_checks_actual_and_projected_boundaries_independently(self):
+        settings = dict(heavyWorkPausePercent=80, projectedPeakPausePercent=90)
+        for actual, forecast, expected in ((799, 899, 'allow'), (799, 900, 'blocked'),
+                                           (800, 899, 'blocked'), (801, 899, 'blocked')):
+            with self.subTest(actual=actual, forecast=forecast):
+                receipt = m.decision({**self.input, **settings, 'currentUsedBytes': actual,
+                                      'projectedPeakBytes': forecast}, self.now)
+                self.assertEqual(receipt['decision'], expected)
+                for key, value in settings.items():
+                    self.assertEqual(receipt[key], value)
+
+    def test_invalid_projected_threshold_is_rejected(self):
+        for value in (None, True, '90', 90.0, 89, 91):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'projected peak'):
+                m.decision({**self.input, 'projectedPeakPausePercent': value}, self.now)
+
     def test_missing_and_insufficient_wait(self):
         self.assertEqual(m.decision(None, self.now)['decision'], 'wait')
         self.input['sampleEvidenceSufficient'] = False

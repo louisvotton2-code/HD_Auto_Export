@@ -15,7 +15,7 @@ import {admitFormalListing,clearFormalWithdrawal,formalAdmissionInstalled,formal
 import {runSourceMaintenance} from './maintenance.js';
 import {syncAccount} from './quota.js';
 import {advanceCapacitySampleLifecycle,capacitySample,capacityBinding,capacityTarget,capacitySampleTarget,verifiedSnapshotTarget,validMeasuredCohort,readCapacityDecision,type CapacityBinding,type MeasuredCohort,type CapacityDisk,type CapacitySample} from './capacity.js';
-import {defaultHeavyWorkPausePercent,reachedHeavyWorkPause,type HeavyWorkPausePercent} from './disk-policy.js';
+import {defaultHeavyWorkPausePercent,reachedHeavyWorkPause,type HeavyWorkPausePercent,type ProjectedPeakPausePercent} from './disk-policy.js';
 import {recordReceiveObservation,recordDetailTiming,recordWithdrawalTiming,supersedeTiming} from './timing.js';
 import {FullSyncClient} from './client.js';
 import {applyFullSource,ensureMember,bindAlias,lockMember,parseAlias} from './apply.js';
@@ -86,7 +86,8 @@ export class FullSyncWorker{
  private reportOwed=false;
  constructor(readonly db:Database,readonly client:FullSyncClient,readonly directory:string,private apply:FullApply=applyFullSource,
   private materializationObserver?:DetailMaterializationObserver,
-  private readonly heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent){}
+  private readonly heavyWorkPausePercent:HeavyWorkPausePercent=defaultHeavyWorkPausePercent,
+  private readonly projectedPeakPausePercent:ProjectedPeakPausePercent=heavyWorkPausePercent){}
  get tickPhase(){return this.phase;}
  /** One dedicated connection owns the process lease; pool's remaining connection executes short transactions. */
  async acquire(){
@@ -124,7 +125,7 @@ export class FullSyncWorker{
   return measured;
  }
  private readHostCapacityDecision(binding:CapacityBinding,disk:CapacityDisk,approved=Number(process.env.FULL_SYNC_CAPACITY_APPROVED_BYTES??0)){
-  return readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved,undefined,this.heavyWorkPausePercent);
+  return readCapacityDecision(process.env.FULL_SYNC_CAPACITY_DECISION_FILE,binding,disk,approved,undefined,this.heavyWorkPausePercent,this.projectedPeakPausePercent);
  }
  // Only work restricted to existing sampled members (and its required account refresh) may request sampleRepair.
  async heavy(sampleRepair=false){
@@ -497,7 +498,7 @@ export class FullSyncWorker{
   const admission=enoughSample?await this.readHostCapacityDecision(binding,disk,approved):{allowed:false,code:'SYNC_CAPACITY_INSUFFICIENT_SAMPLE',decision:null};
   const allowed=admission.allowed&&state.enabled&&!state.paused;
   const code=!state.enabled||state.paused?'SYNC_HEAVY_PAUSED':admission.code;
-  const estimate={...binding,heavyWorkPausePercent:this.heavyWorkPausePercent,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,
+  const estimate={...binding,heavyWorkPausePercent:this.heavyWorkPausePercent,projectedPeakPausePercent:this.projectedPeakPausePercent,sampleStageRows:Number(measured.n),distinctProcessed:processed,detailSampleRows:details,activeDetailSampleRows:sample.active_details,withdrawnSampleRows:sample.withdrawn,threeLocaleCompleted:sample.three_locales,reportCompleted:sample.reports,confirmedNoReport:sample.no_report,csvRows:Number(snapshot?.rows)||0,csvTarget:rows||null,estimatedRows:rows,sampleEvidenceSufficient:enoughSample,actualBytesPerDetail:actualPerDetail,projectedBytesPerDetail,historicalBytesPerDetail:measuredSample?.bytesPerDetail??null,businessBytes,sqlStagingBytes,fixedBytes,relations,walBytes:Number(wal),csvBytes:bytes,archiveDirectoryBytes:archiveBytes,
     estimatedBytes:admission.decision?.projectedPeakBytes??null,decision:admission.decision,approvedBudgetBytes:approved||null,allowed,reason:code,assumptions:['Only OPS hd-ext07-peak-v1 or hd-ext09-daily-two-v1 computes peak usage; BE emits measured components and validates the bound decision.','Business bytes include indexes and compressed raw storage, excluding complete SQL staging.','Archive files and WAL are fixed observations, not per-detail multipliers.','Historical costs require a fully measured fixed cohort; a new verified CSV snapshot always invalidates an old decision.','Withdrawn members are terminal, not checked or absent reports.'],at:new Date().toISOString()};
   await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=$1,capacity_pending=NOT $2,
    capacity_baseline=CASE WHEN $3::jsonb IS NULL THEN capacity_baseline ELSE coalesce(capacity_baseline,'{}'::jsonb)||jsonb_build_object('detailSample',$3::jsonb) END WHERE id=1`,[JSON.stringify(estimate),allowed,measuredSample===null?null:JSON.stringify(measuredSample)]);
@@ -957,11 +958,12 @@ export class FullSyncWorker{
     const estimatedBytes=approval.decision?.projectedPeakBytes??null;
     // Keep the physical observation timestamp. Rechecking a receipt is not a measurement.
     if(state.capacity_pending===allowed||estimate.allowed!==allowed||estimate.reason!==reason||estimate.estimatedBytes!==estimatedBytes||
-      estimate.heavyWorkPausePercent!==this.heavyWorkPausePercent||
+      estimate.heavyWorkPausePercent!==this.heavyWorkPausePercent||estimate.projectedPeakPausePercent!==this.projectedPeakPausePercent||
       (allowed&&Number(state.last_capacity_sample)!==sample.details)) {
      await this.db.pool.query(`UPDATE external_full_sync SET capacity_estimate=capacity_estimate||$1::jsonb,capacity_pending=NOT $2,
       last_capacity_sample=CASE WHEN $2 THEN $3 ELSE last_capacity_sample END WHERE id=1`,
-     [JSON.stringify({allowed,reason,decision:approval.decision,estimatedBytes,heavyWorkPausePercent:this.heavyWorkPausePercent}),allowed,sample.details]);
+     [JSON.stringify({allowed,reason,decision:approval.decision,estimatedBytes,heavyWorkPausePercent:this.heavyWorkPausePercent,
+       projectedPeakPausePercent:this.projectedPeakPausePercent}),allowed,sample.details]);
     }
     if(!allowed)throw new FullSyncError(reason!);
     return true;

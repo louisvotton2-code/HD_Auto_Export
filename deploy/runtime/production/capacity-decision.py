@@ -46,11 +46,16 @@ def decision(measurement, now):
         if not re.fullmatch(r'[A-Za-z][A-Za-z0-9]{0,63}Bytes', name):
             raise ValueError('Invalid component name')
         result['components'][name] = integer(value)
-    stop_percent = measurement.get('heavyWorkPausePercent',70)
-    if type(stop_percent) is not int or stop_percent not in (70,80):
+    stop_percent = measurement.get('heavyWorkPausePercent', 70)
+    if type(stop_percent) is not int or stop_percent not in (70, 80):
         raise ValueError('Invalid heavy-work pause threshold')
+    peak_percent = measurement.get('projectedPeakPausePercent', stop_percent)
+    if type(peak_percent) is not int or peak_percent not in (70, 80, 90):
+        raise ValueError('Invalid projected peak pause threshold')
     if stop_percent == 80:
         result['heavyWorkPausePercent'] = stop_percent
+    if peak_percent != stop_percent:
+        result['projectedPeakPausePercent'] = peak_percent
     if measurement.get('sampleEvidenceSufficient') is not True:
         result['reason'] = 'SYNC_CAPACITY_INSUFFICIENT_SAMPLE'
         return result
@@ -58,7 +63,9 @@ def decision(measurement, now):
     if peak < result['currentUsedBytes']:
         raise ValueError('Inconsistent measurement')
     result['projectedPeakBytes'] = peak
-    blocked = max(peak, result['currentUsedBytes']) * 100 >= result['diskTotalBytes'] * stop_percent
+    total = result['diskTotalBytes']
+    blocked = (result['currentUsedBytes'] * 100 >= total * stop_percent or
+               peak * 100 >= total * peak_percent)
     result.update(decision='blocked' if blocked else 'allow',
                   reason='SYNC_CAPACITY_LIMIT' if blocked else 'SYNC_CAPACITY_VERIFIED')
     return result

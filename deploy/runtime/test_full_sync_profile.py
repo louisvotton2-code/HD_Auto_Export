@@ -24,6 +24,7 @@ class FullSyncProfile(unittest.TestCase):
                       'PROXY_GATEWAY': '172.30.94.1', 'PROXY_IP': '172.30.94.2', 'WEB_IP': '172.30.94.3',
                       'FULL_SYNC_DATA_ROOT': str(root / 'full-sync'),
                       'FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT': '80',
+                      'FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT': '90',
                       'FULL_SYNC_CAPACITY_APPROVED_BYTES': '340000000000',
                       'CHINACARAPI_KEY_FILE': str(root / 'existing-provider-key')}
             envfile = root / 'fixture.env'
@@ -59,6 +60,7 @@ class FullSyncProfile(unittest.TestCase):
         self.assertTrue(volumes['/private/capacity']['read_only'])
         self.assertEqual(worker['environment']['FULL_SYNC_ARCHIVE_ROOT'], '/private/full-sync')
         self.assertEqual(worker['environment']['FULL_SYNC_HEAVY_WORK_PAUSE_PERCENT'], '80')
+        self.assertEqual(worker['environment']['FULL_SYNC_PROJECTED_PEAK_PAUSE_PERCENT'], '90')
         self.assertEqual(worker['environment']['FULL_SYNC_CAPACITY_APPROVED_BYTES'], '340000000000')
         self.assertEqual(worker['environment']['CHINACARAPI_KEY_FILE'], '/run/secrets/chinacarapi_key')
         self.assertTrue(cfg['networks']['default']['internal'])
