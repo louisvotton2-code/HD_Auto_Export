@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { test, type TestContext } from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createDatabase } from '../src/db/index.js';
 import { migrateDatabase } from '../src/db/migrate.js';
@@ -986,9 +985,15 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
   // The fixed export is older than both successors. One identity is present
   // with its already normalized price; the other is absent from the export.
   const snapshotId = await f.seedSnapshot(staged.map((id, i) => [i + 1, id]));
-  const generatedAt = new Date(Date.now() + 1).toISOString();
-  const withdrawalAt = new Date(Date.parse(generatedAt) + 1).toISOString();
-  const relistAt = new Date(Date.parse(generatedAt) + 2).toISOString();
+  const { rows: [priceClock] } = await f.db.pool.query<{ detail_at: Date | null }>(
+    'SELECT max(detail_updated_at) AS detail_at FROM external_full_events WHERE event_id=ANY($1::numeric[])',
+    [prices.map(event => event.id)]);
+  assert.ok(priceClock?.detail_at);
+  // Step to the next whole millisecond after the database recorded the price details.
+  const generatedAtMs = priceClock.detail_at.getTime() + 1;
+  const generatedAt = new Date(generatedAtMs).toISOString();
+  const withdrawalAt = new Date(generatedAtMs + 1).toISOString();
+  const relistAt = new Date(generatedAtMs + 2).toISOString();
   await f.db.pool.query('UPDATE external_full_snapshots SET generated_at=$2 WHERE id=$1', [snapshotId, generatedAt]);
   await f.db.pool.query(`UPDATE external_full_stage SET payload=payload||jsonb_build_object(
     'price_cny','68000','detail_fetched_at',$2::text,'duplicate_of','')
@@ -998,7 +1003,7 @@ async function postSnapshotLifecycle(t: TestContext, standaloneRelists = false, 
   worker = await f.start();
   assert.equal(await worker.promoteSnapshot(snapshotId), staged.length - 1);
   assert.equal(await worker.details(), staged.length - 1);
-  await delay(Math.max(0, Date.parse(relistAt) - Date.now()));
+  await f.db.pool.query('SELECT pg_sleep_until($1::timestamptz)', [relistAt]);
   const freeze = async (cursor: number) => {
     await worker.tick();
     const frozen = await f.policy();
